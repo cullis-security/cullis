@@ -150,13 +150,6 @@ KMS_BACKEND=aws     -> AWS KMS               (add provider, swap env var)
 
 Changing the backend requires zero code changes — only a different environment variable.
 
-### Prompt Injection Defense
-
-Every inter-agent message passes through a two-stage detection pipeline:
-
-- **Regex fast path** — blocks known injection patterns with zero latency
-- **LLM judge** (optional) — semantic analysis for novel attacks via Anthropic API
-
 ### Additional Security Controls
 
 - **Certificate revocation** — block compromised agent certificates immediately
@@ -222,7 +215,6 @@ A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, 
 | Federated PDP Webhooks | Done |
 | KMS Adapter (Vault KV v2) | Done |
 | WebSocket real-time push | Done |
-| Prompt injection detection | Done |
 | Rate limiting | Done |
 | Certificate + token revocation | Done |
 | Capability discovery | Done |
