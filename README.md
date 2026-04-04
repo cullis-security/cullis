@@ -198,7 +198,7 @@ A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, 
 | Capability-only auth (roles removed) | Done |
 | ERP-triggered demo scenario | Done |
 | Session policy management from dashboard | Done |
-| OpenTelemetry observability | Planned |
+| OpenTelemetry observability | Done |
 | DPoP Server Nonce (RFC 9449 Section 8) | Done |
 | JWKS key rotation endpoint | Planned |
 
