@@ -24,12 +24,13 @@ This means the network operator has **zero visibility** into organizational busi
 
 ```mermaid
 flowchart TD
-    A["🏢 Org A Agent"] -- "Task Request Envelope\n(x509 + SPIFFE signed)" --> B["🔐 Credential Broker\n(Trust Router / CDP)"]
-    B -- "Short-lived DPoP-bound\ncredentials" --> C["🏭 Org B Agent"]
-    B -- "Policy query" --> D["Org A PDP Webhook\n(Org A IT systems)"]
-    B -- "Policy query" --> E["Org B PDP Webhook\n(Org B IT systems)"]
+    A["🏢 Org A Agent"] -- "1. Task Request Envelope\n(x509 + SPIFFE signed)" --> B["🔐 Credential Broker\n(Trust Router / CDP)"]
+    B -- "2. Policy query" --> D["Org A PDP Webhook\n(Org A IT systems)"]
+    B -- "2. Policy query" --> E["Org B PDP Webhook\n(Org B IT systems)"]
     D -- "allow / deny" --> B
     E -- "allow / deny" --> B
+    B -- "3. Short-lived DPoP-bound\ncredentials (only if both allow)" --> A
+    B -- "3. Short-lived DPoP-bound\ncredentials (only if both allow)" --> C["🏭 Org B Agent"]
 ```
 
 **Session Flow:**
