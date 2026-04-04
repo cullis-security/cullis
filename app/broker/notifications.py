@@ -26,6 +26,7 @@ class Notification(Base):
     id = Column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     recipient_type = Column(String(16), nullable=False, index=True)   # "agent" | "admin"
     recipient_id = Column(String(256), nullable=False, index=True)    # agent_id or "admin"
+    org_id = Column(String(128), nullable=True, index=True)           # org isolation — prevents cross-org leaks
     notification_type = Column(String(64), nullable=False, index=True)  # "session_pending", "binding_pending", etc.
     title = Column(String(512), nullable=False)
     body = Column(Text, nullable=True)       # JSON details
@@ -44,10 +45,12 @@ async def create_notification(
     title: str,
     body: str | None = None,
     reference_id: str | None = None,
+    org_id: str | None = None,
 ) -> Notification:
     n = Notification(
         recipient_type=recipient_type,
         recipient_id=recipient_id,
+        org_id=org_id,
         notification_type=notification_type,
         title=title,
         body=body,
@@ -63,9 +66,10 @@ async def get_pending_notifications(
     db: AsyncSession,
     recipient_type: str,
     recipient_id: str,
+    org_id: str | None = None,
     limit: int = 50,
 ) -> list[Notification]:
-    result = await db.execute(
+    query = (
         select(Notification)
         .where(
             Notification.recipient_type == recipient_type,
@@ -75,6 +79,9 @@ async def get_pending_notifications(
         .order_by(Notification.created_at.desc())
         .limit(limit)
     )
+    if org_id:
+        query = query.where(Notification.org_id == org_id)
+    result = await db.execute(query)
     return list(result.scalars().all())
 
 
@@ -82,8 +89,9 @@ async def count_pending_notifications(
     db: AsyncSession,
     recipient_type: str,
     recipient_id: str,
+    org_id: str | None = None,
 ) -> int:
-    result = await db.execute(
+    query = (
         select(func.count(Notification.id))
         .where(
             Notification.recipient_type == recipient_type,
@@ -91,6 +99,9 @@ async def count_pending_notifications(
             Notification.is_acted == False,
         )
     )
+    if org_id:
+        query = query.where(Notification.org_id == org_id)
+    result = await db.execute(query)
     return result.scalar() or 0
 
 

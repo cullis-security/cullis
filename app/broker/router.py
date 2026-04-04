@@ -150,6 +150,7 @@ async def _create_session_inner(body, current_agent, store, db, span):
         title=f"Session request from {current_agent.agent_id}",
         body=f"Capabilities: {', '.join(body.requested_capabilities)}",
         reference_id=session.session_id,
+        org_id=target_binding.org_id,
     )
 
     # Push WS al target se connesso (real-time delivery on top of persistent notification)
@@ -327,9 +328,9 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Nonce already used — possible replay attack")
 
-    # ── Freshness check — reject messages older than 5 minutes or in the future ──
+    # ── Freshness check — reject messages older than 60 seconds or in the future ──
     now_ts = int(datetime.now(timezone.utc).timestamp())
-    if abs(now_ts - envelope.timestamp) > 300:
+    if abs(now_ts - envelope.timestamp) > 60:
         await log_event(db, "broker.message_send", "denied",
                         agent_id=current_agent.agent_id, session_id=session_id,
                         details={"reason": "timestamp out of window", "ts": envelope.timestamp})
@@ -476,7 +477,7 @@ async def get_notifications(
 ):
     """Return pending (unacted) notifications for the authenticated agent."""
     from app.broker.notifications import get_pending_notifications
-    notifications = await get_pending_notifications(db, "agent", current_agent.agent_id)
+    notifications = await get_pending_notifications(db, "agent", current_agent.agent_id, org_id=current_agent.org)
     return [
         {
             "id": n.id,

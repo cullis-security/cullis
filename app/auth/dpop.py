@@ -61,11 +61,16 @@ def generate_dpop_nonce() -> str:
 
 
 def get_current_dpop_nonce() -> str:
-    """Return the current server nonce, rotating if expired."""
-    global _current_nonce, _nonce_generated_at
-    if not _current_nonce or (time.time() - _nonce_generated_at) > _NONCE_ROTATION_INTERVAL:
-        return generate_dpop_nonce()
-    return _current_nonce
+    """Return the current server nonce, rotating if expired.
+
+    Reads are protected by the lock to prevent tearing when another
+    thread is in the middle of a rotation.
+    """
+    with _nonce_lock:
+        if _current_nonce and (time.time() - _nonce_generated_at) <= _NONCE_ROTATION_INTERVAL:
+            return _current_nonce
+    # Need rotation — generate_dpop_nonce acquires the lock internally
+    return generate_dpop_nonce()
 
 
 def _is_valid_nonce(nonce: str) -> bool:

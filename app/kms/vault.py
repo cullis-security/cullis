@@ -55,8 +55,10 @@ class VaultKMSProvider:
         async with httpx.AsyncClient(timeout=_VAULT_READ_TIMEOUT) as client:
             resp = await client.get(url, headers={"X-Vault-Token": self._vault_token})
             if resp.status_code != 200:
+                _log.error("Vault returned HTTP %d for %s: %s",
+                           resp.status_code, self._secret_path, resp.text)
                 raise RuntimeError(
-                    f"Vault returned HTTP {resp.status_code} for {self._secret_path}: {resp.text}"
+                    f"Vault returned HTTP {resp.status_code} — check broker logs for details"
                 )
             return resp.json()["data"]["data"]
 
