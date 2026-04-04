@@ -39,24 +39,24 @@ pytestmark = pytest.mark.asyncio
 async def _setup(client: AsyncClient, agent_id: str, org_id: str, dpop) -> str:
     """Register org + CA + agent + binding + policy; return access token."""
     secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={"org_id": org_id, "display_name": org_id, "secret": secret}, headers=ADMIN_HEADERS)
+    await client.post("/v1/registry/orgs", json={"org_id": org_id, "display_name": org_id, "secret": secret}, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": ["order.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post(f"/registry/bindings/{resp.json()['id']}/approve",
+    await client.post(f"/v1/registry/bindings/{resp.json()['id']}/approve",
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/policy/rules", json={
+    await client.post("/v1/policy/rules", json={
         "policy_id": f"{org_id}::allow-all",
         "org_id": org_id, "policy_type": "session",
         "rules": {"effect": "allow", "conditions": {"target_org_id": [], "capabilities": []}},
@@ -65,14 +65,14 @@ async def _setup(client: AsyncClient, agent_id: str, org_id: str, dpop) -> str:
 
 
 async def _open_active_session(client, token_a, token_b, agent_b_id, org_b, dpop) -> str:
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": agent_b_id,
         "target_org_id": org_b,
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_b))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_b))
     return session_id
 
 
@@ -92,9 +92,9 @@ async def test_valid_signature_accepted(client: AsyncClient, dpop):
         "sig-valid-b::agent", "sig-valid-b",
         session_id, nonce, payload,
     )
-    resp = await client.post(f"/broker/sessions/{session_id}/messages",
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages",
                              json=envelope,
-                             headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+                             headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 202
 
 
@@ -110,13 +110,13 @@ async def test_missing_signature_rejected(client: AsyncClient, dpop):
     nonce = str(uuid.uuid4())
     recipient_pubkey = get_agent_pubkey_pem("sig-miss-b::agent", "sig-miss-b")
     cipher_blob = encrypt_for_agent(recipient_pubkey, {"type": "order"}, "fake-inner-sig", session_id, "sig-miss-a::agent")
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "sig-miss-a::agent",
         "payload": cipher_blob,
         "nonce": nonce,
         # no "signature" field
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 422
 
 
@@ -140,9 +140,9 @@ async def test_tampered_payload_rejected(client: AsyncClient, dpop):
     # Manometti il ciphertext dopo la firma esterna
     envelope["payload"]["ciphertext"] = base64.b64encode(b"manomesso" * 20).decode()
 
-    resp = await client.post(f"/broker/sessions/{session_id}/messages",
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages",
                              json=envelope,
-                             headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+                             headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 401
 
 
@@ -166,14 +166,14 @@ async def test_wrong_session_id_in_signature_rejected(client: AsyncClient, dpop)
     # Firma esterna usa session_id sbagliato
     outer_sig, _ = sign_message("sig-sess-a::agent", "sig-sess-a", wrong_session_id, "sig-sess-a::agent", nonce, cipher_blob)
 
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "sig-sess-a::agent",
         "payload": cipher_blob,
         "nonce": nonce,
         "timestamp": _ts,
         "signature": outer_sig,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 401
 
 
@@ -197,14 +197,14 @@ async def test_wrong_nonce_in_signature_rejected(client: AsyncClient, dpop):
     # Firma esterna usa il nonce sbagliato
     outer_sig, _ = sign_message("sig-nonce-a::agent", "sig-nonce-a", session_id, "sig-nonce-a::agent", wrong_nonce, cipher_blob)
 
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "sig-nonce-a::agent",
         "payload": cipher_blob,
         "nonce": real_nonce,
         "timestamp": _ts,
         "signature": outer_sig,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 401
 
 
@@ -228,14 +228,14 @@ async def test_signature_from_wrong_agent_rejected(client: AsyncClient, dpop):
     outer_sig_by_b, _ = sign_message("sig-cross-b::agent", "sig-cross-b", session_id,
                                       "sig-cross-a::agent", nonce, cipher_blob)
 
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "sig-cross-a::agent",
         "payload": cipher_blob,
         "nonce": nonce,
         "timestamp": _ts,
         "signature": outer_sig_by_b,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
     assert resp.status_code == 401
 
 
@@ -257,14 +257,14 @@ async def test_signature_persisted_and_retrievable(client: AsyncClient, dpop):
         session_id, nonce, payload,
     )
 
-    await client.post(f"/broker/sessions/{session_id}/messages",
+    await client.post(f"/v1/broker/sessions/{session_id}/messages",
                       json=envelope,
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
 
     # B recupera il messaggio: il payload è ancora il ciphertext, la firma è quella esterna
-    resp = await client.get(f"/broker/sessions/{session_id}/messages",
+    resp = await client.get(f"/v1/broker/sessions/{session_id}/messages",
                             params={"after": -1},
-                            headers=dpop.headers("GET", f"/broker/sessions/{session_id}/messages", token_b))
+                            headers=dpop.headers("GET", f"/v1/broker/sessions/{session_id}/messages", token_b))
     assert resp.status_code == 200
     msgs = resp.json()
     assert len(msgs) == 1
@@ -297,14 +297,14 @@ async def test_signature_verifiable_with_public_key(client: AsyncClient, dpop):
         session_id, nonce, payload,
     )
 
-    await client.post(f"/broker/sessions/{session_id}/messages",
+    await client.post(f"/v1/broker/sessions/{session_id}/messages",
                       json=envelope,
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a))
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a))
 
     # Recupera il messaggio via polling
-    resp = await client.get(f"/broker/sessions/{session_id}/messages",
+    resp = await client.get(f"/v1/broker/sessions/{session_id}/messages",
                             params={"after": -1},
-                            headers=dpop.headers("GET", f"/broker/sessions/{session_id}/messages", token_b))
+                            headers=dpop.headers("GET", f"/v1/broker/sessions/{session_id}/messages", token_b))
     msg = resp.json()[0]
 
     # Verifica la firma esterna con il cert del mittente (come farebbe un auditor)

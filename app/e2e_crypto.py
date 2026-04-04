@@ -21,6 +21,7 @@ def encrypt_for_agent(
     inner_signature: str,
     session_id: str,
     sender_agent_id: str,
+    client_seq: int | None = None,
 ) -> dict:
     """
     Cifra payload e firma interna con la chiave pubblica del destinatario.
@@ -43,7 +44,10 @@ def encrypt_for_agent(
     aes_key = os.urandom(32)
     iv = os.urandom(12)
     aesgcm = AESGCM(aes_key)
-    aad = f"{session_id}|{sender_agent_id}".encode()
+    if client_seq is not None:
+        aad = f"{session_id}|{sender_agent_id}|{client_seq}".encode()
+    else:
+        aad = f"{session_id}|{sender_agent_id}".encode()
     ciphertext = aesgcm.encrypt(iv, plaintext, aad)  # include GCM tag (16 byte)
 
     encrypted_key = pubkey.encrypt(
@@ -67,6 +71,7 @@ def decrypt_from_agent(
     cipher_blob: dict,
     session_id: str,
     sender_agent_id: str,
+    client_seq: int | None = None,
 ) -> tuple[dict, str]:
     """
     Decifra un blob cifrato. Ritorna (payload_dict, inner_signature).
@@ -96,7 +101,10 @@ def decrypt_from_agent(
     )
 
     aesgcm = AESGCM(aes_key)
-    aad = f"{session_id}|{sender_agent_id}".encode()
+    if client_seq is not None:
+        aad = f"{session_id}|{sender_agent_id}|{client_seq}".encode()
+    else:
+        aad = f"{session_id}|{sender_agent_id}".encode()
     plaintext = aesgcm.decrypt(iv, ciphertext, aad)
     data = json.loads(plaintext)
 
@@ -111,6 +119,7 @@ def verify_inner_signature(
     nonce: str,
     timestamp: int,
     payload: dict,
+    client_seq: int | None = None,
 ) -> bool:
     """
     Verify the inner (plaintext) signature after E2E decryption.
@@ -130,7 +139,10 @@ def verify_inner_signature(
 
     # Canonical format must match sign_message() in message_signer.py
     payload_str = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{payload_str}".encode("utf-8")
+    if client_seq is not None:
+        canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{client_seq}|{payload_str}".encode("utf-8")
+    else:
+        canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{payload_str}".encode("utf-8")
 
     pss_padding = asym_pad.PSS(
         mgf=asym_pad.MGF1(hashes.SHA256()),

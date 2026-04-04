@@ -19,14 +19,14 @@ pytestmark = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 
 async def _register_org(client: AsyncClient, org_id: str, org_secret: str):
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
 
 
 async def _upload_ca(client: AsyncClient, org_id: str, org_secret: str):
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -36,7 +36,7 @@ async def _register_agent(client: AsyncClient, agent_id: str, org_id: str,
                            capabilities: list[str] | None = None,
                            org_secret: str | None = None):
     secret = org_secret or (org_id + "-secret")
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id, "display_name": agent_id,
         "capabilities": capabilities or [],
     }, headers={"x-org-id": org_id, "x-org-secret": secret})
@@ -44,7 +44,7 @@ async def _register_agent(client: AsyncClient, agent_id: str, org_id: str,
 
 async def _create_binding(client: AsyncClient, org_id: str, org_secret: str,
                            agent_id: str, scope: list[str]) -> int:
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": scope},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -53,14 +53,14 @@ async def _create_binding(client: AsyncClient, org_id: str, org_secret: str,
 
 
 async def _approve_binding(client: AsyncClient, binding_id: int, org_id: str, org_secret: str):
-    resp = await client.post(f"/registry/bindings/{binding_id}/approve",
+    resp = await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     assert resp.status_code == 200, resp.text
 
 
 async def _revoke_binding(client: AsyncClient, binding_id: int, org_id: str, org_secret: str):
-    resp = await client.post(f"/registry/bindings/{binding_id}/revoke",
+    resp = await client.post(f"/v1/registry/bindings/{binding_id}/revoke",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     assert resp.status_code == 200, resp.text
@@ -70,8 +70,8 @@ async def _get_token(client: AsyncClient, agent_id: str, org_id: str, dpop=None)
     from tests.cert_factory import make_dpop_key_pair, make_dpop_proof, DPoPHelper
     _dpop = dpop or DPoPHelper()
     assertion = make_assertion(agent_id, org_id)
-    proof = _dpop.proof("POST", "/auth/token")
-    return await client.post("/auth/token",
+    proof = _dpop.proof("POST", "/v1/auth/token")
+    return await client.post("/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": proof},
     )
@@ -165,11 +165,11 @@ async def test_session_denied_target_no_binding(client: AsyncClient, dpop):
     await _register_org(client, "s-org-no-bind", "s-org-no-bind-secret")
     await _register_agent(client, "s-org-no-bind::agent", "s-org-no-bind")
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "s-org-no-bind::agent",
         "target_org_id": "s-org-no-bind",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert resp.status_code == 403
     assert "binding" in resp.json()["detail"].lower()
 
@@ -179,11 +179,11 @@ async def test_session_denied_capability_not_in_initiator_scope(client: AsyncCli
     token_a = await _full_setup(client, "scope-a-org", "scope-a-org::agent", ["kyc.read"], dpop)
     await _full_setup(client, "scope-b-org", "scope-b-org::agent", ["kyc.read", "kyc.write"], dpop)
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "scope-b-org::agent",
         "target_org_id": "scope-b-org",
         "requested_capabilities": ["kyc.write"],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert resp.status_code == 403
     assert "scope" in resp.json()["detail"].lower()
 
@@ -194,10 +194,10 @@ async def test_session_denied_capability_not_in_target_scope(client: AsyncClient
                                   ["kyc.read", "kyc.write"], dpop)
     await _full_setup(client, "sc2-b-org", "sc2-b-org::agent", ["kyc.read"], dpop)
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "sc2-b-org::agent",
         "target_org_id": "sc2-b-org",
         "requested_capabilities": ["kyc.write"],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert resp.status_code == 403
     assert "scope" in resp.json()["detail"].lower()

@@ -39,3 +39,4 @@ class SessionMessageRecord(Base):
     timestamp       = Column(DateTime(timezone=True), nullable=False,
                              default=lambda: datetime.now(timezone.utc))
     signature       = Column(Text, nullable=True)   # base64 RSA-PKCS1v15-SHA256
+    client_seq      = Column(Integer, nullable=True)

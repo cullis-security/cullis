@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -101,9 +101,14 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Cache-Control"] = "no-store"
-    # DPoP-Nonce on all API responses (RFC 9449 §8)
-    if not request.url.path.startswith("/dashboard"):
+    # JWKS endpoint should be cacheable; everything else is no-store
+    if request.url.path == "/.well-known/jwks.json":
+        response.headers["Cache-Control"] = "public, max-age=3600"
+    else:
+        response.headers["Cache-Control"] = "no-store"
+    # DPoP-Nonce on API responses only (RFC 9449 §8)
+    _no_dpop_nonce = ("/dashboard", "/health", "/.well-known/")
+    if not any(request.url.path.startswith(p) for p in _no_dpop_nonce):
         from app.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
     if request.url.path.startswith("/dashboard"):
@@ -117,17 +122,34 @@ async def security_headers(request: Request, call_next):
         )
     return response
 
-app.include_router(auth_router)
-app.include_router(registry_router)
-app.include_router(org_router)
-app.include_router(binding_router)
-app.include_router(broker_router)
-app.include_router(policy_router)
-app.include_router(onboarding_router)
-app.include_router(admin_router)
+# ── API v1 ────────────────────────────────────────────────────────────────────
+v1 = APIRouter(prefix="/v1")
+v1.include_router(auth_router)
+v1.include_router(registry_router)
+v1.include_router(org_router)
+v1.include_router(binding_router)
+v1.include_router(broker_router)
+v1.include_router(policy_router)
+v1.include_router(onboarding_router)
+v1.include_router(admin_router)
+app.include_router(v1)
+
+# ── Non-versioned routes ──────────────────────────────────────────────────────
 app.include_router(dashboard_router)
 
 
 @app.get("/health", tags=["infra"])
 async def health():
     return {"status": "ok", "version": settings.app_version}
+
+
+@app.get("/.well-known/jwks.json", tags=["infra"])
+async def jwks_endpoint():
+    """Public JWKS endpoint — broker signing key(s) in JWK format (RFC 7517)."""
+    from app.auth.jwt import _get_broker_keys
+    from app.auth.jwks import rsa_pem_to_jwk, build_jwks, compute_kid
+
+    _, pub_pem = await _get_broker_keys()
+    kid = compute_kid(pub_pem)
+    jwk = rsa_pem_to_jwk(pub_pem, kid=kid)
+    return build_jwks([jwk])

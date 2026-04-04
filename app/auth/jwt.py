@@ -71,7 +71,10 @@ async def create_access_token(
     if settings is None:
         settings = get_settings()
 
-    priv_pem, _ = await _get_broker_keys(settings)
+    priv_pem, pub_pem = await _get_broker_keys(settings)
+
+    from app.auth.jwks import compute_kid
+    kid = compute_kid(pub_pem)
 
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
@@ -92,7 +95,7 @@ async def create_access_token(
         "cnf": {"jkt": dpop_jkt},  # DPoP key binding — RFC 9449 §6
     }
 
-    token = jwt.encode(payload, priv_pem, algorithm="RS256")
+    token = jwt.encode(payload, priv_pem, algorithm="RS256", headers={"kid": kid})
     expires_in = settings.jwt_access_token_expire_minutes * 60
     return token, expires_in
 

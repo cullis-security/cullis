@@ -33,18 +33,18 @@ pytestmark = pytest.mark.asyncio
 
 async def test_step1_banca_a_registra_agente(client: AsyncClient):
     # Register org banca-a
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "banca-a", "display_name": "Banca A", "secret": "banca-a-org-secret",
     }, headers=ADMIN_HEADERS)
 
     # Upload org CA cert
     ca_pem = get_org_ca_pem("banca-a")
-    await client.post("/registry/orgs/banca-a/certificate",
+    await client.post("/v1/registry/orgs/banca-a/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "banca-a", "x-org-secret": "banca-a-org-secret"},
     )
 
-    resp = await client.post("/registry/agents", json={
+    resp = await client.post("/v1/registry/agents", json={
         "agent_id": "banca-a::kyc-agent",
         "org_id": "banca-a",
         "display_name": "Agente KYC Banca A",
@@ -59,18 +59,18 @@ async def test_step1_banca_a_registra_agente(client: AsyncClient):
     assert "kyc.read" in body["capabilities"]
 
     # Create + approve binding
-    r = await client.post("/registry/bindings",
+    r = await client.post("/v1/registry/bindings",
         json={"org_id": "banca-a", "agent_id": "banca-a::kyc-agent",
               "scope": ["kyc.read", "kyc.write"]},
         headers={"x-org-id": "banca-a", "x-org-secret": "banca-a-org-secret"},
     )
     binding_id = r.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": "banca-a", "x-org-secret": "banca-a-org-secret"},
     )
 
     # Create session policy: banca-a can open sessions with banca-b
-    await client.post("/policy/rules",
+    await client.post("/v1/policy/rules",
         json={
             "policy_id": "banca-a::session-v1",
             "org_id": "banca-a",
@@ -89,18 +89,18 @@ async def test_step1_banca_a_registra_agente(client: AsyncClient):
 
 async def test_step2_banca_b_registra_agente(client: AsyncClient):
     # Register org banca-b
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "banca-b", "display_name": "Banca B", "secret": "banca-b-org-secret",
     }, headers=ADMIN_HEADERS)
 
     # Upload org CA cert
     ca_pem = get_org_ca_pem("banca-b")
-    await client.post("/registry/orgs/banca-b/certificate",
+    await client.post("/v1/registry/orgs/banca-b/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"},
     )
 
-    resp = await client.post("/registry/agents", json={
+    resp = await client.post("/v1/registry/agents", json={
         "agent_id": "banca-b::kyc-agent",
         "org_id": "banca-b",
         "display_name": "Agente KYC Banca B",
@@ -111,13 +111,13 @@ async def test_step2_banca_b_registra_agente(client: AsyncClient):
     assert resp.json()["agent_id"] == "banca-b::kyc-agent"
 
     # Create + approve binding
-    r = await client.post("/registry/bindings",
+    r = await client.post("/v1/registry/bindings",
         json={"org_id": "banca-b", "agent_id": "banca-b::kyc-agent",
               "scope": ["kyc.read", "kyc.write"]},
         headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"},
     )
     binding_id = r.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"},
     )
 
@@ -131,9 +131,9 @@ async def test_step3_agente_a_ottiene_jwt(client: AsyncClient):
     _store("dpop_a", d)
 
     assertion = make_assertion("banca-a::kyc-agent", "banca-a")
-    dpop_proof = d.proof("POST", "/auth/token")
+    dpop_proof = d.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -150,9 +150,9 @@ async def test_step4_agente_b_ottiene_jwt(client: AsyncClient):
     _store("dpop_b", d)
 
     assertion = make_assertion("banca-b::kyc-agent", "banca-b")
-    dpop_proof = d.proof("POST", "/auth/token")
+    dpop_proof = d.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -166,12 +166,12 @@ async def test_step4_agente_b_ottiene_jwt(client: AsyncClient):
 
 async def test_step5_agente_a_richiede_sessione(client: AsyncClient):
     d: DPoPHelper = _load("dpop_a")
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "banca-b::kyc-agent",
         "target_org_id": "banca-b",
         "requested_capabilities": ["kyc.read"],
         "context": {"motivo": "verifica KYC cliente CUST-001"},
-    }, headers=d.headers("POST", "/broker/sessions", _load("token_a")))
+    }, headers=d.headers("POST", "/v1/broker/sessions", _load("token_a")))
 
     assert resp.status_code == 201, resp.text
     body = resp.json()
@@ -190,8 +190,8 @@ async def test_step6_agente_b_accetta_sessione(client: AsyncClient):
     session_id = _load("session_id")
     d: DPoPHelper = _load("dpop_b")
     resp = await client.post(
-        f"/broker/sessions/{session_id}/accept",
-        headers=d.headers("POST", f"/broker/sessions/{session_id}/accept", _load("token_b")),
+        f"/v1/broker/sessions/{session_id}/accept",
+        headers=d.headers("POST", f"/v1/broker/sessions/{session_id}/accept", _load("token_b")),
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "active"
@@ -216,7 +216,7 @@ async def test_step7_agente_a_invia_messaggio(client: AsyncClient):
         "banca-b::kyc-agent", "banca-b",
         session_id, nonce, _payload_a,
     )
-    path = f"/broker/sessions/{session_id}/messages"
+    path = f"/v1/broker/sessions/{session_id}/messages"
     d: DPoPHelper = _load("dpop_a")
     resp = await client.post(
         path,
@@ -247,7 +247,7 @@ async def test_step8_agente_b_risponde(client: AsyncClient):
         "banca-a::kyc-agent", "banca-a",
         session_id, _nonce_b, _payload_b,
     )
-    path = f"/broker/sessions/{session_id}/messages"
+    path = f"/v1/broker/sessions/{session_id}/messages"
     d: DPoPHelper = _load("dpop_b")
     resp = await client.post(
         path,
@@ -272,7 +272,7 @@ async def test_step9_replay_attack_bloccato(client: AsyncClient):
         "banca-b::kyc-agent", "banca-b",
         session_id, nonce_usato, _payload_replay,
     )
-    path = f"/broker/sessions/{session_id}/messages"
+    path = f"/v1/broker/sessions/{session_id}/messages"
     d: DPoPHelper = _load("dpop_a")
     resp = await client.post(
         path,
@@ -290,33 +290,33 @@ async def test_step9_replay_attack_bloccato(client: AsyncClient):
 
 async def test_step10_terzo_agente_bloccato(client: AsyncClient):
     # Register and authenticate an intruder agent (with valid org + CA + binding)
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "banca-c", "display_name": "Banca C", "secret": "banca-c-org-secret",
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem("banca-c")
-    await client.post("/registry/orgs/banca-c/certificate",
+    await client.post("/v1/registry/orgs/banca-c/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": "banca-c::evil-agent",
         "org_id": "banca-c",
         "display_name": "Agente Malevolo",
         "capabilities": [],
     }, headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"})
-    rb = await client.post("/registry/bindings",
+    rb = await client.post("/v1/registry/bindings",
         json={"org_id": "banca-c", "agent_id": "banca-c::evil-agent", "scope": []},
         headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"},
     )
-    await client.post(f"/registry/bindings/{rb.json()['id']}/approve",
+    await client.post(f"/v1/registry/bindings/{rb.json()['id']}/approve",
         headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"},
     )
 
     d_evil = DPoPHelper()
     assertion = make_assertion("banca-c::evil-agent", "banca-c")
-    dpop_proof = d_evil.proof("POST", "/auth/token")
+    dpop_proof = d_evil.proof("POST", "/v1/auth/token")
     r = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -330,7 +330,7 @@ async def test_step10_terzo_agente_bloccato(client: AsyncClient):
         "banca-b::kyc-agent", "banca-b",
         session_id, _nonce_evil, _payload_evil,
     )
-    path = f"/broker/sessions/{session_id}/messages"
+    path = f"/v1/broker/sessions/{session_id}/messages"
     resp = await client.post(
         path,
         json=envelope_evil,

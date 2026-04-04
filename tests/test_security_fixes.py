@@ -32,27 +32,27 @@ pytestmark = pytest.mark.asyncio
 async def _setup_agent(client: AsyncClient, dpop, agent_id: str, org_id: str) -> str:
     """Register infrastructure and return a DPoP-bound token."""
     org_secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     })
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": ["test.read", "test.write"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read", "test.write"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/policy/rules",
+    await client.post("/v1/policy/rules",
         json={
             "policy_id": f"{org_id}::session-allow-all",
             "org_id": org_id,
@@ -69,7 +69,7 @@ async def _setup_agent(client: AsyncClient, dpop, agent_id: str, org_id: str) ->
 # ────────────────────────────────────────────────────────────────────────
 
 def test_session_nonce_capacity_limit():
-    """Verify that the nonce set rejects new nonces after reaching its limit."""
+    """Verify that the nonce cache rejects new nonces after reaching its limit."""
     session = Session(
         session_id="test-session",
         initiator_agent_id="org::a",
@@ -81,15 +81,16 @@ def test_session_nonce_capacity_limit():
     # Override the limit to a small number for testing
     session._MAX_NONCES = 5
 
-    # First 5 nonces should succeed
+    # First 5 nonces should be cacheable
     for i in range(5):
-        assert session.consume_nonce(f"nonce-{i}") is True
+        assert session.is_nonce_cached(f"nonce-{i}") is False
+        session.cache_nonce(f"nonce-{i}")
 
-    # 6th nonce should be rejected (capacity limit, not replay)
-    assert session.consume_nonce("nonce-new") is False
+    # 6th nonce should be rejected by cache (capacity limit)
+    assert session.is_nonce_cached("nonce-new") is True
 
-    # Replayed nonces should still be detected
-    assert session.consume_nonce("nonce-0") is False
+    # Replayed nonces should still be detected by cache
+    assert session.is_nonce_cached("nonce-0") is True
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -126,15 +127,15 @@ async def test_envelope_session_id_mismatch(client: AsyncClient, dpop):
     token_b = await _setup_agent(client, dpop, "mismatch-org-b::agent", "mismatch-org-b")
 
     # Create and accept a session
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "mismatch-org-b::agent",
         "target_org_id": "mismatch-org-b",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     session_id = resp.json()["session_id"]
 
-    await client.post(f"/broker/sessions/{session_id}/accept",
-        headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_b))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+        headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_b))
 
     # Create an envelope with a wrong session_id
     nonce = str(uuid.uuid4())
@@ -147,7 +148,7 @@ async def test_envelope_session_id_mismatch(client: AsyncClient, dpop):
     # Tamper with the session_id in the envelope
     envelope["session_id"] = "wrong-session-id"
 
-    msg_path = f"/broker/sessions/{session_id}/messages"
+    msg_path = f"/v1/broker/sessions/{session_id}/messages"
     resp = await client.post(msg_path, json=envelope,
         headers=dpop.headers("POST", msg_path, token_a))
     assert resp.status_code == 400
@@ -174,7 +175,7 @@ async def test_ca_cert_upload_rejects_non_ca(client: AsyncClient, dpop):
     org_id = "ca-val-org"
     org_secret = org_id + "-secret"
 
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     })
 
@@ -184,7 +185,7 @@ async def test_ca_cert_upload_rejects_non_ca(client: AsyncClient, dpop):
     _, leaf_cert = make_agent_cert(f"{org_id}::leaf", org_id)
     leaf_pem = leaf_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-    resp = await client.post(f"/registry/orgs/{org_id}/certificate",
+    resp = await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": leaf_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -197,11 +198,11 @@ async def test_ca_cert_upload_rejects_invalid_pem(client: AsyncClient):
     org_id = "ca-bad-org"
     org_secret = org_id + "-secret"
 
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     })
 
-    resp = await client.post(f"/registry/orgs/{org_id}/certificate",
+    resp = await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": "not-a-valid-pem-certificate"},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -217,15 +218,15 @@ async def test_message_on_expired_session(client: AsyncClient, dpop):
     token_a = await _setup_agent(client, dpop, "exp-org-a::agent", "exp-org-a")
     token_b = await _setup_agent(client, dpop, "exp-org-b::agent", "exp-org-b")
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "exp-org-b::agent",
         "target_org_id": "exp-org-b",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     session_id = resp.json()["session_id"]
 
-    await client.post(f"/broker/sessions/{session_id}/accept",
-        headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_b))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+        headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_b))
 
     # Force the session to be expired
     from app.broker.session import session_store
@@ -240,7 +241,7 @@ async def test_message_on_expired_session(client: AsyncClient, dpop):
         "exp-org-b::agent", "exp-org-b",
         session_id, nonce, payload,
     )
-    msg_path = f"/broker/sessions/{session_id}/messages"
+    msg_path = f"/v1/broker/sessions/{session_id}/messages"
     resp = await client.post(msg_path, json=envelope,
         headers=dpop.headers("POST", msg_path, token_a))
     # Should be rejected — session is expired

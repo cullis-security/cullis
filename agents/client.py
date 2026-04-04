@@ -259,7 +259,7 @@ class BrokerClient:
         """
         from websockets.sync.client import connect as ws_connect
 
-        ws_url = self._ws_url() + "/broker/ws"
+        ws_url = self._ws_url() + "/v1/broker/ws"
         for attempt in range(max_retries):
             try:
                 with ws_connect(ws_url, open_timeout=5) as ws:
@@ -293,7 +293,7 @@ def _open_ws(broker: BrokerClient, agent_id: str):
     """
     try:
         from websockets.sync.client import connect as ws_connect
-        ws_url = broker._ws_url() + "/broker/ws"
+        ws_url = broker._ws_url() + "/v1/broker/ws"
         ws = ws_connect(ws_url, open_timeout=5)
         ws.send(json.dumps({"type": "auth", "token": broker.token}))
         resp = json.loads(ws.recv())

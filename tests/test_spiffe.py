@@ -150,26 +150,26 @@ async def _register_agent_with_spiffe(
     """Registra org + CA + agente + binding approvato, con SAN SPIFFE nel cert."""
     org_secret = org_id + "-secret"
 
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id,
         "org_id": org_id,
         "display_name": f"Test Agent {agent_id}",
         "capabilities": ["test.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
@@ -192,9 +192,9 @@ async def test_jwt_sub_e_spiffe_id(client: AsyncClient, dpop):
     await _register_agent_with_spiffe(client, agent_id, org_id, trust_domain)
 
     assertion = make_assertion(agent_id, org_id, trust_domain=trust_domain)
-    proof = dpop.proof("POST", "/auth/token")
+    proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": proof},
     )
@@ -223,9 +223,9 @@ async def test_jwt_sub_senza_san_nel_cert(client: AsyncClient, dpop):
 
     # Cert senza SAN (nessun trust_domain passato)
     assertion = make_assertion(agent_id, org_id)
-    proof = dpop.proof("POST", "/auth/token")
+    proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": proof},
     )
@@ -251,9 +251,9 @@ async def test_autenticazione_con_san_corretto(client: AsyncClient, dpop):
     await _register_agent_with_spiffe(client, agent_id, org_id)
 
     assertion = make_assertion(agent_id, org_id, trust_domain="atn.local")
-    proof = dpop.proof("POST", "/auth/token")
+    proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": proof},
     )
@@ -276,34 +276,34 @@ async def test_autenticazione_fallisce_con_san_sbagliato(client: AsyncClient, dp
 
     # Usa org già registrata dalla fixture precedente (o la registra)
     org_secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id,
         "org_id": org_id,
         "display_name": f"Test Agent {agent_id}",
         "capabilities": ["test.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
     # Cert con SAN che punta a un trust domain DIVERSO da atn.local
     assertion = make_assertion(agent_id, org_id, trust_domain="evil.example.com")
-    proof = dpop.proof("POST", "/auth/token")
+    proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": proof},
     )
@@ -327,8 +327,8 @@ async def test_registry_espone_agent_uri(client: AsyncClient, dpop):
     token = await dpop.get_token(client, agent_id, org_id, trust_domain="atn.local")
 
     resp = await client.get(
-        "/registry/agents",
-        headers=dpop.headers("GET", "/registry/agents", token),
+        "/v1/registry/agents",
+        headers=dpop.headers("GET", "/v1/registry/agents", token),
     )
     assert resp.status_code == 200
     agents = resp.json()["agents"]

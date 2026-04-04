@@ -16,6 +16,10 @@ from app.broker.db_models import SessionRecord, SessionMessageRecord
 from app.broker.models import SessionStatus
 from app.broker.session import Session, StoredMessage, SessionStore
 
+# Dialect-specific inserts for atomic nonce uniqueness check
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
 logger = logging.getLogger("agent_trust")
 
 
@@ -49,9 +53,15 @@ async def save_message(
     db: AsyncSession,
     session_id: str,
     msg: StoredMessage,
-) -> None:
-    """Insert a message into the session_messages table."""
-    record = SessionMessageRecord(
+) -> bool:
+    """Insert a message atomically, using the nonce UNIQUE constraint.
+
+    Returns True if the message was inserted, False if the nonce was
+    already present (replay attack).  Uses INSERT ... ON CONFLICT DO NOTHING
+    so the check-and-insert is a single atomic operation — same pattern as
+    ``jti_blacklist.check_and_consume_jti``.
+    """
+    values = dict(
         session_id=session_id,
         seq=msg.seq,
         sender_agent_id=msg.sender_agent_id,
@@ -59,9 +69,22 @@ async def save_message(
         nonce=msg.nonce,
         timestamp=msg.timestamp,
         signature=msg.signature,
+        client_seq=msg.client_seq,
     )
-    db.add(record)
+
+    dialect_name = db.bind.dialect.name if db.bind else "unknown"
+
+    if dialect_name == "postgresql":
+        stmt = pg_insert(SessionMessageRecord).values(**values)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["nonce"])
+    else:
+        stmt = sqlite_insert(SessionMessageRecord).values(**values)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["nonce"])
+
+    result = await db.execute(stmt)
     await db.commit()
+
+    return result.rowcount > 0
 
 
 async def restore_sessions(db: AsyncSession, store: SessionStore) -> int:
@@ -153,6 +176,7 @@ async def restore_sessions(db: AsyncSession, store: SessionStore) -> int:
                 nonce=msg_rec.nonce,
                 timestamp=msg_rec.timestamp.replace(tzinfo=timezone.utc),
                 signature=msg_rec.signature,
+                client_seq=msg_rec.client_seq,
             )
             session._messages.append(stored)
             session.used_nonces.add(msg_rec.nonce)

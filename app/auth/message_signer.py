@@ -24,9 +24,12 @@ _PSS_PADDING = padding.PSS(
 )
 
 
-def _canonical(session_id: str, sender_agent_id: str, nonce: str, timestamp: int, payload: dict) -> bytes:
+def _canonical(session_id: str, sender_agent_id: str, nonce: str, timestamp: int,
+               payload: dict, client_seq: int | None = None) -> bytes:
     """Deterministic canonical string to be signed."""
     payload_str = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if client_seq is not None:
+        return f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{client_seq}|{payload_str}".encode("utf-8")
     return f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{payload_str}".encode("utf-8")
 
 
@@ -37,6 +40,7 @@ def sign_message(
     nonce: str,
     timestamp: int,
     payload: dict,
+    client_seq: int | None = None,
 ) -> str:
     """
     Sign the message with the agent's private key (RSA-PSS-SHA256).
@@ -44,7 +48,7 @@ def sign_message(
     Used by agents/sdk.py before sending each message.
     """
     priv_key = serialization.load_pem_private_key(private_key_pem.encode(), password=None)
-    canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload)
+    canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload, client_seq)
     signature = priv_key.sign(canonical, _PSS_PADDING, hashes.SHA256())
     return base64.urlsafe_b64encode(signature).decode()
 
@@ -57,6 +61,7 @@ def verify_message_signature(
     nonce: str,
     timestamp: int,
     payload: dict,
+    client_seq: int | None = None,
 ) -> None:
     """
     Verify the message signature using the public key in the agent's certificate.
@@ -67,7 +72,7 @@ def verify_message_signature(
         cert = crypto_x509.load_pem_x509_certificate(cert_pem.encode())
         pub_key = cert.public_key()
         sig = base64.urlsafe_b64decode(signature_b64)
-        canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload)
+        canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload, client_seq)
         pub_key.verify(sig, canonical, _PSS_PADDING, hashes.SHA256())
     except InvalidSignature:
         raise HTTPException(

@@ -54,29 +54,29 @@ async def _register_agent(client: AsyncClient, agent_id: str, org_id: str):
     """Register org + upload CA + agent + approved binding."""
     org_secret = org_id + "-secret"
 
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
 
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id,
         "org_id": org_id,
         "display_name": f"Test Agent {agent_id}",
         "capabilities": ["test.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
 
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
@@ -91,9 +91,9 @@ async def test_token_issued_for_valid_agent(client: AsyncClient, dpop):
     await _register_agent(client, "auth-org-a::agent-1", "auth-org-a")
 
     assertion = make_assertion("auth-org-a::agent-1", "auth-org-a")
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -112,9 +112,9 @@ async def test_token_contains_cnf_jkt(client: AsyncClient, dpop):
     await _register_agent(client, "auth-org-cnf::agent-1", "auth-org-cnf")
 
     assertion = make_assertion("auth-org-cnf::agent-1", "auth-org-cnf")
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -158,9 +158,9 @@ async def test_token_denied_wrong_signature(client: AsyncClient, dpop):
     bad_assertion = jose_jwt.encode(payload, wrong_key_pem, algorithm="RS256",
                                     headers={"x5c": x5c})
 
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": bad_assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -172,19 +172,19 @@ async def test_token_denied_unknown_agent(client: AsyncClient, dpop):
     await _prime_nonce(client, dpop)
     org_id = "auth-org-c"
     org_secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
     assertion = make_assertion("auth-org-c::ghost-999", org_id)
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -197,9 +197,9 @@ async def test_token_denied_org_mismatch(client: AsyncClient, dpop):
     await _register_agent(client, "auth-org-b::agent-1", "auth-org-b")
 
     assertion = make_assertion("auth-org-b::agent-1", "org-evil")
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -214,15 +214,15 @@ async def test_token_denied_jti_replay(client: AsyncClient, dpop):
     fixed_jti = str(uuid.uuid4())
     assertion = make_assertion("auth-org-d::agent-1", "auth-org-d", jti=fixed_jti)
 
-    dpop_proof1 = dpop.proof("POST", "/auth/token")
-    resp1 = await client.post("/auth/token",
+    dpop_proof1 = dpop.proof("POST", "/v1/auth/token")
+    resp1 = await client.post("/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof1},
     )
     assert resp1.status_code == 200
 
-    dpop_proof2 = dpop.proof("POST", "/auth/token")
-    resp2 = await client.post("/auth/token",
+    dpop_proof2 = dpop.proof("POST", "/v1/auth/token")
+    resp2 = await client.post("/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof2},
     )
@@ -236,9 +236,9 @@ async def test_token_denied_missing_jti(client: AsyncClient, dpop):
     await _register_agent(client, "auth-org-e::agent-1", "auth-org-e")
 
     assertion = make_assertion("auth-org-e::agent-1", "auth-org-e", jti=None)
-    dpop_proof = dpop.proof("POST", "/auth/token")
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -254,7 +254,7 @@ async def test_token_denied_missing_dpop_header(client: AsyncClient):
     """No DPoP header → 422 (required header missing)."""
     await _register_agent(client, "auth-org-f::agent-1", "auth-org-f")
     assertion = make_assertion("auth-org-f::agent-1", "auth-org-f")
-    resp = await client.post("/auth/token", json={"client_assertion": assertion})
+    resp = await client.post("/v1/auth/token", json={"client_assertion": assertion})
     assert resp.status_code == 422
 
 
@@ -263,9 +263,9 @@ async def test_token_denied_dpop_wrong_htm(client: AsyncClient, dpop):
     await _prime_nonce(client, dpop)
     await _register_agent(client, "auth-org-g::agent-1", "auth-org-g")
     assertion = make_assertion("auth-org-g::agent-1", "auth-org-g")
-    dpop_proof = dpop.proof("GET", "/auth/token")  # wrong method
+    dpop_proof = dpop.proof("GET", "/v1/auth/token")  # wrong method
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -280,7 +280,7 @@ async def test_token_denied_dpop_wrong_htu(client: AsyncClient, dpop):
     assertion = make_assertion("auth-org-h::agent-1", "auth-org-h")
     dpop_proof = dpop.proof("POST", "/wrong/endpoint")  # wrong path
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -296,15 +296,15 @@ async def test_token_denied_dpop_jti_replay(client: AsyncClient, dpop):
     assertion2 = make_assertion("auth-org-i::agent-1", "auth-org-i")
 
     fixed_dpop_jti = str(uuid.uuid4())
-    dpop_proof = dpop.proof("POST", "/auth/token", jti=fixed_dpop_jti)
+    dpop_proof = dpop.proof("POST", "/v1/auth/token", jti=fixed_dpop_jti)
 
-    resp1 = await client.post("/auth/token",
+    resp1 = await client.post("/v1/auth/token",
         json={"client_assertion": assertion1},
         headers={"DPoP": dpop_proof},
     )
     assert resp1.status_code == 200
 
-    resp2 = await client.post("/auth/token",
+    resp2 = await client.post("/v1/auth/token",
         json={"client_assertion": assertion2},
         headers={"DPoP": dpop_proof},
     )
@@ -317,9 +317,9 @@ async def test_token_denied_dpop_expired_iat(client: AsyncClient, dpop):
     await _prime_nonce(client, dpop)
     await _register_agent(client, "auth-org-j::agent-1", "auth-org-j")
     assertion = make_assertion("auth-org-j::agent-1", "auth-org-j")
-    dpop_proof = dpop.proof("POST", "/auth/token", iat_offset=-120)  # 2 min ago
+    dpop_proof = dpop.proof("POST", "/v1/auth/token", iat_offset=-120)  # 2 min ago
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -338,7 +338,7 @@ async def test_authenticated_endpoint_rejects_bearer(client: AsyncClient, dpop):
 
     # Plain Bearer — no DPoP
     resp = await client.get(
-        "/broker/sessions",
+        "/v1/broker/sessions",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 401
@@ -351,7 +351,7 @@ async def test_authenticated_endpoint_rejects_missing_dpop_proof(client: AsyncCl
     token = await dpop.get_token(client, "auth-org-l::agent-1", "auth-org-l")
 
     resp = await client.get(
-        "/broker/sessions",
+        "/v1/broker/sessions",
         headers={"Authorization": f"DPoP {token}"},
         # No DPoP header
     )
@@ -365,9 +365,9 @@ async def test_authenticated_endpoint_rejects_wrong_ath(client: AsyncClient, dpo
     token = await dpop.get_token(client, "auth-org-m::agent-1", "auth-org-m")
 
     # Proof signed over a fake token value — ath mismatch
-    wrong_proof = dpop.proof("GET", "/broker/sessions", access_token="fake-token-value")
+    wrong_proof = dpop.proof("GET", "/v1/broker/sessions", access_token="fake-token-value")
     resp = await client.get(
-        "/broker/sessions",
+        "/v1/broker/sessions",
         headers={
             "Authorization": f"DPoP {token}",
             "DPoP": wrong_proof,
@@ -383,8 +383,8 @@ async def test_authenticated_endpoint_accepts_valid_dpop(client: AsyncClient, dp
     token = await dpop.get_token(client, "auth-org-n::agent-1", "auth-org-n")
 
     resp = await client.get(
-        "/broker/sessions",
-        headers=dpop.headers("GET", "/broker/sessions", token),
+        "/v1/broker/sessions",
+        headers=dpop.headers("GET", "/v1/broker/sessions", token),
     )
     assert resp.status_code == 200
 
@@ -443,9 +443,9 @@ async def test_different_cert_rejected(client: AsyncClient, dpop):
     alt_assertion, _ = make_assertion_alternate(agent_id, org_id)
     from tests.cert_factory import DPoPHelper
     dpop2 = DPoPHelper()
-    dpop_proof = dpop2.proof("POST", "/auth/token")
+    dpop_proof = dpop2.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": alt_assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -453,9 +453,9 @@ async def test_different_cert_rejected(client: AsyncClient, dpop):
     if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
         dpop2._update_nonce(resp)
         alt_assertion, _ = make_assertion_alternate(agent_id, org_id)
-        dpop_proof = dpop2.proof("POST", "/auth/token")
+        dpop_proof = dpop2.proof("POST", "/v1/auth/token")
         resp = await client.post(
-            "/auth/token",
+            "/v1/auth/token",
             json={"client_assertion": alt_assertion},
             headers={"DPoP": dpop_proof},
         )
@@ -479,7 +479,7 @@ async def test_rotate_then_new_cert_accepted(client: AsyncClient, dpop):
 
     # Rotate via API
     resp = await client.post(
-        f"/registry/agents/{agent_id}/rotate-cert",
+        f"/v1/registry/agents/{agent_id}/rotate-cert",
         json={"new_certificate": alt_cert_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -491,18 +491,18 @@ async def test_rotate_then_new_cert_accepted(client: AsyncClient, dpop):
     alt_assertion, _ = make_assertion_alternate(agent_id, org_id)
     from tests.cert_factory import DPoPHelper
     dpop3 = DPoPHelper()
-    dpop_proof = dpop3.proof("POST", "/auth/token")
+    dpop_proof = dpop3.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": alt_assertion},
         headers={"DPoP": dpop_proof},
     )
     if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
         dpop3._update_nonce(resp)
         alt_assertion, _ = make_assertion_alternate(agent_id, org_id)
-        dpop_proof = dpop3.proof("POST", "/auth/token")
+        dpop_proof = dpop3.proof("POST", "/v1/auth/token")
         resp = await client.post(
-            "/auth/token",
+            "/v1/auth/token",
             json={"client_assertion": alt_assertion},
             headers={"DPoP": dpop_proof},
         )
@@ -523,7 +523,7 @@ async def test_old_cert_rejected_after_rotation(client: AsyncClient, dpop):
     # Rotate to alternate cert
     _, alt_cert_pem = make_assertion_alternate(agent_id, org_id)
     resp = await client.post(
-        f"/registry/agents/{agent_id}/rotate-cert",
+        f"/v1/registry/agents/{agent_id}/rotate-cert",
         json={"new_certificate": alt_cert_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
@@ -533,18 +533,18 @@ async def test_old_cert_rejected_after_rotation(client: AsyncClient, dpop):
     from tests.cert_factory import DPoPHelper
     dpop4 = DPoPHelper()
     assertion = make_assertion(agent_id, org_id)
-    dpop_proof = dpop4.proof("POST", "/auth/token")
+    dpop_proof = dpop4.proof("POST", "/v1/auth/token")
     resp = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
     if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
         dpop4._update_nonce(resp)
         assertion = make_assertion(agent_id, org_id)
-        dpop_proof = dpop4.proof("POST", "/auth/token")
+        dpop_proof = dpop4.proof("POST", "/v1/auth/token")
         resp = await client.post(
-            "/auth/token",
+            "/v1/auth/token",
             json={"client_assertion": assertion},
             headers={"DPoP": dpop_proof},
         )

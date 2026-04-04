@@ -123,6 +123,7 @@ class BrokerClient:
         self._label: str = "agent"
         self._signing_key_pem: str | None = None
         self._pubkey_cache: dict[str, tuple[str, float]] = {}  # agent_id → (pubkey_pem, fetched_at)
+        self._client_seq: dict[str, int] = {}  # session_id → next client_seq
 
         # Ephemeral DPoP key pair — generated once per client instance (per login).
         # Separate from the x509 authentication key.
@@ -256,7 +257,7 @@ class BrokerClient:
 
             # Generate ephemeral DPoP key for this session
             self._init_dpop_key()
-            token_url = f"{self.base}/auth/token"
+            token_url = f"{self.base}/v1/auth/token"
 
             # First attempt — may fail with 401 use_dpop_nonce (RFC 9449 §8)
             dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
@@ -294,7 +295,7 @@ class BrokerClient:
             pubkey_pem, fetched_at = self._pubkey_cache[agent_id]
             if time.time() - fetched_at < self._PUBKEY_CACHE_TTL:
                 return pubkey_pem
-        path = f"/registry/agents/{agent_id}/public-key"
+        path = f"/v1/registry/agents/{agent_id}/public-key"
         resp = self._authed_request("GET", path)
         resp.raise_for_status()
         pubkey_pem = resp.json()["public_key_pem"]
@@ -302,14 +303,14 @@ class BrokerClient:
         return pubkey_pem
 
     def discover(self, capabilities: list[str]) -> list[dict]:
-        path = "/registry/agents/search"
+        path = "/v1/registry/agents/search"
         resp = self._authed_request("GET", path, params=[("capability", c) for c in capabilities])
         resp.raise_for_status()
         return resp.json().get("agents", [])
 
     def open_session(self, target_agent_id: str, target_org_id: str,
                      capabilities: list[str]) -> str:
-        path = "/broker/sessions"
+        path = "/v1/broker/sessions"
         resp = self._authed_request("POST", path, json={
             "target_agent_id":        target_agent_id,
             "target_org_id":          target_org_id,
@@ -319,17 +320,17 @@ class BrokerClient:
         return resp.json()["session_id"]
 
     def accept_session(self, session_id: str) -> None:
-        path = f"/broker/sessions/{session_id}/accept"
+        path = f"/v1/broker/sessions/{session_id}/accept"
         resp = self._authed_request("POST", path)
         resp.raise_for_status()
 
     def close_session(self, session_id: str) -> None:
-        path = f"/broker/sessions/{session_id}/close"
+        path = f"/v1/broker/sessions/{session_id}/close"
         resp = self._authed_request("POST", path)
         resp.raise_for_status()
 
     def list_sessions(self, status_filter: str | None = None) -> list[dict]:
-        path = "/broker/sessions"
+        path = "/v1/broker/sessions"
         params = {}
         if status_filter:
             params["status"] = status_filter
@@ -352,13 +353,20 @@ class BrokerClient:
                 "All messages must be E2E encrypted."
             )
 
+        # Client-side sequence number for E2E ordering integrity
+        client_seq = self._client_seq.get(session_id, 0)
+        self._client_seq[session_id] = client_seq + 1
+
         # Inner signature on plaintext (non-repudiation for the recipient)
-        inner_sig = _sign_message(self._signing_key_pem, session_id, sender_agent_id, nonce, timestamp, payload)
+        inner_sig = _sign_message(self._signing_key_pem, session_id, sender_agent_id,
+                                  nonce, timestamp, payload, client_seq=client_seq)
         # Encrypt payload + inner signature with recipient's public key
         recipient_pubkey = self.get_agent_public_key(recipient_agent_id)
-        cipher_blob = encrypt_for_agent(recipient_pubkey, payload, inner_sig, session_id, sender_agent_id)
+        cipher_blob = encrypt_for_agent(recipient_pubkey, payload, inner_sig,
+                                        session_id, sender_agent_id, client_seq=client_seq)
         # Outer signature on ciphertext (transport integrity for the broker)
-        outer_sig = _sign_message(self._signing_key_pem, session_id, sender_agent_id, nonce, timestamp, cipher_blob)
+        outer_sig = _sign_message(self._signing_key_pem, session_id, sender_agent_id,
+                                  nonce, timestamp, cipher_blob, client_seq=client_seq)
         envelope_payload = cipher_blob
         envelope_sig = outer_sig
 
@@ -369,8 +377,9 @@ class BrokerClient:
             "nonce":            nonce,
             "timestamp":        timestamp,
             "signature":        envelope_sig,
+            "client_seq":       client_seq,
         }
-        path = f"/broker/sessions/{session_id}/messages"
+        path = f"/v1/broker/sessions/{session_id}/messages"
         for attempt in range(3):
             try:
                 resp = self._authed_request("POST", path, json=envelope)
@@ -405,8 +414,9 @@ class BrokerClient:
         try:
             from app.e2e_crypto import decrypt_from_agent
             sender_agent_id = msg.get("sender_agent_id", "")
+            client_seq = msg.get("client_seq")
             plaintext_dict, _inner_sig = decrypt_from_agent(
-                self._signing_key_pem, p, sid, sender_agent_id
+                self._signing_key_pem, p, sid, sender_agent_id, client_seq=client_seq
             )
             msg = dict(msg)
             msg["payload"] = plaintext_dict
@@ -416,7 +426,7 @@ class BrokerClient:
         return msg
 
     def poll(self, session_id: str, after: int = -1, poll_interval: int = 2) -> list[dict]:
-        path = f"/broker/sessions/{session_id}/messages"
+        path = f"/v1/broker/sessions/{session_id}/messages"
         for attempt in range(5):
             try:
                 resp = self._authed_request("GET", path, params={"after": after})
@@ -444,7 +454,7 @@ def _open_ws(broker: BrokerClient, agent_id: str):
     try:
         import ssl as _ssl
         from websockets.sync.client import connect as ws_connect
-        ws_url = broker._ws_url() + "/broker/ws"
+        ws_url = broker._ws_url() + "/v1/broker/ws"
         ws_kwargs: dict = {"open_timeout": 5}
         if ws_url.startswith("wss://") and not broker._verify_tls:
             ssl_ctx = _ssl.create_default_context()

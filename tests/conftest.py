@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault("OTEL_ENABLED", "false")
+os.environ["SKIP_ALEMBIC"] = "1"
 
 import pytest
 import pytest_asyncio

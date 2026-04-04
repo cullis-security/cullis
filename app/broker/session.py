@@ -23,6 +23,7 @@ class StoredMessage:
     nonce: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     signature: str | None = None
+    client_seq: int | None = None
 
 
 @dataclass
@@ -46,19 +47,20 @@ class Session:
             return False
         return datetime.now(timezone.utc) > self.expires_at
 
-    def consume_nonce(self, nonce: str) -> bool:
-        """
-        Returns False if the nonce has already been used (replay attack)
-        or if the nonce set has reached its capacity limit (DoS protection).
-        """
-        if nonce in self.used_nonces:
-            return False
-        if len(self.used_nonces) >= self._MAX_NONCES:
-            return False
-        self.used_nonces.add(nonce)
-        return True
+    def is_nonce_cached(self, nonce: str) -> bool:
+        """Fast-path replay check against the in-memory cache.
 
-    def store_message(self, sender_agent_id: str, payload: dict, nonce: str, signature: str | None = None) -> int:
+        The DB (via ``save_message`` ON CONFLICT) is the source of truth;
+        this cache prevents an unnecessary DB round-trip for obvious replays.
+        """
+        return nonce in self.used_nonces or len(self.used_nonces) >= self._MAX_NONCES
+
+    def cache_nonce(self, nonce: str) -> None:
+        """Record a nonce in the in-memory cache after successful DB insert."""
+        self.used_nonces.add(nonce)
+
+    def store_message(self, sender_agent_id: str, payload: dict, nonce: str,
+                      signature: str | None = None, client_seq: int | None = None) -> int:
         """Store the message in the session inbox and return the assigned seq."""
         seq = self._next_seq
         self._messages.append(StoredMessage(
@@ -67,6 +69,7 @@ class Session:
             payload=payload,
             nonce=nonce,
             signature=signature,
+            client_seq=client_seq,
         ))
         self._next_seq += 1
         return seq

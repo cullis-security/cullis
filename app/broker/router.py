@@ -321,7 +321,8 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="sender_agent_id does not match the token")
 
-    if not session.consume_nonce(envelope.nonce):
+    # Fast-path: in-memory cache rejects obvious replays without a DB hit
+    if session.is_nonce_cached(envelope.nonce):
         await log_event(db, "broker.message_send", "denied",
                         agent_id=current_agent.agent_id, session_id=session_id,
                         details={"reason": "replay attack detected", "nonce": envelope.nonce})
@@ -350,6 +351,7 @@ async def send_message(
         envelope.nonce,
         envelope.timestamp,
         envelope.payload,
+        client_seq=envelope.client_seq,
     )
     _log.info("✔ signature verified  (%s)", current_agent.agent_id)
 
@@ -373,8 +375,22 @@ async def send_message(
 
     _log.info("✔ message accepted  (%s → %s)", current_agent.org, session.target_org_id)
 
-    seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce, envelope.signature)
-    await save_message(db, session_id, session._messages[-1])
+    seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce,
+                                envelope.signature, client_seq=envelope.client_seq)
+
+    # Atomic DB insert — source of truth for nonce uniqueness.
+    # If the nonce already exists in the DB, undo in-memory state.
+    inserted = await save_message(db, session_id, session._messages[-1])
+    if not inserted:
+        session._messages.pop()
+        session._next_seq -= 1
+        await log_event(db, "broker.message_send", "denied",
+                        agent_id=current_agent.agent_id, session_id=session_id,
+                        details={"reason": "replay attack detected (DB)", "nonce": envelope.nonce})
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Nonce already used — possible replay attack")
+
+    session.cache_nonce(envelope.nonce)
 
     import hashlib, json as _json
     payload_hash = hashlib.sha256(
@@ -398,7 +414,7 @@ async def send_message(
         else session.initiator_agent_id
     )
     if ws_manager.is_connected(recipient_id):
-        await ws_manager.send_to_agent(recipient_id, {
+        ws_msg = {
             "type": "new_message",
             "session_id": session_id,
             "message": {
@@ -407,7 +423,10 @@ async def send_message(
                 "payload": envelope.payload,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
-        })
+        }
+        if envelope.client_seq is not None:
+            ws_msg["message"]["client_seq"] = envelope.client_seq
+        await ws_manager.send_to_agent(recipient_id, ws_msg)
 
     return {"status": "accepted", "session_id": session_id}
 
@@ -465,6 +484,7 @@ async def poll_messages(
             nonce=m.nonce,
             timestamp=m.timestamp,
             signature=m.signature,
+            client_seq=m.client_seq,
         )
         for m in messages
     ]
@@ -549,7 +569,7 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
             from app.config import get_settings as _get_settings
             _settings = _get_settings()
             if _settings.broker_public_url:
-                ws_htu = _normalize_htu(_settings.broker_public_url.rstrip("/") + "/broker/ws")
+                ws_htu = _normalize_htu(_settings.broker_public_url.rstrip("/") + "/v1/broker/ws")
             else:
                 ws_htu = _normalize_htu(str(websocket.url).replace("wss://", "https://").replace("ws://", "http://"))
             jkt = await verify_dpop_proof(dpop_proof, htm="GET", htu=ws_htu, access_token=auth_msg["token"])

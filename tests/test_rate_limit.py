@@ -29,27 +29,27 @@ def _reset_limiter() -> None:
 
 async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str, secret: str, dpop) -> str:
     """Register org + agent + binding + policy; return access token."""
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": ["order.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/policy/rules",
+    await client.post("/v1/policy/rules",
         json={
             "policy_id": f"{org_id}::allow-all",
             "org_id": org_id,
@@ -66,23 +66,23 @@ async def test_auth_token_rate_limit(client: AsyncClient, dpop):
     _reset_limiter()
 
     # Register the org only once
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "rl-token-org", "display_name": "rl-token-org", "secret": "s",
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem("rl-token-org")
-    await client.post("/registry/orgs/rl-token-org/certificate",
+    await client.post("/v1/registry/orgs/rl-token-org/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "rl-token-org", "x-org-secret": "s"},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": "rl-token-org::agent", "org_id": "rl-token-org",
         "display_name": "x", "capabilities": [],
     }, headers={"x-org-id": "rl-token-org", "x-org-secret": "s"})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": "rl-token-org", "agent_id": "rl-token-org::agent", "scope": []},
         headers={"x-org-id": "rl-token-org", "x-org-secret": "s"},
     )
-    await client.post(f"/registry/bindings/{resp.json()['id']}/approve",
+    await client.post(f"/v1/registry/bindings/{resp.json()['id']}/approve",
         headers={"x-org-id": "rl-token-org", "x-org-secret": "s"},
     )
 
@@ -90,18 +90,18 @@ async def test_auth_token_rate_limit(client: AsyncClient, dpop):
     for _ in range(10):
         assertion = make_assertion("rl-token-org::agent", "rl-token-org")
         r = await client.post(
-            "/auth/token",
+            "/v1/auth/token",
             json={"client_assertion": assertion},
-            headers={"DPoP": dpop.proof("POST", "/auth/token")},
+            headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
         )
         assert r.status_code == 200
 
     # The eleventh must be blocked
     assertion = make_assertion("rl-token-org::agent", "rl-token-org")
     r = await client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
-        headers={"DPoP": dpop.proof("POST", "/auth/token")},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
     )
     assert r.status_code == 429
 
@@ -114,17 +114,17 @@ async def test_message_rate_limit(client: AsyncClient, dpop):
     token_b = await _setup_agent(client, RL_AGENT_B, RL_ORG_B, RL_SECRET_B, dpop)
 
     # Create and activate session
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": RL_AGENT_B,
         "target_org_id": RL_ORG_B,
         "requested_capabilities": ["order.read"],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert resp.status_code == 201
     session_id = resp.json()["session_id"]
 
     await client.post(
-        f"/broker/sessions/{session_id}/accept",
-        headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_b),
+        f"/v1/broker/sessions/{session_id}/accept",
+        headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_b),
     )
 
     import uuid
@@ -134,7 +134,7 @@ async def test_message_rate_limit(client: AsyncClient, dpop):
         nonce = str(uuid.uuid4())
         _sig, _ts = sign_message(RL_AGENT, RL_ORG, session_id, RL_AGENT, nonce, {"x": 1})
         r = await client.post(
-            f"/broker/sessions/{session_id}/messages",
+            f"/v1/broker/sessions/{session_id}/messages",
             json={
                 "session_id": session_id,
                 "sender_agent_id": RL_AGENT,
@@ -143,7 +143,7 @@ async def test_message_rate_limit(client: AsyncClient, dpop):
                 "timestamp": _ts,
                 "signature": _sig,
             },
-            headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a),
+            headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a),
         )
         assert r.status_code == 202
 
@@ -151,7 +151,7 @@ async def test_message_rate_limit(client: AsyncClient, dpop):
     nonce = str(uuid.uuid4())
     _sig, _ts = sign_message(RL_AGENT, RL_ORG, session_id, RL_AGENT, nonce, {"x": 1})
     r = await client.post(
-        f"/broker/sessions/{session_id}/messages",
+        f"/v1/broker/sessions/{session_id}/messages",
         json={
             "session_id": session_id,
             "sender_agent_id": RL_AGENT,
@@ -160,7 +160,7 @@ async def test_message_rate_limit(client: AsyncClient, dpop):
             "timestamp": _ts,
             "signature": _sig,
         },
-        headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_a),
+        headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_a),
     )
     assert r.status_code == 429
 
@@ -174,16 +174,16 @@ async def test_session_rate_limit(client: AsyncClient, dpop):
 
     # 20 requests → pass (some may fail for policy/other reasons, but not for rate limit)
     for _ in range(20):
-        await client.post("/broker/sessions", json={
+        await client.post("/v1/broker/sessions", json={
             "target_agent_id": "rl-sess-b::agent",
             "target_org_id": "rl-sess-b",
             "requested_capabilities": [],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
 
     # The 21st must be blocked by the rate limiter
-    r = await client.post("/broker/sessions", json={
+    r = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "rl-sess-b::agent",
         "target_org_id": "rl-sess-b",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_a))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert r.status_code == 429

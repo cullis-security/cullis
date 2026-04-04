@@ -20,30 +20,30 @@ def _setup_agent(client: TestClient, org_id: str, agent_id: str, dpop: DPoPHelpe
     """Register org + CA + agent + approved binding. Returns the DPoP-bound access token."""
     org_secret = org_id + "-secret"
 
-    client.post("/registry/orgs", json={
+    client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    client.post(f"/registry/orgs/{org_id}/certificate",
+    client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    client.post("/registry/agents", json={
+    client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": ["order.read"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = client.post("/registry/bindings",
+    resp = client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    client.post(f"/registry/bindings/{binding_id}/approve",
+    client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     assertion = make_assertion(agent_id, org_id)
-    dpop_proof = dpop.proof("POST", f"{_TESTSERVER}/auth/token")
+    dpop_proof = dpop.proof("POST", f"{_TESTSERVER}/v1/auth/token")
     resp = client.post(
-        "/auth/token",
+        "/v1/auth/token",
         json={"client_assertion": assertion},
         headers={"DPoP": dpop_proof},
     )
@@ -57,8 +57,8 @@ def test_ws_auth_valid():
     with TestClient(app) as client:
         token = _setup_agent(client, "ws-valid-org", "ws-valid-org::agent", dpop)
 
-        ws_proof = dpop.proof("GET", f"{_TESTSERVER}/broker/ws", access_token=token)
-        with client.websocket_connect("/broker/ws") as ws:
+        ws_proof = dpop.proof("GET", f"{_TESTSERVER}/v1/broker/ws", access_token=token)
+        with client.websocket_connect("/v1/broker/ws") as ws:
             ws.send_json({"type": "auth", "token": token, "dpop_proof": ws_proof})
             data = ws.receive_json()
 
@@ -70,8 +70,8 @@ def test_ws_auth_invalid_token():
     """An invalid token must receive auth_error and the connection is closed."""
     with TestClient(app) as client:
         dpop = DPoPHelper()
-        ws_proof = dpop.proof("GET", f"{_TESTSERVER}/broker/ws")
-        with client.websocket_connect("/broker/ws") as ws:
+        ws_proof = dpop.proof("GET", f"{_TESTSERVER}/v1/broker/ws")
+        with client.websocket_connect("/v1/broker/ws") as ws:
             ws.send_json({"type": "auth", "token": "not.a.valid.jwt.token", "dpop_proof": ws_proof})
             data = ws.receive_json()
 

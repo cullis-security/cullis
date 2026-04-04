@@ -90,27 +90,27 @@ async def pg_client():
 
 async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
     org_secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": ["order.read", "order.write"],
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read", "order.write"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/policy/rules", json={
+    await client.post("/v1/policy/rules", json={
         "policy_id": f"{org_id}::allow-all",
         "org_id": org_id,
         "policy_type": "session",
@@ -131,7 +131,7 @@ async def test_pg_session_and_signed_messages(pg_client):
     token_b = await _setup_agent(pg_client, "pg-org-b::agent", "pg-org-b")
 
     # Create session
-    resp = await pg_client.post("/broker/sessions", json={
+    resp = await pg_client.post("/v1/broker/sessions", json={
         "target_agent_id": "pg-org-b::agent",
         "target_org_id": "pg-org-b",
         "requested_capabilities": ["order.read"],
@@ -140,7 +140,7 @@ async def test_pg_session_and_signed_messages(pg_client):
     session_id = resp.json()["session_id"]
 
     # Accept
-    resp = await pg_client.post(f"/broker/sessions/{session_id}/accept",
+    resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/accept",
                                 headers={"Authorization": f"Bearer {token_b}"})
     assert resp.status_code == 200, resp.text
 
@@ -153,7 +153,7 @@ async def test_pg_session_and_signed_messages(pg_client):
     nonces = [str(uuid.uuid4()) for _ in payloads]
     for payload, nonce in zip(payloads, nonces):
         sig, _ts = sign_message("pg-org-a::agent", "pg-org-a", session_id, "pg-org-a::agent", nonce, payload)
-        resp = await pg_client.post(f"/broker/sessions/{session_id}/messages", json={
+        resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
             "session_id": session_id,
             "sender_agent_id": "pg-org-a::agent",
             "payload": payload,
@@ -181,7 +181,7 @@ async def test_pg_session_and_signed_messages(pg_client):
     assert restored >= 1
 
     # Session still active
-    resp = await pg_client.get("/broker/sessions",
+    resp = await pg_client.get("/v1/broker/sessions",
                                headers={"Authorization": f"Bearer {token_a}"})
     sessions = resp.json()
     match = next((s for s in sessions if s["session_id"] == session_id), None)
@@ -189,7 +189,7 @@ async def test_pg_session_and_signed_messages(pg_client):
     assert match["status"] == "active"
 
     # Messages retrievable with signatures
-    resp = await pg_client.get(f"/broker/sessions/{session_id}/messages",
+    resp = await pg_client.get(f"/v1/broker/sessions/{session_id}/messages",
                                params={"after": -1},
                                headers={"Authorization": f"Bearer {token_b}"})
     assert resp.status_code == 200
@@ -205,19 +205,19 @@ async def test_pg_nonce_replay_blocked(pg_client):
     token_a = await _setup_agent(pg_client, "pg-replay-a::agent", "pg-replay-a")
     token_b = await _setup_agent(pg_client, "pg-replay-b::agent", "pg-replay-b")
 
-    resp = await pg_client.post("/broker/sessions", json={
+    resp = await pg_client.post("/v1/broker/sessions", json={
         "target_agent_id": "pg-replay-b::agent",
         "target_org_id": "pg-replay-b",
         "requested_capabilities": [],
     }, headers={"Authorization": f"Bearer {token_a}"})
     session_id = resp.json()["session_id"]
-    await pg_client.post(f"/broker/sessions/{session_id}/accept",
+    await pg_client.post(f"/v1/broker/sessions/{session_id}/accept",
                          headers={"Authorization": f"Bearer {token_b}"})
 
     nonce = str(uuid.uuid4())
     payload = {"msg": "primo"}
     sig, _ts = sign_message("pg-replay-a::agent", "pg-replay-a", session_id, "pg-replay-a::agent", nonce, payload)
-    await pg_client.post(f"/broker/sessions/{session_id}/messages", json={
+    await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id, "sender_agent_id": "pg-replay-a::agent",
         "payload": payload, "nonce": nonce, "timestamp": _ts, "signature": sig,
     }, headers={"Authorization": f"Bearer {token_a}"})
@@ -230,7 +230,7 @@ async def test_pg_nonce_replay_blocked(pg_client):
     # Replay — must be blocked
     payload2 = {"msg": "replay"}
     sig2, _ts2 = sign_message("pg-replay-a::agent", "pg-replay-a", session_id, "pg-replay-a::agent", nonce, payload2)
-    resp = await pg_client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id, "sender_agent_id": "pg-replay-a::agent",
         "payload": payload2, "nonce": nonce, "timestamp": _ts2, "signature": sig2,
     }, headers={"Authorization": f"Bearer {token_a}"})

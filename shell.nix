@@ -8,7 +8,7 @@ pkgs.mkShell {
     python311Packages.virtualenv
     nodejs_20
     openssl
-    gitAndTools.gh
+    gh
     gcc.cc.lib   # libstdc++.so.6 — richiesta da greenlet (sqlalchemy async)
   ];
 

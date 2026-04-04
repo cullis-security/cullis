@@ -19,23 +19,23 @@ async def _setup(client: AsyncClient, org_id: str, agent_id: str,
                  capabilities: list[str], dpop) -> str:
     """Register org + CA + agent + approved binding. Returns the JWT."""
     org_secret = org_id + "-secret"
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": get_org_ca_pem(org_id)},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": capabilities,
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": capabilities},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
     return await dpop.get_token(client, agent_id, org_id)
@@ -48,9 +48,9 @@ async def test_discovery_finds_other_org_agents(client: AsyncClient, dpop):
     await _setup(client, "disc-supplier", "disc-supplier::agent",
                  ["order.read", "order.write"], dpop)
 
-    resp = await client.get("/registry/agents/search",
+    resp = await client.get("/v1/registry/agents/search",
         params={"capability": ["order.read", "order.write"]},
-        headers=dpop.headers("GET", "/registry/agents/search", token_buyer),
+        headers=dpop.headers("GET", "/v1/registry/agents/search", token_buyer),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -64,9 +64,9 @@ async def test_discovery_excludes_own_org(client: AsyncClient, dpop):
                          ["order.read"], dpop)
     await _setup(client, "disc-other", "disc-other::agent", ["order.read"], dpop)
 
-    resp = await client.get("/registry/agents/search",
+    resp = await client.get("/v1/registry/agents/search",
         params={"capability": ["order.read"]},
-        headers=dpop.headers("GET", "/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -81,9 +81,9 @@ async def test_discovery_partial_capability_no_match(client: AsyncClient, dpop):
     await _setup(client, "disc-partial-sup", "disc-partial-sup::agent",
                  ["order.read"], dpop)  # does not have order.write
 
-    resp = await client.get("/registry/agents/search",
+    resp = await client.get("/v1/registry/agents/search",
         params={"capability": ["order.read", "order.write"]},
-        headers=dpop.headers("GET", "/registry/agents/search", token_buyer),
+        headers=dpop.headers("GET", "/v1/registry/agents/search", token_buyer),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -92,7 +92,7 @@ async def test_discovery_partial_capability_no_match(client: AsyncClient, dpop):
 
 async def test_discovery_requires_auth(client: AsyncClient):
     """Senza token → 401."""
-    resp = await client.get("/registry/agents/search",
+    resp = await client.get("/v1/registry/agents/search",
         params={"capability": ["order.read"]},
     )
     assert resp.status_code in (401, 403)

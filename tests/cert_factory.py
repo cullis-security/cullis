@@ -300,6 +300,7 @@ def sign_message(
     payload: dict,
     timestamp: int | None = None,
     trust_domain: str | None = None,
+    client_seq: int | None = None,
 ) -> tuple[str, int]:
     """
     Sign a message with the agent's private key — for use in tests.
@@ -311,7 +312,7 @@ def sign_message(
     if timestamp is None:
         timestamp = int(_time.time())
     key_pem = get_agent_key_pem(agent_id, org_id, trust_domain=trust_domain)
-    return _sign(key_pem, session_id, sender_agent_id, nonce, timestamp, payload), timestamp
+    return _sign(key_pem, session_id, sender_agent_id, nonce, timestamp, payload, client_seq=client_seq), timestamp
 
 
 def make_encrypted_envelope(
@@ -322,6 +323,7 @@ def make_encrypted_envelope(
     session_id: str,
     nonce: str,
     payload: dict,
+    client_seq: int | None = None,
 ) -> dict:
     """
     Costruisce un envelope E2E cifrato completo per i test.
@@ -334,12 +336,15 @@ def make_encrypted_envelope(
     from app.e2e_crypto import encrypt_for_agent
 
     timestamp = int(_time.time())
-    inner_sig, _ = sign_message(sender_agent_id, sender_org_id, session_id, sender_agent_id, nonce, payload, timestamp)
+    inner_sig, _ = sign_message(sender_agent_id, sender_org_id, session_id, sender_agent_id,
+                                nonce, payload, timestamp, client_seq=client_seq)
     recipient_pubkey = get_agent_pubkey_pem(recipient_agent_id, recipient_org_id)
-    cipher_blob = encrypt_for_agent(recipient_pubkey, payload, inner_sig, session_id, sender_agent_id)
-    outer_sig, _ = sign_message(sender_agent_id, sender_org_id, session_id, sender_agent_id, nonce, cipher_blob, timestamp)
+    cipher_blob = encrypt_for_agent(recipient_pubkey, payload, inner_sig, session_id,
+                                    sender_agent_id, client_seq=client_seq)
+    outer_sig, _ = sign_message(sender_agent_id, sender_org_id, session_id, sender_agent_id,
+                                nonce, cipher_blob, timestamp, client_seq=client_seq)
 
-    return {
+    envelope = {
         "session_id":      session_id,
         "sender_agent_id": sender_agent_id,
         "payload":         cipher_blob,
@@ -347,6 +352,9 @@ def make_encrypted_envelope(
         "timestamp":       timestamp,
         "signature":       outer_sig,
     }
+    if client_seq is not None:
+        envelope["client_seq"] = client_seq
+    return envelope
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -419,8 +427,8 @@ class DPoPHelper:
 
     Usage in tests:
         token = await dpop.get_token(client, "org::agent", "org")
-        headers = dpop.headers("GET", "/broker/sessions", token)
-        resp = await client.get("/broker/sessions", headers=headers)
+        headers = dpop.headers("GET", "/v1/broker/sessions", token)
+        resp = await client.get("/v1/broker/sessions", headers=headers)
     """
 
     # Base URL used by the test AsyncClient (matches conftest base_url="http://test")
@@ -473,9 +481,9 @@ class DPoPHelper:
         Handles the server nonce flow (RFC 9449 §8): first attempt may return
         401 with DPoP-Nonce header, then we retry with the nonce."""
         assertion = make_assertion(agent_id, org_id, trust_domain=trust_domain)
-        dpop_proof = self.proof("POST", "/auth/token")
+        dpop_proof = self.proof("POST", "/v1/auth/token")
         resp = await client.post(
-            "/auth/token",
+            "/v1/auth/token",
             json={"client_assertion": assertion},
             headers={"DPoP": dpop_proof},
         )
@@ -483,9 +491,9 @@ class DPoPHelper:
         if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
             self._update_nonce(resp)
             assertion = make_assertion(agent_id, org_id, trust_domain=trust_domain)
-            dpop_proof = self.proof("POST", "/auth/token")
+            dpop_proof = self.proof("POST", "/v1/auth/token")
             resp = await client.post(
-                "/auth/token",
+                "/v1/auth/token",
                 json={"client_assertion": assertion},
                 headers={"DPoP": dpop_proof},
             )

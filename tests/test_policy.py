@@ -54,24 +54,24 @@ async def _setup_org_agent(client: AsyncClient, org_id: str, agent_id: str, dpop
     """Register org + CA + agent + approved binding. Returns the JWT."""
     org_secret = org_id + "-secret"
 
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/registry/orgs/{org_id}/certificate",
+    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/registry/agents", json={
+    await client.post("/v1/registry/agents", json={
         "agent_id": agent_id, "org_id": org_id,
         "display_name": agent_id, "capabilities": CAPS,
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-    resp = await client.post("/registry/bindings",
+    resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": CAPS},
         headers=org_headers(org_id),
     )
     binding_id = resp.json()["id"]
-    await client.post(f"/registry/bindings/{binding_id}/approve",
+    await client.post(f"/v1/registry/bindings/{binding_id}/approve",
         headers=org_headers(org_id),
     )
     return await dpop.get_token(client, agent_id, org_id)
@@ -92,7 +92,7 @@ async def _create_session_policy(
     if max_active_sessions is not None:
         conditions["max_active_sessions"] = max_active_sessions
 
-    resp = await client.post("/policy/rules", json={
+    resp = await client.post("/v1/policy/rules", json={
         "policy_id": policy_id,
         "org_id": org_id,
         "policy_type": "session",
@@ -117,7 +117,7 @@ async def _create_message_policy(
     if blocked_fields:
         conditions["blocked_fields"] = blocked_fields
 
-    resp = await client.post("/policy/rules", json={
+    resp = await client.post("/v1/policy/rules", json={
         "policy_id": policy_id,
         "org_id": org_id,
         "policy_type": "message",
@@ -144,11 +144,11 @@ async def test_session_denied_webhook_deny(client: AsyncClient, dpop):
 
     deny = WebhookDecision(allowed=False, reason="not authorized by org policy", org_id="whdeny-buyer")
     with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
-        resp = await client.post("/broker/sessions", json={
+        resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "whdeny-manufacturer::sales-agent",
             "target_org_id": "whdeny-manufacturer",
             "requested_capabilities": ["order.write"],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
 
     assert resp.status_code == 403
     assert "policy" in resp.json()["detail"].lower()
@@ -174,11 +174,11 @@ async def test_session_denied_target_org_denies(client: AsyncClient, dpop):
         allowed=False, reason="target org does not allow this initiator", org_id="wrongtgt-manufacturer"
     )
     with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
-        resp = await client.post("/broker/sessions", json={
+        resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "wrongtgt-manufacturer::sales-agent",
             "target_org_id": "wrongtgt-manufacturer",
             "requested_capabilities": ["order.write"],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
 
     assert resp.status_code == 403
     assert "policy" in resp.json()["detail"].lower()
@@ -204,11 +204,11 @@ async def test_session_denied_initiator_capability_denied(client: AsyncClient, d
         allowed=False, reason="capability order.write not authorized by org policy", org_id="cap-buyer"
     )
     with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
-        resp = await client.post("/broker/sessions", json={
+        resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "cap-manufacturer::sales-agent",
             "target_org_id": "cap-manufacturer",
             "requested_capabilities": ["order.write"],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
 
     assert resp.status_code == 403
     assert "policy" in resp.json()["detail"].lower()
@@ -233,19 +233,19 @@ async def test_session_denied_max_active_sessions(client: AsyncClient, dpop):
     deny  = WebhookDecision(allowed=False, reason="max active sessions reached", org_id="maxsess-buyer")
 
     with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=allow)):
-        resp = await client.post("/broker/sessions", json={
+        resp = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "maxsess-mfr-a::sales-agent",
             "target_org_id": "maxsess-mfr-a",
             "requested_capabilities": [],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
         assert resp.status_code == 201
 
     with patch("app.broker.router.evaluate_session_via_webhooks", new=AsyncMock(return_value=deny)):
-        resp2 = await client.post("/broker/sessions", json={
+        resp2 = await client.post("/v1/broker/sessions", json={
             "target_agent_id": "maxsess-mfr-b::sales-agent",
             "target_org_id": "maxsess-mfr-b",
             "requested_capabilities": [],
-        }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+        }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
 
     assert resp2.status_code == 403
     assert "policy" in resp2.json()["detail"].lower()
@@ -269,11 +269,11 @@ async def test_session_allowed_by_policy(client: AsyncClient, dpop):
         capabilities=CAPS,
     )
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "allow-manufacturer::sales-agent",
         "target_org_id": "allow-manufacturer",
         "requested_capabilities": ["order.write"],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
 
     assert resp.status_code == 201
     assert resp.json()["status"] == "pending"
@@ -296,27 +296,27 @@ async def test_message_allowed_no_policy(client: AsyncClient, dpop):
         target_org_ids=["msgallow-mfr"], capabilities=[],
     )
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "msgallow-mfr::sales-agent",
         "target_org_id": "msgallow-mfr",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_mfr))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_mfr))
 
     # No message policy → default allow
     _nonce_ma = str(uuid.uuid4())
     _payload_ma = {"type": "order_request", "order_id": "ORD-001", "text": "ciao"}
     _sig_ma, _ts_ma = sign_message("msgallow-buyer::procurement-agent", "msgallow-buyer", session_id, "msgallow-buyer::procurement-agent", _nonce_ma, _payload_ma)
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "msgallow-buyer::procurement-agent",
         "payload": _payload_ma,
         "nonce": _nonce_ma,
         "timestamp": _ts_ma,
         "signature": _sig_ma,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_buyer))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_buyer))
 
     assert resp.status_code == 202
 
@@ -343,26 +343,26 @@ async def test_message_blocked_payload_too_large(client: AsyncClient, dpop):
         max_payload_size_bytes=50,
     )
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "bigmsg-mfr::sales-agent",
         "target_org_id": "bigmsg-mfr",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_mfr))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_mfr))
 
     _nonce_bm = str(uuid.uuid4())
     _payload_bm = {"type": "order_request", "text": "x" * 200}
     _sig_bm, _ts_bm = sign_message("bigmsg-buyer::procurement-agent", "bigmsg-buyer", session_id, "bigmsg-buyer::procurement-agent", _nonce_bm, _payload_bm)
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "bigmsg-buyer::procurement-agent",
         "payload": _payload_bm,
         "nonce": _nonce_bm,
         "timestamp": _ts_bm,
         "signature": _sig_bm,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_buyer))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_buyer))
 
     assert resp.status_code == 403
     assert "large" in resp.json()["detail"].lower()
@@ -390,27 +390,27 @@ async def test_message_blocked_missing_required_field(client: AsyncClient, dpop)
         required_fields=["order_id"],
     )
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "reqfield-mfr::sales-agent",
         "target_org_id": "reqfield-mfr",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_mfr))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_mfr))
 
     # Payload without order_id → blocked
     _nonce_rf = str(uuid.uuid4())
     _payload_rf = {"type": "order_request", "text": "voglio 1000 bulloni"}
     _sig_rf, _ts_rf = sign_message("reqfield-buyer::procurement-agent", "reqfield-buyer", session_id, "reqfield-buyer::procurement-agent", _nonce_rf, _payload_rf)
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "reqfield-buyer::procurement-agent",
         "payload": _payload_rf,
         "nonce": _nonce_rf,
         "timestamp": _ts_rf,
         "signature": _sig_rf,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_buyer))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_buyer))
 
     assert resp.status_code == 403
     assert "order_id" in resp.json()["detail"]
@@ -438,14 +438,14 @@ async def test_message_blocked_blocked_field_present(client: AsyncClient, dpop):
         blocked_fields=["internal_margin", "production_cost"],
     )
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "blkfield-mfr::sales-agent",
         "target_org_id": "blkfield-mfr",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_mfr))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_mfr))
 
     # Payload with blocked field → deny
     _nonce_bf = str(uuid.uuid4())
@@ -455,14 +455,14 @@ async def test_message_blocked_blocked_field_present(client: AsyncClient, dpop):
         "internal_margin": 0.35,   # blocked field
     }
     _sig_bf, _ts_bf = sign_message("blkfield-buyer::procurement-agent", "blkfield-buyer", session_id, "blkfield-buyer::procurement-agent", _nonce_bf, _payload_bf)
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "blkfield-buyer::procurement-agent",
         "payload": _payload_bf,
         "nonce": _nonce_bf,
         "timestamp": _ts_bf,
         "signature": _sig_bf,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_buyer))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_buyer))
 
     assert resp.status_code == 403
     assert "internal_margin" in resp.json()["detail"]
@@ -473,12 +473,12 @@ async def test_message_blocked_blocked_field_present(client: AsyncClient, dpop):
 # ---------------------------------------------------------------------------
 
 async def test_policy_crud_create(client: AsyncClient, dpop):
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "crud-buyer", "display_name": "crud-buyer",
         "secret": "crud-buyer-secret",
     }, headers=ADMIN_HEADERS)
 
-    resp = await client.post("/policy/rules", json={
+    resp = await client.post("/v1/policy/rules", json={
         "policy_id": "crud-buyer::session-v1",
         "org_id": "crud-buyer",
         "policy_type": "session",
@@ -504,7 +504,7 @@ async def test_policy_crud_create(client: AsyncClient, dpop):
 # ---------------------------------------------------------------------------
 
 async def test_policy_crud_duplicate(client: AsyncClient, dpop):
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "dup-buyer", "display_name": "dup-buyer",
         "secret": "dup-buyer-secret",
     }, headers=ADMIN_HEADERS)
@@ -515,8 +515,8 @@ async def test_policy_crud_duplicate(client: AsyncClient, dpop):
         "policy_type": "session",
         "rules": {"effect": "allow", "conditions": {}},
     }
-    await client.post("/policy/rules", json=payload, headers=org_headers("dup-buyer"))
-    resp = await client.post("/policy/rules", json=payload, headers=org_headers("dup-buyer"))
+    await client.post("/v1/policy/rules", json=payload, headers=org_headers("dup-buyer"))
+    resp = await client.post("/v1/policy/rules", json=payload, headers=org_headers("dup-buyer"))
 
     assert resp.status_code == 409
 
@@ -526,20 +526,20 @@ async def test_policy_crud_duplicate(client: AsyncClient, dpop):
 # ---------------------------------------------------------------------------
 
 async def test_policy_crud_list(client: AsyncClient, dpop):
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "list-buyer", "display_name": "list-buyer",
         "secret": "list-buyer-secret",
     }, headers=ADMIN_HEADERS)
 
     for i in range(3):
-        await client.post("/policy/rules", json={
+        await client.post("/v1/policy/rules", json={
             "policy_id": f"list-buyer::policy-{i}",
             "org_id": "list-buyer",
             "policy_type": "session",
             "rules": {"effect": "allow", "conditions": {}},
         }, headers=org_headers("list-buyer"))
 
-    resp = await client.get("/policy/rules", params={"org_id": "list-buyer"},
+    resp = await client.get("/v1/policy/rules", params={"org_id": "list-buyer"},
                             headers=org_headers("list-buyer"))
     assert resp.status_code == 200
     ids = [p["policy_id"] for p in resp.json()]
@@ -553,18 +553,18 @@ async def test_policy_crud_list(client: AsyncClient, dpop):
 # ---------------------------------------------------------------------------
 
 async def test_policy_crud_get(client: AsyncClient, dpop):
-    await client.post("/registry/orgs", json={
+    await client.post("/v1/registry/orgs", json={
         "org_id": "get-buyer", "display_name": "get-buyer",
         "secret": "get-buyer-secret",
     }, headers=ADMIN_HEADERS)
-    await client.post("/policy/rules", json={
+    await client.post("/v1/policy/rules", json={
         "policy_id": "get-buyer::session-v1",
         "org_id": "get-buyer",
         "policy_type": "session",
         "rules": {"effect": "allow", "conditions": {"capabilities": ["order.read"]}},
     }, headers=org_headers("get-buyer"))
 
-    resp = await client.get("/policy/rules/get-buyer::session-v1",
+    resp = await client.get("/v1/policy/rules/get-buyer::session-v1",
                             headers=org_headers("get-buyer"))
     assert resp.status_code == 200
     assert resp.json()["policy_id"] == "get-buyer::session-v1"
@@ -590,21 +590,21 @@ async def test_policy_crud_deactivate(client: AsyncClient, dpop):
     )
 
     # Session allowed (webhook mock returns allow via autouse fixture)
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "deact-manufacturer::sales-agent",
         "target_org_id": "deact-manufacturer",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     assert resp.status_code == 201
 
     # Deactivate the policy via CRUD API — verify is_active flips to False
-    resp = await client.delete("/policy/rules/deact-buyer::session-v1",
+    resp = await client.delete("/v1/policy/rules/deact-buyer::session-v1",
                                headers=org_headers("deact-buyer"))
     assert resp.status_code == 200
     assert resp.json()["is_active"] is False
 
     # GET confirms it's deactivated in the DB
-    resp = await client.get("/policy/rules/deact-buyer::session-v1",
+    resp = await client.get("/v1/policy/rules/deact-buyer::session-v1",
                             headers=org_headers("deact-buyer"))
     assert resp.status_code == 200
     assert resp.json()["is_active"] is False
@@ -634,21 +634,21 @@ async def test_message_blocked_explicit_deny(client: AsyncClient, dpop):
     )
 
     # Emergency block: deny all messages, no field conditions
-    await client.post("/policy/rules", json={
+    await client.post("/v1/policy/rules", json={
         "policy_id": "emergdeny-buyer::msg-emergency",
         "org_id": "emergdeny-buyer",
         "policy_type": "message",
         "rules": {"effect": "deny", "conditions": {}},
     }, headers=org_headers("emergdeny-buyer"))
 
-    resp = await client.post("/broker/sessions", json={
+    resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "emergdeny-mfr::sales-agent",
         "target_org_id": "emergdeny-mfr",
         "requested_capabilities": [],
-    }, headers=dpop.headers("POST", "/broker/sessions", token_buyer))
+    }, headers=dpop.headers("POST", "/v1/broker/sessions", token_buyer))
     session_id = resp.json()["session_id"]
-    await client.post(f"/broker/sessions/{session_id}/accept",
-                      headers=dpop.headers("POST", f"/broker/sessions/{session_id}/accept", token_mfr))
+    await client.post(f"/v1/broker/sessions/{session_id}/accept",
+                      headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/accept", token_mfr))
 
     # Valid payload — but the emergency deny policy must block it anyway
     _nonce = str(uuid.uuid4())
@@ -657,14 +657,14 @@ async def test_message_blocked_explicit_deny(client: AsyncClient, dpop):
         "emergdeny-buyer::procurement-agent", "emergdeny-buyer",
         session_id, "emergdeny-buyer::procurement-agent", _nonce, _payload,
     )
-    resp = await client.post(f"/broker/sessions/{session_id}/messages", json={
+    resp = await client.post(f"/v1/broker/sessions/{session_id}/messages", json={
         "session_id": session_id,
         "sender_agent_id": "emergdeny-buyer::procurement-agent",
         "payload": _payload,
         "nonce": _nonce,
         "timestamp": _ts,
         "signature": _sig,
-    }, headers=dpop.headers("POST", f"/broker/sessions/{session_id}/messages", token_buyer))
+    }, headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/messages", token_buyer))
 
     assert resp.status_code == 403
     assert "denied" in resp.json()["detail"].lower()

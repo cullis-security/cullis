@@ -10,6 +10,7 @@ class InboxMessage(BaseModel):
     nonce: str
     timestamp: datetime
     signature: str | None = None
+    client_seq: int | None = None
 
 
 class SessionStatus(str, Enum):
@@ -58,6 +59,7 @@ class MessageEnvelope(BaseModel):
     nonce: str = Field(..., max_length=128, description="UUID to prevent message-level replay attacks")
     timestamp: int = Field(..., description="Unix timestamp (seconds UTC) of when the message was signed")
     signature: str = Field(..., max_length=2048, description="RSA-PSS-SHA256 signature of the canonical message")
+    client_seq: int | None = Field(None, ge=0, description="Client-side monotonic sequence number for E2E ordering integrity")
 
     @field_validator("payload")
     @classmethod
