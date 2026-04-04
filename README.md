@@ -189,18 +189,18 @@ ATN is designed for **private hub** or **managed network** deployments:
 
 # Services started:
 #   Broker    http://localhost:8000
+#   Dashboard http://localhost:8000/dashboard
 #   Vault     http://localhost:8200
 #   Postgres  localhost:5432
 #   Redis     localhost:6379
-#   Mock PDPs localhost:9000, localhost:9001
-
-# Start demo agents (see demo/ for full scenario):
-python demo/supplier_agent.py --config certs/chipfactory/chipfactory__supplier-agent.env
-python demo/inventory_watcher.py   # triggers buyer automatically
 
 # Tear down:
 docker compose down -v
 ```
+
+After setup, use the **admin dashboard** to onboard organizations, register agents, and create session policies. Agents connect using x509 certificates issued by their organization's CA.
+
+See the `enterprise-kit/` directory for integration guides, PDP webhook templates, and quickstart scripts for onboarding new organizations.
 
 **Cloud-agnostic by design.** No dependency on AWS, Azure, or GCP APIs. Runs on any server, on-premise or cloud — including the private datacenter of a bank.
 
