@@ -1,0 +1,45 @@
+In questo momento setup.sh e generate_demo_certs.py mascherano la complessità, ma in uno scenario reale ATN non "installa" né "ospita" gli agenti. L'agente gira nell'infrastruttura dell'azienda cliente (sul loro AWS, Azure o Kubernetes on-premise), mentre ATN fornisce solo l'autostrada sicura.
+
+Ecco come funziona esattamente il ciclo di vita in un'azienda Enterprise reale e cosa devi fornire loro per renderlo irresistibile e semplice.
+
+Il Workflow Enterprise (La Realtà)
+1. L'Onboarding (La Cerimonia delle Chiavi)
+In azienda non useranno mai il tuo generate_demo_certs.py. Il team di sicurezza dell'azienda (IT/SecOps) farà questo:
+
+Genererà una sua Certificate Authority interna (Org CA) usando i propri sistemi (es. HashiCorp Vault, AWS ACM o una CA on-premise).
+
+Accederà alla tua dashboard ATN (o chiamerà le tue API di Onboarding) per registrarsi e invierà solamente il certificato pubblico (.crt o .pem pubblico) della loro Org CA e l'URL del loro Webhook PDP.
+
+Risultato: Il Broker ATN ora sa di potersi fidare dei certificati emessi da quell'azienda, ma non ha mai visto le loro chiavi private.
+
+2. Il Provisioning dell'Agente (Niente file su disco)
+Quando l'azienda vuole creare l'agente "Buyer", non creerà file .pem da passarsi con la chiavetta USB.
+
+Chiederà alla propria Org CA interna di emettere un certificato x509 con lo SPIFFE ID richiesto (spiffe://trust-domain/org/buyer).
+
+La chiave privata dell'agente nascerà e morirà all'interno del gestore segreti dell'azienda (es. Kubernetes Secrets o Vault Agent Injector).
+
+3. Il Deployment (Come lo mettono in produzione)
+L'azienda prenderà il codice del suo agente, che include il tuo SDK Python agents/sdk.py, e lo metterà in un container Docker.
+Per farlo partire, forniranno al container solo delle variabili d'ambiente:
+
+Bash
+BROKER_PUBLIC_URL=https://broker.atn-network.com
+AGENT_SPIFFE_ID=spiffe://atn.local/org-b/buyer
+CLIENT_CERT_PATH=/mnt/secrets/agent.crt  # Montato dinamicamente da Kubernetes
+CLIENT_KEY_PATH=/mnt/secrets/agent.key   # Montato dinamicamente, mai su disco fisso
+L'agente si avvia, l'SDK legge in memoria le chiavi, genera la chiave DPoP effimera e apre la connessione WebSocket in uscita verso la porta 443 del tuo Broker.
+
+4. Il Governance Layer (Il Webhook)
+Infine, l'IT dell'azienda esporrà il famoso server Webhook PDP (Policy Decision Point) nella propria rete interna. Quando l'agente prova a fare qualcosa, ATN bussa al Webhook. L'azienda ha il pieno controllo.
+
+Cosa ci manca per renderlo "Enterprise Ready"?
+Tecnicamente il tuo SDK e la tua architettura supportano già tutto questo al 100%. Il blocco non è nel codice, è nella Developer Experience (DX) lato cliente.
+
+Per togliere la frizione alle aziende e risolvere la tua preoccupazione, dovresti preparare un "Kit di Integrazione Cliente" che contenga:
+
+Documentazione di Onboarding: Una guida chiara intitolata "Bring Your Own CA" (Porta la tua CA), che spiega al reparto sicurezza come emettere i certificati compatibili con ATN.
+
+Template Kubernetes/Docker: Un esempio di docker-compose.yml o Helm Chart per il cliente, che mostra come montare le chiavi in modo sicuro senza scriverle nel codice.
+
+Mock PDP Avanzato: Un template server per il loro Webhook (che hai già abbozzato in agents/mock_pdp.py) in modo che non debbano scriverlo da zero, ma solo aggiungere i loro if/else per le regole aziendali.

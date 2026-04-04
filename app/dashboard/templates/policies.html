@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Policies{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-white">Session Policies</h2>
+        <div class="flex items-center gap-3">
+            <span class="text-sm text-gray-500">{{ policies | length }} active</span>
+            <a href="/dashboard/policies/create" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">+ Create Policy</a>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800">
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Policy ID</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Organization</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target Org</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capabilities</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Effect</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for p in policies %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-5 py-4">
+                        <p class="text-sm font-mono text-white">{{ p.policy_id }}</p>
+                    </td>
+                    <td class="px-5 py-4 text-sm text-gray-400">{{ p.org_id }}</td>
+                    <td class="px-5 py-4">
+                        <div class="flex flex-wrap gap-1">
+                        {% for org in p.target_orgs %}
+                            <span class="px-1.5 py-0.5 rounded text-xs bg-brand-500/10 text-brand-400">{{ org }}</span>
+                        {% endfor %}
+                        {% if not p.target_orgs %}
+                            <span class="text-xs text-gray-600">any</span>
+                        {% endif %}
+                        </div>
+                    </td>
+                    <td class="px-5 py-4">
+                        <div class="flex flex-wrap gap-1">
+                        {% for cap in p.capabilities %}
+                            <span class="px-1.5 py-0.5 rounded text-xs bg-emerald-500/10 text-emerald-400">{{ cap }}</span>
+                        {% endfor %}
+                        {% if not p.capabilities %}
+                            <span class="text-xs text-gray-600">any</span>
+                        {% endif %}
+                        </div>
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if p.effect == 'allow' %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">allow</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400">deny</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if p.is_active %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Active
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-500/10 text-gray-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Inactive
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if p.is_active %}
+                        <form method="post" action="/dashboard/policies/{{ p.policy_id }}/deactivate" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button onclick="return confirm('Deactivate policy {{ p.policy_id }}?')"
+                                    class="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Deactivate</button>
+                        </form>
+                        {% else %}
+                        <span class="text-xs text-gray-600">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not policies %}
+                <tr><td colspan="7" class="px-5 py-8 text-center text-sm text-gray-600">No session policies — default deny on all sessions</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

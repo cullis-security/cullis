@@ -1,0 +1,15 @@
+{
+  "sku": "BLT-M10-ZN",
+  "item": "Zinc-plated M10 bolts",
+  "requested_quantity": 2000,
+  "supplier_org": "chipfactory",
+  "result": {
+    "type": "order_confirm",
+    "sku": "BLT-M10-ZN",
+    "quantity": 2000,
+    "accepted_price": 0.071,
+    "delivery_days": 3,
+    "final": true
+  },
+  "timestamp": "2026-04-04T09:56:50Z"
+}

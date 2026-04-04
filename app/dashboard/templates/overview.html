@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+    <h2 class="text-2xl font-bold text-white mb-6">Network Overview</h2>
+
+    <!-- Stats cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <p class="text-sm text-gray-400">Organizations</p>
+            <p class="text-3xl font-bold text-white mt-1">{{ stats.orgs }}</p>
+            <p class="text-xs text-gray-600 mt-1">{{ stats.orgs_active }} active</p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <p class="text-sm text-gray-400">Agents</p>
+            <p class="text-3xl font-bold text-white mt-1">{{ stats.agents }}</p>
+            <p class="text-xs text-gray-600 mt-1">{{ stats.agents_active }} active</p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <p class="text-sm text-gray-400">Sessions</p>
+            <p class="text-3xl font-bold text-white mt-1">{{ stats.sessions_active }}</p>
+            <p class="text-xs text-emerald-500 mt-1">active now</p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <p class="text-sm text-gray-400">Audit Events</p>
+            <p class="text-3xl font-bold text-white mt-1">{{ stats.audit_events }}</p>
+            <p class="text-xs text-gray-600 mt-1">total recorded</p>
+        </div>
+    </div>
+
+    <!-- Recent audit -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg">
+        <div class="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white">Recent Activity</h3>
+            <a href="/dashboard/audit" class="text-xs text-brand-500 hover:text-brand-400">View all</a>
+        </div>
+        <div class="divide-y divide-gray-800">
+            {% for event in recent_events %}
+            <div class="px-5 py-3 flex items-center gap-4">
+                <span class="w-2 h-2 rounded-full flex-shrink-0 {% if event.result == 'ok' %}bg-emerald-500{% elif event.result == 'denied' %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-gray-300 truncate">{{ event.event_type }}</p>
+                    <p class="text-xs text-gray-600 truncate">{{ event.agent_id or event.org_id or '-' }}</p>
+                </div>
+                <time class="text-xs text-gray-600 flex-shrink-0">{{ event.created_at.strftime('%H:%M:%S') if event.created_at else '-' }}</time>
+            </div>
+            {% endfor %}
+            {% if not recent_events %}
+            <div class="px-5 py-8 text-center text-sm text-gray-600">No events yet</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,34 @@
+{
+  "warehouse": "ElectroStore — Milan",
+  "last_updated": "2026-04-03T10:00:00Z",
+  "buyer_agent_config": "certs/electrostore/electrostore__buyer-agent.env",
+  "items": [
+    {
+      "sku": "BLT-M8-ZN",
+      "name": "Zinc-plated M8 bolts",
+      "stock": 450,
+      "reorder_threshold": 500,
+      "reorder_quantity": 5000,
+      "unit": "units",
+      "preferred_supplier_org": "chipfactory"
+    },
+    {
+      "sku": "SCR-M6-IX",
+      "name": "Stainless M6 screws",
+      "stock": 8000,
+      "reorder_threshold": 2000,
+      "reorder_quantity": 10000,
+      "unit": "units",
+      "preferred_supplier_org": "chipfactory"
+    },
+    {
+      "sku": "BLT-M10-ZN",
+      "name": "Zinc-plated M10 bolts",
+      "stock": 120,
+      "reorder_threshold": 200,
+      "reorder_quantity": 2000,
+      "unit": "units",
+      "preferred_supplier_org": "chipfactory"
+    }
+  ]
+}

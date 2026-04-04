@@ -1,0 +1,49 @@
+Hai centrato il punto: il "trigger" che trasforma uno script in un agente attivo. In un'architettura enterprise, l'agente non vive nel vuoto, ma è reattivo a eventi del mondo reale.
+
+Non devi necessariamente creare un database complesso ora, ma devi definire il punto di contatto tra i sistemi aziendali e l'SDK dell'agente. Ecco come si integra tecnicamente la catena di comando:
+
+1. Il Trigger (L'Input)
+L'agente non chiama l'altro agente "a caso". La chiamata scatta solitamente in due modi:
+
+Evento da Database/Legacy: Una riga viene aggiornata (es. inventory_level < 20%). Un piccolo script "osservatore" (o un trigger DB) lancia il tuo file Python dell'agente.
+
+Richiesta API: Un utente preme un bottone sulla propria dashboard interna che invia una POST all'agente.
+
+2. Il Flusso di Connessione (Esempio pratico)
+Immaginiamo lo scenario del 20% di inventario che hai citato:
+
+Sorgente: Il sistema gestionale (ERP) rileva il calo.
+
+Attivazione Agente A (Buyer): L'ERP invia l'input all'Agente A: "Ehi, serve acciaio. Negozia con Org B".
+
+Auth & DPoP: L'Agente A usa l'SDK (agents/sdk.py) per autenticarsi al Broker con il suo certificato x509. Genera la sua chiave DPoP efimera.
+
+Richiesta Sessione: L'Agente A chiede al Broker una sessione con l'Agente B per la capability order:modify.
+
+Federated PDP (Il momento decisivo):
+
+Il Broker chiama il Webhook PDP di Org A: "Il tuo agente può negoziare?". Org A risponde allow.
+
+Il Broker chiama il Webhook PDP di Org B: "L'agente di Org A vuole negoziare. Lo accetti?". Org B risponde allow.
+
+Handshake: Solo ora il Broker consegna i token DPoP e l'Agente B riceve una notifica (via WebSocket o Polling) che c'è una sessione pronta.
+
+3. Cosa devono avere i tuoi Script Agent per parlare
+Per far sì che i due file Python parlino, nel tuo Kit devi impostare:
+
+Identità: Ogni file Python deve "puntare" ai propri certificati (.crt e .key) e al file di configurazione .env generato (es. quelli creati da generate_demo_certs.py).
+
+Endpoint del Broker: Entrambi devono conoscere l'URL del Broker ATN (es. http://localhost:8000).
+
+Loop di Ascolto (per il ricevente): L'Agente B deve essere in esecuzione e "in ascolto" sui WebSocket del Broker per ricevere l'invito alla sessione.
+
+4. Esempio di "Istruzioni" nel Kit per lo scenario
+Nel file di istruzioni del Kit, scriverai:
+
+Scenario: Sotto-scorta 20%
+
+Agente A (Mittente): Esegui python buyer_agent.py --target-org OrgB --capability order:modify.
+
+Agente B (Destinatario): Deve essere già attivo con python supplier_agent.py.
+
+Verifica: Controlla la Dashboard ATN (/dashboard/sessions) per vedere il passaggio da pending a active dopo che i Webhook hanno dato l'ok.

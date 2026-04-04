@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Sessions{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+    <div class="flex items-center justify-between mb-6">
+        <h2 class="text-2xl font-bold text-white">Sessions</h2>
+        <div class="flex gap-2">
+            <a href="/dashboard/sessions" class="px-3 py-1.5 rounded text-xs {% if not status_filter %}bg-gray-800 text-white{% else %}text-gray-400 hover:bg-gray-800/50{% endif %}">All</a>
+            <a href="/dashboard/sessions?status=active" class="px-3 py-1.5 rounded text-xs {% if status_filter == 'active' %}bg-emerald-500/20 text-emerald-400{% else %}text-gray-400 hover:bg-gray-800/50{% endif %}">Active</a>
+            <a href="/dashboard/sessions?status=pending" class="px-3 py-1.5 rounded text-xs {% if status_filter == 'pending' %}bg-yellow-500/20 text-yellow-400{% else %}text-gray-400 hover:bg-gray-800/50{% endif %}">Pending</a>
+            <a href="/dashboard/sessions?status=closed" class="px-3 py-1.5 rounded text-xs {% if status_filter == 'closed' %}bg-gray-500/20 text-gray-400{% else %}text-gray-400 hover:bg-gray-800/50{% endif %}">Closed</a>
+        </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800">
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Session ID</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Initiator</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
+                    <th class="px-5 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800">
+                {% for s in sessions %}
+                <tr class="hover:bg-gray-800/50">
+                    <td class="px-5 py-4">
+                        <span class="text-xs font-mono text-gray-400" title="{{ s.session_id }}">{{ s.session_id[:12] }}...</span>
+                    </td>
+                    <td class="px-5 py-4">
+                        <p class="text-sm text-white">{{ s.initiator_agent_id }}</p>
+                        <p class="text-xs text-gray-600">{{ s.initiator_org_id }}</p>
+                    </td>
+                    <td class="px-5 py-4">
+                        <p class="text-sm text-white">{{ s.target_agent_id }}</p>
+                        <p class="text-xs text-gray-600">{{ s.target_org_id }}</p>
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if s.status == 'active' %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+                        </span>
+                        {% elif s.status == 'pending' %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>Pending
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-500/10 text-gray-500">Closed</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 text-sm text-gray-400">{{ s.message_count }}</td>
+                    <td class="px-5 py-4 text-xs text-gray-600">{{ s.created_at.strftime('%Y-%m-%d %H:%M') if s.created_at else '-' }}</td>
+                </tr>
+                {% endfor %}
+                {% if not sessions %}
+                <tr><td colspan="6" class="px-5 py-8 text-center text-sm text-gray-600">No sessions{% if status_filter %} with status "{{ status_filter }}"{% endif %}</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,67 @@
+# Agent Trust Network — Agent Deployment Template
+#
+# This docker-compose runs your agent + PDP webhook alongside the remote ATN broker.
+# The broker is NOT included here — it runs in the ATN operator's infrastructure.
+#
+# Usage:
+#   1. Copy this file to your project
+#   2. Update the environment variables below
+#   3. Mount your agent cert + key (Kubernetes Secrets, Vault, etc.)
+#   4. docker compose -f docker-compose.agent.yml up
+#
+# For Kubernetes: convert this to a Helm chart or Deployment manifest.
+
+services:
+
+  agent:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      # Mount the ATN SDK + your agent code
+      - ./agent:/app
+      # Mount secrets (cert + key) — in production use K8s secrets or Vault
+      - ./secrets:/mnt/secrets:ro
+    environment:
+      # ── Required ──────────────────────────────────────────
+      BROKER_URL: ${BROKER_URL:-https://broker.atn-network.com}
+      AGENT_ID: ${AGENT_ID}
+      ORG_ID: ${ORG_ID}
+      DISPLAY_NAME: ${DISPLAY_NAME:-My Agent}
+      CAPABILITIES: ${CAPABILITIES:-order.read,order.write}
+      AGENT_CERT_PATH: /mnt/secrets/agent.pem
+      AGENT_KEY_PATH: /mnt/secrets/agent-key.pem
+
+      # ── Optional ──────────────────────────────────────────
+      POLL_INTERVAL: ${POLL_INTERVAL:-2}
+      MAX_TURNS: ${MAX_TURNS:-20}
+
+      # ── LLM backend ──────────────────────────────────────
+      LLM_MODEL: ${LLM_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+    command: python agent.py
+    restart: unless-stopped
+    depends_on:
+      pdp:
+        condition: service_healthy
+
+  pdp:
+    # Your organization's Policy Decision Point webhook.
+    # Replace this with your real PDP or customize pdp_server.py.
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./pdp:/app
+    environment:
+      ORG_ID: ${ORG_ID}
+      # Add your authorization config here (LDAP, DB, etc.)
+    command: python pdp_server.py --port 9000
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped

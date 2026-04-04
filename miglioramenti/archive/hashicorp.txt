@@ -1,0 +1,38 @@
+La risposta breve e brutale è: per il modello di business e l'architettura di Agent Trust Network, HashiCorp Vault vince a mani basse.
+
+Tuttavia, siccome stai puntando a clienti Enterprise (come banche o grandi fornitori), la risposta più strategica è: devi usare HashiCorp Vault come default, ma scrivere il codice in modo che sia agnostico.
+
+Ecco un'analisi schietta delle opzioni, basata sui requisiti del tuo progetto (deploy su cloud diversi o server privati on-premise).
+
+1. Il Vincitore Assoluto: HashiCorp Vault
+Per il tuo "Laboratorio" e per il 90% delle installazioni, Vault è la scelta perfetta.
+
+Il superpotere (PKI Secrets Engine): Vault non si limita a conservare stringhe segrete. Ha un motore PKI nativo. Questo significa che puoi letteralmente dirgli tramite API: "Ehi Vault, generami una Root CA e usala per firmare questa Org CA". Fa esattamente il lavoro che attualmente fai a mano con il tuo script generate_certs.py.
+
+Cloud-Agnostic e On-Premise: Come hai scritto nei tuoi documenti, il cliente potrebbe voler installare il sistema su server privati. AWS KMS o Azure Key Vault non possono girare nel seminterrato blindato di una banca; Vault sì.
+
+Perfetto per Docker: Puoi far girare Vault in modalità "dev" (un solo container che tiene tutto in memoria) direttamente nel tuo docker-compose.yml in 3 secondi netti. Questo ti permette di testare tutto in locale senza impazzire.
+
+2. Le Alternative Cloud-Native: AWS KMS / AWS Private CA o Azure Key Vault
+Sono ottimi servizi, ma portano con sé problemi specifici per il tuo modello.
+
+Il problema del Vendor Lock-in: Se scrivi il tuo codice usando le librerie specifiche di AWS (boto3), il tuo Broker potrà girare solo su AWS. Addio clienti che usano Azure o server privati.
+
+Costi e Complessità PKI: AWS KMS in sé gestisce chiavi, ma non è una Certificate Authority. Per fare quello che fa Vault (firmare certificati x509 per gli agenti), su AWS dovresti usare AWS Private CA, che costa circa 400$ al mese solo per tenerlo acceso, anche in ambiente di test.
+
+Difficili da simulare: Non puoi mettere AWS KMS nel tuo docker-compose.yml locale. Dovresti usare cloni pesanti come LocalStack, che complicano enormemente il setup per gli sviluppatori.
+
+Il Consiglio Architetturale (Pattern "Adapter")
+Poiché offri una soluzione Enterprise, prima o poi arriverà la megacorporation che ti dirà: "Il tuo sistema ci piace, ma le nostre policy aziendali ci obbligano a usare il nostro HSM fisico o Azure Key Vault, non HashiCorp Vault".
+
+Per non dover riscrivere mezzo progetto quando succederà, non importare il client di Vault direttamente dentro jwt.py o x509_verifier.py.
+
+Crea un'interfaccia astratta (un "Adapter") nel tuo codice:
+
+Python
+# app/kms/provider.py (pseudocodice)
+class KMSProvider(Protocol):
+    async def sign_jwt(self, payload: dict) -> str: ...
+    async def verify_signature(self, signature: str, data: str) -> bool: ...
+    async def issue_cert(self, csr: str) -> str: ...
+Poi, creerai la classe VaultKMSProvider che implementa questa interfaccia. Domani, se serve, potrai aggiungere AzureKMSProvider cambiando solo una variabile d'ambiente, senza toccare la logica del Broker.

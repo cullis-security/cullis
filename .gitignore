@@ -1,0 +1,16 @@
+# Certificati — non committare chiavi private
+certs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Database
+*.db
+
+# Env
+.env
+
+# Test cache
+.pytest_cache/

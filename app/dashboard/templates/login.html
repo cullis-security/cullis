@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — Agent Trust Network</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: { extend: { colors: { brand: { 500:'#6366f1', 600:'#4f46e5', 700:'#4338ca' } } } }
+        }
+    </script>
+</head>
+<body class="h-full flex items-center justify-center">
+<div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+        <h1 class="text-2xl font-bold text-white">ATN</h1>
+        <p class="text-sm text-gray-500 mt-1">Agent Trust Network</p>
+    </div>
+
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+
+    <!-- Tab selector -->
+    <div class="flex mb-6 bg-gray-900 rounded-lg p-1">
+        <button onclick="showTab('admin')" id="tab-admin"
+                class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-white bg-gray-800">
+            Network Admin
+        </button>
+        <button onclick="showTab('org')" id="tab-org"
+                class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-gray-400">
+            Organization
+        </button>
+    </div>
+
+    <!-- Admin login -->
+    <form id="form-admin" method="post" action="/dashboard/login" class="space-y-4">
+        <input type="hidden" name="login_type" value="admin">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Admin Secret</label>
+            <input type="password" name="admin_secret" required placeholder="Enter admin secret"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        </div>
+        <button type="submit" class="w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+            Login as Admin
+        </button>
+    </form>
+
+    <!-- Org login -->
+    <form id="form-org" method="post" action="/dashboard/login" class="space-y-4 hidden">
+        <input type="hidden" name="login_type" value="org">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
+            <input type="text" name="org_id" placeholder="e.g. acme-corp"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Organization Secret</label>
+            <input type="password" name="org_secret" placeholder="Enter org secret"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        </div>
+        <button type="submit" class="w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+            Login as Organization
+        </button>
+    </form>
+
+    <p class="text-center text-xs text-gray-600 mt-6">
+        External organizations can join via the API: <code class="text-gray-500">POST /onboarding/join</code>
+    </p>
+</div>
+
+<script>
+function showTab(tab) {
+    document.getElementById('form-admin').classList.toggle('hidden', tab !== 'admin');
+    document.getElementById('form-org').classList.toggle('hidden', tab !== 'org');
+    document.getElementById('tab-admin').classList.toggle('bg-gray-800', tab === 'admin');
+    document.getElementById('tab-admin').classList.toggle('text-white', tab === 'admin');
+    document.getElementById('tab-admin').classList.toggle('text-gray-400', tab !== 'admin');
+    document.getElementById('tab-org').classList.toggle('bg-gray-800', tab === 'org');
+    document.getElementById('tab-org').classList.toggle('text-white', tab === 'org');
+    document.getElementById('tab-org').classList.toggle('text-gray-400', tab !== 'org');
+}
+</script>
+</body>
+</html>

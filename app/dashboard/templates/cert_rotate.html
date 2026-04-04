@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Rotate Certificate{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <a href="/dashboard/agents" class="text-sm text-gray-500 hover:text-gray-300 mb-4 inline-block">&larr; Back to Agents</a>
+    <h2 class="text-2xl font-bold text-white mb-2">Rotate Certificate</h2>
+    <p class="text-gray-400 text-sm mb-6">Agent: <span class="text-white font-mono">{{ agent.agent_id }}</span></p>
+
+    {% if agent.cert_thumbprint %}
+    <div class="mb-4 p-3 bg-gray-800 border border-gray-700 rounded-md">
+        <p class="text-xs text-gray-500">Current thumbprint (SHA-256)</p>
+        <p class="text-sm text-gray-300 font-mono break-all">{{ agent.cert_thumbprint }}</p>
+    </div>
+    {% else %}
+    <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md text-sm text-yellow-400">
+        No certificate pinned yet. The agent has not logged in.
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-sm text-emerald-400">{{ success }}</div>
+    {% endif %}
+
+    <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/rotate-cert" class="space-y-5">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">New Certificate (PEM)</label>
+            <textarea name="certificate" required rows="12" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500"></textarea>
+            <p class="text-xs text-gray-600 mt-1">Must be signed by the organization CA. CN must match the agent ID. All active tokens will be invalidated.</p>
+        </div>
+        <button type="submit"
+                class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md">
+            Rotate Certificate
+        </button>
+    </form>
+</div>
+{% endblock %}

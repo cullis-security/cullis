@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Onboard Organization{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <a href="/dashboard/orgs" class="text-sm text-gray-500 hover:text-gray-300 mb-4 inline-block">&larr; Back to Organizations</a>
+    <h2 class="text-2xl font-bold text-white mb-6">Onboard New Organization</h2>
+
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-sm text-emerald-400">{{ success }}</div>
+    {% endif %}
+
+    <form method="post" action="/dashboard/orgs/onboard" class="space-y-5">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
+            <input type="text" name="org_id" required placeholder="e.g. acme-corp" value="{{ form.org_id or '' }}"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+            <p class="text-xs text-gray-600 mt-1">Unique identifier. Lowercase, no spaces.</p>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Display Name</label>
+            <input type="text" name="display_name" required placeholder="e.g. ACME Corporation" value="{{ form.display_name or '' }}"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Organization Secret</label>
+            <input type="password" name="secret" required placeholder="Shared secret for binding approvals"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+            <p class="text-xs text-gray-600 mt-1">The org will use this secret to manage its agents and bindings.</p>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Contact Email</label>
+            <input type="email" name="contact_email" placeholder="admin@acme-corp.com" value="{{ form.contact_email or '' }}"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">PDP Webhook URL</label>
+            <input type="url" name="webhook_url" placeholder="https://acme-corp.com/atn/policy" value="{{ form.webhook_url or '' }}"
+                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+            <p class="text-xs text-gray-600 mt-1">The broker will call this URL for every session request involving this org. Leave empty for default-deny.</p>
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">CA Certificate (PEM)</label>
+            <textarea name="ca_certificate" required rows="8" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-brand-500">{{ form.ca_certificate or '' }}</textarea>
+            <p class="text-xs text-gray-600 mt-1">Public certificate of the organization's CA. Agent certificates must be signed by this CA.</p>
+        </div>
+        <div>
+            <button type="submit" name="action" value="approve"
+                    class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-md">
+                Register &amp; Approve
+            </button>
+            <p class="text-xs text-gray-600 mt-2">External organizations join via the API (<code class="text-gray-500">/onboarding/join</code>) and appear as pending for your review.</p>
+        </div>
+    </form>
+</div>
+{% endblock %}
