@@ -104,7 +104,7 @@ async def test_step2_banca_b_registra_agente(client: AsyncClient):
         "agent_id": "banca-b::kyc-agent",
         "org_id": "banca-b",
         "display_name": "Agente KYC Banca B",
-        "capabilities": ["kyc.read"],
+        "capabilities": ["kyc.read", "kyc.write"],
         "metadata": {"environment": "test"},
     }, headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"})
     assert resp.status_code == 201, resp.text
