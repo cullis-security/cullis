@@ -97,7 +97,7 @@ async def test_token_denied_pending_binding(client: AsyncClient):
     """Agent with 'pending' binding cannot obtain a token → 403."""
     await _register_org(client, "pending-org", "pending-org-secret")
     await _upload_ca(client, "pending-org", "pending-org-secret")
-    await _register_agent(client, "pending-org::agent", "pending-org")
+    await _register_agent(client, "pending-org::agent", "pending-org", capabilities=["kyc.read"])
     await _create_binding(client, "pending-org", "pending-org-secret",
                           "pending-org::agent", ["kyc.read"])
     # Binding created but NOT approved
@@ -126,7 +126,7 @@ async def test_token_denied_revoked_binding(client: AsyncClient):
     """Agent with 'revoked' binding cannot obtain a token → 403."""
     await _register_org(client, "revoked-org", "revoked-org-secret")
     await _upload_ca(client, "revoked-org", "revoked-org-secret")
-    await _register_agent(client, "revoked-org::agent", "revoked-org")
+    await _register_agent(client, "revoked-org::agent", "revoked-org", capabilities=["kyc.read"])
     bid = await _create_binding(client, "revoked-org", "revoked-org-secret",
                                  "revoked-org::agent", ["kyc.read"])
     await _approve_binding(client, bid, "revoked-org", "revoked-org-secret")

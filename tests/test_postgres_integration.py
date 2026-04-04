@@ -22,10 +22,22 @@ from app.auth.jti_blacklist import JtiBlacklist as _JBL        # noqa
 from app.broker.db_models import SessionRecord, SessionMessageRecord  # noqa
 from app.broker.session import session_store
 from app.broker.persistence import restore_sessions
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message
+from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message, DPoPHelper
 from tests.conftest import ADMIN_HEADERS
 
 POSTGRES_URL = "postgresql+asyncpg://agent:trustme@localhost:5432/agent_trust"
+
+# Skip entire module if Postgres is not available
+import socket
+def _pg_available():
+    try:
+        s = socket.create_connection(("localhost", 5432), timeout=1)
+        s.close()
+        return True
+    except OSError:
+        return False
+
+pytestmark = pytest.mark.skipif(not _pg_available(), reason="Postgres not available")
 
 pg_engine = create_async_engine(POSTGRES_URL, echo=False, poolclass=NullPool)
 PgSession = async_sessionmaker(pg_engine, expire_on_commit=False)
@@ -106,8 +118,8 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
 
     assertion = make_assertion(agent_id, org_id)
-    resp = await client.post("/auth/token", json={"client_assertion": assertion})
-    return resp.json()["access_token"]
+    dpop = DPoPHelper()
+    return await dpop.get_token(client, agent_id, org_id)
 
 
 # ── Test ─────────────────────────────────────────────────────────────────────
