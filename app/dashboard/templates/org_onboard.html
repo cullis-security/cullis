@@ -48,6 +48,27 @@
                       class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-brand-500">{{ form.ca_certificate or '' }}</textarea>
             <p class="text-xs text-gray-600 mt-1">Public certificate of the organization's CA. Agent certificates must be signed by this CA.</p>
         </div>
+        <details class="border border-gray-800 rounded-md p-4">
+            <summary class="text-sm font-medium text-gray-300 cursor-pointer">OIDC Configuration (optional)</summary>
+            <div class="mt-3 space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-1">OIDC Issuer URL</label>
+                    <input type="url" name="oidc_issuer_url" placeholder="https://your-company.okta.com" value="{{ form.oidc_issuer_url or '' }}"
+                           class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-1">OIDC Client ID</label>
+                    <input type="text" name="oidc_client_id" placeholder="your-client-id" value="{{ form.oidc_client_id or '' }}"
+                           class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-1">OIDC Client Secret</label>
+                    <input type="password" name="oidc_client_secret" placeholder="your-client-secret"
+                           class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+                </div>
+                <p class="text-xs text-gray-600">Configure to allow organization members to log in via their company's identity provider instead of the shared secret.</p>
+            </div>
+        </details>
         <div>
             <button type="submit" name="action" value="approve"
                     class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-md">

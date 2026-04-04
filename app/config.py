@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     # Logging — "text" (default) or "json" (structured for SIEM)
     log_format: str = "text"
 
+    # OIDC for network admin login (optional — admin_secret remains as fallback)
+    admin_oidc_issuer_url: str = ""
+    admin_oidc_client_id: str = ""
+    admin_oidc_client_secret: str = ""
+
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
     kms_backend: str = "local"
     vault_addr: str = ""

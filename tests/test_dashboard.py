@@ -80,7 +80,8 @@ async def _org_ctx(client: AsyncClient, org_id: str, org_secret: str) -> tuple[d
 async def test_login_page_renders(client: AsyncClient):
     resp = await client.get("/dashboard/login")
     assert resp.status_code == 200
-    assert "Network Admin" in resp.text
+    assert "Admin" in resp.text
+    assert "SSO" in resp.text
 
 
 async def test_unauthenticated_redirects_to_login(client: AsyncClient):

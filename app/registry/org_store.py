@@ -21,9 +21,16 @@ class OrganizationRecord(Base):
     metadata_json = Column(Text, default="{}")
     ca_certificate = Column(Text, nullable=True)
     webhook_url = Column(String(512), nullable=True)  # PDP webhook — None = default-deny
+    oidc_issuer_url = Column(String(512), nullable=True)
+    oidc_client_id = Column(String(256), nullable=True)
+    oidc_client_secret = Column(String(512), nullable=True)
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.oidc_issuer_url and self.oidc_client_id)
 
     @property
     def extra(self) -> dict:
@@ -81,6 +88,24 @@ async def update_org_ca_cert(
     if record is None:
         return None
     record.ca_certificate = ca_certificate_pem
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def update_org_oidc(
+    db: AsyncSession,
+    org_id: str,
+    issuer_url: str | None,
+    client_id: str | None,
+    client_secret: str | None,
+) -> OrganizationRecord | None:
+    record = await get_org_by_id(db, org_id)
+    if record is None:
+        return None
+    record.oidc_issuer_url = issuer_url
+    record.oidc_client_id = client_id
+    record.oidc_client_secret = client_secret
     await db.commit()
     await db.refresh(record)
     return record

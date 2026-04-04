@@ -147,6 +147,51 @@ def require_login(request: Request) -> DashboardSession | RedirectResponse:
     return session
 
 
+# ── OIDC flow state cookie ──────────────────────────────────────────────────
+_OIDC_STATE_COOKIE = "atn_oidc_state"
+_OIDC_STATE_MAX_AGE = 600  # 10 minutes
+
+
+def set_oidc_state(response: Response, flow_state: dict) -> None:
+    """Store the OIDC flow state in a short-lived signed cookie."""
+    flow_state["exp"] = int(time.time()) + _OIDC_STATE_MAX_AGE
+    payload = json.dumps(flow_state)
+    signed = _sign(payload)
+    from app.config import get_settings
+    is_https = "https" in get_settings().broker_public_url.lower() if get_settings().broker_public_url else False
+    response.set_cookie(
+        _OIDC_STATE_COOKIE, signed,
+        max_age=_OIDC_STATE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=is_https,
+    )
+
+
+def get_oidc_state(request: Request) -> dict | None:
+    """Read and verify the OIDC state cookie. Returns None if missing/invalid/expired."""
+    cookie = request.cookies.get(_OIDC_STATE_COOKIE)
+    if not cookie:
+        return None
+    payload_str = _verify(cookie)
+    if not payload_str:
+        return None
+    try:
+        data = json.loads(payload_str)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if data.get("exp", 0) < time.time():
+        return None
+    return data
+
+
+def clear_oidc_state(response: Response) -> None:
+    """Delete the OIDC state cookie."""
+    from app.config import get_settings
+    is_https = "https" in get_settings().broker_public_url.lower() if get_settings().broker_public_url else False
+    response.delete_cookie(_OIDC_STATE_COOKIE, samesite="lax", secure=is_https)
+
+
 async def verify_csrf(request: Request, session: DashboardSession) -> bool:
     """Verify the CSRF token from the form matches the one in the session cookie."""
     form = await request.form()

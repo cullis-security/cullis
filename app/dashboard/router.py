@@ -52,7 +52,12 @@ async def login_page(request: Request):
     session = get_session(request)
     if session.logged_in:
         return RedirectResponse(url="/dashboard", status_code=303)
-    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+    from app.config import get_settings as _gs
+    _s = _gs()
+    admin_oidc_enabled = bool(_s.admin_oidc_issuer_url and _s.admin_oidc_client_id)
+    return templates.TemplateResponse("login.html", {
+        "request": request, "error": None, "admin_oidc_enabled": admin_oidc_enabled,
+    })
 
 
 @router.post("/login")
@@ -105,6 +110,165 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
 async def logout(request: Request):
     response = RedirectResponse(url="/dashboard/login", status_code=303)
     clear_session(response)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OIDC federation login
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/oidc/start")
+async def oidc_start(
+    request: Request,
+    role: str = Query(...),
+    org_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Initiate OIDC authorization code flow with PKCE."""
+    from app.config import get_settings
+    from app.dashboard.oidc import create_oidc_state, build_authorization_url, OidcError
+    from app.dashboard.session import set_oidc_state
+
+    settings = get_settings()
+    if not settings.broker_public_url:
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": "OIDC requires BROKER_PUBLIC_URL to be configured.",
+            "admin_oidc_enabled": False,
+        })
+
+    redirect_uri = settings.broker_public_url.rstrip("/") + "/dashboard/oidc/callback"
+
+    if role == "org":
+        if not org_id:
+            return templates.TemplateResponse("login.html", {
+                "request": request, "error": "Organization ID is required for SSO login.",
+                "admin_oidc_enabled": False,
+            })
+        org = await get_org_by_id(db, org_id)
+        if not org or not org.oidc_enabled:
+            return templates.TemplateResponse("login.html", {
+                "request": request, "error": f"Organization '{org_id}' does not have SSO configured.",
+                "admin_oidc_enabled": False,
+            })
+        if org.status != "active":
+            return templates.TemplateResponse("login.html", {
+                "request": request, "error": f"Organization is '{org.status}', not active.",
+                "admin_oidc_enabled": False,
+            })
+        issuer_url = org.oidc_issuer_url
+        client_id = org.oidc_client_id
+    elif role == "admin":
+        if not settings.admin_oidc_issuer_url or not settings.admin_oidc_client_id:
+            return templates.TemplateResponse("login.html", {
+                "request": request, "error": "Admin SSO is not configured.",
+                "admin_oidc_enabled": False,
+            })
+        issuer_url = settings.admin_oidc_issuer_url
+        client_id = settings.admin_oidc_client_id
+    else:
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": "Invalid SSO role.",
+            "admin_oidc_enabled": False,
+        })
+
+    flow_state = create_oidc_state(role, org_id)
+    try:
+        auth_url = await build_authorization_url(issuer_url, client_id, redirect_uri, flow_state)
+    except OidcError as e:
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": f"SSO error: {e}",
+            "admin_oidc_enabled": bool(settings.admin_oidc_issuer_url),
+        })
+
+    response = RedirectResponse(url=auth_url, status_code=303)
+    set_oidc_state(response, flow_state.to_dict())
+    return response
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle OIDC provider redirect after user authentication."""
+    import hmac as _hmac
+    from app.config import get_settings
+    from app.dashboard.oidc import OidcFlowState, exchange_code_for_identity, OidcError
+    from app.dashboard.session import get_oidc_state, clear_oidc_state
+    from app.rate_limit.limiter import rate_limiter
+
+    settings = get_settings()
+    admin_oidc_enabled = bool(settings.admin_oidc_issuer_url and settings.admin_oidc_client_id)
+
+    client_ip = request.client.host if request.client else "unknown"
+    await rate_limiter.check(client_ip, "dashboard.login")
+
+    def _login_error(msg: str):
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": msg, "admin_oidc_enabled": admin_oidc_enabled,
+        })
+
+    if error:
+        return _login_error(f"SSO provider error: {error_description or error}")
+
+    if not code or not state:
+        return _login_error("Missing authorization code or state from SSO provider.")
+
+    flow_data = get_oidc_state(request)
+    if not flow_data:
+        return _login_error("SSO session expired or invalid. Please try again.")
+
+    if not _hmac.compare_digest(state, flow_data.get("state", "")):
+        return _login_error("SSO state mismatch — possible CSRF attack.")
+
+    flow_state = OidcFlowState.from_dict(flow_data)
+    redirect_uri = settings.broker_public_url.rstrip("/") + "/dashboard/oidc/callback"
+
+    # Determine OIDC config
+    if flow_state.role == "org":
+        org = await get_org_by_id(db, flow_state.org_id)
+        if not org or not org.oidc_enabled:
+            return _login_error("Organization SSO configuration not found.")
+        issuer_url = org.oidc_issuer_url
+        client_id = org.oidc_client_id
+        client_secret = org.oidc_client_secret
+    elif flow_state.role == "admin":
+        issuer_url = settings.admin_oidc_issuer_url
+        client_id = settings.admin_oidc_client_id
+        client_secret = settings.admin_oidc_client_secret or None
+    else:
+        return _login_error("Invalid SSO role.")
+
+    try:
+        identity = await exchange_code_for_identity(
+            issuer_url, client_id, client_secret, redirect_uri, code, flow_state
+        )
+    except OidcError as e:
+        _log.warning("OIDC callback failed: %s", e)
+        return _login_error(f"SSO authentication failed: {e}")
+
+    # Create session
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    clear_oidc_state(response)
+
+    if flow_state.role == "admin":
+        set_session(response, role="admin")
+    else:
+        set_session(response, role="org", org_id=flow_state.org_id)
+
+    await log_event(db, "dashboard.oidc_login", "ok",
+                    org_id=flow_state.org_id,
+                    details={
+                        "role": flow_state.role,
+                        "sub": identity.sub,
+                        "email": identity.email,
+                        "issuer": identity.issuer,
+                    })
+
     return response
 
 
@@ -241,6 +405,7 @@ async def orgs_list(request: Request, db: AsyncSession = Depends(get_db)):
             "status": org.status,
             "webhook_url": org.webhook_url,
             "ca_certificate": org.ca_certificate,
+            "oidc_enabled": org.oidc_enabled,
             "agent_count": agent_counts.get(org.org_id, 0),
         })
 
@@ -551,6 +716,14 @@ async def org_onboard_submit(request: Request, db: AsyncSession = Depends(get_db
         webhook_url=form["webhook_url"],
     )
     await update_org_ca_cert(db, form["org_id"], form["ca_certificate"])
+
+    # Save optional OIDC configuration
+    oidc_issuer = form_data.get("oidc_issuer_url", "").strip() or None
+    oidc_cid = form_data.get("oidc_client_id", "").strip() or None
+    oidc_csec = form_data.get("oidc_client_secret", "").strip() or None
+    if oidc_issuer and oidc_cid:
+        from app.registry.org_store import update_org_oidc
+        await update_org_oidc(db, form["org_id"], oidc_issuer, oidc_cid, oidc_csec)
 
     if action == "approve":
         await set_org_status(db, form["org_id"], "active")
