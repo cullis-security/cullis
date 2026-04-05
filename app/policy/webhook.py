@@ -29,10 +29,12 @@ import ipaddress
 import logging
 import socket
 import time
+import typing
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
+import httpcore
 
 from app.telemetry import tracer
 from app.telemetry_metrics import PDP_WEBHOOK_LATENCY_HISTOGRAM
@@ -100,6 +102,36 @@ def _validate_and_resolve_webhook_url(url: str) -> str:
     return safe_ip
 
 
+class _PinnedDNSBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that pins DNS resolution to a pre-resolved IP.
+
+    This prevents DNS rebinding attacks: the hostname resolves to the pinned IP
+    at the socket level, while httpx/httpcore still use the original hostname
+    for TLS SNI and certificate validation.
+    """
+
+    def __init__(self, pinned_ip: str, default_port: int = 443):
+        self._pinned_ip = pinned_ip
+        self._default_port = default_port
+        self._backend = httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: typing.Iterable | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        # Connect to the pinned IP instead of resolving the hostname again.
+        return await self._backend.connect_tcp(
+            self._pinned_ip, port, timeout=timeout, local_address=local_address, socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self, path: str, timeout: float | None = None, socket_options: typing.Iterable | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
 @dataclass
 class WebhookDecision:
     allowed: bool
@@ -160,28 +192,22 @@ async def call_pdp_webhook(
             span.set_attribute("pdp.context", session_context)
 
             # Pin the connection to the resolved IP to prevent DNS rebinding.
-            # httpx transport maps hostname -> pinned_ip so the TLS handshake
-            # still uses the original hostname for SNI / certificate validation.
+            # We use a custom httpcore network backend that returns the pinned IP
+            # for any lookup, while httpx keeps the original hostname for TLS SNI.
             parsed_url = urlparse(webhook_url)
             port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
-            transport = httpx.AsyncHTTPTransport(
-                local_address=None,
-            )
+            pinned_backend = _PinnedDNSBackend(pinned_ip, port)
+            pool = httpcore.AsyncConnectionPool(network_backend=pinned_backend)
+            transport = httpx.AsyncHTTPTransport()
+            # Replace the internal pool with our pinned one
+            transport._pool = pool
+
             async with httpx.AsyncClient(
                 timeout=_WEBHOOK_TIMEOUT,
                 follow_redirects=False,
                 transport=transport,
             ) as client:
-                # Replace hostname with pinned IP in the URL while preserving
-                # the Host header for correct routing / TLS SNI.
-                pinned_url = webhook_url.replace(
-                    f"//{parsed_url.hostname}", f"//{pinned_ip}", 1
-                )
-                resp = await client.post(
-                    pinned_url,
-                    json=payload,
-                    headers={"Host": parsed_url.hostname or ""},
-                )
+                resp = await client.post(webhook_url, json=payload)
 
             # Post-request safety check (belt and suspenders)
             _validate_response_ip(resp)

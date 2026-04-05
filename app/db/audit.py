@@ -6,6 +6,7 @@ making any tampering (insert, update, delete, reorder) detectable.
 
 No row is ever modified or deleted (threat model: non-repudiation, SOC2).
 """
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -14,6 +15,11 @@ from sqlalchemy import Column, Integer, String, DateTime, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
+
+# Serializes audit log inserts to prevent hash chain bifurcation.
+# Two concurrent log_event() calls reading the same previous_hash before
+# either commits would fork the chain. This lock ensures sequential access.
+_audit_chain_lock = asyncio.Lock()
 
 
 class AuditLog(Base):
@@ -65,34 +71,37 @@ async def log_event(
 ) -> AuditLog:
     details_json = json.dumps(details) if details else None
 
-    # Get the hash of the last entry in the chain
-    last = await db.execute(
-        select(AuditLog.entry_hash).order_by(AuditLog.id.desc()).limit(1)
-    )
-    previous_hash = last.scalar_one_or_none()
+    # Serialize chain access: read previous_hash + insert + commit must be
+    # atomic to prevent two coroutines forking the hash chain.
+    async with _audit_chain_lock:
+        last = await db.execute(
+            select(AuditLog.entry_hash).order_by(AuditLog.id.desc()).limit(1)
+        )
+        previous_hash = last.scalar_one_or_none()
 
-    entry = AuditLog(
-        event_type=event_type,
-        agent_id=agent_id,
-        session_id=session_id,
-        org_id=org_id,
-        details=details_json,
-        result=result,
-        previous_hash=previous_hash,
-    )
-    db.add(entry)
-    await db.flush()  # assigns auto-incremented id
+        entry = AuditLog(
+            event_type=event_type,
+            agent_id=agent_id,
+            session_id=session_id,
+            org_id=org_id,
+            details=details_json,
+            result=result,
+            previous_hash=previous_hash,
+        )
+        db.add(entry)
+        await db.flush()  # assigns auto-incremented id
 
-    # Normalize timestamp for hash computation — SQLite may strip tzinfo on refresh
-    ts = entry.timestamp
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    entry.entry_hash = compute_entry_hash(
-        entry.id, ts, event_type,
-        agent_id, session_id, org_id, result,
-        details_json, previous_hash,
-    )
-    await db.commit()
+        # Normalize timestamp for hash computation — SQLite may strip tzinfo on refresh
+        ts = entry.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        entry.entry_hash = compute_entry_hash(
+            entry.id, ts, event_type,
+            agent_id, session_id, org_id, result,
+            details_json, previous_hash,
+        )
+        await db.commit()
+
     await db.refresh(entry)
     return entry
 

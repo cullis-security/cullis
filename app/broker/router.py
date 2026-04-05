@@ -650,6 +650,13 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
                 await websocket.close()
                 return
 
+        # Step 2d: verify agent binding is still approved
+        binding = await get_approved_binding(db, agent.org, agent.agent_id)
+        if not binding:
+            await websocket.send_json({"type": "auth_error", "detail": "Agent binding not approved or revoked"})
+            await websocket.close()
+            return
+
         # Step 3: register connection and confirm
         agent_id = agent.agent_id
         agent_org = agent.org

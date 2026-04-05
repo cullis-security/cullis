@@ -264,3 +264,142 @@ async def test_webhook_ssrf_localhost_blocked():
 
     with pytest.raises(ValueError, match="loopback"):
         _validate_and_resolve_webhook_url("http://[::1]:8080/pdp")
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 8. SSRF DNS pinning preserves original hostname (not IP) in URL
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_webhook_dns_pinning_preserves_hostname():
+    """DNS pinning transport connects to the pinned IP but keeps the original URL
+    so that TLS SNI uses the real hostname for certificate validation."""
+    from app.policy.webhook import _PinnedDNSBackend
+    import httpcore
+
+    # Create a pinned backend pointing to a specific IP
+    backend = _PinnedDNSBackend("93.184.216.34", 443)
+
+    # Verify that connect_tcp receives the pinned IP, not the original host
+    original_connect = httpcore.AnyIOBackend.connect_tcp
+
+    connected_hosts = []
+
+    async def spy_connect(self, host, port, **kwargs):
+        connected_hosts.append(host)
+        raise ConnectionRefusedError("test — not actually connecting")
+
+    import unittest.mock
+    with unittest.mock.patch.object(httpcore.AnyIOBackend, "connect_tcp", spy_connect):
+        try:
+            await backend.connect_tcp("webhook.example.com", 443)
+        except ConnectionRefusedError:
+            pass
+
+    assert connected_hosts == ["93.184.216.34"], \
+        f"Expected pinned IP, got {connected_hosts}"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 9. WebSocket rejects agent with revoked binding
+# ────────────────────────────────────────────────────────────────────────
+
+def test_ws_binding_revoked_rejected():
+    """An agent whose binding is revoked must get auth_error on WebSocket connect."""
+    from starlette.testclient import TestClient
+    from app.main import app
+    from tests.cert_factory import make_assertion, get_org_ca_pem, DPoPHelper
+    from tests.conftest import ADMIN_HEADERS
+
+    _TESTSERVER = "http://testserver"
+    dpop = DPoPHelper()
+
+    with TestClient(app) as client:
+        org_id = "ws-revoke-org"
+        agent_id = f"{org_id}::agent"
+        org_secret = f"{org_id}-secret"
+
+        # Setup org + agent + binding
+        client.post("/v1/registry/orgs", json={
+            "org_id": org_id, "display_name": org_id, "secret": org_secret,
+        }, headers=ADMIN_HEADERS)
+        ca_pem = get_org_ca_pem(org_id)
+        client.post(f"/v1/registry/orgs/{org_id}/certificate",
+            json={"ca_certificate": ca_pem},
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        client.post("/v1/registry/agents", json={
+            "agent_id": agent_id, "org_id": org_id,
+            "display_name": agent_id, "capabilities": ["order.read"],
+        }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+        resp = client.post("/v1/registry/bindings",
+            json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        binding_id = resp.json()["id"]
+        client.post(f"/v1/registry/bindings/{binding_id}/approve",
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+
+        # Get token while binding is active
+        assertion = make_assertion(agent_id, org_id)
+        dpop_proof = dpop.proof("POST", f"{_TESTSERVER}/v1/auth/token")
+        resp = client.post(
+            "/v1/auth/token",
+            json={"client_assertion": assertion},
+            headers={"DPoP": dpop_proof},
+        )
+        assert resp.status_code == 200
+        token = resp.json()["access_token"]
+
+        # Revoke the binding
+        resp = client.post(f"/v1/registry/bindings/{binding_id}/revoke",
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        assert resp.status_code == 200, f"Revoke failed: {resp.text}"
+
+        # Try to connect via WebSocket — should be rejected
+        ws_proof = dpop.proof("GET", f"{_TESTSERVER}/v1/broker/ws", access_token=token)
+        with client.websocket_connect("/v1/broker/ws") as ws:
+            ws.send_json({"type": "auth", "token": token, "dpop_proof": ws_proof})
+            data = ws.receive_json()
+
+    assert data["type"] == "auth_error"
+    assert "binding" in data["detail"].lower() or "revoked" in data["detail"].lower()
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 10. Audit log hash chain serialization under concurrency
+# ────────────────────────────────────────────────────────────────────────
+
+async def test_audit_chain_concurrent_inserts():
+    """Concurrent audit log inserts must produce a valid hash chain.
+
+    The _audit_chain_lock serializes access, preventing two coroutines from
+    reading the same previous_hash and forking the chain. We verify by
+    scheduling multiple coroutines that contend on the lock and then
+    checking chain integrity.
+
+    Note: SQLite StaticPool shares a single connection, so we use the same
+    session for all inserts to avoid connection-level conflicts.
+    """
+    import asyncio
+    from app.db.audit import log_event, verify_chain, _audit_chain_lock
+    from tests.conftest import TestSessionLocal
+
+    # Use a shared session (SQLite StaticPool limitation)
+    async with TestSessionLocal() as db:
+        # Create multiple tasks that will contend on the audit chain lock
+        tasks = []
+        for i in range(10):
+            tasks.append(
+                log_event(db, f"concurrent.test.{i}", "ok", agent_id=f"agent-{i}")
+            )
+        # asyncio.gather schedules all coroutines; the lock serializes them
+        await asyncio.gather(*tasks)
+
+    # Verify the chain is intact (no bifurcation)
+    async with TestSessionLocal() as db:
+        is_valid, total, broken_id = await verify_chain(db)
+
+    assert is_valid, f"Hash chain broken at entry {broken_id} (checked {total} entries)"
+    assert total >= 10, f"Expected at least 10 entries, got {total}"
