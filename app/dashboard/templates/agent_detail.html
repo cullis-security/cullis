@@ -83,7 +83,7 @@
         <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Credentials</h3>
 
         {% if agent.cert_thumbprint %}
-        <div class="grid grid-cols-2 gap-4 text-sm mb-4">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm mb-4">
             <div>
                 <span class="text-gray-500">Certificate</span>
                 <p>
@@ -103,30 +103,58 @@
         </div>
         {% else %}
         <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md">
-            <p class="text-sm text-yellow-400">No certificate generated yet. Generate credentials to connect this agent to the network.</p>
+            <p class="text-sm text-yellow-400">No certificate pinned yet. Upload a certificate or generate demo credentials to connect this agent.</p>
         </div>
         {% endif %}
 
-        <div class="p-3 bg-amber-500/5 border border-amber-500/20 rounded-md mb-4">
-            <div class="flex items-start gap-2">
-                <svg class="w-4 h-4 text-amber-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-1.964-.833-2.732 0L4.268 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-                <p class="text-xs text-amber-400/80">The private key is included only in the downloaded zip. Store it securely in your infrastructure — it cannot be retrieved again from the dashboard.</p>
-            </div>
+        <!-- Option 1: Upload Certificate (production — BYOCA) -->
+        <div class="mb-5">
+            <h4 class="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">Option 1 — Upload Certificate (recommended for production)</h4>
+            <p class="text-xs text-gray-500 mb-3">Generate the agent's key pair and certificate locally using your organization's CA. The private key never leaves your infrastructure. Upload only the signed certificate here.</p>
+            <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/upload-cert" class="space-y-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <textarea name="cert_pem" rows="6"
+                          placeholder="-----BEGIN CERTIFICATE-----&#10;Paste your agent certificate here (signed by your org CA)...&#10;-----END CERTIFICATE-----"
+                          class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-brand-500"></textarea>
+                <button type="submit" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+                    Upload Certificate
+                </button>
+            </form>
         </div>
 
-        <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/credentials" class="inline">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            {% if agent.cert_thumbprint %}
-            <button type="submit" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md"
-                    onclick="return confirm('This will generate new credentials and invalidate existing tokens. Continue?')">
-                Regenerate Credentials
-            </button>
-            {% else %}
-            <button type="submit" class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
-                Generate Credentials
-            </button>
-            {% endif %}
-        </form>
+        <!-- Divider -->
+        <div class="flex items-center gap-3 my-5">
+            <div class="flex-1 h-px bg-gray-800"></div>
+            <span class="text-xs text-gray-600 uppercase tracking-wider">or</span>
+            <div class="flex-1 h-px bg-gray-800"></div>
+        </div>
+
+        <!-- Option 2: Generate Demo Credentials (dev/test only) -->
+        <div class="p-4 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+            <h4 class="text-xs font-semibold text-amber-400 uppercase tracking-wider mb-2">Option 2 — Generate Demo Credentials (development only)</h4>
+            <div class="flex items-start gap-2 mb-3">
+                <svg class="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                <p class="text-xs text-amber-300/80 leading-relaxed">
+                    <strong>Not for production.</strong> This generates a key pair and certificate on the broker side. The private key will be included in the downloaded zip.
+                    In production, generate keys locally and upload only the certificate (Option 1).
+                </p>
+            </div>
+            <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/credentials" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                {% if agent.cert_thumbprint %}
+                <button type="submit"
+                        class="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-400 text-sm rounded-md transition-colors"
+                        onclick="return confirm('This will generate new credentials and invalidate existing tokens. Continue?')">
+                    Regenerate Demo Credentials
+                </button>
+                {% else %}
+                <button type="submit"
+                        class="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-400 text-sm rounded-md transition-colors">
+                    Generate Demo Credentials
+                </button>
+                {% endif %}
+            </form>
+        </div>
     </div>
 
     <!-- ── Section 3: Integration Guide ──────────────────────────────────── -->

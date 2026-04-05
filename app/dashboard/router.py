@@ -1420,6 +1420,92 @@ async def agent_detail(request: Request, agent_id: str,
              broker_url=broker_url))
 
 
+@router.post("/agents/{agent_id:path}/upload-cert", response_class=HTMLResponse)
+async def agent_upload_cert(request: Request, agent_id: str,
+                            db: AsyncSession = Depends(get_db)):
+    """Upload an externally signed agent certificate (BYOCA production flow)."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    agent = (await db.execute(
+        select(AgentRecord).where(AgentRecord.agent_id == agent_id)
+    )).scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    if not session.is_admin and agent.org_id != session.org_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    form_data = await request.form()
+    cert_pem = form_data.get("cert_pem", "").strip()
+
+    # Helper to re-render the detail page with an error
+    async def _render_error(error_msg):
+        binding = await get_binding_by_org_agent(db, agent.org_id, agent_id)
+        ws_connected = ws_manager.is_connected(agent_id)
+        cert_expiry = None
+        from app.db.audit import AuditLog
+        audit_events = (await db.execute(
+            select(AuditLog).where(AuditLog.agent_id == agent_id)
+            .order_by(AuditLog.id.desc()).limit(10)
+        )).scalars().all()
+        broker_url = _broker_url_from_request(request)
+        return templates.TemplateResponse("agent_detail.html",
+            _ctx(request, session, active="agents",
+                 agent=agent, binding=binding, ws_connected=ws_connected,
+                 cert_expiry=cert_expiry, audit_events=audit_events,
+                 broker_url=broker_url, error=error_msg))
+
+    if not cert_pem or "-----BEGIN CERTIFICATE-----" not in cert_pem:
+        return await _render_error("Invalid certificate. Paste a valid PEM certificate.")
+
+    # Parse and validate the certificate
+    try:
+        from cryptography.x509 import load_pem_x509_certificate
+        cert = load_pem_x509_certificate(cert_pem.encode())
+    except Exception:
+        return await _render_error("Could not parse the certificate. Ensure it is valid PEM format.")
+
+    # Verify CN matches agent_id
+    from cryptography.x509.oid import NameOID
+    cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not cn_attrs or cn_attrs[0].value != agent_id:
+        return await _render_error(
+            f"Certificate CN '{cn_attrs[0].value if cn_attrs else '(none)'}' "
+            f"does not match agent ID '{agent_id}'.")
+
+    # Verify cert is signed by the org's CA (if CA is uploaded)
+    org = await get_org_by_id(db, agent.org_id)
+    if org and org.ca_certificate:
+        try:
+            from cryptography.x509 import load_pem_x509_certificate as _load_cert
+            from cryptography.hazmat.primitives.asymmetric import padding
+            ca_cert = _load_cert(org.ca_certificate.encode())
+            ca_cert.public_key().verify(
+                cert.signature,
+                cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                cert.signature_hash_algorithm,
+            )
+        except Exception:
+            return await _render_error(
+                "Certificate signature verification failed. "
+                "The certificate must be signed by your organization's CA.")
+
+    # Pin the certificate
+    from app.registry.store import rotate_agent_cert
+    await rotate_agent_cert(db, agent_id, cert_pem)
+
+    await log_event(db, "registry.agent_cert_uploaded", "ok",
+                    agent_id=agent_id, org_id=agent.org_id,
+                    details={"source": "dashboard", "method": "upload"})
+
+    return RedirectResponse(
+        url=f"/dashboard/agents/{agent_id}", status_code=303)
+
+
 @router.post("/agents/{agent_id:path}/credentials")
 async def agent_credentials_download(request: Request, agent_id: str,
                                      db: AsyncSession = Depends(get_db)):
