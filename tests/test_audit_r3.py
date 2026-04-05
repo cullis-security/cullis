@@ -9,10 +9,8 @@ Covers:
   H3  — Constant-time org secret verification
   H4  — Context field depth/key validation
 """
-import json
 import pytest
-import pytest_asyncio
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import MagicMock
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -128,7 +126,6 @@ def test_verify_org_credentials_with_none_org():
 def test_verify_org_credentials_with_inactive_org():
     """H3: verify_org_credentials must not short-circuit for inactive orgs."""
     from app.registry.org_store import verify_org_credentials
-    from unittest.mock import MagicMock
 
     org = MagicMock()
     org.status = "pending"
@@ -199,7 +196,6 @@ def test_context_rejects_oversized():
 def test_save_session_inside_lock():
     """C3: Verify accept_session calls save_session within the lock block."""
     import inspect
-    import textwrap
     from app.broker import router
 
     source = inspect.getsource(router.accept_session)

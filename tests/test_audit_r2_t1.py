@@ -10,12 +10,9 @@ Covers:
   - #43: Logout requires POST + CSRF (GET rejected)
 """
 import json
-import hmac
-import hashlib
 import pytest
-import pytest_asyncio
-from unittest.mock import patch, AsyncMock
-from httpx import AsyncClient, ASGITransport
+from unittest.mock import patch
+from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
