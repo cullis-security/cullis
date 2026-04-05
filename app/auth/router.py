@@ -144,10 +144,10 @@ async def revoke_agent_tokens(
     Admin revoke: invalidate all tokens for any agent in the authenticated organization.
     Authentication via X-Org-Id + X-Org-Secret headers.
     """
-    from app.registry.org_store import get_org_by_id
+    from app.registry.org_store import get_org_by_id, verify_org_credentials
 
     org = await get_org_by_id(db, x_org_id)
-    if not org or org.status != "active" or not org.verify_secret(x_org_secret):
+    if not verify_org_credentials(org, x_org_secret):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Invalid organization credentials")
 

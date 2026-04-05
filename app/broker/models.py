@@ -31,8 +31,22 @@ class SessionRequest(BaseModel):
 
     @field_validator("context")
     @classmethod
-    def limit_context_size(cls, v: dict) -> dict:
+    def validate_context(cls, v: dict) -> dict:
         import json
+
+        def _check_depth(obj: object, depth: int = 0) -> None:
+            if depth > 4:
+                raise ValueError("context nesting exceeds maximum depth of 4")
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if not isinstance(key, str):
+                        raise ValueError("context keys must be strings")
+                    _check_depth(val, depth + 1)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _check_depth(item, depth + 1)
+
+        _check_depth(v)
         if len(json.dumps(v, default=str)) > 16384:
             raise ValueError("context exceeds 16 KB limit")
         return v

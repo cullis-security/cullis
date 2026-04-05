@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db.audit import log_event
-from app.registry.org_store import get_org_by_id, OrganizationRecord
+from app.registry.org_store import get_org_by_id, verify_org_credentials, OrganizationRecord
 from app.registry.binding_store import (
     create_binding,
     get_binding,
@@ -33,7 +33,7 @@ async def get_current_org(
     Verify organization credentials from the X-Org-Id + X-Org-Secret headers.
     """
     org = await get_org_by_id(db, x_org_id)
-    if not org or org.status != "active" or not org.verify_secret(x_org_secret):
+    if not verify_org_credentials(org, x_org_secret):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid organization credentials",

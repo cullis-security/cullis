@@ -57,10 +57,17 @@ class Session:
         The DB (via ``save_message`` ON CONFLICT) is the source of truth;
         this cache prevents an unnecessary DB round-trip for obvious replays.
         """
-        return nonce in self.used_nonces or len(self.used_nonces) >= self._MAX_NONCES
+        return nonce in self.used_nonces
 
     def cache_nonce(self, nonce: str) -> None:
-        """Record a nonce in the in-memory cache after successful DB insert."""
+        """Record a nonce in the in-memory cache after successful DB insert.
+
+        When the cache is full, an arbitrary entry is evicted.
+        The DB UNIQUE constraint remains the authoritative replay guard;
+        this cache is only a fast-path optimisation.
+        """
+        if len(self.used_nonces) >= self._MAX_NONCES:
+            self.used_nonces.pop()
         self.used_nonces.add(nonce)
 
     def store_message(self, sender_agent_id: str, payload: dict, nonce: str,

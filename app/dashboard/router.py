@@ -88,14 +88,11 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
             return templates.TemplateResponse("login.html", {
                 "request": request, "error": "Organization ID and secret are required.",
             })
+        from app.registry.org_store import verify_org_credentials
         org = await get_org_by_id(db, org_id)
-        if not org or not org.verify_secret(org_secret):
+        if not verify_org_credentials(org, org_secret):
             return templates.TemplateResponse("login.html", {
                 "request": request, "error": "Invalid organization credentials.",
-            })
-        if org.status != "active":
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": f"Organization is '{org.status}', not active.",
             })
         response = RedirectResponse(url="/dashboard", status_code=303)
         set_session(response, role="org", org_id=org_id)

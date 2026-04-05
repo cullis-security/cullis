@@ -65,7 +65,7 @@
                     </td>
                     <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ event.agent_id or '-' }}</td>
                     <td class="px-5 py-3 text-xs text-gray-400">{{ event.org_id or '-' }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ event.details }}">{{ event.details or '' }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ event.details | e }}">{{ event.details or '' }}</td>
                     <td class="px-5 py-3 text-xs text-gray-600 font-mono" title="{{ event.entry_hash or '' }}">{{ (event.entry_hash or '')[:12] }}{% if event.entry_hash %}...{% endif %}</td>
                 </tr>
                 {% endfor %}

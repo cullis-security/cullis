@@ -23,7 +23,7 @@ from app.registry.store import (
     search_agents_by_capabilities, rotate_agent_cert,
 )
 from app.registry.binding_store import create_binding, get_binding_by_org_agent
-from app.registry.org_store import get_org_by_id
+from app.registry.org_store import get_org_by_id, verify_org_credentials
 from app.spiffe import internal_id_to_spiffe
 
 router = APIRouter(prefix="/registry", tags=["registry"])
@@ -44,7 +44,7 @@ async def register(
     Requires valid organization credentials (X-Org-Id + X-Org-Secret headers).
     """
     org = await get_org_by_id(db, x_org_id)
-    if not org or org.status != "active" or not org.verify_secret(x_org_secret):
+    if not verify_org_credentials(org, x_org_secret):
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             detail="Invalid organization credentials")
     if body.org_id != x_org_id:
@@ -162,10 +162,21 @@ async def get_agent_public_key(
     """
     Return the agent's PEM public key, extracted from the certificate stored at login.
     Used by the sender to encrypt E2E messages towards this agent.
+
+    Requires same org OR an approved binding between the caller's org and the target agent.
     """
     agent = await get_agent_by_id(db, agent_id)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    # Org isolation: same org is always allowed; cross-org requires an approved binding
+    if agent.org_id != current_agent.org:
+        from app.registry.binding_store import get_approved_binding
+        binding = await get_approved_binding(db, agent.org_id, agent_id)
+        if not binding:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="No approved binding with this agent")
+
     if not agent.cert_pem:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -190,6 +201,15 @@ async def get_agent(
     agent = await get_agent_by_id(db, agent_id)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    # Org isolation: same org always allowed; cross-org requires approved binding
+    if agent.org_id != current_agent.org:
+        from app.registry.binding_store import get_approved_binding
+        binding = await get_approved_binding(db, agent.org_id, agent_id)
+        if not binding:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail="No approved binding with this agent")
+
     trust_domain = get_settings().trust_domain
     return AgentResponse(
         agent_id=agent.agent_id,
@@ -267,7 +287,7 @@ async def rotate_cert(
     """
     # Authenticate org
     org = await get_org_by_id(db, x_org_id)
-    if not org or org.status != "active" or not org.verify_secret(x_org_secret):
+    if not verify_org_credentials(org, x_org_secret):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invalid organization credentials")
 
     # Verify agent exists and belongs to org
