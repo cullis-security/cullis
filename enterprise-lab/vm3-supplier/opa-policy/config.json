@@ -1,0 +1,13 @@
+{
+  "config": {
+    "allowed_initiator_orgs": {
+      "electrostore": true,
+      "automotiveparts": true
+    },
+    "allowed_capabilities": [
+      "order.read",
+      "order.write"
+    ],
+    "blocked_agents": {}
+  }
+}

@@ -26,7 +26,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message
+from tests.cert_factory import get_org_ca_pem, sign_message
 from tests.conftest import ADMIN_HEADERS
 
 pytestmark = pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_session_denied_initiator_capability_denied(client: AsyncClient, d
 
 async def test_session_denied_max_active_sessions(client: AsyncClient, dpop):
     """Org PDP denies second session when max active sessions reached."""
-    from unittest.mock import AsyncMock, patch, call
+    from unittest.mock import AsyncMock, patch
     from app.policy.webhook import WebhookDecision
 
     token_buyer = await _setup_org_agent(

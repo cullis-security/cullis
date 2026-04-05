@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import TokenRequest, TokenResponse, TokenPayload
 from app.auth.jwt import create_access_token, get_current_agent
 from app.auth.x509_verifier import verify_client_assertion
-from app.auth.dpop import verify_dpop_proof, build_htu, set_dpop_nonce_header
+from app.auth.dpop import verify_dpop_proof, build_htu
 from app.config import get_settings
 from app.db.database import get_db
 from app.db.audit import log_event

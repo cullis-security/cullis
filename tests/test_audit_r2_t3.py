@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 
 pytestmark = pytest.mark.asyncio
@@ -329,7 +328,7 @@ class TestRevocationCleanupBuffer:
     async def test_long_expired_cert_cleaned(self, db_session):
         """A cert expired 60 min ago should be cleaned up."""
         from app.auth.revocation import revoke_cert, RevokedCert
-        from sqlalchemy import select, delete
+        from sqlalchemy import select
 
         now = datetime.now(timezone.utc)
 

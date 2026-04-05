@@ -22,7 +22,7 @@ from app.auth.jti_blacklist import JtiBlacklist as _JBL        # noqa
 from app.broker.db_models import SessionRecord, SessionMessageRecord  # noqa
 from app.broker.session import session_store
 from app.broker.persistence import restore_sessions
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message, DPoPHelper
+from tests.cert_factory import get_org_ca_pem, sign_message, DPoPHelper
 from tests.conftest import ADMIN_HEADERS
 
 POSTGRES_URL = "postgresql+asyncpg://agent:trustme@localhost:5432/agent_trust"
@@ -117,7 +117,6 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
         "rules": {"effect": "allow", "conditions": {"target_org_id": [], "capabilities": []}},
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
 
-    assertion = make_assertion(agent_id, org_id)
     dpop = DPoPHelper()
     return await dpop.get_token(client, agent_id, org_id)
 

@@ -2,7 +2,7 @@ import datetime
 
 from cryptography import x509 as crypto_x509
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -22,7 +22,6 @@ from app.registry.store import (
     register_agent, get_agent_by_id, list_agents,
     search_agents_by_capabilities, rotate_agent_cert,
 )
-from app.registry.binding_store import create_binding, get_binding_by_org_agent
 from app.registry.org_store import get_org_by_id, verify_org_credentials
 from app.spiffe import internal_id_to_spiffe
 

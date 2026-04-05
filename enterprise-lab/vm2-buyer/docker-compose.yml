@@ -1,0 +1,86 @@
+# VM2 — Enterprise A (ElectroStore — Buyer)
+#
+# Simulates a real enterprise intranet:
+#   - ERPNext: real ERP with inventory, purchasing, warehouse management
+#   - OPA: local Policy Decision Point (controls what the agent can do)
+#   - Buyer Agent: reads ERPNext inventory, negotiates via ATN broker
+#
+# This VM can ONLY talk to VM1 (broker). No direct access to VM3.
+#
+# Ports:
+#   8080  — ERPNext web UI
+#   8181  — OPA REST API (PDP)
+
+services:
+
+  # ── ERPNext stack ────────────────────────────────────────────────────
+
+  erpnext:
+    image: frappe/erpnext:v15
+    environment:
+      - FRAPPE_SITE_NAME_HEADER=erp.localhost
+    ports:
+      - "8080:8000"
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis-erp:
+        condition: service_healthy
+
+  erpnext-worker:
+    image: frappe/erpnext:v15
+    command: bench worker --queue short,default,long
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      - erpnext
+
+  erpnext-scheduler:
+    image: frappe/erpnext:v15
+    command: bench schedule
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on:
+      - erpnext
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: changeit
+      MARIADB_CHARACTER_SET_SERVER: utf8mb4
+      MARIADB_COLLATION_SERVER: utf8mb4_unicode_ci
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -pchangeit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-erp:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── OPA (Policy Decision Point) ────────────────────────────────────
+
+  opa:
+    image: openpolicyagent/opa:latest
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - /policies
+    ports:
+      - "8182:8181"
+    volumes:
+      - ./opa-policy:/policies:ro
+
+volumes:
+  erpnext-sites:
+  mariadb-data:

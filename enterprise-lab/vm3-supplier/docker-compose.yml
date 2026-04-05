@@ -1,0 +1,63 @@
+# VM3 — Enterprise B (ChipFactory — Supplier)
+#
+# Simulates a real enterprise intranet:
+#   - Odoo CE: real CRM/ERP with product catalog, price lists, sales orders
+#   - OPA: local Policy Decision Point (controls what the agent can do)
+#   - Supplier Agent: reads Odoo catalog, responds to RFQs via ATN broker
+#
+# This VM can ONLY talk to VM1 (broker). No direct access to VM2.
+#
+# Ports:
+#   8069  — Odoo web UI
+#   8181  — OPA REST API (PDP)
+
+services:
+
+  # ── Odoo CE stack ──────────────────────────────────────────────────
+
+  odoo:
+    image: odoo:17.0
+    ports:
+      - "8069:8069"
+    environment:
+      - HOST=odoo-db
+      - USER=odoo
+      - PASSWORD=odoo
+    volumes:
+      - odoo-data:/var/lib/odoo
+      - ./addons:/mnt/extra-addons
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+
+  odoo-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+    volumes:
+      - odoo-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── OPA (Policy Decision Point) ────────────────────────────────────
+
+  opa:
+    image: openpolicyagent/opa:latest
+    command:
+      - run
+      - --server
+      - --addr=0.0.0.0:8181
+      - /policies
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./opa-policy:/policies:ro
+
+volumes:
+  odoo-data:
+  odoo-pg-data:

@@ -1,7 +1,6 @@
 """
 ORM model e query per le policy organizzative.
 """
-import uuid
 import json
 from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, select

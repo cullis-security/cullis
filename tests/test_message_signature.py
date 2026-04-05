@@ -15,20 +15,19 @@ Verifica che:
   8. Firma esterna verificabile post-hoc con la pubkey del cert
 """
 import base64
-import json
 import uuid
 
 import pytest
 from httpx import AsyncClient
 
-from app.auth.message_signer import sign_message as _sign, verify_message_signature
+from app.auth.message_signer import verify_message_signature
 from app.e2e_crypto import encrypt_for_agent
 from tests.cert_factory import (
-    make_assertion, get_org_ca_pem, sign_message, get_agent_key_pem, make_agent_cert,
+    get_org_ca_pem, sign_message, make_agent_cert,
     get_agent_pubkey_pem, make_encrypted_envelope,
 )
 from tests.conftest import ADMIN_HEADERS
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 
 pytestmark = pytest.mark.asyncio
 

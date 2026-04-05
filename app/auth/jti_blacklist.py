@@ -9,7 +9,7 @@ Lazy cleanup: expired records are removed on each insertion.
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import Column, String, DateTime, delete, select
+from sqlalchemy import Column, String, DateTime, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
@@ -33,8 +33,6 @@ async def check_and_consume_jti(db: AsyncSession, jti: str, expires_at: datetime
     """
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-    from sqlalchemy import inspect as sa_inspect
-
     now = datetime.now(timezone.utc)
 
     # Atomic upsert: try to insert — if the JTI already exists the insert

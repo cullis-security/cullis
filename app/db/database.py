@@ -32,10 +32,16 @@ async def init_db() -> None:
             await conn.run_sync(Base.metadata.create_all)
         return
 
-    from alembic.config import Config
-    from alembic import command
+    import asyncio
 
-    alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
-    alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
-    command.upgrade(alembic_cfg, "head")
+    def _run_alembic():
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
+        alembic_cfg.set_main_option("sqlalchemy.url", str(engine.url))
+        command.upgrade(alembic_cfg, "head")
+
+    # Alembic env.py calls asyncio.run() internally, which cannot run inside
+    # an existing event loop.  Run it in a separate thread to avoid conflict.
+    await asyncio.to_thread(_run_alembic)
     logger.info("Alembic migrations applied (head)")

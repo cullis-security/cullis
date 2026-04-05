@@ -14,7 +14,7 @@ Notifications are marked as 'read' or 'acted' — never deleted (audit trail).
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, DateTime, Text, Boolean, Integer, select, func
+from sqlalchemy import Column, String, DateTime, Text, Boolean, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
@@ -74,7 +74,7 @@ async def get_pending_notifications(
         .where(
             Notification.recipient_type == recipient_type,
             Notification.recipient_id == recipient_id,
-            Notification.is_acted == False,
+            Notification.is_acted.is_(False),
         )
         .order_by(Notification.created_at.desc())
         .limit(limit)
@@ -96,7 +96,7 @@ async def count_pending_notifications(
         .where(
             Notification.recipient_type == recipient_type,
             Notification.recipient_id == recipient_id,
-            Notification.is_acted == False,
+            Notification.is_acted.is_(False),
         )
     )
     if org_id:
@@ -126,7 +126,7 @@ async def mark_acted_by_reference(
         select(Notification).where(
             Notification.notification_type == notification_type,
             Notification.reference_id == reference_id,
-            Notification.is_acted == False,
+            Notification.is_acted.is_(False),
         )
     )
     for n in result.scalars().all():

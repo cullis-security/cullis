@@ -9,7 +9,7 @@ Verifica che:
 """
 import pytest
 from httpx import AsyncClient
-from tests.cert_factory import make_assertion, get_org_ca_pem
+from tests.cert_factory import get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS
 
 pytestmark = pytest.mark.asyncio

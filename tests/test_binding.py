@@ -67,7 +67,7 @@ async def _revoke_binding(client: AsyncClient, binding_id: int, org_id: str, org
 
 
 async def _get_token(client: AsyncClient, agent_id: str, org_id: str, dpop=None):
-    from tests.cert_factory import make_dpop_key_pair, make_dpop_proof, DPoPHelper
+    from tests.cert_factory import DPoPHelper
     _dpop = dpop or DPoPHelper()
     assertion = make_assertion(agent_id, org_id)
     proof = _dpop.proof("POST", "/v1/auth/token")

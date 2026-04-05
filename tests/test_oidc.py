@@ -1,8 +1,6 @@
 """Tests for OIDC federation login."""
-import json
 import time
 import pytest
-import pytest_asyncio
 from unittest.mock import patch, AsyncMock
 
 from httpx import AsyncClient
@@ -10,9 +8,8 @@ from httpx import AsyncClient
 from tests.conftest import ADMIN_HEADERS, TestSessionLocal
 from app.dashboard.oidc import (
     create_oidc_state, _pkce_code_challenge, OidcFlowState,
-    OidcIdentity, OidcError,
+    OidcIdentity,
 )
-from app.dashboard.session import set_oidc_state, get_oidc_state
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,7 +53,7 @@ def test_flow_state_roundtrip():
 
 async def _setup_org_with_oidc(client: AsyncClient, org_id: str = "oidc-org"):
     """Create an org with OIDC configuration."""
-    from app.registry.org_store import get_org_by_id, update_org_oidc
+    from app.registry.org_store import update_org_oidc
     from tests.cert_factory import get_org_ca_pem
 
     org_secret = org_id + "-secret"

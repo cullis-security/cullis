@@ -35,13 +35,12 @@ import json
 import uuid
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives import serialization
 from fastapi import HTTPException
 from jose import jwt as jose_jwt
 
-from app.auth.dpop import compute_jkt, verify_dpop_proof, _normalize_htu, generate_dpop_nonce, get_current_dpop_nonce, _is_valid_nonce
-from app.auth.dpop_jti_store import get_dpop_jti_store, reset_dpop_jti_store
+from app.auth.dpop import compute_jkt, verify_dpop_proof, generate_dpop_nonce, _is_valid_nonce
+from app.auth.dpop_jti_store import reset_dpop_jti_store
 
 pytestmark = pytest.mark.asyncio
 from tests.cert_factory import make_dpop_key_pair, make_dpop_proof
@@ -152,13 +151,12 @@ async def test_verify_wrong_typ():
 async def test_verify_symmetric_alg_rejected():
     """HS256 must be rejected — symmetric algorithms are forbidden for DPoP."""
     privkey, jwk = make_dpop_key_pair()
-    priv_pem = privkey.private_bytes(
+    _priv_pem = privkey.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
     # Build a structurally valid proof but with alg=HS256 in the header
-    import struct, hmac as _hmac
     header_dict = {"typ": "dpop+jwt", "alg": "HS256", "jwk": jwk}
     header_b64 = base64.urlsafe_b64encode(
         json.dumps(header_dict).encode()

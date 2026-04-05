@@ -422,7 +422,7 @@ class BrokerClient:
             msg["payload"] = plaintext_dict
         except Exception as exc:
             log("sdk", f"E2E decryption failed for session {sid} — message rejected", RED)
-            raise ValueError(f"E2E decryption failed: message integrity cannot be verified") from exc
+            raise ValueError("E2E decryption failed: message integrity cannot be verified") from exc
         return msg
 
     def poll(self, session_id: str, after: int = -1, poll_interval: int = 2) -> list[dict]:

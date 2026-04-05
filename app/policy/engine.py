@@ -7,13 +7,12 @@ Defaults:
                               unless an explicit policy blocks them)
 """
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.audit import log_event
 from app.policy.store import list_policies
-from app.telemetry import tracer
 from app.telemetry_metrics import POLICY_ALLOW_COUNTER, POLICY_DENY_COUNTER
 
 

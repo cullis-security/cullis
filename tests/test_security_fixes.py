@@ -14,11 +14,10 @@ import uuid
 from datetime import datetime, timezone, timedelta
 
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 
 from tests.cert_factory import (
-    make_assertion, get_org_ca_pem, sign_message, make_encrypted_envelope,
+    get_org_ca_pem, make_encrypted_envelope,
 )
 from app.broker.session import Session, SessionStatus, SessionStore
 
@@ -280,7 +279,7 @@ async def test_webhook_dns_pinning_preserves_hostname():
     backend = _PinnedDNSBackend("93.184.216.34", 443)
 
     # Verify that connect_tcp receives the pinned IP, not the original host
-    original_connect = httpcore.AnyIOBackend.connect_tcp
+    _original_connect = httpcore.AnyIOBackend.connect_tcp
 
     connected_hosts = []
 
@@ -383,7 +382,7 @@ async def test_audit_chain_concurrent_inserts():
     session for all inserts to avoid connection-level conflicts.
     """
     import asyncio
-    from app.db.audit import log_event, verify_chain, _audit_chain_lock
+    from app.db.audit import log_event, verify_chain
     from tests.conftest import TestSessionLocal
 
     # Use a shared session (SQLite StaticPool limitation)

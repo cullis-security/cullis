@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.broker.db_models import SessionRecord
 from app.broker.session import session_store
 from app.broker.persistence import restore_sessions
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message
+from tests.cert_factory import get_org_ca_pem, sign_message
 from tests.conftest import ADMIN_HEADERS
 
 pytestmark = pytest.mark.asyncio

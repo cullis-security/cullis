@@ -12,80 +12,103 @@
     </script>
 </head>
 <body class="h-full flex items-center justify-center">
-<div class="w-full max-w-sm">
-    <div class="text-center mb-8">
-        <h1 class="text-2xl font-bold text-white">ATN</h1>
-        <p class="text-sm text-gray-500 mt-1">Agent Trust Network</p>
+<!-- Subtle radial glow behind the card -->
+<div style="position:fixed;top:50%;left:50%;width:600px;height:600px;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(99,102,241,0.08) 0%,transparent 70%);pointer-events:none;z-index:0;"></div>
+
+<div class="w-full max-w-md relative z-10">
+    <!-- Logo & Branding -->
+    <div class="text-center mb-10">
+        <div class="inline-flex items-center justify-center mb-4">
+            <svg width="56" height="56" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <!-- Shield body -->
+                <path d="M28 4L8 14v14c0 12.4 8.5 24 20 28 11.5-4 20-15.6 20-28V14L28 4z" fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>
+                <!-- Network nodes -->
+                <circle cx="28" cy="22" r="3.5" fill="#6366f1"/>
+                <circle cx="18" cy="34" r="2.5" fill="#6366f1" opacity="0.7"/>
+                <circle cx="38" cy="34" r="2.5" fill="#6366f1" opacity="0.7"/>
+                <circle cx="28" cy="42" r="2" fill="#6366f1" opacity="0.5"/>
+                <!-- Network edges -->
+                <line x1="28" y1="25.5" x2="18" y2="31.5" stroke="#6366f1" stroke-width="1" opacity="0.5"/>
+                <line x1="28" y1="25.5" x2="38" y2="31.5" stroke="#6366f1" stroke-width="1" opacity="0.5"/>
+                <line x1="18" y1="36.5" x2="28" y2="40" stroke="#6366f1" stroke-width="1" opacity="0.35"/>
+                <line x1="38" y1="36.5" x2="28" y2="40" stroke="#6366f1" stroke-width="1" opacity="0.35"/>
+            </svg>
+        </div>
+        <h1 class="text-2xl font-bold text-white tracking-wide">Agent Trust Network</h1>
+        <p class="text-sm text-gray-500 mt-1.5">Secure inter-agent trust management</p>
     </div>
 
     {% if error %}
     <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
     {% endif %}
 
-    <!-- Tab selector -->
-    <div class="flex mb-6 bg-gray-900 rounded-lg p-1">
-        <button onclick="showTab('admin')" id="tab-admin"
-                class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-white bg-gray-800">
-            Admin
-        </button>
-        <button onclick="showTab('org')" id="tab-org"
-                class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-gray-400">
-            Organization
-        </button>
-        <button onclick="showTab('sso')" id="tab-sso"
-                class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-gray-400">
-            SSO
-        </button>
-    </div>
+    <!-- Card container -->
+    <div class="bg-gray-900/60 border border-gray-800 rounded-xl p-6 backdrop-blur-sm" style="box-shadow:0 0 40px rgba(99,102,241,0.04);">
+        <!-- Tab selector -->
+        <div class="flex mb-6 bg-gray-950 rounded-lg p-1">
+            <button onclick="showTab('admin')" id="tab-admin"
+                    class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-white bg-gray-800 transition-colors">
+                Admin
+            </button>
+            <button onclick="showTab('org')" id="tab-org"
+                    class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-gray-400 transition-colors">
+                Organization
+            </button>
+            <button onclick="showTab('sso')" id="tab-sso"
+                    class="flex-1 px-3 py-2 rounded-md text-sm font-medium text-gray-400 transition-colors">
+                SSO
+            </button>
+        </div>
 
-    <!-- Admin login -->
-    <form id="form-admin" method="post" action="/dashboard/login" class="space-y-4">
-        <input type="hidden" name="login_type" value="admin">
-        <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Admin Secret</label>
-            <input type="password" name="admin_secret" required placeholder="Enter admin secret"
-                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
-        </div>
-        <button type="submit" class="w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
-            Login as Admin
-        </button>
-    </form>
+        <!-- Admin login -->
+        <form id="form-admin" method="post" action="/dashboard/login" class="space-y-4">
+            <input type="hidden" name="login_type" value="admin">
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-1">Admin Secret</label>
+                <input type="password" name="admin_secret" required placeholder="Enter admin secret"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-colors">
+            </div>
+            <button type="submit" class="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-md transition-colors">
+                Login as Admin
+            </button>
+        </form>
 
-    <!-- Org login -->
-    <form id="form-org" method="post" action="/dashboard/login" class="space-y-4 hidden">
-        <input type="hidden" name="login_type" value="org">
-        <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
-            <input type="text" name="org_id" placeholder="e.g. acme-corp"
-                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
-        </div>
-        <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Organization Secret</label>
-            <input type="password" name="org_secret" placeholder="Enter org secret"
-                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
-        </div>
-        <button type="submit" class="w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
-            Login as Organization
-        </button>
-    </form>
+        <!-- Org login -->
+        <form id="form-org" method="post" action="/dashboard/login" class="space-y-4 hidden">
+            <input type="hidden" name="login_type" value="org">
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
+                <input type="text" name="org_id" placeholder="e.g. acme-corp"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-colors">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-1">Organization Secret</label>
+                <input type="password" name="org_secret" placeholder="Enter org secret"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-colors">
+            </div>
+            <button type="submit" class="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-md transition-colors">
+                Login as Organization
+            </button>
+        </form>
 
-    <!-- SSO login -->
-    <div id="form-sso" class="space-y-4 hidden">
-        {% if admin_oidc_enabled is defined and admin_oidc_enabled %}
-        <a href="/dashboard/oidc/start?role=admin"
-           class="block w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md text-center">
-            Admin SSO Login
-        </a>
-        <div class="relative my-3"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-gray-800"></div></div><div class="relative flex justify-center text-xs"><span class="bg-gray-950 px-2 text-gray-500">or</span></div></div>
-        {% endif %}
-        <div>
-            <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
-            <input type="text" id="sso-org-id" placeholder="e.g. acme-corp"
-                   class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500">
+        <!-- SSO login -->
+        <div id="form-sso" class="space-y-4 hidden">
+            {% if admin_oidc_enabled is defined and admin_oidc_enabled %}
+            <a href="/dashboard/oidc/start?role=admin"
+               class="block w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-md text-center transition-colors">
+                Admin SSO Login
+            </a>
+            <div class="relative my-3"><div class="absolute inset-0 flex items-center"><div class="w-full border-t border-gray-800"></div></div><div class="relative flex justify-center text-xs"><span class="bg-gray-950 px-2 text-gray-500">or</span></div></div>
+            {% endif %}
+            <div>
+                <label class="block text-sm font-medium text-gray-300 mb-1">Organization ID</label>
+                <input type="text" id="sso-org-id" placeholder="e.g. acme-corp"
+                       class="w-full bg-gray-950 border border-gray-700 rounded-md px-3 py-2.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 transition-colors">
+            </div>
+            <button onclick="startOrgSso()" class="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-md transition-colors">
+                Continue with Organization SSO
+            </button>
         </div>
-        <button onclick="startOrgSso()" class="w-full px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
-            Continue with Organization SSO
-        </button>
     </div>
 
     <p class="text-center text-xs text-gray-600 mt-6">

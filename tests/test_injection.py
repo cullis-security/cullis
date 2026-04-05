@@ -8,11 +8,9 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from httpx import AsyncClient
 
-from app.injection.detector import InjectionDetector, injection_detector
+from app.injection.detector import InjectionDetector
 from app.injection.patterns import fast_check, is_suspicious, extract_strings
-from tests.cert_factory import make_assertion, get_org_ca_pem
 
 pytestmark = pytest.mark.asyncio
 

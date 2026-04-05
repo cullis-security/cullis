@@ -484,7 +484,8 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Nonce already used — possible replay attack")
 
-    import hashlib, json as _json
+    import hashlib
+    import json as _json
     payload_hash = hashlib.sha256(
         _json.dumps(envelope.payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

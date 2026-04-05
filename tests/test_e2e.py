@@ -21,7 +21,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message, make_encrypted_envelope, DPoPHelper
+from tests.cert_factory import make_assertion, get_org_ca_pem, make_encrypted_envelope, DPoPHelper
 from tests.conftest import ADMIN_HEADERS
 
 pytestmark = pytest.mark.asyncio

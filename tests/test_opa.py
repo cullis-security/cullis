@@ -1,7 +1,6 @@
 """
 Tests for OPA policy adapter and backend dispatcher.
 """
-import json
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 

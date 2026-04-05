@@ -2,7 +2,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 
-from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message, make_encrypted_envelope
+from tests.cert_factory import get_org_ca_pem, make_encrypted_envelope
 from tests.conftest import ADMIN_HEADERS
 
 pytestmark = pytest.mark.asyncio
@@ -228,7 +228,7 @@ async def test_reject_non_pending_fails(client: AsyncClient, dpop):
 async def test_non_target_cannot_reject(client: AsyncClient, dpop):
     """Initiator cannot reject a session (only target can)."""
     token_a = await _register_and_login(client, dpop, "rejnt-org-a::agent", "rejnt-org-a")
-    token_b = await _register_and_login(client, dpop, "rejnt-org-b::agent", "rejnt-org-b")
+    _token_b = await _register_and_login(client, dpop, "rejnt-org-b::agent", "rejnt-org-b")
 
     resp = await client.post("/v1/broker/sessions", json={
         "target_agent_id": "rejnt-org-b::agent", "target_org_id": "rejnt-org-b",

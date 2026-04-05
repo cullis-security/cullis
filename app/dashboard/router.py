@@ -25,17 +25,20 @@ from app.dashboard.session import (
 
 from app.db.database import get_db
 from app.db.audit import AuditLog, log_event
-from app.registry.store import AgentRecord, register_agent, rotate_agent_cert, compute_cert_thumbprint
+from app.registry.store import AgentRecord, register_agent, rotate_agent_cert
 from app.registry.org_store import (
     OrganizationRecord, register_org, get_org_by_id,
-    update_org_ca_cert, update_org_webhook, set_org_status, list_pending_orgs,
+    update_org_ca_cert, set_org_status,
 )
 from app.registry.binding_store import (
     BindingRecord, create_binding, approve_binding, revoke_binding, get_binding_by_org_agent,
 )
-from app.policy.store import PolicyRecord, create_policy, get_policy, list_policies, deactivate_policy
+from app.policy.store import PolicyRecord, create_policy, get_policy, deactivate_policy
 from app.broker.db_models import SessionRecord, SessionMessageRecord
 from app.broker.ws_manager import ws_manager
+
+import logging
+_log = logging.getLogger("agent_trust")
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
@@ -341,7 +344,7 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
         orgs_active = 1
 
     agents_q = select(func.count(AgentRecord.agent_id))
-    agents_active_q = select(func.count(AgentRecord.agent_id)).where(AgentRecord.is_active == True)
+    agents_active_q = select(func.count(AgentRecord.agent_id)).where(AgentRecord.is_active.is_(True))
     if org_filter:
         agents_q = agents_q.where(AgentRecord.org_id == org_filter)
         agents_active_q = agents_active_q.where(AgentRecord.org_id == org_filter)

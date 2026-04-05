@@ -16,7 +16,6 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.main import app
 
 pytestmark = pytest.mark.asyncio
 

@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -25,7 +25,6 @@ from app.registry.org_store import (
     get_org_by_id,
     register_org,
     update_org_ca_cert,
-    update_org_webhook,
     list_pending_orgs,
     set_org_status,
 )

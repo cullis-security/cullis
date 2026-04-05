@@ -18,10 +18,9 @@ Covers:
 import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 
 from app.broker.session import Session, SessionStatus, SessionStore
@@ -35,7 +34,7 @@ pytestmark = pytest.mark.asyncio
 # ────────────────────────────────────────────────────────────────────────
 
 from tests.cert_factory import (
-    make_assertion, get_org_ca_pem, sign_message,
+    get_org_ca_pem,
 )
 
 
@@ -505,7 +504,7 @@ async def test_poll_messages_is_rate_limited(client: AsyncClient, dpop):
         return await original_check(agent_id, action)
 
     with patch.object(_rl, "check", side_effect=tracking_check):
-        resp = await client.get(f"/v1/broker/sessions/{session_id}/messages",
+        _resp = await client.get(f"/v1/broker/sessions/{session_id}/messages",
             headers=dpop.headers("GET", f"/v1/broker/sessions/{session_id}/messages", token))
         # Will be 404 (session not found) but the rate limit should have been called
         poll_calls = [c for c in calls if c[1] == "broker.poll"]

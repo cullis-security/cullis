@@ -28,15 +28,13 @@ import datetime
 import uuid
 
 import pytest
-from cryptography import x509 as cx509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 from httpx import AsyncClient
 from jose import jwt as jose_jwt
 
 from tests.cert_factory import (
-    make_assertion, get_org_ca_pem, make_dpop_key_pair, make_dpop_proof,
+    make_assertion, get_org_ca_pem,
     make_assertion_alternate,
 )
 from tests.conftest import ADMIN_HEADERS

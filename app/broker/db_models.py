@@ -1,7 +1,6 @@
 """
 SQLAlchemy models for session and message persistence.
 """
-import json
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, Text, DateTime, Integer, UniqueConstraint

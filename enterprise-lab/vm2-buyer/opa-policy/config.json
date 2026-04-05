@@ -1,0 +1,13 @@
+{
+  "config": {
+    "allowed_target_orgs": {
+      "chipfactory": true,
+      "metalworks": true
+    },
+    "allowed_capabilities": [
+      "order.read",
+      "order.write"
+    ],
+    "blocked_agents": {}
+  }
+}

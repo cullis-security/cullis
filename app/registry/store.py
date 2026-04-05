@@ -124,7 +124,7 @@ async def rotate_agent_cert(db: AsyncSession, agent_id: str, new_cert_pem: str) 
     if agent is None:
         raise ValueError(f"Agent '{agent_id}' not found")
     new_thumbprint = compute_cert_thumbprint(new_cert_pem)
-    old_thumbprint = agent.cert_thumbprint
+    _old_thumbprint = agent.cert_thumbprint
     agent.cert_pem = new_cert_pem
     agent.cert_thumbprint = new_thumbprint
     agent.token_invalidated_at = datetime.now(timezone.utc).replace(microsecond=0)
@@ -161,7 +161,7 @@ async def search_agents_by_capabilities(
 ) -> list[AgentRecord]:
     """Return active agents that have ALL the requested capabilities."""
     result = await db.execute(
-        select(AgentRecord).where(AgentRecord.is_active == True)
+        select(AgentRecord).where(AgentRecord.is_active.is_(True))
     )
     agents = result.scalars().all()
 

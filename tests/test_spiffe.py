@@ -2,11 +2,8 @@
 Test per il modulo SPIFFE — mapping bidirezionale, validazione, SAN nei certificati,
 claim spiffe_id nel JWT emesso dal broker e verifica SAN nell'autenticazione.
 """
-import base64
-
 import pytest
 from cryptography import x509 as cx509
-from cryptography.hazmat.primitives import serialization
 from httpx import AsyncClient
 from jose import jwt as jose_jwt
 
@@ -266,11 +263,6 @@ async def test_autenticazione_fallisce_con_san_sbagliato(client: AsyncClient, dp
     Cert con SAN SPIFFE che non corrisponde all'agente registrato → 401.
     Costruiamo manualmente un cert con SAN del trust domain sbagliato.
     """
-    import datetime
-    import uuid
-    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
-    from cryptography.x509.oid import NameOID
-
     agent_id = "spiffe-san-org::agent-bad-san"
     org_id = "spiffe-san-org"
 
