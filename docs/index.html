@@ -733,6 +733,7 @@ footer {
       <li><a href="#problem">Problem</a></li>
       <li><a href="#features">Features</a></li>
       <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#enterprise">Enterprise</a></li>
       <li><a href="#quickstart">Quick Start</a></li>
       <li><a href="https://github.com/DaenAIHax/agent-trust-network" target="_blank">GitHub</a></li>
     </ul>
@@ -764,16 +765,16 @@ footer {
 <div class="container">
   <div class="stats-bar reveal">
     <div class="stat">
-      <div class="stat-value">350<span class="accent">+</span></div>
+      <div class="stat-value">381<span class="accent">+</span></div>
       <div class="stat-label">Tests passing</div>
     </div>
     <div class="stat">
-      <div class="stat-value">RFC <span class="accent">9449</span></div>
-      <div class="stat-label">DPoP Compliant</div>
+      <div class="stat-value"><span class="accent">3</span></div>
+      <div class="stat-label">Security audit rounds</div>
     </div>
     <div class="stat">
-      <div class="stat-value"><span class="accent">E2E</span></div>
-      <div class="stat-label">Encrypted Messages</div>
+      <div class="stat-value"><span class="accent">7</span></div>
+      <div class="stat-label">CVEs resolved</div>
     </div>
     <div class="stat">
       <div class="stat-value"><span class="accent">0</span></div>
@@ -850,6 +851,36 @@ footer {
         <div class="feature-tag">Standards</div>
         <h3>IETF &amp; CNCF Aligned</h3>
         <p>Built on WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS). No proprietary protocols. No vendor lock-in. Interoperable by design.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">SSO</div>
+        <h3>OIDC Federation</h3>
+        <p>Each organization configures its own IdP &mdash; Okta, Azure AD, Google. OAuth 2.0 Authorization Code with PKCE. Client secrets encrypted at rest via KMS.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Policy Engine</div>
+        <h3>OPA Integration</h3>
+        <p>Open Policy Agent as alternative backend. Rego policies included. Switch from webhook to OPA with a single environment variable. No code changes required.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Commerce</div>
+        <h3>RFQ &amp; Transaction Tokens</h3>
+        <p>Broadcast RFQs to matching suppliers, collect quotes with timeout. Single-use transaction tokens bound to payload hash authorize specific operations after approval.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Developer Portal</div>
+        <h3>Agent Onboarding</h3>
+        <p>Stripe-style developer portal per agent. BYOCA certificate upload, integration guides with Python/TypeScript/cURL snippets, recent activity feed, credential management.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Observability</div>
+        <h3>OpenTelemetry + Jaeger</h3>
+        <p>Distributed traces and metrics via OTLP/gRPC. Custom spans for auth, x509 verification, policy calls. Counters for auth success/deny, session created/denied, rate limit rejects.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">SDKs</div>
+        <h3>Python &amp; TypeScript</h3>
+        <p>Full-lifecycle SDKs: x509 auth, DPoP key management, E2E encryption, message signing, WebSocket streaming. Secret manager support &mdash; private keys never touch disk.</p>
       </div>
     </div>
   </div>
@@ -957,6 +988,40 @@ footer {
   </div>
 </section>
 
+<!-- DASHBOARD & ENTERPRISE -->
+<section id="enterprise">
+  <div class="container">
+    <div class="section-label reveal">Enterprise Ready</div>
+    <h2 class="section-title reveal">Built for production, <br><em>not just demos</em></h2>
+    <p class="section-desc reveal">
+      Multi-role dashboard, one-command deployment, database migrations, health probes,
+      structured logging, and a complete enterprise integration kit.
+    </p>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-tag">Dashboard</div>
+        <h3>Multi-Role Admin</h3>
+        <p>Network admin sees everything. Org admin sees only their agents, sessions, and audit. CSRF protection, security headers, HTMX live badges, dark theme. Zero build step.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Deployment</div>
+        <h3>One-Command Deploy</h3>
+        <p><code>./deploy.sh</code> generates secrets, configures TLS, starts Docker Compose. Dev, production, and Let's Encrypt modes. Vault production unsealing with Shamir 5/3.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Enterprise Kit</div>
+        <h3>Bring Your Own CA</h3>
+        <p>Step-by-step guide for security teams. Docker Compose templates, PDP webhook templates with configurable rules, OPA policy bundle, and interactive quickstart script.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Operations</div>
+        <h3>Production Tooling</h3>
+        <p>Health probes (<code>/healthz</code>, <code>/readyz</code>), Alembic database migrations, PostgreSQL backup with 30-day rotation, structured JSON logging for SIEM, audit export API.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- QUICKSTART -->
 <section id="quickstart">
   <div class="container">
@@ -1056,6 +1121,24 @@ footer {
             <td class="cross">&mdash;</td>
             <td class="cross">&mdash;</td>
             <td class="check">Capability-based</td>
+          </tr>
+          <tr>
+            <td>SSO / OIDC federation</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Partial</td>
+            <td class="check">Per-org IdP + PKCE</td>
+          </tr>
+          <tr>
+            <td>Policy engine</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Webhook + OPA</td>
+          </tr>
+          <tr>
+            <td>Certificate rotation</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">API + Dashboard</td>
           </tr>
         </tbody>
       </table>
