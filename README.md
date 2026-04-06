@@ -87,21 +87,27 @@ Cullis is a **federated trust broker** (credential broker pattern): x509 PKI for
 
 ## Architecture
 
-```
-Org A Agent ──── x509 + SPIFFE ────> Credential Broker <──── x509 + SPIFFE ──── Org B Agent
-                                          │
-                              ┌───────────┼───────────┐
-                              v                       v
-                        Org A PDP                Org B PDP
-                       (webhook/OPA)            (webhook/OPA)
-                        allow/deny               allow/deny
-                              │                       │
-                              └───────> BOTH ─────────┘
-                                    must allow
-                                         │
-                                         v
-                               Short-lived DPoP-bound
-                               credentials issued
+```mermaid
+flowchart TB
+    A["Org A Agent<br><i>x509 + SPIFFE</i>"] -->|client_assertion + DPoP| B["Credential Broker"]
+    C["Org B Agent<br><i>x509 + SPIFFE</i>"] -->|client_assertion + DPoP| B
+
+    B -->|policy query| D["Org A PDP<br><i>webhook / OPA</i>"]
+    B -->|policy query| E["Org B PDP<br><i>webhook / OPA</i>"]
+
+    D -->|allow / deny| F{"Both must allow"}
+    E -->|allow / deny| F
+
+    F -->|allowed| G["Short-lived DPoP-bound<br>credentials issued"]
+    F -->|denied| H["Request rejected"]
+
+    G -->|E2E encrypted session| A
+    G -->|E2E encrypted session| C
+
+    style B fill:#4f46e5,stroke:#6366f1,color:#fff
+    style F fill:#d97706,stroke:#f59e0b,color:#fff
+    style G fill:#059669,stroke:#10b981,color:#fff
+    style H fill:#dc2626,stroke:#ef4444,color:#fff
 ```
 
 **Session flow:** Agent submits signed Task Request Envelope --> Broker verifies x509 + SPIFFE identity --> Broker queries both orgs' PDP webhooks --> Only if both allow, issues DPoP-bound credentials --> All decisions recorded in cryptographic audit ledger.
