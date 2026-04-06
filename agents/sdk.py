@@ -225,7 +225,7 @@ class BrokerClient:
             "display_name": display_name,
             "capabilities": capabilities,
         }
-        resp = self._http.post(f"{self.base}/registry/agents", json=body)
+        resp = self._http.post(f"{self.base}/v1/registry/agents", json=body)
         if resp.status_code == 409:
             return False
         resp.raise_for_status()
