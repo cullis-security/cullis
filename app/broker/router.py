@@ -725,7 +725,7 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
     from app.config import get_settings
     _ws_settings = get_settings()
     _ws_origins = [o.strip() for o in _ws_settings.allowed_origins.split(",") if o.strip()]
-    if "*" not in _ws_origins:
+    if _ws_origins and "*" not in _ws_origins:
         origin = websocket.headers.get("origin", "")
         if origin not in _ws_origins:
             await websocket.close(code=1008)

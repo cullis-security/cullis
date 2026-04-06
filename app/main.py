@@ -43,6 +43,8 @@ logger = logging.getLogger("agent_trust")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.config import validate_config
+    validate_config(settings)
     init_telemetry()
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -80,20 +82,29 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 _cors_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
-_cors_allow_credentials = "*" not in _cors_origins
-if not _cors_allow_credentials:
-    logger.warning(
-        "CORS allow_origins='*' — credentials disabled. "
-        "Set ALLOWED_ORIGINS to specific origins for production."
-    )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_credentials=_cors_allow_credentials,
-    allow_methods=["GET", "POST", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "DPoP"],
-)
+if _cors_origins:
+    if "*" in _cors_origins:
+        logger.warning(
+            "CORS allow_origins='*' — credentials disabled. "
+            "Set ALLOWED_ORIGINS to specific origins for production."
+        )
+        _cors_allow_credentials = False
+    else:
+        _cors_allow_credentials = True
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=_cors_allow_credentials,
+        allow_methods=["GET", "POST", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "DPoP"],
+    )
+else:
+    logger.info(
+        "CORS middleware not enabled — ALLOWED_ORIGINS is empty. "
+        "Set ALLOWED_ORIGINS to allow cross-origin requests."
+    )
 
 
 @app.middleware("http")

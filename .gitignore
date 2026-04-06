@@ -41,3 +41,5 @@ CHANGELOG.md
 .claude/
 enterprise-lab/
 org-node/
+backups/
+vault/vault-keys.json

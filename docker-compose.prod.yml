@@ -56,10 +56,16 @@ services:
 
   vault:
     restart: always
-    # In production, replace dev mode with proper Vault configuration:
-    # - File or Consul storage backend
-    # - TLS enabled
-    # - Unsealing via cloud KMS or Shamir keys
+    # Production mode: file storage, no dev token, manual init+unseal required.
+    # First deploy: ./vault/init-vault.sh
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    command: vault server -config=/vault/config/config.hcl
+    volumes:
+      - ./vault/config.hcl:/vault/config/config.hcl:ro
+      - vault-data:/vault/data
+    cap_add:
+      - IPC_LOCK
 
   nginx:
     restart: always
@@ -74,3 +80,6 @@ services:
     # or an external observability platform (Grafana Tempo, Datadog, etc.)
     restart: always
     ports: []   # Don't expose Jaeger UI publicly — access via SSH tunnel or VPN
+
+volumes:
+  vault-data:

@@ -1,299 +1,169 @@
 # Agent Trust Network (ATN)
 
-> Federated Trust Router and Credential Broker for inter-organizational AI agents.
-> Aligned with IETF WIMSE (Workload Identity in Multi-System Environments) and the emerging CB4A (Credential Broker for Agents) pattern.
+**Zero-trust identity and authorization for AI agent-to-agent communication.**
+
+When your AI agents negotiate with another company's AI agents -- who verifies identity? Who enforces policy? Who audits what happened? ATN is a federated trust broker: x509 PKI for identity, DPoP-bound tokens, end-to-end encrypted messaging, default-deny policy, and a cryptographic audit ledger. Purpose-built infrastructure for the agent-to-agent era.
 
 ---
 
-## The Problem
+## Key Features
 
-As AI agents begin operating across organizational boundaries, a critical security gap emerges. Today's agents rely on long-lived API keys and static OAuth tokens — creating **standing privileges** that aggregate access across services and turn AI gateways into high-value compromise targets.
-
-Organizations cannot blindly trust external agents. They need real-time, fine-grained control over what an agent is authorized to do — without surrendering that control to a centralized operator.
-
----
-
-## The Solution: Federated Trust Router
-
-ATN acts as a **Credential Broker** that physically separates two concerns:
-
-- **The Broker (Credential Delivery Point)** — verifies cryptographic identity, enforces transport integrity, delivers short-lived credentials. It never stores business policies.
-- **Each Organization (Policy Decision Point)** — exposes a webhook that the broker calls in real time. The organization's own IT systems decide allow or deny. The broker only enforces the outcome.
-
-This means the network operator has **zero visibility** into organizational business logic, and organizations have **zero dependency** on a centralized policy engine.
-
-```mermaid
-flowchart TD
-    A["🏢 Org A Agent"] -- "1. Task Request Envelope\n(x509 + SPIFFE signed)" --> B["🔐 Credential Broker\n(Trust Router / CDP)"]
-    B -- "2. Policy query" --> D["Org A PDP Webhook\n(Org A IT systems)"]
-    B -- "2. Policy query" --> E["Org B PDP Webhook\n(Org B IT systems)"]
-    D -- "allow / deny" --> B
-    E -- "allow / deny" --> B
-    B -- "3. Short-lived DPoP-bound\ncredentials (only if both allow)" --> A
-    B -- "3. Short-lived DPoP-bound\ncredentials (only if both allow)" --> C["🏭 Org B Agent"]
-```
-
-**Session Flow:**
-
-```mermaid
-sequenceDiagram
-    participant A as Org A Agent
-    participant B as Credential Broker
-    participant PA as Org A PDP
-    participant PB as Org B PDP
-    participant C as Org B Agent
-
-    A->>B: 1. Session request + signed Task Request Envelope
-    B->>B: 2. Verify x509 identity + SPIFFE SAN
-    par Policy check
-        B->>PA: 3. Policy query (request context)
-        B->>PB: 3. Policy query (request context)
-    end
-    PA-->>B: allow / deny
-    PB-->>B: allow / deny
-    Note over B: Proceed only if BOTH return allow
-    B->>A: 4. Issue short-lived DPoP-bound credentials
-    B->>C: 4. Issue short-lived DPoP-bound credentials
-    B->>B: 5. Record decisions in immutable audit ledger
-```
-
-**Session Flow (summary):**
-1. Agent A submits a session request with a signed Task Request Envelope.
-2. The Broker verifies the cryptographic workload identity (x509 + SPIFFE).
-3. The Broker calls **both** organizations' PDP webhooks with the request context.
-4. Only if both return `allow`, the Broker issues short-lived, DPoP-bound credentials.
-5. All decisions are recorded in an immutable audit ledger.
-
----
-
-## Security Architecture
-
-### Workload Identity — WIMSE Aligned
-
-Agents authenticate via a **3-tier PKI model**: Broker CA > Org CA > Agent Certificate. Each agent carries a SPIFFE-style identity (`spiffe://trust-domain/org/agent`) embedded in the x509 SAN.
-
-```mermaid
-flowchart TD
-    ROOT["🔐 Broker Root CA\n(RSA 4096, KMS-backed)"]
-    ROOT --> ORGA["🏢 Org A CA\n(uploaded at onboarding)"]
-    ROOT --> ORGB["🏭 Org B CA\n(uploaded at onboarding)"]
-    ORGA --> A1["Agent A1\nspiffe://atn/orgA/agent1"]
-    ORGA --> A2["Agent A2\nspiffe://atn/orgA/agent2"]
-    ORGB --> B1["Agent B1\nspiffe://atn/orgB/agent1"]
-```
-
-No passwords. No API keys. No shared secrets between organizations.
-
-### DPoP Token Binding — RFC 9449
-
-Every access token is **bound to an ephemeral key** held by the agent (Demonstrating Proof of Possession). Even if a token is intercepted, it cannot be used without the agent's private key.
-
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant Broker
-
-    Agent->>Agent: Generate ephemeral EC P-256 key pair
-    Agent->>Broker: Token request + DPoP proof (signed with ephemeral key)
-    Broker->>Broker: Verify DPoP proof signature
-    Broker-->>Agent: Access token (bound to JWK thumbprint) + server nonce
-    Agent->>Broker: API request + token + new DPoP proof (nonce, method, URL, token hash)
-    Broker->>Broker: Verify token binding + proof + nonce + JTI uniqueness
-    Broker-->>Agent: Response
-```
-
-- Ephemeral EC P-256 key pair per session
-- Per-request DPoP proof (method + URL + token hash)
-- **Server Nonce (RFC 9449 §8)** — server-issued nonce rotated every 5 min, eliminates clock skew
-- JTI replay protection with strict time window
-- Mandatory on every endpoint — plain Bearer tokens are rejected
+### Identity & Authentication
+- **3-tier PKI** -- Broker CA > Org CA > Agent Certificate with SPIFFE identity (`spiffe://trust-domain/org/agent`)
+- **DPoP token binding (RFC 9449)** -- every token bound to an ephemeral EC P-256 key; server nonce rotation (Section 8)
+- **Certificate thumbprint pinning** -- SHA-256 pinned at first login, prevents rogue CA swaps
+- **Certificate rotation** -- API and dashboard with CA chain validation
+- **OIDC federation** -- Okta, Azure AD, Google; per-org IdP config, PKCE, client secret encrypted at rest via KMS
+- **JWKS endpoint** -- `/.well-known/jwks.json` with `kid` (RFC 7517 / RFC 7638)
 
 ### End-to-End Encrypted Messaging
+- **AES-256-GCM** payload encryption with session-bound AAD + client sequence number (anti-reordering)
+- **RSA-OAEP-SHA256** key encapsulation
+- **Two-layer RSA-PSS signing** -- inner (non-repudiation) + outer (transport integrity)
+- The broker **never reads message plaintext** -- zero-knowledge forwarding
 
-The broker **never reads message plaintext**. Every message uses hybrid encryption:
+### Federated Policy
+- **PDP webhooks** -- broker calls both organizations; proceeds only if both return `allow`
+- **OPA integration** -- Open Policy Agent as alternative backend; Rego policies included
+- **Dual-org evaluation** -- each organization retains full sovereignty over authorization
+- **Capability-scoped sessions** -- requested capabilities must be authorized in both parties' bindings
 
-```mermaid
-flowchart LR
-    subgraph Sender
-        P["Plaintext"] --> AES["AES-256-GCM\n(session AAD)"]
-        AES --> IS["Inner RSA-PSS\nSignature\n(non-repudiation)"]
-        IS --> OS["Outer RSA-PSS\nSignature\n(transport integrity)"]
-    end
-    OS --> BR["Broker\nverifies outer sig\ncannot read plaintext"]
-    BR --> R["Recipient\nverifies inner sig\ndecrypts payload"]
+### Discovery & Transactions
+- **Enhanced discovery** -- multi-mode: agent_id, SPIFFE URI, org_id, glob pattern, capability; filters combinable
+- **RFQ broadcast** -- find matching suppliers, evaluate policy, broadcast, collect quotes with timeout
+- **Transaction tokens** -- single-use, TTL-bound, payload-hash-verified (RFC 8693 actor chain)
+
+### Observability & Audit
+- **Cryptographic audit ledger** -- append-only, SHA-256 hash chain, tamper detection, verification endpoint
+- **Audit export** -- NDJSON and CSV with date/org/event filters; SIEM-ready (Splunk, Datadog, ELK)
+- **OpenTelemetry + Jaeger** -- auto-instrumentation (FastAPI, SQLAlchemy, Redis, HTTPX) + custom spans and metrics
+- **Structured JSON logging** -- `LOG_FORMAT=json` for SIEM ingestion
+- **Health probes** -- `/healthz` (liveness) + `/readyz` (readiness: DB + Redis + KMS)
+
+### Security
+- **3 security audit rounds** -- 100+ findings analyzed and fixed
+- **PyJWT migration** -- replaced python-jose, fixing CVE-2024-33663 and CVE-2024-33664
+- **CSRF protection** -- per-session token, timing-safe verification on every POST
+- **Security headers** -- CSP, X-Frame-Options DENY, HSTS, nosniff, Referrer-Policy, Permissions-Policy
+- **Input validation** -- regex on org_id/agent_id, UUID format on session_id, webhook URL scheme check
+- **WebSocket hardening** -- Origin validation, auth timeout, connection limits, binding check
+- **Rate limiting** -- sliding window per-endpoint, per-agent (in-memory or Redis)
+- **EC curve whitelist** -- only P-256, P-384, P-521 accepted
+- **Session state locking** -- atomic transitions, eviction of expired sessions
+
+---
+
+## Architecture
+
+```
+Org A Agent ──── x509 + SPIFFE ────> Credential Broker <──── x509 + SPIFFE ──── Org B Agent
+                                          │
+                              ┌───────────┼───────────┐
+                              v                       v
+                        Org A PDP                Org B PDP
+                       (webhook/OPA)            (webhook/OPA)
+                        allow/deny               allow/deny
+                              │                       │
+                              └───────> BOTH ─────────┘
+                                    must allow
+                                         │
+                                         v
+                               Short-lived DPoP-bound
+                               credentials issued
 ```
 
-- **AES-256-GCM** for payload encryption (session-bound AAD prevents cross-session replay)
-- **RSA-OAEP-SHA256** for key encapsulation
-- **Two-layer RSA-PSS signing**: inner signature for non-repudiation (recipient verifies sender), outer signature for transport integrity (broker verifies sender before forwarding)
+**Session flow:** Agent submits signed Task Request Envelope --> Broker verifies x509 + SPIFFE identity --> Broker queries both orgs' PDP webhooks --> Only if both allow, issues DPoP-bound credentials --> All decisions recorded in cryptographic audit ledger.
 
-### Federated Policy (PDP Webhooks + OPA)
-
-Each organization registers a webhook at onboarding. For every session request, the broker calls both organizations' webhooks and proceeds **only if both return allow**. If an organization has no webhook configured, the PDP check is skipped for that org (the session policy engine still applies).
-
-Alternatively, set `POLICY_BACKEND=opa` to use **Open Policy Agent** as the policy engine. ATN ships with Rego policies and a ready-to-deploy OPA sidecar (`enterprise-kit/opa/`). The webhook and OPA backends share the same interface — switching requires only an environment variable change.
-
-The local policy engine also enforces **dual-org evaluation**: session policies from both the initiator and target organization must allow the session. Organizations retain full sovereignty over authorization decisions. The broker is a neutral enforcer.
-
-### Immutable Audit Trail
-
-Every authentication, session, message, and policy decision is recorded in an **append-only cryptographic ledger** with SHA-256 hash chaining. Each entry's hash includes the previous entry's hash — any tampering (insert, modify, delete, reorder) breaks the chain and is immediately detectable.
-
-No UPDATE or DELETE operations on audit records. Verification endpoint validates the entire chain. Admin export API (`GET /v1/admin/audit/export`) supports NDJSON and CSV with date range and org filters — ready for SIEM ingestion (Splunk, Datadog, ELK).
-
-### Enterprise KMS Integration
-
-The broker's root signing key never lives on disk in production. ATN implements a **KMS Adapter pattern**:
-
-```
-KMS_BACKEND=local   -> filesystem (dev/test)
-KMS_BACKEND=vault   -> HashiCorp Vault KV v2 (production default)
-KMS_BACKEND=azure   -> Azure Key Vault       (add provider, swap env var)
-KMS_BACKEND=aws     -> AWS KMS               (add provider, swap env var)
-```
-
-Changing the backend requires zero code changes — only a different environment variable.
-
-### Additional Security Controls
-
-- **Certificate Thumbprint Pinning** — SHA-256 thumbprint pinned at first login, prevents rogue CA certificate swaps
-- **Certificate Rotation** — explicit rotation via API and dashboard with CA chain validation
-- **Certificate revocation** — block compromised agent certificates immediately, sessions closed + WebSocket disconnected on binding revoke
-- **Token revocation** — self-service and admin-initiated token invalidation
-- **EC curve whitelist** — only P-256, P-384, P-521 accepted for agent certificates
-- **Rate limiting** — sliding window per-endpoint, per-agent (auth, message send, message poll, onboarding)
-- **Capability-scoped sessions** — requested capabilities must be authorized in both parties' bindings
-- **Input validation** — regex patterns on org_id, agent_id, UUID format on session_id; prevents injection and SPIFFE ID corruption
-- **WebSocket hardening** — Origin validation, auth timeout (10s), connection limits per org, binding check on connect
-- **Session state locking** — atomic accept/reject/close transitions, eviction of expired sessions, memory DoS protection
+**KMS backends:** local filesystem (dev), HashiCorp Vault KV v2 (production), extensible to AWS KMS / Azure Key Vault.
 
 ---
 
-## Operational Features
-
-### Real-Time WebSocket Messaging
-Agents receive session invitations and messages via WebSocket push with automatic REST polling fallback. The broker pushes events; agents do not poll.
-
-### Capability Discovery
-Agents can discover other agents by capability across the network. The broker returns only agents from other organizations with matching approved capabilities.
-
-### Self-Service Onboarding
-Organizations join the network via a structured onboarding flow (request > admin review > approve/reject). Each organization uploads its own CA certificate and registers its PDP webhook.
-
-### Multi-Role Admin Dashboard
-A built-in web dashboard at `/dashboard` with role-based access control:
-
-- **Network Admin** — full visibility: all organizations, agents, sessions, audit log. Can onboard new organizations (upload CA cert + webhook URL), approve/reject pending orgs, register and delete agents.
-- **Organization** — scoped view: sees only own agents, own sessions, own audit events. Can register agents for own org only. Cannot access admin-only pages.
-
-Agent registration from the dashboard automatically constructs the agent ID (`org::name`), creates and approves the binding. Login via signed cookie (HMAC-SHA256) with CSRF protection. Security headers (CSP, X-Frame-Options, HSTS). Live notification badges (HTMX auto-refresh). Dark theme, Tailwind CSS, zero build step.
-
-### Enterprise Integration Kit
-A self-contained kit for onboarding customer organizations:
-
-- **Bring Your Own CA guide** — step-by-step for the customer's security team
-- **Docker Compose template** — deploy agent + PDP webhook in customer infrastructure
-- **PDP webhook template** — configurable rules (allowed orgs, capabilities, blocked agents), optional OPA forwarding
-- **OPA policy bundle** — Rego session policy + config data + Docker Compose with OPA sidecar
-- **Quickstart script** — generates CA, agent cert, registers org in one command
-
-### Agent SDK
-A Python SDK (`agents/sdk.py`) handles the full lifecycle: x509 authentication, DPoP key management, session negotiation, E2E encryption, message signing, and WebSocket streaming.
-
----
-
-## Numbers
-
-| Metric | Value |
-|--------|-------|
-| Broker codebase | ~60 Python modules + templates, ~11,000 lines |
-| Test suite | 30 test files, 350+ tests |
-| Test coverage | Auth, DPoP, broker, crypto, policy, OPA, revocation, rate limiting, WebSocket, E2E, dashboard, CSRF, security headers, cert pinning, KMS encryption, health probes, audit export, input validation, session locking, dual-org policy |
-| Security audits | 2 rounds, 44 findings analyzed, 33 confirmed and fixed |
-| Standards referenced | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS) |
-
----
-
-## Roadmap
-
-| Feature | Status |
-|---------|--------|
-| x509 PKI + SPIFFE identity | Done |
-| JWT RS256 access tokens | Done |
-| DPoP token binding (RFC 9449) | Done |
-| E2E AES-256-GCM + RSA-OAEP | Done |
-| Two-layer RSA-PSS message signing | Done |
-| Immutable audit log | Done |
-| Federated PDP Webhooks | Done |
-| KMS Adapter (Vault KV v2) | Done |
-| WebSocket real-time push | Done |
-| Rate limiting | Done |
-| Certificate thumbprint pinning | Done |
-| Certificate + token revocation | Done |
-| Capability discovery | Done |
-| Docker Compose + one-command setup | Done |
-| Redis Pub/Sub (horizontal scaling) | Done |
-| Multi-role admin dashboard | Done |
-| Dashboard security (CSRF, headers, input validation) | Done |
-| Enterprise integration kit (BYOCA, templates, PDP) | Done |
-| Capability-only auth (roles removed) | Done |
-| ERP-triggered demo scenario | Done |
-| Session policy management from dashboard | Done |
-| OpenTelemetry observability | Done |
-| DPoP Server Nonce (RFC 9449 Section 8) | Done |
-| Alembic database migrations | Done |
-| API versioning (`/v1/`) | Done |
-| JWKS endpoint + kid in JWT (RFC 7517) | Done |
-| E2E AAD with client sequence number (anti-reordering) | Done |
-| Structured JSON logging (SIEM-ready) | Done |
-| Audit log hash chain (SHA-256, tamper detection) | Done |
-| OIDC federation (org + network admin login) | Done |
-| OIDC client secret encryption at rest (KMS) | Done |
-| Health/readiness probes (`/healthz`, `/readyz`) | Done |
-| Audit log export API (JSON/CSV, admin-only) | Done |
-| OPA as alternative policy engine | Done |
-| Async-safe locks (threading.Lock → asyncio.Lock) | Done |
-| Security audit Round 2 (28 findings fixed) | Done |
-| 3-VM enterprise demo lab (ERPNext + Odoo) | In Progress |
-| Transaction tokens (per-operation authorization) | Planned |
-| MCP proxy (cross-org tool invocation) | Planned |
-| Supply chain traceability ledger | Planned |
-| Multi-broker trust federation | Planned |
-| TypeScript SDK | Planned |
-| Beckn protocol (agent-to-agent commerce) | Planned |
-
----
-
-## Deployment
-
-ATN is designed for **private hub** or **managed network** deployments:
+## Quick Start
 
 ```bash
-# One-command setup (PKI + Docker + Vault + bootstrap)
+# One-command setup: PKI + Docker + Vault + bootstrap
 ./setup.sh
 
-# Services started:
-#   Broker    http://localhost:8000
-#   Dashboard http://localhost:8000/dashboard
-#   Vault     http://localhost:8200
-#   Postgres  localhost:5432
-#   Redis     localhost:6379
+# Services:
+#   Broker + Dashboard   http://localhost:8000
+#   Nginx HTTPS          https://localhost:8443
+#   Vault                http://localhost:8200
+#   Jaeger UI            http://localhost:16686
+#   PostgreSQL           localhost:5432
+#   Redis                localhost:6379
 
-# Tear down:
+# Tear down
 docker compose down -v
 ```
 
-After setup, use the **admin dashboard** to onboard organizations, register agents, and create session policies. Agents connect using x509 certificates issued by their organization's CA.
+After setup, use the admin dashboard at `/dashboard` to onboard organizations, register agents, and manage policies. See `enterprise-kit/` for integration guides, PDP webhook templates, and quickstart scripts.
 
-See the `enterprise-kit/` directory for integration guides, PDP webhook templates, and quickstart scripts for onboarding new organizations.
+**Production deployment:** `.env.example` with tagged secrets, `docker-compose.prod.yml` with resource limits and restart policies, `docs/ops-runbook.md` with 9 operational sections. Alembic migrations for schema versioning. API versioned under `/v1/`.
 
-**Cloud-agnostic by design.** No dependency on AWS, Azure, or GCP APIs. Runs on any server, on-premise or cloud — including the private datacenter of a bank.
+---
+
+## SDKs
+
+### Python
+
+```python
+from agents.sdk import BrokerClient
+
+client = BrokerClient(broker_url="https://localhost:8443", verify_tls=False)
+client.login(agent_id="buyer", org_id="acme", cert_path="agent.pem", key_path="agent-key.pem")
+
+# Or load credentials from a secret manager (key never on disk)
+client.login_from_pem(agent_id="buyer", org_id="acme", cert_pem=cert_str, key_pem=key_str)
+
+# Discover, negotiate, send E2E encrypted messages
+agents = client.discover(capability="supply")
+session = client.create_session(target_agent="supplier::widgets-corp", capabilities=["supply"])
+client.send_message(session["session_id"], {"order": "100 units"})
+```
+
+### TypeScript
+
+```typescript
+import { BrokerClient } from '@atn/sdk';
+
+const client = new BrokerClient({ brokerUrl: 'https://localhost:8443' });
+await client.login({ agentId: 'buyer', orgId: 'acme', certPath: 'agent.pem', keyPath: 'agent-key.pem' });
+
+const agents = await client.discover({ capability: 'supply' });
+const session = await client.createSession({ targetAgent: 'supplier::widgets-corp', capabilities: ['supply'] });
+await client.sendMessage(session.sessionId, { order: '100 units' });
+```
+
+Full SDK source in `agents/sdk.py` (Python) and `sdk-ts/` (TypeScript).
+
+---
+
+## Enterprise Features
+
+### Agent Developer Portal
+Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials management, BYOCA certificate upload (production) or demo cert generation (dev), integration guide with Python/TypeScript/cURL tabs, and recent activity feed.
+
+### Enterprise Demo Lab
+3-VM lab with real ERP/CRM integration:
+- **ERPNext v15** -- stock monitoring, reorder triggers, Purchase Order creation
+- **Odoo CE v17** -- product catalog, price lists, Sale Order creation
+- Buyer and supplier agents negotiate via ATN, creating real orders in both systems
+
+### Enterprise Integration Kit
+- Bring Your Own CA guide for customer security teams
+- Docker Compose template for agent + PDP webhook deployment
+- PDP webhook template with configurable rules + optional OPA forwarding
+- OPA policy bundle with Rego policies and Docker Compose sidecar
+- Quickstart script -- generates CA, agent cert, registers org in one command
+
+### Multi-Role Dashboard
+- **Network Admin** -- full visibility, org onboarding, agent management, audit chain verification
+- **Organization** -- scoped to own agents, sessions, audit events
+- Self-registration, OIDC SSO, CSRF protection, security headers, dark theme (Tailwind + HTMX)
 
 ---
 
 ## Positioning
-
-ATN is not an Identity Provider (Okta) nor an API Gateway (Kong). It is purpose-built infrastructure for the AI agent era:
 
 | | Traditional IAM | AI Proxy/Gateway | **ATN** |
 |---|---|---|---|
@@ -302,15 +172,39 @@ ATN is not an Identity Provider (Okta) nor an API Gateway (Kong). It is purpose-
 | Policy location | Centralized | Centralized | **Federated (each org decides)** |
 | Credential lifetime | Long-lived | Long-lived | **Short-lived, scoped** |
 | Message security | None | TLS termination | **E2E encrypted + dual-signed** |
-| Audit | Application logs | Access logs | **Cryptographic append-only ledger** |
+| Audit | Application logs | Access logs | **Cryptographic hash-chained ledger** |
 | On-premise | Sometimes | Rarely | **Always** |
+
+---
+
+## Numbers
+
+| Metric | Value |
+|--------|-------|
+| Broker codebase | ~60 Python modules + templates, ~11,000 lines |
+| Test suite | 34 test files, 350+ tests |
+| Security audits | 3 rounds, 100+ findings analyzed and fixed |
+| CVEs resolved | 7 (cryptography, python-jose, python-multipart, starlette) |
+| Standards | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS), RFC 8693 (Token Exchange) |
 
 ---
 
 ## Tech Stack
 
-Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, Redis, cryptography (RSA 4096, x509, EC P-256), PyJWT RS256, HashiCorp Vault, Alembic, Open Policy Agent, OpenTelemetry + Jaeger, WebSocket (FastAPI native), Authlib (OIDC), Anthropic SDK.
+Python 3.11, FastAPI, SQLAlchemy async, PostgreSQL 16, Redis, PyJWT RS256, cryptography (RSA 4096, x509, EC P-256), HashiCorp Vault, Alembic, Open Policy Agent, OpenTelemetry + Jaeger, Authlib (OIDC), Nginx TLS, Docker Compose. TypeScript SDK for Node.js.
 
 ---
 
-*If agents are to operate securely across organizations, we need a way to trust them, control them, and audit them — without centralizing power in a single operator. ATN provides the infrastructure to make this possible.*
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, PR workflow, and code conventions.
+
+Security vulnerabilities: see [SECURITY.md](SECURITY.md) for private reporting guidelines.
+
+## License
+
+[Apache License 2.0](LICENSE)
+
+---
+
+*If agents are to operate securely across organizations, we need a way to trust them, control them, and audit them -- without centralizing power in a single operator. ATN provides the infrastructure to make this possible.*

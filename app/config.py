@@ -1,3 +1,6 @@
+import logging
+import pathlib
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -16,7 +19,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./agent_trust.db"
 
     require_cert_validation: bool = False
-    allowed_origins: str = "*"
+    allowed_origins: str = ""
+
+    environment: str = "development"  # "development" or "production"
 
     app_version: str = "0.1.0"
 
@@ -73,6 +78,51 @@ class Settings(BaseSettings):
 
 
 _INSECURE_DEFAULT_SECRET = "change-me-in-production"
+_INSECURE_VAULT_TOKEN = "dev-root-token"
+_startup_logger = logging.getLogger("agent_trust.startup")
+
+
+def validate_config(settings: "Settings") -> None:
+    """Validate broker configuration at startup.
+
+    Raises SystemExit for fatal mis-configurations in production.
+    Logs warnings for non-critical issues in any mode.
+    """
+    is_production = settings.environment == "production"
+
+    # ── Fatal checks (production only) ─────────────────────────────────────
+    if is_production:
+        if not settings.database_url or settings.database_url.startswith("sqlite"):
+            _startup_logger.critical(
+                "DATABASE_URL is not set or points to SQLite ('%s'). "
+                "Production requires PostgreSQL.", settings.database_url)
+            raise SystemExit(1)
+
+        if not pathlib.Path(settings.broker_ca_key_path).exists():
+            _startup_logger.critical(
+                "BROKER_CA_KEY_PATH '%s' does not exist on disk.",
+                settings.broker_ca_key_path)
+            raise SystemExit(1)
+
+        if settings.admin_secret == _INSECURE_DEFAULT_SECRET:
+            _startup_logger.critical(
+                "ADMIN_SECRET is still the insecure default in production.")
+            raise SystemExit(1)
+
+    # ── Warning checks (all environments) ──────────────────────────────────
+    if not is_production and settings.admin_secret == _INSECURE_DEFAULT_SECRET:
+        _startup_logger.warning("ADMIN_SECRET is the insecure default — acceptable in dev only.")
+
+    if not settings.redis_url:
+        _startup_logger.warning("REDIS_URL not set — falling back to in-memory stores.")
+
+    if settings.vault_token == _INSECURE_VAULT_TOKEN:
+        _startup_logger.warning("VAULT_TOKEN is the default dev token '%s'.", _INSECURE_VAULT_TOKEN)
+
+    if settings.allowed_origins.strip() == "*":
+        _startup_logger.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
+
+    _startup_logger.info("Startup validation passed (environment=%s).", settings.environment)
 
 
 @lru_cache
