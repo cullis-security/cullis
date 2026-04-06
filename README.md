@@ -141,12 +141,6 @@ Full SDK source in `agents/sdk.py` (Python) and `sdk-ts/` (TypeScript).
 ### Agent Developer Portal
 Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials management, BYOCA certificate upload (production) or demo cert generation (dev), integration guide with Python/TypeScript/cURL tabs, and recent activity feed.
 
-### Enterprise Demo Lab
-3-VM lab with real ERP/CRM integration:
-- **ERPNext v15** -- stock monitoring, reorder triggers, Purchase Order creation
-- **Odoo CE v17** -- product catalog, price lists, Sale Order creation
-- Buyer and supplier agents negotiate via Cullis, creating real orders in both systems
-
 ### Enterprise Integration Kit
 - Bring Your Own CA guide for customer security teams
 - Docker Compose template for agent + PDP webhook deployment
