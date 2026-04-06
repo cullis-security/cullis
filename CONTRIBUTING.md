@@ -20,12 +20,11 @@ pip install -r requirements.txt
 pytest tests/ -v
 
 # Full setup (Docker + PKI + Vault)
-./setup.sh
+./deploy.sh
 ```
 
 ## Code Conventions
 
-- **Language:** All code, comments, logs, and docstrings must be in **English**
 - **Async:** All DB and HTTP code uses async/await
 - **Type hints:** Required on all public functions
 - **Pydantic:** Every endpoint uses Pydantic schemas for request/response
@@ -47,7 +46,6 @@ pytest tests/ -v
 Before submitting, verify:
 
 - [ ] All tests pass (`pytest tests/ -v`)
-- [ ] New code is in English (no other languages in code/comments)
 - [ ] Type hints added to public functions
 - [ ] No secrets, private keys, or credentials in the code
 - [ ] New endpoints have Pydantic schemas
