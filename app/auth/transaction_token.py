@@ -9,11 +9,17 @@ Flow:
   4. Broker validates and consumes the token (single-use)
   5. Audit log records the full chain: RFQ → approval → execution
 """
+from __future__ import annotations
+
 import hashlib
 import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.auth.models import TokenPayload
 
 import jwt
 from sqlalchemy import select
