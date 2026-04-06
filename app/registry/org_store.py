@@ -32,6 +32,10 @@ class OrganizationRecord(Base):
     def oidc_enabled(self) -> bool:
         return bool(self.oidc_issuer_url and self.oidc_client_id)
 
+    @property
+    def extra(self) -> dict:
+        return json.loads(self.metadata_json)
+
 
 # Pre-computed dummy hash to ensure constant-time org secret verification
 # even when the org does not exist (prevents timing-based org enumeration).
@@ -45,10 +49,6 @@ def verify_org_credentials(org: "OrganizationRecord | None", secret: str) -> boo
         bcrypt.checkpw(secret.encode(), _DUMMY_HASH.encode())
         return False
     return org.verify_secret(secret)
-
-    @property
-    def extra(self) -> dict:
-        return json.loads(self.metadata_json)
 
 
 async def register_org(

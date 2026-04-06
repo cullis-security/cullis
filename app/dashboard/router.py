@@ -84,12 +84,23 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
         })
 
     # Check if it's the admin
-    import hmac as _hmac
-    from app.config import get_settings
-    if user_id == "admin" and _hmac.compare_digest(password, get_settings().admin_secret):
-        response = RedirectResponse(url="/dashboard", status_code=303)
-        set_session(response, role="admin")
-        return response
+    if user_id == "admin":
+        from app.kms.admin_secret import get_admin_secret_hash, verify_admin_password
+        stored_hash = await get_admin_secret_hash()
+        if verify_admin_password(password, stored_hash):
+            response = RedirectResponse(url="/dashboard", status_code=303)
+            set_session(response, role="admin")
+            return response
+        # Fallback: compare with .env plaintext secret.
+        # Covers: Vault down (stored_hash is None), stale local hash
+        # file from a previous deployment, or CI environments without
+        # a KMS backend.
+        import hmac as _hmac
+        from app.config import get_settings
+        if _hmac.compare_digest(password, get_settings().admin_secret):
+            response = RedirectResponse(url="/dashboard", status_code=303)
+            set_session(response, role="admin")
+            return response
 
     # Otherwise try as org
     from app.registry.org_store import verify_org_credentials
@@ -182,6 +193,83 @@ async def register_submit(request: Request, db: AsyncSession = Depends(get_db)):
         "request": request, "form": {}, "error": None,
         "success": org_id,
     })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin Settings (change admin password)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/admin/settings", response_class=HTMLResponse)
+async def admin_settings_page(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    from app.kms.admin_secret import get_admin_secret_hash
+    from app.config import get_settings
+    stored_hash = await get_admin_secret_hash()
+    return templates.TemplateResponse("admin_settings.html",
+        _ctx(request, session, active="admin_settings", error=None, success=None,
+             kms_backend=get_settings().kms_backend, hash_present=stored_hash is not None))
+
+
+@router.post("/admin/settings/password", response_class=HTMLResponse)
+async def admin_change_password(request: Request, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
+
+    from app.config import get_settings
+    settings = get_settings()
+
+    form = await request.form()
+    current_password = form.get("current_password", "")
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+
+    def _err(msg: str):
+        return templates.TemplateResponse("admin_settings.html",
+            _ctx(request, session, active="admin_settings", error=msg, success=None,
+                 kms_backend=settings.kms_backend, hash_present=True))
+
+    if not current_password or not new_password or not confirm_password:
+        return _err("All fields are required.")
+
+    if new_password != confirm_password:
+        return _err("New passwords do not match.")
+
+    if len(new_password) < 12:
+        return _err("Password must be at least 12 characters.")
+
+    # Verify current password
+    from app.kms.admin_secret import get_admin_secret_hash, verify_admin_password, set_admin_secret_hash
+    stored_hash = await get_admin_secret_hash()
+    if not verify_admin_password(current_password, stored_hash):
+        # Fallback to .env if no hash in backend
+        if stored_hash is not None:
+            return _err("Current password is incorrect.")
+        import hmac as _hmac
+        if not _hmac.compare_digest(current_password, settings.admin_secret):
+            return _err("Current password is incorrect.")
+
+    # Hash and store
+    import bcrypt
+    new_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    await set_admin_secret_hash(new_hash)
+
+    await log_event(db, "admin.password_changed", "ok",
+                    details={"source": "dashboard"})
+
+    return templates.TemplateResponse("admin_settings.html",
+        _ctx(request, session, active="admin_settings", error=None,
+             success="Admin password updated successfully.",
+             kms_backend=settings.kms_backend, hash_present=True))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ async def _admin_ctx(client: AsyncClient) -> tuple[dict, str]:
 async def _org_cookies(client: AsyncClient, org_id: str, org_secret: str) -> dict:
     """Login as org and return cookies dict."""
     resp = await client.post("/dashboard/login", data={
-        "login_type": "org", "org_id": org_id, "org_secret": org_secret,
+        "user_id": org_id, "password": org_secret,
     }, follow_redirects=False)
     assert resp.status_code == 303
     return dict(resp.cookies)

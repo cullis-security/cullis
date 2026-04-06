@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await init_db()
+    from app.kms.admin_secret import ensure_bootstrapped
+    await ensure_bootstrapped()
     await init_redis(settings.redis_url)
     from app.broker.ws_manager import ws_manager
     await ws_manager.init_redis()

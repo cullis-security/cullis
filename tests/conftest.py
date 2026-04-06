@@ -75,6 +75,38 @@ def pytest_configure(config):
     jwt_module._broker_public_key_pem = pub_pem
 
 
+@pytest.fixture(autouse=True)
+def _inject_kms_provider():
+    """
+    Replace the KMS singleton with an in-memory provider backed by the
+    ephemeral broker key from cert_factory.  This avoids reading
+    certs/broker-ca-key.pem from disk, which doesn't exist in CI.
+    """
+    from tests.cert_factory import init_broker_keys
+    from app.kms.secret_encrypt import encrypt_secret, decrypt_secret
+
+    priv_pem, pub_pem = init_broker_keys()
+
+    class _EphemeralKMS:
+        async def get_broker_private_key_pem(self) -> str:
+            return priv_pem
+
+        async def get_broker_public_key_pem(self) -> str:
+            return pub_pem
+
+        async def encrypt_secret(self, plaintext: str) -> str:
+            return encrypt_secret(priv_pem, plaintext)
+
+        async def decrypt_secret(self, stored: str) -> str:
+            return decrypt_secret(priv_pem, stored)
+
+    import app.kms.factory as kms_mod
+    old = kms_mod._provider
+    kms_mod._provider = _EphemeralKMS()
+    yield
+    kms_mod._provider = old
+
+
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def setup_db():
     async with test_engine.begin() as conn:
@@ -90,6 +122,22 @@ def reset_rate_limiter():
     rate_limiter._windows.clear()
     yield
     rate_limiter._windows.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_admin_secret_cache():
+    """Reset the module-level admin secret cache between tests.
+
+    Without this, a stale bcrypt hash cached by a prior test (or
+    bootstrapped from a local file written during a previous CI step)
+    can cause admin login to fail: verify_admin_password() rejects
+    the password against the wrong hash, and the hmac fallback is
+    skipped because stored_hash is not None.
+    """
+    import app.kms.admin_secret as _admin_mod
+    _admin_mod._cached_hash = None
+    yield
+    _admin_mod._cached_hash = None
 
 
 @pytest.fixture(autouse=True)

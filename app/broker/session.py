@@ -56,8 +56,16 @@ class Session:
 
         The DB (via ``save_message`` ON CONFLICT) is the source of truth;
         this cache prevents an unnecessary DB round-trip for obvious replays.
+
+        When the cache is at capacity, unknown nonces are treated as
+        duplicates to prevent unbounded memory growth (DoS protection).
         """
-        return nonce in self.used_nonces
+        if nonce in self.used_nonces:
+            return True
+        # Capacity limit: reject new nonces when cache is full
+        if len(self.used_nonces) >= self._MAX_NONCES:
+            return True
+        return False
 
     def cache_nonce(self, nonce: str) -> None:
         """Record a nonce in the in-memory cache after successful DB insert.
