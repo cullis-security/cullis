@@ -39,6 +39,10 @@
                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-400">
                             <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>Pending
                         </span>
+                        {% elif org.status == 'suspended' %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/10 text-orange-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-orange-500"></span>Suspended
+                        </span>
                         {% else %}
                         <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-500/10 text-red-400">
                             <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>{{ org.status }}
@@ -57,7 +61,8 @@
                         {% if org.ca_certificate %}
                         <span class="text-xs text-emerald-400">Uploaded</span>
                         {% else %}
-                        <span class="text-xs text-gray-600">Missing</span>
+                        <a href="/dashboard/orgs/{{ org.org_id }}/upload-ca"
+                           class="px-2 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded">Upload CA</a>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4">
@@ -83,7 +88,23 @@
                             <button class="px-2 py-1 text-xs bg-yellow-600 hover:bg-yellow-700 text-white rounded"
                                     onclick="return confirm('Unlock CA certificate for {{ org.org_id }}?')">Unlock CA</button>
                         </form>
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/suspend" class="inline ml-1">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button class="px-2 py-1 text-xs bg-orange-600 hover:bg-orange-700 text-white rounded"
+                                    onclick="return confirm('Suspend organization {{ org.org_id }}? All agents will be unable to authenticate.')">Suspend</button>
+                        </form>
+                        {% elif org.status == 'suspended' %}
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/approve" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button class="px-2 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded">Reactivate</button>
+                        </form>
                         {% endif %}
+                        <form method="post" action="/dashboard/orgs/{{ org.org_id }}/delete" class="inline ml-1"
+                              onsubmit="return confirm('Delete organization {{ org.org_id }} and ALL its agents? This cannot be undone.')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit"
+                                    class="px-2 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded">Delete</button>
+                        </form>
                     </td>
                 </tr>
                 {% endfor %}

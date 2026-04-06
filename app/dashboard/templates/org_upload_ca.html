@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Upload CA Certificate{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <a href="/dashboard/orgs" class="text-sm text-gray-500 hover:text-gray-300 mb-4 inline-block">&larr; Back to Organizations</a>
+    <h2 class="text-2xl font-bold text-white mb-2">Upload CA Certificate</h2>
+    <p class="text-gray-400 text-sm mb-6">Organization: <span class="text-white font-mono">{{ org.org_id }}</span> ({{ org.display_name }})</p>
+
+    {% if org.ca_certificate %}
+    <div class="mb-4 p-3 bg-gray-800 border border-gray-700 rounded-md">
+        <p class="text-xs text-gray-500">Current CA certificate</p>
+        <pre class="mt-1 text-xs text-gray-400 font-mono overflow-x-auto">{{ org.ca_certificate[:80] }}...</pre>
+    </div>
+    {% else %}
+    <div class="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md text-sm text-yellow-400">
+        No CA certificate uploaded yet.
+    </div>
+    {% endif %}
+
+    {% if error %}
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-sm text-emerald-400">{{ success }}</div>
+    {% endif %}
+
+    <form method="post" action="/dashboard/orgs/{{ org.org_id }}/upload-ca" class="space-y-5">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">CA Certificate (PEM)</label>
+            <textarea name="ca_certificate" required rows="12" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-2 text-sm text-white font-mono placeholder-gray-600 focus:outline-none focus:border-brand-500"></textarea>
+            <p class="text-xs text-gray-600 mt-1">Must be a valid x509 CA certificate (BasicConstraints: CA=true). Agent certificates must be signed by this CA.</p>
+        </div>
+        <button type="submit"
+                class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm rounded-md">
+            Upload CA Certificate
+        </button>
+    </form>
+</div>
+{% endblock %}

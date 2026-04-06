@@ -85,6 +85,8 @@
                            class="px-2 py-1 text-xs bg-brand-600 hover:bg-brand-700 text-white rounded">Details</a>
                         <a href="/dashboard/agents/{{ agent.agent_id }}/rotate-cert"
                            class="px-2 py-1 text-xs bg-yellow-600 hover:bg-yellow-700 text-white rounded">Rotate Cert</a>
+                        <a href="/dashboard/orgs/{{ agent.org_id }}/upload-ca"
+                           class="px-2 py-1 text-xs bg-cyan-600 hover:bg-cyan-700 text-white rounded">Upload CA</a>
                         <form method="post" action="/dashboard/agents/{{ agent.agent_id }}/delete" class="inline"
                               onsubmit="return confirm('Delete agent ' + this.dataset.agentId + '?')"
                               data-agent-id="{{ agent.agent_id }}">

@@ -4,6 +4,37 @@
 <div class="max-w-6xl">
     <h2 class="text-2xl font-bold text-white mb-6">Overview</h2>
 
+    <!-- Policy enforcement toggle (admin only) -->
+    {% if session and session.is_admin %}
+    <div class="mb-6 bg-gray-900 border {% if policy_enforced %}border-gray-800{% else %}border-amber-600/50{% endif %} rounded-lg p-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-md {% if policy_enforced %}bg-emerald-500/10{% else %}bg-amber-500/10{% endif %} flex items-center justify-center flex-shrink-0">
+                <svg class="w-4 h-4 {% if policy_enforced %}text-emerald-400{% else %}text-amber-400{% endif %}" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+            </div>
+            <div>
+                <p class="text-sm font-medium text-white">Policy Enforcement</p>
+                {% if policy_enforced %}
+                <p class="text-xs text-emerald-500">Active — all policies evaluated</p>
+                {% else %}
+                <p class="text-xs text-amber-400">DISABLED — demo mode, all sessions/messages allowed</p>
+                {% endif %}
+            </div>
+        </div>
+        <form method="post" action="/dashboard/admin/policy-toggle">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if policy_enforced %}
+            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md bg-amber-600/20 text-amber-400 border border-amber-600/40 hover:bg-amber-600/30 transition-colors">
+                Disable for Demo
+            </button>
+            {% else %}
+            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600/20 text-emerald-400 border border-emerald-600/40 hover:bg-emerald-600/30 transition-colors">
+                Re-enable
+            </button>
+            {% endif %}
+        </form>
+    </div>
+    {% endif %}
+
     <!-- Stats cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <!-- Organizations -->

@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Agent Console{% endblock %}
+{% block content %}
+<div class="max-w-5xl mx-auto flex flex-col h-[calc(100vh-3rem)]">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h2 class="text-2xl font-bold text-white">Agent Console</h2>
+            <p class="text-sm text-gray-500 mt-0.5">Interact with suppliers on the Cullis network</p>
+        </div>
+        <div class="flex items-center gap-3">
+            {% if connected %}
+            <span class="flex items-center gap-1.5 text-xs text-emerald-400">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
+                Connected
+            </span>
+            <form method="post" action="/dashboard/agent-console/disconnect">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md bg-red-600/20 text-red-400 border border-red-600/40 hover:bg-red-600/30 transition-colors">
+                    Disconnect
+                </button>
+            </form>
+            {% else %}
+            <span class="flex items-center gap-1.5 text-xs text-gray-500">
+                <span class="w-2 h-2 rounded-full bg-gray-600"></span>
+                Not connected
+            </span>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if not connected %}
+    <!-- Connect form -->
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-6 max-w-lg">
+        <h3 class="text-sm font-semibold text-white mb-4">Connect an Agent</h3>
+        <form method="post" action="/dashboard/agent-console/start">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="block text-xs text-gray-400 mb-1.5">Select Agent</label>
+            <select name="agent_id" required
+                    class="w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-brand-500 mb-4">
+                {% for agent in agents %}
+                <option value="{{ agent.agent_id }}">{{ agent.display_name or agent.agent_id }} ({{ agent.agent_id }})</option>
+                {% endfor %}
+                {% if not agents %}
+                <option disabled selected>No active agents found</option>
+                {% endif %}
+            </select>
+            <button type="submit" {% if not agents %}disabled{% endif %}
+                    class="w-full px-4 py-2 text-sm font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                Connect to Broker
+            </button>
+        </form>
+        <p class="text-xs text-gray-600 mt-3">The agent's x509 certificate and private key must be available on the server.</p>
+    </div>
+    {% else %}
+    <!-- Chat area -->
+    <div class="flex-1 flex flex-col bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+        <!-- Messages -->
+        <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3"
+             hx-get="/dashboard/agent-console/messages" hx-trigger="load, every 3s"
+             hx-swap="innerHTML" hx-target="#chat-messages-inner">
+            <div id="chat-messages-inner">
+                {% for msg in messages %}
+                <div class="flex {% if msg.role == 'human' %}justify-end{% else %}justify-start{% endif %}">
+                    <div class="max-w-[80%] rounded-lg px-3 py-2 text-sm
+                        {% if msg.role == 'human' %}bg-brand-600/20 text-brand-200 border border-brand-600/30
+                        {% elif msg.role == 'assistant' %}bg-gray-800 text-gray-200 border border-gray-700
+                        {% elif msg.role == 'tool' %}bg-amber-900/20 text-amber-300 border border-amber-700/30 text-xs font-mono
+                        {% else %}bg-gray-800/50 text-gray-400 border border-gray-800 text-xs italic{% endif %}">
+                        {% if msg.role == 'tool' and msg.tool_name %}
+                        <span class="text-amber-500 font-semibold">{{ msg.tool_name }}</span>:
+                        {% endif %}
+                        {{ msg.content }}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Input -->
+        <div class="border-t border-gray-800 p-3">
+            <form id="chat-form" class="flex gap-2" onsubmit="sendMessage(event)">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="text" id="chat-input" name="message" autocomplete="off" placeholder="Ask your agent to find suppliers, negotiate orders..."
+                       class="flex-1 bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+                <button type="submit" id="chat-send"
+                        class="px-4 py-2 text-sm font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700 transition-colors disabled:opacity-50">
+                    Send
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+    const csrfToken = '{{ csrf_token }}';
+    let isProcessing = false;
+
+    function scrollToBottom() {
+        const el = document.getElementById('chat-messages');
+        if (el) el.scrollTop = el.scrollHeight;
+    }
+
+    function addMessage(role, content, toolName) {
+        const container = document.getElementById('chat-messages-inner');
+        if (!container) return;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'flex ' + (role === 'human' ? 'justify-end' : 'justify-start');
+
+        let classes = 'max-w-[80%] rounded-lg px-3 py-2 text-sm ';
+        if (role === 'human') classes += 'bg-brand-600/20 text-brand-200 border border-brand-600/30';
+        else if (role === 'assistant') classes += 'bg-gray-800 text-gray-200 border border-gray-700';
+        else if (role === 'tool') classes += 'bg-amber-900/20 text-amber-300 border border-amber-700/30 text-xs font-mono';
+        else classes += 'bg-gray-800/50 text-gray-400 border border-gray-800 text-xs italic';
+
+        const bubble = document.createElement('div');
+        bubble.className = classes;
+        let html = '';
+        if (role === 'tool' && toolName) html += '<span class="text-amber-500 font-semibold">' + toolName + '</span>: ';
+        html += content;
+        bubble.innerHTML = html;
+        wrapper.appendChild(bubble);
+        container.appendChild(wrapper);
+        scrollToBottom();
+    }
+
+    async function sendMessage(e) {
+        e.preventDefault();
+        const input = document.getElementById('chat-input');
+        const btn = document.getElementById('chat-send');
+        const msg = input.value.trim();
+        if (!msg || isProcessing) return;
+
+        isProcessing = true;
+        btn.disabled = true;
+        btn.textContent = 'Thinking...';
+        input.value = '';
+
+        addMessage('human', msg);
+
+        // Show processing indicator
+        addMessage('system', 'Processing...');
+
+        try {
+            const formData = new FormData();
+            formData.append('csrf_token', csrfToken);
+            formData.append('message', msg);
+
+            const resp = await fetch('/dashboard/agent-console/send', {
+                method: 'POST',
+                body: formData,
+            });
+            const data = await resp.json();
+
+            // Remove processing indicator
+            const container = document.getElementById('chat-messages-inner');
+            if (container && container.lastChild) container.removeChild(container.lastChild);
+
+            if (data.reply) {
+                addMessage('assistant', data.reply);
+            } else if (data.error) {
+                addMessage('system', 'Error: ' + data.error);
+            }
+        } catch (err) {
+            addMessage('system', 'Network error: ' + err.message);
+        } finally {
+            isProcessing = false;
+            btn.disabled = false;
+            btn.textContent = 'Send';
+        }
+    }
+
+    // Initial scroll
+    document.addEventListener('DOMContentLoaded', scrollToBottom);
+
+    // Disable HTMX polling while processing (to avoid overwriting the chat)
+    document.body.addEventListener('htmx:configRequest', function(e) {
+        if (isProcessing && e.detail.path.includes('/messages')) {
+            e.preventDefault();
+        }
+    });
+    </script>
+    {% endif %}
+</div>
+{% endblock %}

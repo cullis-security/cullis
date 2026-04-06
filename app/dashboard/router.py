@@ -75,7 +75,7 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
     await rate_limiter.check(client_ip, "dashboard.login")
 
     form = await request.form()
-    user_id = form.get("user_id", "").strip()
+    user_id = form.get("user_id", "").strip().lower()
     password = form.get("password", "")
 
     if not user_id or not password:
@@ -682,6 +682,28 @@ def _validate_webhook_url(url: str) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Policy enforcement toggle (admin only, demo mode)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/admin/policy-toggle", response_class=HTMLResponse)
+async def admin_policy_toggle(request: Request, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    from app.config import is_policy_enforced, set_policy_enforcement
+    new_state = not is_policy_enforced()
+    set_policy_enforcement(new_state)
+    state_label = "enabled" if new_state else "disabled"
+    await log_event(db, "admin.policy_toggle", "ok", details={"enforcement": state_label})
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Overview
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -737,8 +759,10 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
         "audit_events": audit_events,
     }
 
+    from app.config import is_policy_enforced
     return templates.TemplateResponse("overview.html",
-        _ctx(request, session, active="overview", stats=stats, recent_events=recent_events)
+        _ctx(request, session, active="overview", stats=stats, recent_events=recent_events,
+             policy_enforced=is_policy_enforced())
     )
 
 
@@ -1272,6 +1296,54 @@ async def org_reject(request: Request, org_id: str, db: AsyncSession = Depends(g
 # Unlock CA Certificate (admin only)
 # ─────────────────────────────────────────────────────────────────────────────
 
+@router.post("/orgs/{org_id}/suspend", response_class=HTMLResponse)
+async def org_suspend(request: Request, org_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+    org = await get_org_by_id(db, org_id)
+    if org and org.status == "active":
+        await set_org_status(db, org_id, "suspended")
+        await log_event(db, "onboarding.suspended", "ok", org_id=org_id,
+                        details={"source": "dashboard"})
+    return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+
+@router.post("/orgs/{org_id}/delete", response_class=HTMLResponse)
+async def org_delete(request: Request, org_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+    org = await get_org_by_id(db, org_id)
+    if org:
+        # Delete all agents belonging to this org
+        agents = await db.execute(
+            select(AgentRecord).where(AgentRecord.org_id == org_id)
+        )
+        for agent in agents.scalars().all():
+            binding = await get_binding_by_org_agent(db, org_id, agent.agent_id)
+            if binding and binding.status != "revoked":
+                await revoke_binding(db, binding.id)
+            await db.delete(agent)
+
+        # Delete the org
+        await db.delete(org)
+        await db.commit()
+        await log_event(db, "registry.org_deleted", "ok", org_id=org_id,
+                        details={"source": "dashboard"})
+
+    return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+
 @router.post("/orgs/{org_id}/unlock-ca", response_class=HTMLResponse)
 async def org_unlock_ca(request: Request, org_id: str, db: AsyncSession = Depends(get_db)):
     session = require_login(request)
@@ -1292,6 +1364,76 @@ async def org_unlock_ca(request: Request, org_id: str, db: AsyncSession = Depend
                         org_id=org_id, details={"source": "dashboard"})
 
     return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin — Upload CA certificate for an org
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/orgs/{org_id}/upload-ca", response_class=HTMLResponse)
+async def org_upload_ca_form(request: Request, org_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    org = await get_org_by_id(db, org_id)
+    if not org:
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+    return templates.TemplateResponse("org_upload_ca.html",
+        _ctx(request, session, active="orgs", org=org, error=None, success=None))
+
+
+@router.post("/orgs/{org_id}/upload-ca", response_class=HTMLResponse)
+async def org_upload_ca_submit(request: Request, org_id: str, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    org = await get_org_by_id(db, org_id)
+    if not org:
+        return RedirectResponse(url="/dashboard/orgs", status_code=303)
+
+    if not await verify_csrf(request, session):
+        return templates.TemplateResponse("org_upload_ca.html",
+            _ctx(request, session, active="orgs", org=org,
+                 error="Invalid CSRF token.", success=None))
+
+    form_data = await request.form()
+    ca_pem = form_data.get("ca_certificate", "").strip()
+
+    if not ca_pem or "-----BEGIN CERTIFICATE-----" not in ca_pem:
+        return templates.TemplateResponse("org_upload_ca.html",
+            _ctx(request, session, active="orgs", org=org,
+                 error="Invalid certificate. Paste a valid PEM certificate.", success=None))
+
+    try:
+        from cryptography.x509 import load_pem_x509_certificate
+        load_pem_x509_certificate(ca_pem.encode())
+    except Exception:
+        return templates.TemplateResponse("org_upload_ca.html",
+            _ctx(request, session, active="orgs", org=org,
+                 error="Could not parse the certificate. Ensure it is valid PEM format.", success=None))
+
+    await update_org_ca_cert(db, org_id, ca_pem)
+
+    meta = _json.loads(org.metadata_json or "{}")
+    meta["ca_locked"] = True
+    org.metadata_json = _json.dumps(meta)
+    await db.commit()
+
+    await log_event(db, "registry.ca_certificate_uploaded", "ok",
+                    org_id=org_id,
+                    details={"source": "dashboard_admin"})
+
+    org = await get_org_by_id(db, org_id)
+    return templates.TemplateResponse("org_upload_ca.html",
+        _ctx(request, session, active="orgs", org=org,
+             error=None, success="CA certificate uploaded and locked."))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

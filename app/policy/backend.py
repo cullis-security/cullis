@@ -31,8 +31,15 @@ async def evaluate_session_policy(
     For webhook backend: calls both orgs' PDP webhooks (dual allow).
     For OPA backend: calls the OPA REST API once with full context.
     """
-    from app.config import get_settings
+    from app.config import get_settings, is_policy_enforced
     settings = get_settings()
+
+    if not is_policy_enforced():
+        return WebhookDecision(
+            allowed=True,
+            reason="Policy enforcement disabled (demo mode)",
+            org_id="broker",
+        )
 
     backend = settings.policy_backend.lower()
 

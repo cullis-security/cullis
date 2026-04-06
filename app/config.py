@@ -65,9 +65,10 @@ class Settings(BaseSettings):
     # Policy backend — "webhook" (per-org PDP webhooks) or "opa" (Open Policy Agent)
     policy_backend: str = "webhook"
     opa_url: str = ""  # e.g. "http://opa:8181"
+    policy_enforcement: bool = True  # False = bypass all policy checks (demo mode)
 
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
-    kms_backend: str = "local"
+    kms_backend: str = "vault"
     vault_addr: str = ""
     vault_token: str = ""
     vault_secret_path: str = "secret/data/broker"
@@ -123,6 +124,22 @@ def validate_config(settings: "Settings") -> None:
         _startup_logger.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
 
     _startup_logger.info("Startup validation passed (environment=%s).", settings.environment)
+
+
+_policy_override: bool | None = None  # None = use Settings value
+
+
+def is_policy_enforced() -> bool:
+    """Check whether policy enforcement is active (runtime-toggleable)."""
+    if _policy_override is not None:
+        return _policy_override
+    return get_settings().policy_enforcement
+
+
+def set_policy_enforcement(enabled: bool) -> None:
+    """Toggle policy enforcement at runtime (admin dashboard use)."""
+    global _policy_override
+    _policy_override = enabled
 
 
 @lru_cache

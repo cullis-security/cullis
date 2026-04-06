@@ -48,6 +48,13 @@ class PolicyEngine:
              If target has no policies, it is treated as opt-out (allowed).
           3. No initiator policy found → deny (strict default deny).
         """
+        # ── Bypass: policy enforcement disabled (demo mode) ─────────────
+        from app.config import is_policy_enforced
+        if not is_policy_enforced():
+            decision = PolicyDecision(allowed=True, reason="Policy enforcement disabled (demo mode)")
+            await self._audit(db, "session", decision, initiator_org_id, agent_id, session_id)
+            return decision
+
         # ── Phase 1: Initiator org policies (default-deny) ──────────────
         initiator_decision = await self._evaluate_org_session_policies(
             db, initiator_org_id, target_org_id, capabilities,
@@ -189,6 +196,13 @@ class PolicyEngine:
              If a condition fails → immediate deny.
           4. If all policies are satisfied → allow.
         """
+        # ── Bypass: policy enforcement disabled (demo mode) ─────────────
+        from app.config import is_policy_enforced
+        if not is_policy_enforced():
+            decision = PolicyDecision(allowed=True, reason="Policy enforcement disabled (demo mode)")
+            await self._audit(db, "message", decision, sender_org_id, agent_id, session_id)
+            return decision
+
         policies = await list_policies(db, sender_org_id, policy_type="message")
 
         if not policies:
