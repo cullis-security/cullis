@@ -87,7 +87,7 @@ async def approve_binding(
     binding = await get_binding(db, binding_id)
     if not binding:
         return None
-    if binding.status != "pending":
+    if binding.status not in ("pending", "revoked"):
         return None
     binding.status = "approved"
     binding.approved_at = datetime.now(timezone.utc)

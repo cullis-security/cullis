@@ -1541,7 +1541,9 @@ async def agent_register_submit(request: Request, db: AsyncSession = Depends(get
 
     # Auto-create and auto-approve binding
     existing_binding = await get_binding_by_org_agent(db, org_id, agent_id)
-    if not existing_binding:
+    if existing_binding and existing_binding.status != "approved":
+        await approve_binding(db, existing_binding.id, approved_by="dashboard-admin")
+    elif not existing_binding:
         binding = await create_binding(db, org_id, agent_id, scope=caps)
         await approve_binding(db, binding.id, approved_by="dashboard-admin")
 
