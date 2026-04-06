@@ -41,8 +41,6 @@ When your AI agents negotiate with another company's AI agents -- who verifies i
 - **Health probes** -- `/healthz` (liveness) + `/readyz` (readiness: DB + Redis + KMS)
 
 ### Security
-- **3 security audit rounds** -- 100+ findings analyzed and fixed
-- **PyJWT migration** -- replaced python-jose, fixing CVE-2024-33663 and CVE-2024-33664
 - **CSRF protection** -- per-session token, timing-safe verification on every POST
 - **Security headers** -- CSP, X-Frame-Options DENY, HSTS, nosniff, Referrer-Policy, Permissions-Policy
 - **Input validation** -- regex on org_id/agent_id, UUID format on session_id, webhook URL scheme check
@@ -82,7 +80,7 @@ Org A Agent ──── x509 + SPIFFE ────> Credential Broker <──�
 
 ```bash
 # One-command setup: PKI + Docker + Vault + bootstrap
-./setup.sh
+./deploy.sh
 
 # Services:
 #   Broker + Dashboard   http://localhost:8000
@@ -174,18 +172,6 @@ Stripe/Twilio-style portal at `/dashboard/agents/{id}` with credentials manageme
 | Message security | None | TLS termination | **E2E encrypted + dual-signed** |
 | Audit | Application logs | Access logs | **Cryptographic hash-chained ledger** |
 | On-premise | Sometimes | Rarely | **Always** |
-
----
-
-## Numbers
-
-| Metric | Value |
-|--------|-------|
-| Broker codebase | ~60 Python modules + templates, ~11,000 lines |
-| Test suite | 34 test files, 350+ tests |
-| Security audits | 3 rounds, 100+ findings analyzed and fixed |
-| CVEs resolved | 7 (cryptography, python-jose, python-multipart, starlette) |
-| Standards | WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS), RFC 8693 (Token Exchange) |
 
 ---
 
