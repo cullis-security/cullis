@@ -1,489 +1,1139 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cullis — The Trust Layer for AI Agents</title>
-    <meta name="description" content="Cullis is a federated trust broker providing zero-trust identity and mTLS authentication for AI agent-to-agent communication.">
-    <meta name="theme-color" content="#030712">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        brand: {
-                            50: '#eef2ff',
-                            100: '#e0e7ff',
-                            200: '#c7d2fe',
-                            300: '#a5b4fc',
-                            400: '#818cf8',
-                            500: '#6366f1',
-                            600: '#4f46e5',
-                            700: '#4338ca',
-                            800: '#3730a3',
-                            900: '#312e81',
-                        },
-                        surface: {
-                            950: '#030712',
-                            900: '#0a0f1a',
-                            800: '#111827',
-                            700: '#1a2332',
-                        }
-                    },
-                    fontFamily: {
-                        mono: ['JetBrains Mono', 'monospace'],
-                        sans: ['Outfit', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
-    <style>
-        body {
-            font-family: 'Outfit', sans-serif;
-            background: #030712;
-            color: #e5e7eb;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cullis — The Trust Layer for AI Agents</title>
+<meta name="description" content="Open-source federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Satoshi:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-        /* Portcullis grid pattern */
-        .hero-grid {
-            background-image:
-                linear-gradient(rgba(99, 102, 241, 0.06) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(99, 102, 241, 0.06) 1px, transparent 1px);
-            background-size: 48px 48px;
-            background-position: center center;
-        }
+:root {
+  --bg-void: #050508;
+  --bg-surface: #0a0b10;
+  --bg-elevated: #10121a;
+  --bg-card: #13151f;
+  --border-subtle: rgba(255,255,255,0.06);
+  --border-medium: rgba(255,255,255,0.1);
+  --text-primary: #e8e9ed;
+  --text-secondary: #8a8d9b;
+  --text-tertiary: #555868;
+  --accent-cyan: #00e5c7;
+  --accent-cyan-dim: rgba(0,229,199,0.15);
+  --accent-cyan-glow: rgba(0,229,199,0.08);
+  --accent-amber: #f0a500;
+  --accent-red: #ff4d6a;
+  --accent-blue: #3d7aed;
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-body: 'Satoshi', -apple-system, sans-serif;
+  --font-mono: 'DM Mono', 'SF Mono', monospace;
+}
 
-        /* Glow line at top */
-        .glow-line {
-            height: 1px;
-            background: linear-gradient(90deg, transparent, #6366f1, #818cf8, #6366f1, transparent);
-            opacity: 0.6;
-        }
+html { scroll-behavior: smooth; }
 
-        /* Subtle radial glow behind hero */
-        .hero-glow {
-            position: absolute;
-            top: -120px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 800px;
-            height: 600px;
-            background: radial-gradient(ellipse at center, rgba(99, 102, 241, 0.12) 0%, transparent 70%);
-            pointer-events: none;
-        }
+body {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
 
-        /* Animated dash border for feature cards */
-        .feature-card {
-            position: relative;
-            background: rgba(17, 24, 39, 0.5);
-            border: 1px solid rgba(99, 102, 241, 0.1);
-            transition: border-color 0.3s ease, background 0.3s ease;
-        }
-        .feature-card:hover {
-            border-color: rgba(99, 102, 241, 0.35);
-            background: rgba(17, 24, 39, 0.8);
-        }
+::selection {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+}
 
-        /* Step connector line */
-        .step-connector {
-            position: absolute;
-            top: 28px;
-            left: calc(50% + 28px);
-            width: calc(100% - 56px);
-            height: 1px;
-            background: repeating-linear-gradient(
-                90deg,
-                rgba(99, 102, 241, 0.3) 0px,
-                rgba(99, 102, 241, 0.3) 6px,
-                transparent 6px,
-                transparent 12px
-            );
-        }
+/* ── GRID BACKGROUND ─────────────────────────────── */
+.grid-bg {
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
+  background-size: 80px 80px;
+  pointer-events: none;
+  z-index: 0;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, black 20%, transparent 70%);
+}
 
-        /* Scroll reveal */
-        .reveal {
-            opacity: 0;
-            transform: translateY(24px);
-            transition: opacity 0.7s ease, transform 0.7s ease;
-        }
-        .reveal.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
+/* ── NOISE TEXTURE ───────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
 
-        /* Stagger children */
-        .stagger > .reveal:nth-child(1) { transition-delay: 0.05s; }
-        .stagger > .reveal:nth-child(2) { transition-delay: 0.1s; }
-        .stagger > .reveal:nth-child(3) { transition-delay: 0.15s; }
-        .stagger > .reveal:nth-child(4) { transition-delay: 0.2s; }
-        .stagger > .reveal:nth-child(5) { transition-delay: 0.25s; }
+/* ── LAYOUT ──────────────────────────────────────── */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 clamp(1.5rem, 4vw, 3rem);
+  position: relative;
+  z-index: 1;
+}
 
-        /* Brand mark */
-        .brand-mark {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .brand-mark .gate {
-            width: 32px;
-            height: 32px;
-            border: 2px solid #6366f1;
-            border-radius: 4px;
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            grid-template-rows: repeat(3, 1fr);
-            gap: 2px;
-            padding: 3px;
-        }
-        .brand-mark .gate span {
-            background: #6366f1;
-            border-radius: 1px;
-        }
+section {
+  padding: clamp(4rem, 10vw, 8rem) 0;
+}
 
-        /* CTA button glow */
-        .btn-primary {
-            background: #4f46e5;
-            transition: background 0.2s ease, box-shadow 0.2s ease;
-        }
-        .btn-primary:hover {
-            background: #6366f1;
-            box-shadow: 0 0 24px rgba(99, 102, 241, 0.3);
-        }
+/* ── REVEAL ANIMATION ────────────────────────────── */
+.reveal {
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+              transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
 
-        .btn-outline {
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            transition: border-color 0.2s ease, background 0.2s ease;
-        }
-        .btn-outline:hover {
-            border-color: rgba(99, 102, 241, 0.6);
-            background: rgba(99, 102, 241, 0.05);
-        }
+/* ── NAV ─────────────────────────────────────────── */
+nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  padding: 1rem 0;
+  background: rgba(5,5,8,0.8);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border-subtle);
+}
 
-        /* Noise texture overlay */
-        .noise::before {
-            content: '';
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
-            pointer-events: none;
-            z-index: 9999;
-            opacity: 0.4;
-        }
+nav .container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 
-        /* Monospace labels */
-        .label-mono {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.7rem;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            color: #6366f1;
-        }
-    </style>
+.nav-logo {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.nav-logo .dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent-cyan);
+  border-radius: 50%;
+  box-shadow: 0 0 12px var(--accent-cyan);
+  animation: pulse-dot 3s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 12px var(--accent-cyan); }
+  50% { opacity: 0.6; box-shadow: 0 0 6px var(--accent-cyan); }
+}
+
+.nav-links {
+  display: flex;
+  gap: 2rem;
+  list-style: none;
+}
+
+.nav-links a {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.3s;
+}
+
+.nav-links a:hover { color: var(--accent-cyan); }
+
+/* ── HERO ────────────────────────────────────────── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  position: relative;
+  padding-top: 6rem;
+}
+
+.hero-content {
+  max-width: 820px;
+}
+
+.hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 400;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.hero-eyebrow::before {
+  content: '';
+  width: 40px;
+  height: 1px;
+  background: var(--accent-cyan);
+}
+
+.hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(3.2rem, 8vw, 6rem);
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin-bottom: 1.5rem;
+}
+
+.hero h1 em {
+  font-style: italic;
+  color: var(--accent-cyan);
+}
+
+.hero-sub {
+  font-size: clamp(1.05rem, 2vw, 1.25rem);
+  color: var(--text-secondary);
+  max-width: 560px;
+  line-height: 1.7;
+  margin-bottom: 2.5rem;
+  font-weight: 300;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.btn {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.9rem 2rem;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-primary {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+}
+
+.btn-primary:hover {
+  background: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0,229,199,0.2);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-medium);
+}
+
+.btn-ghost:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  transform: translateY(-2px);
+}
+
+/* ── SECTION HEADERS ─────────────────────────────── */
+.section-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.section-label::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: var(--accent-cyan);
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 400;
+  line-height: 1.15;
+  margin-bottom: 1rem;
+}
+
+.section-desc {
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+  max-width: 600px;
+  line-height: 1.7;
+  font-weight: 300;
+  margin-bottom: 3rem;
+}
+
+/* ── PROBLEM CARDS ───────────────────────────────── */
+.problem-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+}
+
+.problem-card {
+  background: var(--bg-surface);
+  padding: clamp(2rem, 4vw, 3rem);
+  position: relative;
+  transition: background 0.4s;
+}
+
+.problem-card:hover {
+  background: var(--bg-elevated);
+}
+
+.problem-card::before {
+  content: attr(data-num);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.1em;
+  display: block;
+  margin-bottom: 1.5rem;
+}
+
+.problem-card .icon-danger {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--accent-red);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  color: var(--accent-red);
+  font-size: 1rem;
+  background: rgba(255,77,106,0.06);
+}
+
+.problem-card h3 {
+  font-family: var(--font-body);
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
+
+.problem-card p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.65;
+  font-weight: 300;
+}
+
+/* ── FEATURES GRID ───────────────────────────────── */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 1.5rem;
+}
+
+.feature-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: clamp(1.8rem, 3vw, 2.5rem);
+  position: relative;
+  transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.feature-card:hover {
+  border-color: rgba(0,229,199,0.25);
+  transform: translateY(-3px);
+}
+
+.feature-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+
+.feature-card:hover::after {
+  opacity: 1;
+}
+
+.feature-tag {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  background: var(--accent-cyan-dim);
+  padding: 0.25rem 0.6rem;
+  display: inline-block;
+  margin-bottom: 1.2rem;
+}
+
+.feature-card h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.feature-card p {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  font-weight: 300;
+}
+
+/* ── ARCHITECTURE ────────────────────────────────── */
+.arch-container {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: clamp(2rem, 5vw, 4rem);
+  position: relative;
+  overflow: hidden;
+}
+
+.arch-container::before {
+  content: '';
+  position: absolute;
+  top: -100px;
+  right: -100px;
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, var(--accent-cyan-glow) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.arch-svg-wrap {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 1rem 0;
+}
+
+.arch-svg-wrap svg {
+  width: 100%;
+  height: auto;
+}
+
+@keyframes dash-flow {
+  to { stroke-dashoffset: -20; }
+}
+
+.flow-line {
+  animation: dash-flow 1.2s linear infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(0,229,199,0.3)); }
+  50% { filter: drop-shadow(0 0 8px rgba(0,229,199,0.6)); }
+}
+
+.node-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+/* ── TERMINAL / QUICKSTART ───────────────────────── */
+.terminal {
+  background: #0c0d12;
+  border: 1px solid var(--border-medium);
+  overflow: hidden;
+  max-width: 700px;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.8rem 1rem;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.terminal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.terminal-dot:nth-child(1) { background: #ff5f57; }
+.terminal-dot:nth-child(2) { background: #febc2e; }
+.terminal-dot:nth-child(3) { background: #28c840; }
+
+.terminal-title {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-left: 0.5rem;
+}
+
+.terminal-body {
+  padding: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 2;
+  overflow-x: auto;
+}
+
+.terminal-body .prompt { color: var(--accent-cyan); }
+.terminal-body .cmd { color: var(--text-primary); }
+.terminal-body .comment { color: var(--text-tertiary); }
+.terminal-body .output { color: var(--text-secondary); }
+
+/* ── COMPARISON TABLE ────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  min-width: 640px;
+}
+
+thead {
+  background: var(--bg-elevated);
+}
+
+th {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  padding: 1rem 1.5rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-medium);
+}
+
+th:last-child {
+  color: var(--accent-cyan);
+}
+
+td {
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-weight: 300;
+}
+
+tr:hover td {
+  background: rgba(255,255,255,0.015);
+}
+
+td:first-child {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.88rem;
+}
+
+.check {
+  color: var(--accent-cyan);
+  font-weight: 500;
+}
+
+.cross {
+  color: var(--text-tertiary);
+}
+
+/* ── FOOTER ──────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: 4rem 0;
+}
+
+.footer-grid {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 2rem;
+}
+
+.footer-brand {
+  max-width: 360px;
+}
+
+.footer-brand p {
+  color: var(--text-tertiary);
+  font-size: 0.88rem;
+  margin-top: 0.8rem;
+  line-height: 1.6;
+  font-weight: 300;
+}
+
+.footer-links {
+  display: flex;
+  gap: 3rem;
+}
+
+.footer-col h4 {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 1rem;
+}
+
+.footer-col ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.footer-col a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.88rem;
+  font-weight: 300;
+  transition: color 0.3s;
+}
+
+.footer-col a:hover { color: var(--accent-cyan); }
+
+.footer-bottom {
+  margin-top: 3rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.footer-bottom span {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+}
+
+/* ── STATS BAR ───────────────────────────────────── */
+.stats-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  margin-top: 4rem;
+}
+
+.stat {
+  background: var(--bg-surface);
+  padding: 2rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-family: var(--font-display);
+  font-size: 2.4rem;
+  color: var(--text-primary);
+  line-height: 1;
+  margin-bottom: 0.4rem;
+}
+
+.stat-value .accent { color: var(--accent-cyan); }
+
+.stat-label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* ── CTA SECTION ─────────────────────────────────── */
+.cta-section {
+  text-align: center;
+  padding: 6rem 0;
+}
+
+.cta-section .section-title {
+  max-width: 600px;
+  margin: 0 auto 1rem;
+}
+
+.cta-section .section-desc {
+  max-width: 480px;
+  margin: 0 auto 2.5rem;
+}
+
+/* ── RESPONSIVE ──────────────────────────────────── */
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .hero { min-height: auto; padding: 8rem 0 4rem; }
+  .problem-grid { grid-template-columns: 1fr; }
+  .features-grid { grid-template-columns: 1fr; }
+  .arch-svg-wrap { overflow-x: auto; }
+  .footer-grid { flex-direction: column; }
+  .footer-links { flex-direction: column; gap: 2rem; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 480px) {
+  .hero-actions { flex-direction: column; }
+  .btn { width: 100%; justify-content: center; }
+  .stats-bar { grid-template-columns: 1fr; }
+}
+</style>
 </head>
-<body class="noise">
+<body>
 
-    <!-- Top glow line -->
-    <div class="glow-line"></div>
+<div class="grid-bg"></div>
 
-    <!-- Navigation -->
-    <nav class="relative z-10 max-w-6xl mx-auto px-6 py-6 flex items-center justify-between">
-        <div class="brand-mark">
-            <div class="gate">
-                <span></span><span></span><span></span>
-                <span></span><span></span><span></span>
-                <span></span><span></span><span></span>
-            </div>
-            <span class="font-mono font-bold text-white text-lg tracking-tight">Cullis</span>
-        </div>
-        <div class="flex items-center gap-6">
-            <a href="#features" class="text-sm text-gray-400 hover:text-white transition-colors">Features</a>
-            <a href="#how-it-works" class="text-sm text-gray-400 hover:text-white transition-colors">How It Works</a>
-            <a href="https://github.com/DaenAIHax/Agent-Trust-Network" target="_blank" rel="noopener"
-               class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-1.5">
-                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                GitHub
-            </a>
-        </div>
-    </nav>
+<!-- NAV -->
+<nav>
+  <div class="container">
+    <a href="#" class="nav-logo">
+      <span class="dot"></span>
+      Cullis
+    </a>
+    <ul class="nav-links">
+      <li><a href="#problem">Problem</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#quickstart">Quick Start</a></li>
+      <li><a href="https://github.com/DaenAIHax/agent-trust-network" target="_blank">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
 
-    <!-- Hero -->
-    <section class="relative hero-grid overflow-hidden">
-        <div class="hero-glow"></div>
-        <div class="relative z-10 max-w-6xl mx-auto px-6 pt-24 pb-32 text-center">
-            <div class="reveal">
-                <span class="label-mono">Federated Trust Broker for AI Agents</span>
-            </div>
-            <h1 class="reveal mt-6 text-5xl sm:text-6xl lg:text-7xl font-bold text-white tracking-tight leading-[1.1]">
-                The Trust Layer<br>for AI Agents
-            </h1>
-            <p class="reveal mt-6 text-lg sm:text-xl text-gray-400 max-w-2xl mx-auto leading-relaxed font-light">
-                Zero-trust identity for AI agent-to-agent communication.
-                Mutual TLS authentication, federated trust policies, and
-                a complete audit trail — out of the box.
-            </p>
-            <div class="reveal mt-10 flex items-center justify-center gap-4 flex-wrap">
-                <a href="https://github.com/DaenAIHax/Agent-Trust-Network#quick-start"
-                   class="btn-primary px-7 py-3 rounded-lg text-white text-sm font-medium">
-                    Get Started
-                </a>
-                <a href="https://github.com/DaenAIHax/Agent-Trust-Network" target="_blank" rel="noopener"
-                   class="btn-outline px-7 py-3 rounded-lg text-gray-300 text-sm font-medium flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    View on GitHub
-                </a>
-            </div>
-
-            <!-- Terminal preview -->
-            <div class="reveal mt-16 max-w-2xl mx-auto text-left">
-                <div class="bg-surface-900 border border-gray-800 rounded-xl overflow-hidden">
-                    <div class="flex items-center gap-2 px-4 py-3 border-b border-gray-800">
-                        <span class="w-3 h-3 rounded-full bg-gray-700"></span>
-                        <span class="w-3 h-3 rounded-full bg-gray-700"></span>
-                        <span class="w-3 h-3 rounded-full bg-gray-700"></span>
-                        <span class="ml-3 text-xs text-gray-500 font-mono">cullis-broker</span>
-                    </div>
-                    <pre class="p-5 text-sm font-mono leading-relaxed overflow-x-auto"><code><span class="text-gray-500">$</span> <span class="text-white">docker compose up -d</span>
-<span class="text-gray-500">[+]</span> <span class="text-gray-400">Running 3/3</span>
- <span class="text-brand-400">broker</span>    <span class="text-gray-500">Started</span>
- <span class="text-brand-400">jaeger</span>    <span class="text-gray-500">Started</span>
- <span class="text-brand-400">dashboard</span> <span class="text-gray-500">Started</span>
-
-<span class="text-gray-500">$</span> <span class="text-white">curl -s https://localhost:8443/health</span>
-<span class="text-emerald-400">{"status": "ok", "broker": "cullis", "version": "0.9.0"}</span></code></pre>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Divider -->
-    <div class="max-w-6xl mx-auto px-6">
-        <div class="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent"></div>
+<!-- HERO -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-content">
+      <div class="hero-eyebrow reveal">Open Source &middot; Apache 2.0</div>
+      <h1 class="reveal">The <em>trust layer</em> for AI agents</h1>
+      <p class="hero-sub reveal">
+        Federated identity, zero-knowledge messaging, and compliance-grade audit
+        for agents operating across organizational boundaries.
+      </p>
+      <div class="hero-actions reveal">
+        <a href="#quickstart" class="btn btn-primary">Get Started &darr;</a>
+        <a href="https://github.com/DaenAIHax/agent-trust-network" target="_blank" class="btn btn-ghost">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+      </div>
     </div>
+  </div>
+</section>
 
-    <!-- Features -->
-    <section id="features" class="relative max-w-6xl mx-auto px-6 py-28">
-        <div class="text-center mb-16">
-            <span class="label-mono reveal">Capabilities</span>
-            <h2 class="reveal mt-4 text-3xl sm:text-4xl font-bold text-white tracking-tight">
-                Built for agent security
-            </h2>
-            <p class="reveal mt-4 text-gray-400 max-w-xl mx-auto">
-                Every component is designed around zero-trust principles.
-                No agent is trusted by default — identity is proven cryptographically.
-            </p>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 stagger">
-            <!-- mTLS Identity -->
-            <div class="feature-card rounded-xl p-6 reveal">
-                <div class="w-10 h-10 rounded-lg bg-brand-900/50 border border-brand-700/30 flex items-center justify-center mb-4">
-                    <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-                    </svg>
-                </div>
-                <h3 class="text-white font-semibold text-base">mTLS Identity</h3>
-                <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                    Every agent authenticates with X.509 certificates.
-                    Mutual TLS ensures both sides of every connection are verified.
-                </p>
-            </div>
-
-            <!-- Federated Trust -->
-            <div class="feature-card rounded-xl p-6 reveal">
-                <div class="w-10 h-10 rounded-lg bg-brand-900/50 border border-brand-700/30 flex items-center justify-center mb-4">
-                    <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
-                    </svg>
-                </div>
-                <h3 class="text-white font-semibold text-base">Federated Trust</h3>
-                <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                    Organizations maintain their own certificate authorities.
-                    Cross-org trust is brokered through policy, not shared keys.
-                </p>
-            </div>
-
-            <!-- Policy Engine -->
-            <div class="feature-card rounded-xl p-6 reveal">
-                <div class="w-10 h-10 rounded-lg bg-brand-900/50 border border-brand-700/30 flex items-center justify-center mb-4">
-                    <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
-                    </svg>
-                </div>
-                <h3 class="text-white font-semibold text-base">Policy Engine</h3>
-                <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                    Define fine-grained access rules. Control which agents
-                    can communicate, what data flows, and under what conditions.
-                </p>
-            </div>
-
-            <!-- Audit Logging -->
-            <div class="feature-card rounded-xl p-6 reveal">
-                <div class="w-10 h-10 rounded-lg bg-brand-900/50 border border-brand-700/30 flex items-center justify-center mb-4">
-                    <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                    </svg>
-                </div>
-                <h3 class="text-white font-semibold text-base">Audit Logging</h3>
-                <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                    Every session, handshake, and policy decision is recorded.
-                    Full traceability with OpenTelemetry and Jaeger integration.
-                </p>
-            </div>
-
-            <!-- BYOCA -->
-            <div class="feature-card rounded-xl p-6 reveal">
-                <div class="w-10 h-10 rounded-lg bg-brand-900/50 border border-brand-700/30 flex items-center justify-center mb-4">
-                    <svg class="w-5 h-5 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-                    </svg>
-                </div>
-                <h3 class="text-white font-semibold text-base">BYOCA Support</h3>
-                <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                    Bring Your Own Certificate Authority. Upload your enterprise
-                    CA and the broker trusts your agents immediately.
-                </p>
-            </div>
-        </div>
-    </section>
-
-    <!-- Divider -->
-    <div class="max-w-6xl mx-auto px-6">
-        <div class="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent"></div>
+<!-- STATS -->
+<div class="container">
+  <div class="stats-bar reveal">
+    <div class="stat">
+      <div class="stat-value">350<span class="accent">+</span></div>
+      <div class="stat-label">Tests passing</div>
     </div>
-
-    <!-- How It Works -->
-    <section id="how-it-works" class="relative max-w-6xl mx-auto px-6 py-28">
-        <div class="text-center mb-16">
-            <span class="label-mono reveal">Protocol</span>
-            <h2 class="reveal mt-4 text-3xl sm:text-4xl font-bold text-white tracking-tight">
-                How it works
-            </h2>
-            <p class="reveal mt-4 text-gray-400 max-w-xl mx-auto">
-                Three steps from zero to a verified agent-to-agent session.
-            </p>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 relative stagger">
-            <!-- Step 1 -->
-            <div class="relative reveal">
-                <div class="flex items-start gap-4">
-                    <div class="flex-shrink-0 w-14 h-14 rounded-xl bg-surface-900 border border-gray-800 flex items-center justify-center">
-                        <span class="font-mono text-brand-400 font-bold text-lg">01</span>
-                    </div>
-                    <div>
-                        <h3 class="text-white font-semibold text-base mt-1">Register</h3>
-                        <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                            Onboard your organization with a CA certificate.
-                            Register agents and assign trust policies through the dashboard or API.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 2 -->
-            <div class="relative reveal">
-                <div class="flex items-start gap-4">
-                    <div class="flex-shrink-0 w-14 h-14 rounded-xl bg-surface-900 border border-gray-800 flex items-center justify-center">
-                        <span class="font-mono text-brand-400 font-bold text-lg">02</span>
-                    </div>
-                    <div>
-                        <h3 class="text-white font-semibold text-base mt-1">Authenticate</h3>
-                        <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                            Agents present their client certificate to the broker.
-                            The broker validates identity via mTLS and evaluates policies.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Step 3 -->
-            <div class="relative reveal">
-                <div class="flex items-start gap-4">
-                    <div class="flex-shrink-0 w-14 h-14 rounded-xl bg-surface-900 border border-gray-800 flex items-center justify-center">
-                        <span class="font-mono text-brand-400 font-bold text-lg">03</span>
-                    </div>
-                    <div>
-                        <h3 class="text-white font-semibold text-base mt-1">Communicate</h3>
-                        <p class="mt-2 text-sm text-gray-400 leading-relaxed">
-                            A verified session is established. Agents communicate
-                            over encrypted channels with full audit traceability.
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Divider -->
-    <div class="max-w-6xl mx-auto px-6">
-        <div class="h-px bg-gradient-to-r from-transparent via-gray-800 to-transparent"></div>
+    <div class="stat">
+      <div class="stat-value">RFC <span class="accent">9449</span></div>
+      <div class="stat-label">DPoP Compliant</div>
     </div>
+    <div class="stat">
+      <div class="stat-value"><span class="accent">E2E</span></div>
+      <div class="stat-label">Encrypted Messages</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value"><span class="accent">0</span></div>
+      <div class="stat-label">Plaintext Visibility</div>
+    </div>
+  </div>
+</div>
 
-    <!-- CTA -->
-    <section class="max-w-6xl mx-auto px-6 py-28 text-center">
-        <div class="reveal">
-            <h2 class="text-3xl sm:text-4xl font-bold text-white tracking-tight">
-                Secure your agent network
-            </h2>
-            <p class="mt-4 text-gray-400 max-w-lg mx-auto">
-                Cullis is open source and ready to deploy.
-                Run the broker locally in under five minutes.
-            </p>
-            <div class="mt-8 flex items-center justify-center gap-4 flex-wrap">
-                <a href="https://github.com/DaenAIHax/Agent-Trust-Network#quick-start"
-                   class="btn-primary px-7 py-3 rounded-lg text-white text-sm font-medium">
-                    Quick Start Guide
-                </a>
-                <a href="https://github.com/DaenAIHax/Agent-Trust-Network" target="_blank" rel="noopener"
-                   class="btn-outline px-7 py-3 rounded-lg text-gray-300 text-sm font-medium">
-                    Browse Source
-                </a>
-            </div>
+<!-- PROBLEM -->
+<section id="problem">
+  <div class="container">
+    <div class="section-label reveal">The Problem</div>
+    <h2 class="section-title reveal">AI agents are operating <br>without identity</h2>
+    <p class="section-desc reveal">
+      When agents from different organizations need to collaborate, they rely on mechanisms
+      that were never designed for autonomous, cross-boundary interactions.
+    </p>
+    <div class="problem-grid reveal">
+      <div class="problem-card" data-num="01">
+        <div class="icon-danger">&times;</div>
+        <h3>Static API Keys</h3>
+        <p>Long-lived secrets that grant permanent, unlimited access. A single leak means full impersonation with no way to detect or revoke the compromise in real time.</p>
+      </div>
+      <div class="problem-card" data-num="02">
+        <div class="icon-danger">&times;</div>
+        <h3>No Mutual Authentication</h3>
+        <p>Agents from different organizations have no way to cryptographically verify each other's identity. There's no chain of trust, no issuer validation, no proof of origin.</p>
+      </div>
+      <div class="problem-card" data-num="03">
+        <div class="icon-danger">&times;</div>
+        <h3>Zero Audit Trail</h3>
+        <p>When something goes wrong across organizational boundaries, there is no tamper-evident record of who authorized what. Compliance is impossible. Non-repudiation is a myth.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="container">
+    <div class="section-label reveal">How Cullis Solves It</div>
+    <h2 class="section-title reveal">Cryptographic trust, <br><em>not blind faith</em></h2>
+    <p class="section-desc reveal">
+      Every security property is enforced at the protocol level. No configuration knobs to get wrong.
+      No secrets to share between organizations.
+    </p>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-tag">Identity</div>
+        <h3>Workload x509 PKI</h3>
+        <p>Three-tier certificate hierarchy with SPIFFE IDs. Each organization brings its own CA. No passwords, no API keys &mdash; cryptographic identity from day one.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Credentials</div>
+        <h3>DPoP Token Binding</h3>
+        <p>RFC 9449 proof-of-possession. Access tokens are cryptographically bound to the agent's ephemeral key. A stolen token is worthless without the private key.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Encryption</div>
+        <h3>E2E Zero-Knowledge</h3>
+        <p>AES-256-GCM payload encryption with RSA-OAEP key wrapping. Dual RSA-PSS signatures for non-repudiation and transport integrity. The broker never reads your messages.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Policy</div>
+        <h3>Federated Authorization</h3>
+        <p>Each organization controls its own Policy Decision Point via webhook. The broker enforces both orgs' decisions. No centralized power. Sovereignty by design.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Audit</div>
+        <h3>Cryptographic Ledger</h3>
+        <p>SHA-256 hash-chained append-only log. Any tampering &mdash; insert, modify, delete, reorder &mdash; breaks the chain and is immediately detectable. SIEM-ready export.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-tag">Standards</div>
+        <h3>IETF &amp; CNCF Aligned</h3>
+        <p>Built on WIMSE, SPIFFE, RFC 9449 (DPoP), RFC 7638 (JWK Thumbprint), RFC 7517 (JWKS). No proprietary protocols. No vendor lock-in. Interoperable by design.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="container">
+    <div class="section-label reveal">Architecture</div>
+    <h2 class="section-title reveal">Federated by design</h2>
+    <p class="section-desc reveal">
+      The broker is a neutral intermediary. Each organization retains full control
+      over its agents, policies, and encryption keys.
+    </p>
+    <div class="arch-container reveal">
+      <div class="arch-svg-wrap">
+        <svg viewBox="0 0 860 580" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+          <!-- ── AGENT A BOX (initiator) ── -->
+          <rect x="60" y="30" width="200" height="76" rx="4" stroke="#00e5c7" stroke-width="1.5" fill="rgba(0,229,199,0.04)" class="node-glow"/>
+          <text x="160" y="58" text-anchor="middle" font-family="'DM Mono', monospace" font-size="13" font-weight="500" fill="#00e5c7">Org A Agent</text>
+          <text x="160" y="78" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">x509 + SPIFFE &middot; initiator</text>
+
+          <!-- ── AGENT B BOX (responder) ── -->
+          <rect x="600" y="30" width="200" height="76" rx="4" stroke="#3d7aed" stroke-width="1.5" fill="rgba(61,122,237,0.04)" class="node-glow"/>
+          <text x="700" y="58" text-anchor="middle" font-family="'DM Mono', monospace" font-size="13" font-weight="500" fill="#3d7aed">Org B Agent</text>
+          <text x="700" y="78" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">x509 + SPIFFE &middot; responder</text>
+
+          <!-- ── ARROW: A → Broker (request) ── -->
+          <line x1="160" y1="106" x2="160" y2="196" stroke="#f0a500" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
+          <polygon points="153,192 160,206 167,192" fill="#f0a500"/>
+          <text x="178" y="155" font-family="'DM Mono', monospace" font-size="10" fill="#f0a500">mTLS + DPoP</text>
+          <text x="178" y="170" font-family="'DM Mono', monospace" font-size="9" fill="#555868">session request</text>
+
+          <!-- ── ARROW: Broker → B (E2E forward) ── -->
+          <line x1="700" y1="196" x2="700" y2="106" stroke="#3d7aed" stroke-width="1.5" stroke-dasharray="6 4" class="flow-line"/>
+          <polygon points="693,110 700,96 707,110" fill="#3d7aed"/>
+          <text x="718" y="145" font-family="'DM Mono', monospace" font-size="10" fill="#3d7aed">E2E encrypted</text>
+          <text x="718" y="160" font-family="'DM Mono', monospace" font-size="9" fill="#555868">session forwarded</text>
+
+          <!-- ── BROKER BOX ── -->
+          <rect x="40" y="206" width="780" height="120" rx="4" stroke="rgba(255,255,255,0.15)" stroke-width="1.5" fill="rgba(16,18,26,0.9)"/>
+          <text x="430" y="238" text-anchor="middle" font-family="'DM Mono', monospace" font-size="14" font-weight="500" fill="#e8e9ed">CREDENTIAL BROKER</text>
+
+          <!-- Pipeline steps -->
+          <rect x="80" y="258" width="130" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="145" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Verify cert chain</text>
+
+          <text x="225" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+
+          <rect x="242" y="258" width="115" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="300" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Validate DPoP</text>
+
+          <text x="372" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+
+          <rect x="390" y="258" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="453" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Query policies</text>
+
+          <text x="530" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" fill="#555868">&rarr;</text>
+
+          <rect x="548" y="258" width="125" height="30" rx="3" fill="rgba(0,229,199,0.08)" stroke="rgba(0,229,199,0.2)" stroke-width="1"/>
+          <text x="611" y="278" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9.5" fill="#8a8d9b">Forward E2E</text>
+
+          <!-- Cannot read plaintext -->
+          <text x="430" y="312" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#ff4d6a">&#x26D4; Cannot read plaintext &mdash; zero-knowledge forwarding</text>
+
+          <!-- ── BROKER → PDP A (query, arrow down) ── -->
+          <line x1="195" y1="326" x2="195" y2="410" stroke="#00e5c7" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="189,406 195,418 201,406" fill="#00e5c7" opacity="0.6"/>
+
+          <!-- ── PDP A → BROKER (response, arrow up) ── -->
+          <line x1="225" y1="410" x2="225" y2="326" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="219,332 225,320 231,332" fill="#f0a500" opacity="0.6"/>
+
+          <!-- ── BROKER → PDP B (query, arrow down) ── -->
+          <line x1="635" y1="326" x2="635" y2="410" stroke="#3d7aed" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="629,406 635,418 641,406" fill="#3d7aed" opacity="0.6"/>
+
+          <!-- ── PDP B → BROKER (response, arrow up) ── -->
+          <line x1="665" y1="410" x2="665" y2="326" stroke="#f0a500" stroke-width="1.2" stroke-dasharray="4 3" class="flow-line"/>
+          <polygon points="659,332 665,320 671,332" fill="#f0a500" opacity="0.6"/>
+
+          <!-- Labels on PDP arrows -->
+          <text x="248" y="370" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
+          <text x="688" y="370" font-family="'DM Mono', monospace" font-size="9" fill="#555868">query / response</text>
+
+          <!-- ── PDP A BOX ── -->
+          <rect x="110" y="420" width="230" height="80" rx="4" stroke="#00e5c7" stroke-width="1" fill="rgba(0,229,199,0.03)"/>
+          <text x="225" y="448" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#00e5c7">Org A PDP</text>
+          <text x="225" y="468" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
+          <text x="225" y="490" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
+
+          <!-- ── PDP B BOX ── -->
+          <rect x="520" y="420" width="230" height="80" rx="4" stroke="#3d7aed" stroke-width="1" fill="rgba(61,122,237,0.03)"/>
+          <text x="635" y="448" text-anchor="middle" font-family="'DM Mono', monospace" font-size="12" font-weight="500" fill="#3d7aed">Org B PDP</text>
+          <text x="635" y="468" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" fill="#555868">webhook / OPA</text>
+          <text x="635" y="490" text-anchor="middle" font-family="'DM Mono', monospace" font-size="10" font-weight="500" fill="#f0a500">allow &#x2713; / deny &#x2717;</text>
+
+          <!-- BOTTOM LABEL -->
+          <text x="430" y="535" text-anchor="middle" font-family="'DM Mono', monospace" font-size="11" fill="#555868">Both orgs must allow &rarr; session proceeds</text>
+          <text x="430" y="555" text-anchor="middle" font-family="'DM Mono', monospace" font-size="9" fill="#555868">Timeout or deny from either PDP = session rejected (fail-safe)</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- QUICKSTART -->
+<section id="quickstart">
+  <div class="container">
+    <div class="section-label reveal">Quick Start</div>
+    <h2 class="section-title reveal">Running in 60 seconds</h2>
+    <p class="section-desc reveal">
+      One command to deploy the full stack: broker, PostgreSQL, Redis, Vault, nginx, and Jaeger tracing.
+    </p>
+    <div class="terminal reveal">
+      <div class="terminal-bar">
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+        <span class="terminal-title">terminal</span>
+      </div>
+      <div class="terminal-body">
+<span class="prompt">$</span> <span class="cmd">git clone https://github.com/DaenAIHax/agent-trust-network</span>
+<span class="prompt">$</span> <span class="cmd">cd agent-trust-network</span>
+<span class="prompt">$</span> <span class="cmd">cp .env.example .env</span>
+<span class="prompt">$</span> <span class="cmd">./setup.sh</span>
+<span class="output">  ✓  Broker CA generated</span>
+<span class="output">  ✓  TLS certificate ready</span>
+<span class="output">  ✓  Containers started</span>
+<span class="output">  ✓  Vault initialized</span>
+<span class="output">  ✓  Broker healthy</span>
+<span class="output"></span>
+<span class="comment"># Dashboard ready at https://localhost:8443/dashboard</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPARISON -->
+<section id="compare">
+  <div class="container">
+    <div class="section-label reveal">Comparison</div>
+    <h2 class="section-title reveal">Not another API gateway</h2>
+    <p class="section-desc reveal">
+      Cullis operates at a different layer &mdash; it provides the identity and trust
+      primitives that gateways, frameworks, and orchestrators don't.
+    </p>
+    <div class="table-wrap reveal">
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>API Keys</th>
+            <th>OAuth 2.0</th>
+            <th>Cullis</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Proof of possession</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">DPoP (RFC 9449)</td>
+          </tr>
+          <tr>
+            <td>Mutual authentication</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">x509 + SPIFFE</td>
+          </tr>
+          <tr>
+            <td>E2E encryption</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">AES-256-GCM</td>
+          </tr>
+          <tr>
+            <td>Federated policy</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Per-org PDP webhook</td>
+          </tr>
+          <tr>
+            <td>Tamper-evident audit</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">SHA-256 hash chain</td>
+          </tr>
+          <tr>
+            <td>Token theft protection</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Ephemeral key binding</td>
+          </tr>
+          <tr>
+            <td>Multi-org federation</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Bring Your Own CA</td>
+          </tr>
+          <tr>
+            <td>Agent discovery</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Capability-based</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="container">
+    <div class="section-label reveal" style="justify-content: center;">Get Involved</div>
+    <h2 class="section-title reveal">Built by security researchers,<br>for the agent era</h2>
+    <p class="section-desc reveal">
+      Cullis is open source, standards-aligned, and ready for your first pilot.
+      Star the repo, open an issue, or deploy it today.
+    </p>
+    <div class="hero-actions reveal" style="justify-content: center;">
+      <a href="https://github.com/DaenAIHax/agent-trust-network" target="_blank" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Star on GitHub
+      </a>
+      <a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/CONTRIBUTING.md" target="_blank" class="btn btn-ghost">
+        Contributing Guide
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="#" class="nav-logo">
+          <span class="dot"></span>
+          Cullis
+        </a>
+        <p>Federated trust broker for inter-organizational AI agents. Cryptographic identity, zero-knowledge messaging, compliance-grade audit.</p>
+      </div>
+      <div class="footer-links">
+        <div class="footer-col">
+          <h4>Project</h4>
+          <ul>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network" target="_blank">GitHub</a></li>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/README.md" target="_blank">Documentation</a></li>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a></li>
+          </ul>
         </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="border-t border-gray-800/50">
-        <div class="max-w-6xl mx-auto px-6 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div class="flex items-center gap-3">
-                <div class="brand-mark" style="gap: 6px;">
-                    <div class="gate" style="width: 20px; height: 20px; padding: 2px; gap: 1px;">
-                        <span></span><span></span><span></span>
-                        <span></span><span></span><span></span>
-                        <span></span><span></span><span></span>
-                    </div>
-                    <span class="font-mono font-medium text-gray-500 text-sm">Cullis</span>
-                </div>
-                <span class="text-xs text-gray-600 hidden sm:inline">
-                    Federated Trust Broker for AI Agents
-                </span>
-            </div>
-            <div class="flex items-center gap-6">
-                <a href="https://github.com/DaenAIHax/Agent-Trust-Network" target="_blank" rel="noopener"
-                   class="text-xs text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-1.5">
-                    <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
-                    GitHub
-                </a>
-            </div>
+        <div class="footer-col">
+          <h4>Security</h4>
+          <ul>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/SECURITY.md" target="_blank">Security Policy</a></li>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/enterprise-kit/BYOCA.md" target="_blank">Bring Your Own CA</a></li>
+            <li><a href="https://github.com/DaenAIHax/agent-trust-network/blob/main/LICENSE" target="_blank">Apache 2.0 License</a></li>
+          </ul>
         </div>
-    </footer>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2026 Cullis</span>
+      <span>Built by security researchers, for the agent era.</span>
+    </div>
+  </div>
+</footer>
 
-    <!-- Scroll reveal script -->
-    <script>
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.classList.add('visible');
-                }
-            });
-        }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+<script>
+// Intersection Observer for reveal animations
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach((e, i) => {
+    if (e.isIntersecting) {
+      setTimeout(() => e.target.classList.add('visible'), i * 80);
+      obs.unobserve(e.target);
+    }
+  });
+}, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
 
-        document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
-    </script>
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+</script>
+
 </body>
 </html>
