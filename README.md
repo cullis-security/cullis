@@ -125,33 +125,67 @@ The **MCP Proxy** is each organization's gateway -- deployed in their own networ
 
 ```mermaid
 flowchart TB
-    subgraph org_a["Organization A — MCP Proxy"]
-        A1["Agent 1<br><i>API Key auth</i>"]
-        A2["Agent 2<br><i>API Key auth</i>"]
-        PA["MCP Proxy A<br><i>cert + DPoP + E2E</i>"]
+    subgraph org_a["🏢 Organization A"]
+        direction TB
+        A1["🤖 Buyer Agent"]
+        A2["🤖 Inventory Agent"]
+        VA["🔐 Vault A"]
+        PA["⚡ MCP Proxy A<br><sub>auto PKI · cert issuance · API key auth</sub>"]
+        A1 -->|"API Key"| PA
+        A2 -->|"API Key"| PA
+        VA -.->|"agent keys"| PA
     end
 
-    subgraph org_b["Organization B — MCP Proxy"]
-        B1["Agent 3<br><i>API Key auth</i>"]
-        PB["MCP Proxy B<br><i>cert + DPoP + E2E</i>"]
-        T1["Tool: ERP<br><i>local</i>"]
+    subgraph broker["🌐 Cullis Broker — self-hosted"]
+        direction TB
+        AUTH["Verify x509 chain"]
+        DPOP["Validate DPoP"]
+        POL["Query policies"]
+        FWD["Forward E2E"]
+        AUTH --> DPOP --> POL --> FWD
     end
 
-    A1 --> PA
-    A2 --> PA
-    PA -->|"x509 + DPoP + E2E"| BR["Cullis Broker"]
-    BR -->|"policy query"| D["Org A PDP"]
-    BR -->|"policy query"| E["Org B PDP"]
-    BR -->|"x509 + DPoP + E2E"| PB
-    PB --> B1
-    PB --> T1
+    subgraph org_b["🏢 Organization B"]
+        direction TB
+        B1["🤖 Supplier Agent"]
+        T1["🔧 Tool: ERP"]
+        VB["🔐 Vault B"]
+        PB["⚡ MCP Proxy B<br><sub>auto PKI · cert issuance · API key auth</sub>"]
+        PB -->|"API Key"| B1
+        PB -->|"tool call"| T1
+        VB -.->|"agent keys"| PB
+    end
 
-    style BR fill:#4f46e5,stroke:#6366f1,color:#fff
-    style PA fill:#0d9488,stroke:#14b8a6,color:#fff
-    style PB fill:#0d9488,stroke:#14b8a6,color:#fff
+    PA ==>|"x509 + DPoP + E2E encrypted"| broker
+    broker ==>|"x509 + DPoP + E2E encrypted"| PB
+
+    broker ---|"policy query"| PDPA["📋 Org A PDP<br><sub>webhook / OPA</sub>"]
+    broker ---|"policy query"| PDPB["📋 Org B PDP<br><sub>webhook / OPA</sub>"]
+
+    PDPA -->|"allow ✓"| DUAL{"Both must<br>allow"}
+    PDPB -->|"allow ✓"| DUAL
+
+    classDef broker fill:#4f46e5,stroke:#6366f1,color:#fff,font-weight:bold
+    classDef proxy fill:#0d9488,stroke:#14b8a6,color:#fff,font-weight:bold
+    classDef agent fill:#1e293b,stroke:#334155,color:#e2e8f0
+    classDef pdp fill:#92400e,stroke:#d97706,color:#fef3c7
+    classDef vault fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
+    classDef decision fill:#b45309,stroke:#f59e0b,color:#fff
+
+    class AUTH,DPOP,POL,FWD broker
+    class PA,PB proxy
+    class A1,A2,B1,T1 agent
+    class PDPA,PDPB pdp
+    class VA,VB vault
+    class DUAL decision
 ```
 
-**Agents talk to their local MCP Proxy** using simple API keys. The proxy handles x509 certificates, DPoP token binding, and E2E encryption -- agents never see cryptographic keys.
+### How it works
+
+1. **Agents talk to their local MCP Proxy** using simple API keys -- no certificates, no DPoP, no cryptography
+2. **The Proxy handles everything** -- x509 cert issuance, DPoP token binding, E2E encryption, Vault key storage
+3. **The Broker routes and enforces** -- verifies identity, queries both orgs' policy engines, forwards encrypted messages it cannot read
+4. **Each org controls its own policy** -- PDP webhook or OPA; the broker enforces both decisions (default-deny)
 
 **KMS backends:** local filesystem (dev), HashiCorp Vault KV v2 (production), extensible to AWS KMS / Azure Key Vault.
 
