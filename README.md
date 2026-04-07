@@ -131,17 +131,17 @@ flowchart TB
         A2["🤖 Inventory Agent"]
         VA["🔐 Vault A"]
         PA["⚡ MCP Proxy A<br><sub>auto PKI · cert issuance · API key auth</sub>"]
-        A1 -->|"API Key"| PA
-        A2 -->|"API Key"| PA
+        A1 -->|"① API Key"| PA
+        A2 -->|"① API Key"| PA
         VA -.->|"agent keys"| PA
     end
 
     subgraph broker["🌐 Cullis Broker — self-hosted"]
         direction TB
-        AUTH["Verify x509 chain"]
-        DPOP["Validate DPoP"]
-        POL["Query policies"]
-        FWD["Forward E2E"]
+        AUTH["② Verify x509 chain"]
+        DPOP["③ Validate DPoP"]
+        POL["④ Query policies"]
+        FWD["⑥ Forward E2E"]
         AUTH --> DPOP --> POL --> FWD
     end
 
@@ -151,19 +151,19 @@ flowchart TB
         T1["🔧 Tool: ERP"]
         VB["🔐 Vault B"]
         PB["⚡ MCP Proxy B<br><sub>auto PKI · cert issuance · API key auth</sub>"]
-        PB -->|"API Key"| B1
-        PB -->|"tool call"| T1
+        PB -->|"⑦ API Key"| B1
+        PB -->|"⑦ tool call"| T1
         VB -.->|"agent keys"| PB
     end
 
-    PA ==>|"x509 + DPoP + E2E encrypted"| broker
-    broker ==>|"x509 + DPoP + E2E encrypted"| PB
+    PA ==>|"② x509 + DPoP + E2E"| broker
+    broker ==>|"⑥ E2E encrypted"| PB
 
-    broker ---|"policy query"| PDPA["📋 Org A PDP<br><sub>webhook / OPA</sub>"]
-    broker ---|"policy query"| PDPB["📋 Org B PDP<br><sub>webhook / OPA</sub>"]
+    broker ---|"④ policy query"| PDPA["📋 Org A PDP<br><sub>webhook / OPA</sub>"]
+    broker ---|"④ policy query"| PDPB["📋 Org B PDP<br><sub>webhook / OPA</sub>"]
 
-    PDPA -->|"allow ✓"| DUAL{"Both must<br>allow"}
-    PDPB -->|"allow ✓"| DUAL
+    PDPA -->|"⑤ allow ✓"| DUAL{"Both must<br>allow"}
+    PDPB -->|"⑤ allow ✓"| DUAL
 
     classDef broker fill:#4f46e5,stroke:#6366f1,color:#fff,font-weight:bold
     classDef proxy fill:#0d9488,stroke:#14b8a6,color:#fff,font-weight:bold
@@ -182,10 +182,13 @@ flowchart TB
 
 ### How it works
 
-1. **Agents talk to their local MCP Proxy** using simple API keys -- no certificates, no DPoP, no cryptography
-2. **The Proxy handles everything** -- x509 cert issuance, DPoP token binding, E2E encryption, Vault key storage
-3. **The Broker routes and enforces** -- verifies identity, queries both orgs' policy engines, forwards encrypted messages it cannot read
-4. **Each org controls its own policy** -- PDP webhook or OPA; the broker enforces both decisions (default-deny)
+1. **① Agent → Proxy** -- agents authenticate with a simple API key to their local MCP Proxy
+2. **② Proxy → Broker** -- the proxy signs the request with x509 + DPoP and encrypts E2E (agents never see crypto keys)
+3. **③ Broker verifies** -- x509 certificate chain, DPoP proof-of-possession, token binding
+4. **④ Policy query** -- broker asks both organizations' PDP (webhook or OPA)
+5. **⑤ Dual authorization** -- session proceeds only if **both** orgs allow (default-deny)
+6. **⑥ E2E forward** -- broker forwards the encrypted message it cannot read (zero-knowledge)
+7. **⑦ Proxy → Agent/Tool** -- receiving proxy decrypts and delivers to the target agent or tool
 
 **KMS backends:** local filesystem (dev), HashiCorp Vault KV v2 (production), extensible to AWS KMS / Azure Key Vault.
 
