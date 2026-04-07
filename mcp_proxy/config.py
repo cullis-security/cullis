@@ -52,6 +52,9 @@ class ProxySettings(BaseSettings):
     org_id: str = ""
     org_secret: str = ""
 
+    # Built-in PDP webhook URL (registered with broker during org join)
+    pdp_url: str = ""
+
     # DB
     database_url: str = "sqlite+aiosqlite:///./mcp_proxy.db"
 

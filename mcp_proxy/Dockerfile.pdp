@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir fastapi uvicorn[standard] httpx
+
+COPY enterprise-kit/pdp-template/pdp_server.py ./pdp_server.py
+
+ENV PDP_PORT=9200
+
+EXPOSE 9200
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')" || exit 1
+
+CMD python pdp_server.py --port ${PDP_PORT} --host 0.0.0.0 --config ${PDP_RULES_PATH:-}

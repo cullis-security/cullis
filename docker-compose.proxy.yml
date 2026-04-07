@@ -5,19 +5,16 @@
 # The MCP Proxy is the org-level gateway that handles identity, certificates,
 # and broker communication on behalf of internal AI agents.
 #
+# Includes a built-in PDP (Policy Decision Point) that the broker calls
+# to authorize sessions. Default: allow all. Customize via rules.json
+# or connect to your own OPA instance.
+#
 # Usage:
 #   docker compose -f docker-compose.proxy.yml up -d
 #
-# Environment variables (set in proxy.env or pass via -e):
-#   MCP_PROXY_ENVIRONMENT    - "development" or "production" (default: development)
-#   MCP_PROXY_ADMIN_SECRET   - Dashboard admin password (CHANGE IN PRODUCTION)
-#
-# The proxy stores its data (agents, config, audit log) in a SQLite database
-# persisted via the mcp_proxy_data volume.
-#
 # On first run, open http://localhost:9100/proxy/login to:
-#   1. Connect to your Cullis broker
-#   2. Register your organization
+#   1. Connect to your Cullis broker (enter broker URL + invite token)
+#   2. Register your organization (PDP webhook auto-registered)
 #   3. Create agents
 # =============================================================================
 
@@ -33,12 +30,17 @@ services:
       MCP_PROXY_ENVIRONMENT: ${MCP_PROXY_ENVIRONMENT:-development}
       MCP_PROXY_ADMIN_SECRET: ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
       MCP_PROXY_DATABASE_URL: sqlite+aiosqlite:////data/mcp_proxy.db
+      # PDP webhook URL — the proxy tells the broker to call this for policy decisions
+      MCP_PROXY_PDP_URL: http://pdp:9200/policy
       # Vault (optional — uncomment to enable)
       # MCP_PROXY_SECRET_BACKEND: vault
       # MCP_PROXY_VAULT_ADDR: http://vault:8200
       # MCP_PROXY_VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
     volumes:
       - mcp_proxy_data:/data
+    depends_on:
+      pdp:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
@@ -47,10 +49,29 @@ services:
       retries: 3
       start_period: 10s
 
+  # Built-in PDP — Policy Decision Point
+  # The broker calls this webhook to authorize sessions involving your org.
+  # Default: allow all sessions. Customize by mounting a rules.json file.
+  pdp:
+    build:
+      context: .
+      dockerfile: mcp_proxy/Dockerfile.pdp
+    ports:
+      - "${MCP_PROXY_PDP_PORT:-9200}:9200"
+    environment:
+      PDP_PORT: "9200"
+      PDP_RULES_PATH: /etc/pdp/rules.json
+    volumes:
+      - ./pdp-rules.json:/etc/pdp/rules.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   # Optional: HashiCorp Vault for secure key storage
-  # Uncomment this section to store agent private keys in Vault
-  # instead of the local SQLite database.
-  #
   # vault:
   #   image: hashicorp/vault:1.17
   #   ports:
@@ -60,11 +81,6 @@ services:
   #     VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
   #   cap_add:
   #     - IPC_LOCK
-  #   healthcheck:
-  #     test: ["CMD", "vault", "status", "-address=http://localhost:8200"]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 10
 
 volumes:
   mcp_proxy_data:
