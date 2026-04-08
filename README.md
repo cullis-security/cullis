@@ -8,7 +8,34 @@
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python"></a>
   <a href="https://github.com/cullis-security/cullis/actions"><img src="https://img.shields.io/github/actions/workflow/status/cullis-security/cullis/ci.yml?branch=main&label=CI" alt="CI"></a>
   <a href="https://github.com/cullis-security/cullis"><img src="https://img.shields.io/badge/Docker-ready-2496ED.svg" alt="Docker"></a>
+  <a href="#status"><img src="https://img.shields.io/badge/status-early--stage%20%C2%B7%20research-orange.svg" alt="Status: early-stage"></a>
 </p>
+
+---
+
+> [!WARNING]
+> **Early-stage research project — not production-ready.**
+>
+> Cullis is in active study and prototyping. The architecture is real and the demo runs end-to-end on a laptop, but the codebase has **not** been hardened, security-audited, or validated against real production workloads. Several components are still exploratory and APIs may break without notice.
+>
+> **Use it to learn, explore, prototype, and contribute — not to handle real users, real credentials, or real traffic yet.**
+>
+> Feedback, security reviews, and ideas are very welcome — see [Contact](#contact).
+
+---
+
+## Status
+
+This is a **research and learning project** built in the open. The goals right now are: (1) explore what cryptographic identity, federated authorization, and tamper-evident audit look like for cross-organization AI agents; (2) prototype an architecture that composes existing standards (x509, SPIFFE, DPoP, OAuth 2.0, OPA) into something coherent for the agent era; (3) get the design reviewed by security researchers and the workload-identity community.
+
+What this means in practice:
+
+- **The demo (`./deploy_demo.sh`)** is the only end-to-end path covered by automated tests. Use it to explore the architecture.
+- **The standalone deploy scripts** (`deploy_broker.sh`, `deploy_proxy.sh`, the Helm chart) run, but they are exploratory — no SLA, no upgrade path, no migration story.
+- **No security review yet.** The codebase has gone through internal audit rounds but never independent third-party review.
+- **Schema and APIs may break.** Pre-1.0, no semver guarantees.
+
+If you want to **try it**, the demo is the right entry point. If you want to **review or break it**, see [SECURITY.md](SECURITY.md). If you want to **deploy it for real workloads** — please don't, not yet.
 
 ---
 
