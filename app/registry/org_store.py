@@ -141,6 +141,39 @@ async def get_org_oidc_secret(org: OrganizationRecord) -> str | None:
     return await kms.decrypt_secret(org.oidc_client_secret)
 
 
+def get_oidc_role_mapping(org: OrganizationRecord) -> dict | None:
+    """
+    Read the OIDC role mapping config from the org metadata.
+
+    Returns None if not configured (legacy backward-compatible behavior).
+    """
+    return org.extra.get("oidc_role_mapping") or None
+
+
+async def update_org_oidc_role_mapping(
+    db: AsyncSession,
+    org_id: str,
+    mapping: dict | None,
+) -> OrganizationRecord | None:
+    """
+    Set or clear the OIDC role mapping config for an org.
+
+    Pass `mapping=None` to remove the mapping (org reverts to legacy behavior).
+    """
+    record = await get_org_by_id(db, org_id)
+    if record is None:
+        return None
+    metadata = record.extra
+    if mapping is None:
+        metadata.pop("oidc_role_mapping", None)
+    else:
+        metadata["oidc_role_mapping"] = mapping
+    record.metadata_json = json.dumps(metadata)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
 async def list_orgs(db: AsyncSession) -> list[OrganizationRecord]:
     result = await db.execute(
         select(OrganizationRecord).where(OrganizationRecord.status == "active")

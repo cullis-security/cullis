@@ -291,9 +291,11 @@ async def settings_page(request: Request, db: AsyncSession = Depends(get_db)):
 
     meta = _json.loads(org.metadata_json or "{}")
     ca_locked = bool(org.ca_certificate) and meta.get("ca_locked", False)
+    oidc_mapping = meta.get("oidc_role_mapping") or {}
 
     return templates.TemplateResponse("settings.html",
         _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+             oidc_mapping=oidc_mapping,
              error=None, success=None))
 
 
@@ -478,6 +480,93 @@ async def settings_generate_ca(request: Request, db: AsyncSession = Depends(get_
                      "Use Bring Your Own CA (BYOCA) for production deployments."))
 
 
+@router.post("/settings/oidc-mapping", response_class=HTMLResponse)
+async def settings_oidc_mapping(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Update the org's OIDC role mapping (claim_path / admin_values / default_role).
+
+    Empty form values clear the mapping (org reverts to legacy behavior:
+    any IdP-authenticated user becomes org admin).
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+    if not await verify_csrf(request, session):
+        org = await get_org_by_id(db, session.org_id)
+        meta = _json.loads(org.metadata_json or "{}") if org else {}
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org,
+                 ca_locked=bool(org and org.ca_certificate) and meta.get("ca_locked", False),
+                 error="Invalid CSRF token.", success=None))
+
+    form_data = await request.form()
+    claim_path = form_data.get("claim_path", "").strip()
+    admin_values_raw = form_data.get("admin_values", "").strip()
+    default_role = form_data.get("default_role", "deny").strip()
+    request_scopes_raw = form_data.get("request_scopes", "").strip()
+
+    org = await get_org_by_id(db, session.org_id)
+    if not org:
+        return RedirectResponse(url="/dashboard/login", status_code=303)
+    meta = _json.loads(org.metadata_json or "{}")
+    ca_locked = bool(org.ca_certificate) and meta.get("ca_locked", False)
+
+    from app.registry.org_store import update_org_oidc_role_mapping
+
+    # Clear mapping if both fields are empty
+    if not claim_path and not admin_values_raw:
+        await update_org_oidc_role_mapping(db, session.org_id, None)
+        await log_event(db, "dashboard.oidc_mapping_cleared", "ok",
+                        org_id=session.org_id)
+        org = await get_org_by_id(db, session.org_id)
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+                 error=None,
+                 success="OIDC role mapping cleared. Org reverts to legacy behavior."))
+
+    # Both fields required when configuring
+    if not claim_path or not admin_values_raw:
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+                 error="Both claim path and admin values are required.", success=None))
+
+    if default_role not in ("deny", "org"):
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+                 error="Default role must be 'deny' or 'org'.", success=None))
+
+    # Parse comma-separated lists
+    admin_values = [v.strip() for v in admin_values_raw.split(",") if v.strip()]
+    if not admin_values:
+        return templates.TemplateResponse("settings.html",
+            _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+                 error="At least one admin value is required.", success=None))
+
+    request_scopes = [s.strip() for s in request_scopes_raw.split(",") if s.strip()]
+
+    mapping = {
+        "claim_path": claim_path,
+        "admin_values": admin_values,
+        "default_role": default_role,
+    }
+    if request_scopes:
+        mapping["request_scopes"] = request_scopes
+
+    await update_org_oidc_role_mapping(db, session.org_id, mapping)
+    await log_event(db, "dashboard.oidc_mapping_updated", "ok",
+                    org_id=session.org_id,
+                    details={"claim_path": claim_path,
+                             "admin_values_count": len(admin_values),
+                             "default_role": default_role})
+
+    org = await get_org_by_id(db, session.org_id)
+    return templates.TemplateResponse("settings.html",
+        _ctx(request, session, active="settings", org=org, ca_locked=ca_locked,
+             error=None, success="OIDC role mapping updated."))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # OIDC federation login
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,9 +625,23 @@ async def oidc_start(
             "admin_oidc_enabled": False,
         })
 
+    # If the org has a role mapping configured and it requests extra OIDC
+    # scopes (e.g. "groups" for Okta/AzureAD), pass them to the IdP.
+    additional_scopes: list[str] | None = None
+    if role == "org":
+        from app.registry.org_store import get_oidc_role_mapping
+        mapping = get_oidc_role_mapping(org)
+        if mapping:
+            extra = mapping.get("request_scopes")
+            if isinstance(extra, list) and extra:
+                additional_scopes = [str(s) for s in extra if s]
+
     flow_state = create_oidc_state(role, org_id)
     try:
-        auth_url = await build_authorization_url(issuer_url, client_id, redirect_uri, flow_state)
+        auth_url = await build_authorization_url(
+            issuer_url, client_id, redirect_uri, flow_state,
+            additional_scopes=additional_scopes,
+        )
     except OidcError as e:
         return templates.TemplateResponse("login.html", {
             "request": request, "error": f"SSO error: {e}",
@@ -616,6 +719,36 @@ async def oidc_callback(
     except OidcError as e:
         _log.warning("OIDC callback failed: %s", e)
         return _login_error(f"SSO authentication failed: {e}")
+
+    # Per-org role mapping: validate IdP claims against the org's policy.
+    # If the org has not configured a mapping, the legacy behavior applies
+    # (any user authenticated through the org's IdP becomes "org admin").
+    if flow_state.role == "org":
+        from app.dashboard.oidc import validate_role_mapping
+        from app.registry.org_store import get_oidc_role_mapping
+
+        mapping = get_oidc_role_mapping(org)
+        allowed, reason = validate_role_mapping(mapping, identity.claims)
+        if not allowed:
+            await log_event(
+                db, "dashboard.oidc_login", "denied",
+                org_id=flow_state.org_id,
+                details={
+                    "role": flow_state.role,
+                    "sub": identity.sub,
+                    "email": identity.email,
+                    "issuer": identity.issuer,
+                    "deny_reason": reason,
+                },
+            )
+            _log.warning(
+                "OIDC role mapping denied: org=%s sub=%s reason=%s",
+                flow_state.org_id, identity.sub, reason,
+            )
+            return _login_error(
+                "You are not authorized to access this organization. "
+                "Contact your administrator."
+            )
 
     # Create session
     response = RedirectResponse(url="/dashboard", status_code=303)

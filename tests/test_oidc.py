@@ -164,6 +164,7 @@ async def test_oidc_callback_success_org(client: AsyncClient):
     mock_identity = OidcIdentity(
         sub="user-123", email="user@example.com",
         name="Test User", issuer="https://idp.example.com",
+        claims={"sub": "user-123", "email": "user@example.com"},
     )
 
     # Manually create a state cookie by building a fake request/response
