@@ -190,8 +190,19 @@ def test_kms_local_backend_still_works():
 
 # ── #42: Revoked binding cannot be re-approved ─────��─────────────────────────
 
-async def test_revoked_binding_cannot_be_reapproved(db_session: AsyncSession):
-    """#42: approve_binding must reject bindings that are not in 'pending' status."""
+async def test_revoked_binding_can_be_reapproved(db_session: AsyncSession):
+    """approve_binding accepts both 'pending' and 'revoked' bindings.
+
+    Originally this rule was strict (only 'pending' was allowed). Commit
+    437c919 ('Fix binding not re-approved when agent re-registered from
+    dashboard', 2026-04-07) intentionally relaxed it so the dashboard
+    re-register flow works without having to delete the existing binding
+    first. This test pins the new contract.
+
+    Security note: an admin can 'undo' a revocation with one click, which
+    weakens the response to a compromised agent. Tracked as a follow-up
+    (distinguish 'voluntary' vs 'security_incident' revoke reasons).
+    """
     from app.registry.binding_store import create_binding, approve_binding, revoke_binding
 
     binding = await create_binding(db_session, "org-r2", "agent-r2", ["cap1"])
@@ -207,9 +218,10 @@ async def test_revoked_binding_cannot_be_reapproved(db_session: AsyncSession):
     assert revoked is not None
     assert revoked.status == "revoked"
 
-    # Try to re-approve — must return None
+    # Re-approve — must succeed (intentional, supports re-register flow)
     result = await approve_binding(db_session, binding.id, "admin")
-    assert result is None
+    assert result is not None
+    assert result.status == "approved"
 
 
 async def test_approved_binding_cannot_be_reapproved(db_session: AsyncSession):

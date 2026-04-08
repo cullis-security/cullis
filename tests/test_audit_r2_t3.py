@@ -141,6 +141,7 @@ class TestJoinRequestValidation:
             display_name="Acme Corp",
             secret="s3cret",
             ca_certificate="-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----",
+            invite_token="test-invite-token",
         )
         assert req.org_id == "acme-corp.01"
 
