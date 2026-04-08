@@ -26,7 +26,7 @@
 
 ```bash
 # 1. Clone and configure
-git clone https://github.com/DaenAIHax/cullis.git
+git clone https://github.com/cullis-security/cullis.git
 cd cullis
 cp .env.example .env
 

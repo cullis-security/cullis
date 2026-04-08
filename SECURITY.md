@@ -8,7 +8,7 @@ If you discover a security vulnerability in Cullis, please report it responsibly
 
 ### How to Report
 
-Use [GitHub's private vulnerability reporting](https://github.com/DaenAIHax/cullis/security/advisories/new) to submit your report. This ensures the report remains confidential until a fix is available.
+Use [GitHub's private vulnerability reporting](https://github.com/cullis-security/cullis/security/advisories/new) to submit your report. This ensures the report remains confidential until a fix is available.
 
 ### What to Include
 

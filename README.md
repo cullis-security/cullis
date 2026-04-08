@@ -6,8 +6,8 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python"></a>
-  <a href="https://github.com/DaenAIHax/cullis/actions"><img src="https://img.shields.io/github/actions/workflow/status/DaenAIHax/cullis/ci.yml?branch=main&label=CI" alt="CI"></a>
-  <a href="https://github.com/DaenAIHax/cullis"><img src="https://img.shields.io/badge/Docker-ready-2496ED.svg" alt="Docker"></a>
+  <a href="https://github.com/cullis-security/cullis/actions"><img src="https://img.shields.io/github/actions/workflow/status/cullis-security/cullis/ci.yml?branch=main&label=CI" alt="CI"></a>
+  <a href="https://github.com/cullis-security/cullis"><img src="https://img.shields.io/badge/Docker-ready-2496ED.svg" alt="Docker"></a>
 </p>
 
 ---
@@ -55,7 +55,7 @@ python3 -m pip install --user --break-system-packages httpx
 ### Run it
 
 ```bash
-git clone https://github.com/DaenAIHax/cullis
+git clone https://github.com/cullis-security/cullis
 cd cullis
 ./deploy_demo.sh up
 python scripts/demo/sender.py

@@ -10,10 +10,10 @@ appVersion: "0.1.0"
 kubeVersion: ">=1.25.0-0"
 home: https://cullis.tech
 sources:
-  - https://github.com/DaenAIHax/Agent-Trust-Network
+  - https://github.com/cullis-security/cullis
 maintainers:
   - name: Cullis Maintainers
-    url: https://github.com/DaenAIHax
+    url: https://github.com/cullis-security
 keywords:
   - cullis
   - agent-trust

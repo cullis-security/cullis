@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Cullis! This guide will help you 
 
 ```bash
 # Clone the repo
-git clone https://github.com/DaenAIHax/cullis.git
+git clone https://github.com/cullis-security/cullis.git
 cd cullis
 
 # Create virtual environment
@@ -56,7 +56,7 @@ Before submitting, verify:
 
 ## What to Contribute
 
-Check out issues labeled [`good-first-issue`](https://github.com/DaenAIHax/cullis/labels/good-first-issue) and [`help-wanted`](https://github.com/DaenAIHax/cullis/labels/help-wanted).
+Check out issues labeled [`good-first-issue`](https://github.com/cullis-security/cullis/labels/good-first-issue) and [`help-wanted`](https://github.com/cullis-security/cullis/labels/help-wanted).
 
 Areas where contributions are especially welcome:
 - **SDKs:** TypeScript, Go, Java client libraries
@@ -71,7 +71,7 @@ Areas where contributions are especially welcome:
 
 ## Questions?
 
-Open a [GitHub Discussion](https://github.com/DaenAIHax/cullis/discussions) in the Q&A category.
+Open a [GitHub Discussion](https://github.com/cullis-security/cullis/discussions) in the Q&A category.
 
 ## License
 
