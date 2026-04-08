@@ -1,9 +1,17 @@
 # Cullis Helm Chart
 
-Production-ready Helm chart for [Cullis](https://cullis.tech), the federated
-trust broker for inter-organizational AI agents. The chart targets managed
-Kubernetes (EKS, GKE, AKS) and assumes external Postgres, Redis and Vault
-by default. In-cluster fallbacks exist for `kind` / `minikube` development.
+Helm chart for [Cullis](https://cullis.io), the federated trust broker for
+inter-organizational AI agents. The chart targets managed Kubernetes
+(EKS, GKE, AKS) and assumes external Postgres, Redis and Vault by default.
+In-cluster fallbacks exist for `kind` / `minikube` development.
+
+> ⚠️ **Status: work in progress, not yet production-validated.**
+> The chart is `helm lint`-clean and captures the intended deployment
+> topology, but has not been exercised end to end against a managed
+> Kubernetes cluster yet. Treat it as a starting point you can fork and
+> harden for your environment, not a turnkey install. The end-to-end path
+> currently covered by automated tests is the demo at
+> [`scripts/demo/`](../../../scripts/demo/), not this chart.
 
 ## Quick start
 

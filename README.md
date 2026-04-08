@@ -63,7 +63,7 @@ python scripts/demo/sender.py
 
 Three commands after the clone, including a full Docker build on first run. The demo uses `KMS_BACKEND=local`, no TLS, no Vault — it is meant for laptops. See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided tour (dashboards, customization, troubleshooting).
 
-For real production deployment (TLS, BYOCA, Vault, Helm) skip down to [Production deployment](#production-deployment).
+If you want to explore the broker or a proxy on its own (not as part of the bundled demo), see [Run the components individually](#run-the-components-individually) below — note that those standalone paths are not yet production-tested.
 
 ---
 
@@ -183,35 +183,61 @@ A TypeScript SDK lives in [`sdk-ts/`](sdk-ts/). An MCP server exposing 10 Cullis
 
 ---
 
-## Production deployment
+## Run the components individually
 
-For real deployments (TLS, real Postgres, Vault KMS, multiple organizations):
+> ⚠️ **Status: exploratory, not production-tested.**
+> The bundled demo (`./deploy_demo.sh`) is the only end-to-end path covered
+> by automated tests. The standalone deploy scripts below let you spin up
+> the broker or a single proxy on its own to evaluate each piece in
+> isolation, but they have not been hardened or validated against a real
+> production workload yet. Use them to **explore**, not yet to **operate**.
+
+If you only want to see Cullis in action, stop at the [Quickstart](#quickstart)
+above and use the demo.
+
+### Just the broker
 
 ```bash
-# Production with Bring Your Own CA cert
-./deploy_broker.sh --prod-byoca \
-  --domain broker.example.com \
-  --cert /etc/ssl/cullis/fullchain.pem \
-  --key  /etc/ssl/cullis/privkey.pem
+# Self-signed cert on https://localhost:8443 — no public DNS required
+./deploy_broker.sh --dev
 
-# Or production with Let's Encrypt (HTTP-01)
+# With Let's Encrypt (requires a public domain pointing at the host)
 ./deploy_broker.sh --prod-acme \
   --domain broker.example.com \
   --email ops@example.com
 
-# Or development on a single host (self-signed cert on https://localhost:8443)
-./deploy_broker.sh --dev
+# With your enterprise CA (Bring Your Own CA)
+./deploy_broker.sh --prod-byoca \
+  --domain broker.example.com \
+  --cert /etc/ssl/cullis/fullchain.pem \
+  --key  /etc/ssl/cullis/privkey.pem
 ```
 
-Three TLS profiles, all driven by the same script: `--dev` (self-signed), `--prod-acme` (Let's Encrypt via certbot), `--prod-byoca` (your enterprise CA).
+Three TLS profiles, same script. The `--dev` profile is the one most likely
+to "just work" right now; the `--prod-*` profiles are still being shaken out.
 
-For each participating organization to join the network, run [`deploy_proxy.sh`](deploy_proxy.sh).
+### Just a proxy (for one organization)
 
-For Kubernetes deployments, see the Helm chart in [`deploy/helm/cullis/`](deploy/helm/cullis/).
+```bash
+./deploy_proxy.sh
+```
 
-For BYOCA, OPA policy bundles, monitoring (Prometheus alert rules), and PDP webhook templates, see [`enterprise-kit/`](enterprise-kit/).
+Pairs with a running broker. Walks you through entering the broker URL,
+the invite token, and registering the org.
 
-Operational guidance (DPoP htu pitfalls, troubleshooting, runbook): [`docs/ops-runbook.md`](docs/ops-runbook.md).
+### Kubernetes (Helm)
+
+A Helm chart lives in [`deploy/helm/cullis/`](deploy/helm/cullis/). Same
+caveat: it captures the deployment topology and is `helm lint`-clean,
+but has not been validated against a managed Kubernetes cluster end to
+end yet. Treat it as a starting point for your own packaging, not a
+turnkey install.
+
+### Where to look next
+
+- [`enterprise-kit/`](enterprise-kit/) — BYOCA guide, OPA policy bundle, Prometheus alert rules, PDP webhook template
+- [`docs/ops-runbook.md`](docs/ops-runbook.md) — operational pitfalls (DPoP htu, KMS bootstrap, common health-check failures)
+- [`scripts/demo/README.md`](scripts/demo/README.md) — the recommended path: full demo guide with dashboard tour and customization hooks
 
 ---
 

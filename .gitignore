@@ -27,8 +27,10 @@ scripts/demo/.checker.pid
 scripts/demo/.checker.log
 
 # Accidental copy of the repo created by `git clone` inside the working
-# tree (e.g. when copy-pasting the README quickstart). Never commit it.
-cullis/
+# tree (e.g. when copy-pasting the README quickstart). Anchored to the
+# repo root with a leading `/` so it does NOT match `deploy/helm/cullis/`
+# or any other legitimate `cullis/` subdirectory deeper in the tree.
+/cullis/
 
 # Local-only: notes, drafts, root demo dir, CLI tools.
 # `/demo/` is anchored to the repo root so it does NOT match `scripts/demo/`.
