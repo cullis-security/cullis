@@ -6,10 +6,23 @@
 # Deploys the Cullis trust broker. Each organization then deploys their own
 # MCP Proxy using deploy_proxy.sh.
 #
-# Usage:
-#   ./deploy_broker.sh              # Interactive mode (asks questions)
-#   ./deploy_broker.sh --dev        # Skip prompts, use development defaults
-#   ./deploy_broker.sh --prod       # Skip mode prompt, ask for domain/TLS details
+# Three TLS profiles, all driven by the same script:
+#
+#   --dev                              Self-signed cert on https://localhost:8443
+#                                      (default — runs entirely offline)
+#
+#   --prod-acme --domain X --email Y   Real cert from Let's Encrypt via certbot.
+#                                      Requires public DNS pointing to the host
+#                                      and ports 80/443 reachable from the
+#                                      internet for the HTTP-01 challenge.
+#
+#   --prod-byoca --domain X            Bring Your Own CA: provide a cert and
+#         --cert /path/to/fullchain.pem  key already issued by your enterprise
+#         --key  /path/to/privkey.pem    CA. The script copies them into nginx
+#                                      and writes the matching nginx.conf.
+#
+# Interactive fallback: running without flags asks the same questions.
+# Backwards-compatible aliases: --prod is treated as the interactive prod path.
 #
 set -euo pipefail
 
@@ -46,20 +59,69 @@ ask_yn() {
 
 # ── Parse CLI args ───────────────────────────────────────────────────────────
 MODE=""
-for arg in "$@"; do
-    case "$arg" in
-        --dev)  MODE="development" ;;
-        --prod) MODE="production" ;;
-        --help|-h)
-            echo "Usage: $0 [--dev|--prod]"
-            echo "  --dev   Development mode (self-signed cert, default secrets)"
-            echo "  --prod  Production mode (asks for domain and TLS config)"
-            echo "  (none)  Interactive — asks which mode to use"
-            exit 0
-            ;;
-        *) die "Unknown argument: $arg (use --help)" ;;
+TLS_PROFILE=""           # "" | "selfsigned" | "acme" | "byoca"
+ARG_DOMAIN=""
+ARG_EMAIL=""
+ARG_CERT=""
+ARG_KEY=""
+
+print_help() {
+    cat <<EOF
+Usage: $0 [PROFILE] [OPTIONS]
+
+Profiles (mutually exclusive):
+  --dev                       Development: self-signed cert on https://localhost:8443
+  --prod                      Production (interactive): asks for domain + TLS choice
+  --prod-acme                 Production with Let's Encrypt (HTTP-01)
+                              Requires --domain and --email
+  --prod-byoca                Production with Bring Your Own CA cert
+                              Requires --domain, --cert, --key
+
+Options:
+  --domain <name>             FQDN for production deployment
+  --email  <addr>             Email for Let's Encrypt notifications (--prod-acme only)
+  --cert   <path>             Path to TLS certificate PEM (--prod-byoca only)
+  --key    <path>             Path to TLS private key PEM (--prod-byoca only)
+  --help, -h                  Show this help and exit
+
+Examples:
+  $0 --dev
+  $0 --prod-acme  --domain broker.example.com --email ops@example.com
+  $0 --prod-byoca --domain broker.example.com \\
+                  --cert /etc/ssl/cullis/fullchain.pem \\
+                  --key  /etc/ssl/cullis/privkey.pem
+
+When no profile is given, the script runs in interactive mode (legacy).
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dev)         MODE="development"; TLS_PROFILE="selfsigned"; shift ;;
+        --prod)        MODE="production"; shift ;;
+        --prod-acme)   MODE="production"; TLS_PROFILE="acme"; shift ;;
+        --prod-byoca)  MODE="production"; TLS_PROFILE="byoca"; shift ;;
+        --domain)      ARG_DOMAIN="${2:-}"; shift 2 ;;
+        --email)       ARG_EMAIL="${2:-}"; shift 2 ;;
+        --cert)        ARG_CERT="${2:-}"; shift 2 ;;
+        --key)         ARG_KEY="${2:-}"; shift 2 ;;
+        --help|-h)     print_help; exit 0 ;;
+        *)             die "Unknown argument: $1 (use --help)" ;;
     esac
 done
+
+# Validate non-interactive profile combinations
+if [[ "$TLS_PROFILE" == "acme" ]]; then
+    [[ -z "$ARG_DOMAIN" ]] && die "--prod-acme requires --domain"
+    [[ -z "$ARG_EMAIL"  ]] && die "--prod-acme requires --email"
+fi
+if [[ "$TLS_PROFILE" == "byoca" ]]; then
+    [[ -z "$ARG_DOMAIN" ]] && die "--prod-byoca requires --domain"
+    [[ -z "$ARG_CERT"   ]] && die "--prod-byoca requires --cert"
+    [[ -z "$ARG_KEY"    ]] && die "--prod-byoca requires --key"
+    [[ ! -f "$ARG_CERT" ]] && die "Certificate file not found: $ARG_CERT"
+    [[ ! -f "$ARG_KEY"  ]] && die "Key file not found: $ARG_KEY"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. Prerequisites
@@ -106,19 +168,34 @@ fi
 if [[ "$MODE" == "production" ]]; then
     ok "Production mode selected"
 
-    read -rp "  Domain name (e.g. broker.example.com): " DOMAIN
-    [[ -z "$DOMAIN" ]] && die "Domain name is required for production mode"
-
-    if ask_yn "Use Let's Encrypt for TLS?"; then
+    # Non-interactive: --prod-acme / --prod-byoca already supplied everything.
+    if [[ "$TLS_PROFILE" == "acme" ]]; then
+        DOMAIN="$ARG_DOMAIN"
         USE_LETSENCRYPT="y"
-        ok "Will configure Let's Encrypt (certbot)"
-    else
+        LE_EMAIL="$ARG_EMAIL"
+        ok "Profile: --prod-acme  domain=$DOMAIN  email=$LE_EMAIL"
+    elif [[ "$TLS_PROFILE" == "byoca" ]]; then
+        DOMAIN="$ARG_DOMAIN"
         USE_LETSENCRYPT="n"
-        read -rp "  Path to TLS certificate (PEM): " CERT_PATH
-        read -rp "  Path to TLS private key (PEM): " KEY_PATH
-        [[ ! -f "$CERT_PATH" ]] && die "Certificate file not found: $CERT_PATH"
-        [[ ! -f "$KEY_PATH" ]]  && die "Key file not found: $KEY_PATH"
-        ok "Will use enterprise CA certificates"
+        CERT_PATH="$ARG_CERT"
+        KEY_PATH="$ARG_KEY"
+        ok "Profile: --prod-byoca  domain=$DOMAIN  cert=$CERT_PATH"
+    else
+        # Interactive legacy path (--prod alone or no flag)
+        read -rp "  Domain name (e.g. broker.example.com): " DOMAIN
+        [[ -z "$DOMAIN" ]] && die "Domain name is required for production mode"
+
+        if ask_yn "Use Let's Encrypt for TLS?"; then
+            USE_LETSENCRYPT="y"
+            ok "Will configure Let's Encrypt (certbot)"
+        else
+            USE_LETSENCRYPT="n"
+            read -rp "  Path to TLS certificate (PEM): " CERT_PATH
+            read -rp "  Path to TLS private key (PEM): " KEY_PATH
+            [[ ! -f "$CERT_PATH" ]] && die "Certificate file not found: $CERT_PATH"
+            [[ ! -f "$KEY_PATH" ]]  && die "Key file not found: $KEY_PATH"
+            ok "Will use enterprise CA certificates"
+        fi
     fi
 else
     ok "Development mode selected"
@@ -439,7 +516,9 @@ if [[ "$USE_LETSENCRYPT" == "y" ]]; then
         sleep 2
     done
 
-    read -rp "  Email for Let's Encrypt notifications: " LE_EMAIL
+    if [[ -z "${LE_EMAIL:-}" ]]; then
+        read -rp "  Email for Let's Encrypt notifications: " LE_EMAIL
+    fi
     [[ -z "$LE_EMAIL" ]] && die "Email is required for Let's Encrypt"
 
     echo "  Running certbot..."

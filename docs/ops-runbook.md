@@ -11,6 +11,7 @@
 | Check readiness | `curl http://localhost:8000/readyz` |
 | Run DB migrations | `docker compose exec broker alembic upgrade head` |
 | Backup database | See [Database Backup](#database-backup) |
+| **Run full E2E test** | **`tests/e2e/run.sh`** (~3 min, see [E2E Test](#e2e-test)) |
 
 ---
 
@@ -54,6 +55,113 @@ docker compose up -d
 curl -k https://localhost:8443/healthz    # → {"status": "ok"}
 curl -k https://localhost:8443/readyz     # → {"status": "ready", ...}
 ```
+
+### TLS profiles via `deploy_broker.sh`
+
+The deploy script supports three TLS profiles. All can run unattended via
+CLI flags (suitable for CI/CD or Terraform `local-exec`); without flags
+the script falls back to the legacy interactive prompts.
+
+**1. Development (self-signed, localhost)**
+
+```bash
+./deploy_broker.sh --dev
+```
+
+Generates a self-signed cert valid for `localhost` and `127.0.0.1`. The
+broker is reachable at `https://localhost:8443`. Suitable only for local
+development and demos — no client outside the host will trust this cert.
+
+**2. Production with Let's Encrypt (HTTP-01 challenge)**
+
+```bash
+./deploy_broker.sh --prod-acme \
+    --domain broker.example.com \
+    --email  ops@example.com
+```
+
+Requirements:
+- Public DNS record for `broker.example.com` pointing at this host
+- TCP/80 reachable from the public internet (for the ACME challenge)
+- TCP/443 reachable for the renewed cert to be served
+
+The script:
+1. Boots nginx with a 1-day temporary self-signed cert so the container starts
+2. Runs `certbot certonly --webroot` to obtain the real certificate
+3. Reloads nginx pointing at `/etc/letsencrypt/live/<domain>/fullchain.pem`
+4. Prints a cron line for renewal — **add it manually**, the script does
+   not install crons. Suggested cron:
+   ```cron
+   0 3 * * * cd /opt/cullis && docker compose -f docker-compose.yml \
+       -f docker-compose.prod.yml -f docker-compose.letsencrypt.yml \
+       run --rm certbot renew --quiet && \
+       docker compose exec nginx nginx -s reload
+   ```
+
+**3. Production with Bring Your Own CA**
+
+```bash
+./deploy_broker.sh --prod-byoca \
+    --domain broker.example.com \
+    --cert /etc/ssl/cullis/fullchain.pem \
+    --key  /etc/ssl/cullis/privkey.pem
+```
+
+Use this when your enterprise CA already issued a certificate. The script
+copies both files into `nginx/certs/` (chmod 600 on the key) and writes a
+matching `nginx/nginx.conf` for the supplied domain. Renewal is your
+responsibility — re-run with the new files when the cert expires.
+
+### <a name="e2e-test"></a>Full-stack E2E test
+
+Per verificare che il flusso completo (broker → 2 proxy → 2 org → 2 agent →
+messaggio E2E) funzioni dopo qualsiasi modifica strutturale, c'è una suite
+di test pytest opt-in che orchestra docker compose:
+
+```bash
+tests/e2e/run.sh
+```
+
+Cosa fa, in ~3 minuti:
+1. Boota lo stack completo (broker + postgres + vault + redis + 2 mcp_proxy)
+   su porte alte (18xxx/19xxx) per non confliggere col tuo dev
+2. Genera 2 invite token via `POST /v1/admin/invites`
+3. Registra 2 org via i due proxy (riusa `AgentManager.create_agent`
+   tramite uno script Python eseguito dentro al container)
+4. Approva entrambe le org
+5. Verifica cross-org capability discovery
+6. Apre una sessione, invia un messaggio E2E criptato, verifica decifratura
+7. Tear down completo (`docker compose down -v`)
+
+Quando lanciarlo:
+- Prima di un PR su `main` che tocca broker/proxy/auth/persistence
+- Prima di un upgrade di dipendenze crittografiche
+- Dopo un refactor del graceful shutdown / FK / migration
+- Dopo aggiornamenti del SDK egress
+
+Il test è **skip di default** nei test unit (`pytest.ini` ha
+`addopts = -m "not e2e"`). Lo lanci esplicitamente con `tests/e2e/run.sh`
+o `pytest -m e2e -o addopts="" tests/e2e/`.
+
+Documentazione dettagliata + troubleshooting: [`tests/e2e/README.md`](../tests/e2e/README.md).
+
+### Common pitfalls
+
+- **`Invalid DPoP proof: htu mismatch` 401s after deploy**: the `BROKER_PUBLIC_URL`
+  in `.env` does not match how clients actually reach the broker. The DPoP
+  proof contains the URL the client used; the broker derives its expected
+  `htu` from `BROKER_PUBLIC_URL` (or the request, when unset). They must
+  match exactly, including scheme and port. Check with:
+  ```bash
+  docker compose exec broker env | grep BROKER_PUBLIC_URL
+  curl -kvI https://<your-domain>/healthz 2>&1 | grep -E "Host|location"
+  ```
+  The broker also logs the two values when a mismatch occurs (warning on
+  the `agent_trust` logger).
+
+- **Self-signed cert on production demo**: every SDK refuses self-signed
+  certs by default. The Python SDK has a `verify_tls=False` option which
+  is **only** for `--dev` localhost demos — never set it in production.
 
 ---
 
