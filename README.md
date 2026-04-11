@@ -89,8 +89,6 @@ sudo apt update && sudo apt install -y python3-pip python3-venv
 
 </details>
 
-[![Cullis Demo](https://img.youtube.com/vi/lsKa_L7JqhU/maxresdefault.jpg)](https://www.youtube.com/watch?v=lsKa_L7JqhU)
-
 > [!CAUTION]
 > **The demo deliberately disables production security features to let you explore the routing and architecture with two simple scripts.**
 >
