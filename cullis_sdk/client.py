@@ -113,6 +113,90 @@ class CullisClient:
 
     # ── Authentication ──────────────────────────────────────────────
 
+    # ── Enrollment-based bootstrap ───────────────────────────────────
+
+    @classmethod
+    def from_enrollment(
+        cls,
+        enroll_url: str,
+        *,
+        save_config: str | None = None,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> CullisClient:
+        """Bootstrap a proxy-connected client from an enrollment URL.
+
+        Calls the enrollment endpoint to receive API key and config, then
+        returns a lightweight client pre-configured for the proxy egress API.
+
+        Args:
+            enroll_url: Full enrollment URL (e.g. https://proxy/v1/enroll/enroll_xxx)
+            save_config: Optional file path to save the received config as .env
+            verify_tls: Whether to verify TLS certificates
+            timeout: HTTP request timeout in seconds
+
+        Returns:
+            A CullisClient configured with the proxy URL and API key.
+
+        Example::
+
+            client = CullisClient.from_enrollment("https://proxy.example.com/v1/enroll/enroll_buyer_abc123")
+            agents = client.discover(capabilities=["order.read"])
+        """
+        http = httpx.Client(timeout=timeout, verify=verify_tls)
+        try:
+            resp = http.get(enroll_url)
+            resp.raise_for_status()
+            config = resp.json()
+        except httpx.HTTPStatusError as e:
+            raise PermissionError(
+                f"Enrollment failed (HTTP {e.response.status_code}): {e.response.text}"
+            ) from e
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise ConnectionError(f"Enrollment endpoint unreachable: {e}") from e
+        finally:
+            http.close()
+
+        # Save config to .env file if requested
+        if save_config:
+            env_lines = [
+                f"CULLIS_API_KEY={config['api_key']}",
+                f"CULLIS_AGENT_ID={config['agent_id']}",
+                f"CULLIS_PROXY_URL={config['proxy_url']}",
+                f"CULLIS_ORG_ID={config['org_id']}",
+            ]
+            Path(save_config).write_text("\n".join(env_lines) + "\n")
+            log(f"Config saved to {save_config}")
+
+        # Build a proxy-oriented client (stores API key + proxy URL for egress calls)
+        instance = cls.__new__(cls)
+        instance.base = config["proxy_url"].rstrip("/")
+        instance._verify_tls = verify_tls
+        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance.token = None
+        instance._label = config["agent_id"]
+        instance._signing_key_pem = None
+        instance._pubkey_cache = {}
+        instance._client_seq = {}
+        instance._dpop_privkey = None
+        instance._dpop_pubkey_jwk = None
+        instance._dpop_nonce = None
+        # Store proxy credentials for egress API
+        instance._proxy_api_key = config["api_key"]
+        instance._proxy_agent_id = config["agent_id"]
+        instance._proxy_org_id = config["org_id"]
+
+        log(f"Enrolled as {config['agent_id']} via proxy {config['proxy_url']}")
+        return instance
+
+    def proxy_headers(self) -> dict:
+        """Return headers for proxy egress API calls (X-API-Key auth)."""
+        if not hasattr(self, "_proxy_api_key") or not self._proxy_api_key:
+            raise RuntimeError("Not enrolled — use from_enrollment() or set proxy credentials")
+        return {"X-API-Key": self._proxy_api_key, "Content-Type": "application/json"}
+
+    # ── Broker authentication ──────────────────────────────────────
+
     def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str) -> None:
         """Authenticate via x509 + DPoP, reading cert and key from file paths."""
         cert_pem = Path(cert_path).read_text()
@@ -358,6 +442,9 @@ class CullisClient:
                     decrypted = self.decrypt_payload(m, session_id=session_id)
                     result.append(InboxMessage.from_dict(decrypted))
                 return result
+            except httpx.HTTPStatusError as exc:
+                # Propagate 409 (session closed) so callers can handle it
+                raise
             except (httpx.ConnectError, httpx.TimeoutException):
                 if attempt < 4:
                     time.sleep(poll_interval)

@@ -9,6 +9,8 @@ import logging
 import time
 import uuid
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -240,6 +242,11 @@ async def send_message(
             request_id=request_id,
             duration_ms=duration_ms,
         )
+        if isinstance(exc, httpx.HTTPStatusError):
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=exc.response.text,
+            ) from exc
         logger.error("Failed to send message for %s: %s", agent.agent_id, exc)
         raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
 
@@ -257,6 +264,12 @@ async def poll_messages(
         messages = await bridge.poll_messages(agent.agent_id, session_id, after)
         return {"messages": messages, "count": len(messages)}
     except Exception as exc:
+        # Pass through broker HTTP status codes (e.g. 409 session closed)
+        if isinstance(exc, httpx.HTTPStatusError):
+            raise HTTPException(
+                status_code=exc.response.status_code,
+                detail=exc.response.text,
+            ) from exc
         logger.error("Failed to poll messages for %s: %s", agent.agent_id, exc)
         raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
 
