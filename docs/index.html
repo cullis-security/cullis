@@ -731,7 +731,7 @@ nav .container {
 /* ── PILLARS TABBED SHOWCASE ─────────────────────── */
 .pillar-tabs {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   gap: 0.6rem;
   margin-bottom: 2.5rem;
   align-items: stretch;
@@ -2041,12 +2041,177 @@ footer {
   margin: 0 auto 2.5rem;
 }
 
+/* ── ENTERPRISE SECTION ─────────────────────────── */
+.enterprise-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2.5rem;
+}
+
+.enterprise-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: clamp(1.8rem, 3vw, 2.5rem);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.4s, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+.enterprise-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent-amber), transparent);
+  opacity: 0.6;
+  transition: opacity 0.4s;
+}
+
+.enterprise-card:hover {
+  border-color: rgba(240,165,0,0.3);
+  transform: translateY(-3px);
+}
+
+.enterprise-card:hover::before {
+  opacity: 1;
+}
+
+.enterprise-card-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(240,165,0,0.2);
+  background: rgba(240,165,0,0.06);
+  border-radius: 2px;
+  margin-bottom: 1.2rem;
+  color: var(--accent-amber);
+}
+
+.enterprise-card-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.enterprise-card h3 {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  font-weight: 400;
+  line-height: 1.2;
+  margin-bottom: 0.8rem;
+  color: var(--text-primary);
+}
+
+.enterprise-card h3 em {
+  font-style: italic;
+  color: var(--accent-amber);
+}
+
+.enterprise-card-desc {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.65;
+  font-weight: 300;
+  flex-grow: 1;
+  margin-bottom: 1.2rem;
+}
+
+.enterprise-card-tag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-amber);
+  padding: 0.35rem 0.7rem;
+  border: 1px solid rgba(240,165,0,0.2);
+  background: rgba(240,165,0,0.06);
+  align-self: flex-start;
+  border-radius: 1px;
+}
+
+.enterprise-cta {
+  text-align: center;
+  margin-top: 1rem;
+}
+
+.enterprise-cta .btn-amber {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 0.85rem 2.2rem;
+  color: var(--bg-void);
+  background: var(--accent-amber);
+  border: none;
+  border-radius: 2px;
+  text-decoration: none;
+  letter-spacing: -0.01em;
+  transition: all 0.3s;
+  box-shadow: 0 8px 30px -8px rgba(240,165,0,0.35);
+}
+
+.enterprise-cta .btn-amber:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px -8px rgba(240,165,0,0.45);
+}
+
+/* Observability mock */
+.mock-metrics {
+  padding: 1.2rem 1.5rem;
+}
+
+.mock-metrics-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mock-metrics-row:last-child {
+  border-bottom: none;
+}
+
+.mock-metrics-name {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.mock-metrics-value {
+  color: var(--accent-cyan);
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+.mock-metrics-bar {
+  flex: 0 0 60px;
+  height: 4px;
+  background: var(--border-subtle);
+  border-radius: 2px;
+  margin-left: 1rem;
+  overflow: hidden;
+}
+
+.mock-metrics-bar-fill {
+  height: 100%;
+  background: var(--accent-cyan);
+  border-radius: 2px;
+}
+
 /* ── RESPONSIVE ──────────────────────────────────── */
 @media (max-width: 1024px) {
   .hero-grid { grid-template-columns: 1fr; gap: 3rem; }
   .hero-terminal-wrap { max-width: 620px; }
   .hero-sub { max-width: none; }
-  .pillar-tabs { grid-template-columns: repeat(3, 1fr); }
+  .pillar-tabs { grid-template-columns: repeat(4, 1fr); }
   .pillar-panel { grid-template-columns: 1fr; gap: 2.5rem; }
   .pillar-stage { min-height: 0; }
   .pillar-tab.active::after { display: none; }
@@ -2093,6 +2258,7 @@ footer {
       <li><a href="#features">Features</a></li>
       <li><a href="#architecture">Architecture</a></li>
       <li><a href="#enterprise">Use Cases</a></li>
+      <li><a href="#enterprise-features">Enterprise</a></li>
       <li><a href="#quickstart">Quick Start</a></li>
       <li><a href="https://github.com/cullis-security/cullis" target="_blank">GitHub</a></li>
     </ul>
@@ -2280,6 +2446,14 @@ footer {
         </span>
         <span class="pillar-tab-title">SDKs</span>
         <span class="pillar-tab-blurb">Python &amp; TypeScript</span>
+      </button>
+
+      <button type="button" class="pillar-tab" role="tab" aria-selected="false" aria-controls="panel-observability" id="tab-observability" data-target="observability">
+        <span class="pillar-tab-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+        </span>
+        <span class="pillar-tab-title">Observability</span>
+        <span class="pillar-tab-blurb">Prometheus + Grafana</span>
       </button>
     </div>
 
@@ -2576,6 +2750,61 @@ footer {
         </div>
       </div>
 
+      <!-- PANEL: OBSERVABILITY -->
+      <div class="pillar-panel" id="panel-observability" role="tabpanel" aria-labelledby="tab-observability">
+        <div>
+          <span class="pillar-panel-eyebrow">Pillar 07 &middot; Observability</span>
+          <h3>See everything,<br><em>miss nothing</em></h3>
+          <p class="pillar-panel-desc">
+            Prometheus metrics on every endpoint, two pre-built Grafana dashboards, and alerting
+            rules that fire before incidents escalate. The <code>cullis.*</code> metric namespace
+            covers auth flows, policy decisions, session lifecycle, and E2E message throughput.
+          </p>
+          <ul>
+            <li><strong>/metrics endpoint</strong> &mdash; Prometheus-native, scrape-ready</li>
+            <li><strong>Overview dashboard</strong> &mdash; session volume, auth rate, latency P99</li>
+            <li><strong>Security Signals</strong> &mdash; failed auth, policy denials, cert expiry</li>
+            <li><strong>Alert rules</strong> &mdash; Alertmanager-ready for Slack, PagerDuty, email</li>
+          </ul>
+        </div>
+        <div class="pillar-visual">
+          <div class="mock-card">
+            <div class="mock-card-bar">
+              <div class="dot-row"><span class="d"></span><span class="d"></span><span class="d"></span></div>
+              <span class="title">grafana &middot; cullis overview</span>
+              <span class="badge">Live</span>
+            </div>
+            <div class="mock-card-body mock-metrics">
+              <div class="mock-metrics-row">
+                <span class="mock-metrics-name">cullis_sessions_total</span>
+                <div class="mock-metrics-bar"><div class="mock-metrics-bar-fill" style="width:85%"></div></div>
+                <span class="mock-metrics-value">1,247</span>
+              </div>
+              <div class="mock-metrics-row">
+                <span class="mock-metrics-name">cullis_auth_success_rate</span>
+                <div class="mock-metrics-bar"><div class="mock-metrics-bar-fill" style="width:97%"></div></div>
+                <span class="mock-metrics-value">99.7%</span>
+              </div>
+              <div class="mock-metrics-row">
+                <span class="mock-metrics-name">cullis_policy_deny_total</span>
+                <div class="mock-metrics-bar"><div class="mock-metrics-bar-fill" style="width:12%"></div></div>
+                <span class="mock-metrics-value">23</span>
+              </div>
+              <div class="mock-metrics-row">
+                <span class="mock-metrics-name">cullis_e2e_latency_p99</span>
+                <div class="mock-metrics-bar"><div class="mock-metrics-bar-fill" style="width:35%"></div></div>
+                <span class="mock-metrics-value">42ms</span>
+              </div>
+              <div class="mock-metrics-row">
+                <span class="mock-metrics-name">cullis_cert_expiry_days</span>
+                <div class="mock-metrics-bar"><div class="mock-metrics-bar-fill" style="width:60%"></div></div>
+                <span class="mock-metrics-value">87d</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 </section>
@@ -2742,6 +2971,72 @@ footer {
         </div>
       </div>
 
+    </div>
+  </div>
+</section>
+
+<!-- ENTERPRISE FEATURES -->
+<section id="enterprise-features">
+  <div class="container">
+    <div class="section-label reveal">Enterprise</div>
+    <h2 class="section-title reveal">Open core, <em>enterprise ready</em></h2>
+    <p class="section-desc reveal">
+      The full trust broker and MCP proxy are Apache&nbsp;2.0. Enterprise extensions
+      for regulated industries integrate through a plugin API &mdash; the core stays
+      untouched, auditable, and yours.
+    </p>
+
+    <div class="enterprise-grid">
+
+      <div class="enterprise-card reveal">
+        <div class="enterprise-card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>SAML 2.0 <em>SSO</em></h3>
+        <p class="enterprise-card-desc">
+          SP-initiated SSO, ACS, metadata exchange, and SLO. Connect Okta, Azure&nbsp;AD,
+          PingFederate, or any SAML&nbsp;2.0 IdP. Per-org configuration with auto-discovery.
+        </p>
+        <span class="enterprise-card-tag">Enterprise plugin</span>
+      </div>
+
+      <div class="enterprise-card reveal">
+        <div class="enterprise-card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>Cloud <em>KMS</em></h3>
+        <p class="enterprise-card-desc">
+          Store signing keys in AWS&nbsp;KMS&nbsp;+&nbsp;Secrets&nbsp;Manager, Azure Key&nbsp;Vault,
+          or GCP Cloud&nbsp;KMS. Private keys never touch disk. Pluggable provider interface
+          for custom backends.
+        </p>
+        <span class="enterprise-card-tag">Enterprise plugin</span>
+      </div>
+
+      <div class="enterprise-card reveal">
+        <div class="enterprise-card-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <h3>Audit export <em>to S3</em></h3>
+        <p class="enterprise-card-desc">
+          Push the tamper-evident audit ledger to S3-compatible storage &mdash; AWS&nbsp;S3,
+          MinIO, or any compatible backend. Gzip JSON&nbsp;Lines for SIEM ingest or
+          regulatory archival.
+        </p>
+        <span class="enterprise-card-tag">Enterprise plugin</span>
+      </div>
+
+    </div>
+
+    <div class="enterprise-cta reveal">
+      <p style="color: var(--text-secondary); font-size: 0.92rem; font-weight: 300; margin-bottom: 1.2rem;">
+        All integrations are self-service &mdash; configure SAML, Cloud KMS, audit export, and
+        monitoring directly from the broker and proxy dashboards. No sales call required.
+      </p>
+      <a href="https://github.com/cullis-security/cullis" target="_blank" class="btn-amber">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Deploy and configure
+      </a>
     </div>
   </div>
 </section>
@@ -2928,6 +3223,27 @@ footer {
             <td class="cross">&mdash;</td>
             <td class="cross">&mdash;</td>
             <td class="check">Capability-scoped</td>
+          </tr>
+          <tr>
+            <td>Prometheus + Grafana observability</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Telemetry</td>
+            <td class="check">2 dashboards, alerts</td>
+          </tr>
+          <tr>
+            <td>Plugin system (custom integrations)</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="check">Auth methods</td>
+            <td class="check">5 extension points</td>
+          </tr>
+          <tr>
+            <td>Backup &amp; restore tooling</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">&mdash;</td>
+            <td class="cross">Manual</td>
+            <td class="check">Unified, SHA-256 verified</td>
           </tr>
           <tr>
             <td>Self-hosted, open source, Apache 2.0</td>
