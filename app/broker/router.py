@@ -610,8 +610,9 @@ async def poll_messages(
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    # Block polling on sessions that are not active (#28)
-    if session.status != SessionStatus.active:
+    # Allow polling on active and closed sessions (closed = drain unread
+    # messages), but block on pending/denied where no messages can exist.
+    if session.status not in (SessionStatus.active, SessionStatus.closed):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail=f"Session is {session.status.value} — polling not available")
 

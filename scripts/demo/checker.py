@@ -110,7 +110,16 @@ def main() -> None:
                         else:
                             _log(agent_id, f"accept session {sid} failed: HTTP {ar.status_code} {ar.text[:200]}")
 
-                # 2) poll inbox for each accepted session
+                # 2) detect closed/denied sessions from the listing so we
+                #    can drain remaining messages and then stop polling.
+                closed_sids: set[str] = set()
+                if resp.status_code == 200:
+                    for s in resp.json().get("sessions", []):
+                        sid = s.get("session_id")
+                        if sid and sid in accepted and s.get("status") in ("closed", "denied"):
+                            closed_sids.add(sid)
+
+                # 3) poll inbox for each accepted session
                 for sid in list(accepted):
                     after = last_seq.get(sid, -1)
                     mr = client.get(
@@ -118,8 +127,7 @@ def main() -> None:
                         params={"after": after},
                     )
                     if mr.status_code == 409:
-                        # session is no longer active (closed/denied) —
-                        # stop polling it
+                        # session is pending/denied — stop polling
                         accepted.discard(sid)
                         last_seq.pop(sid, None)
                         _log(agent_id, f"session {sid} no longer active, stopped polling")
@@ -137,6 +145,12 @@ def main() -> None:
                         )
                         if seq > last_seq.get(sid, -1):
                             last_seq[sid] = seq
+
+                    # If session is closed and we drained all messages, stop
+                    if sid in closed_sids:
+                        accepted.discard(sid)
+                        last_seq.pop(sid, None)
+                        _log(agent_id, f"session {sid} closed, drained all messages")
 
             except httpx.RequestError as exc:
                 _log(agent_id, f"poll error: {exc}")

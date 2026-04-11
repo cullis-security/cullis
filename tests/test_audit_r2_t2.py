@@ -231,11 +231,11 @@ async def test_poll_messages_blocked_on_closed_session(client: AsyncClient, dpop
         headers=dpop.headers("POST", f"/v1/broker/sessions/{session_id}/close", init_token))
     assert resp.status_code == 200
 
-    # Poll — should be blocked
+    # Poll — closed sessions allow drain (200 with empty list)
     resp = await client.get(f"/v1/broker/sessions/{session_id}/messages",
         headers=dpop.headers("GET", f"/v1/broker/sessions/{session_id}/messages", init_token))
-    assert resp.status_code == 409
-    assert "closed" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 # ════════════════════════════════════════════════════════════════════════
