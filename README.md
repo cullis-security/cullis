@@ -65,50 +65,29 @@ Boot the full architecture (broker + 2 MCP proxies + 2 agents in 2 organizations
 
 Supported hosts: Linux native, macOS with Docker Desktop / OrbStack / Colima, Windows via WSL2 + Docker Desktop. No Nix required (Nix is only used by the maintainer's dev loop).
 
-#### Host Python setup
-
-The demo wrapper auto-detects `.venv/bin/python` if present, so you never need to activate the venv.
-
-```bash
-# Recommended: a project venv (works on every OS, never collides with system Python)
-python3 -m venv .venv
-.venv/bin/pip install httpx cryptography
-```
-
-<details>
-<summary>Ubuntu Server 24.04 (fresh install)</summary>
-
-Ubuntu Server does not ship `pip` or `venv` out of the box and has no `python` alias (only `python3`).
-
-```bash
-sudo apt update && sudo apt install -y python3-pip python3-venv
-python3 -m venv .venv
-.venv/bin/pip install httpx cryptography
-```
-
-</details>
-
-<details>
-<summary>Debian/Ubuntu/macOS with PEP 668 ("externally-managed-environment")</summary>
-
-If you prefer a user-wide install instead of a venv:
-
-```bash
-python3 -m pip install --user --break-system-packages httpx cryptography
-```
-
-</details>
-
 ### Run it
 
 ```bash
 git clone https://github.com/cullis-security/cullis
 cd cullis
+python3 -m venv .venv
+.venv/bin/pip install httpx cryptography
 ./deploy_demo.sh up
 ./deploy_demo.sh send
 ```
 
-Four commands after the clone, including a full Docker build on first run. See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided tour (dashboards, customization, troubleshooting).
+The wrapper auto-detects `.venv/bin/python`, no need to activate it. Six commands from zero to a running federated trust network, including a full Docker build on first run. See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided tour (dashboards, customization, troubleshooting).
+
+<details>
+<summary>Ubuntu Server 24.04 (fresh install) — extra step</summary>
+
+Ubuntu Server does not ship `pip` or `venv` out of the box and has no `python` alias (only `python3`). Run this before the commands above:
+
+```bash
+sudo apt update && sudo apt install -y python3-pip python3-venv
+```
+
+</details>
 
 > [!CAUTION]
 > **The demo deliberately disables production security features to let you explore the routing and architecture with two simple scripts.**
