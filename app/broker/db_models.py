@@ -3,7 +3,10 @@ SQLAlchemy models for session, message, and RFQ persistence.
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, DateTime, Integer, UniqueConstraint
+from sqlalchemy import (
+    Column, String, Text, DateTime, Integer, LargeBinary,
+    SmallInteger, UniqueConstraint, Index,
+)
 
 from app.db.database import Base
 
@@ -41,6 +44,56 @@ class SessionMessageRecord(Base):
                              default=lambda: datetime.now(timezone.utc))
     signature       = Column(Text, nullable=True)   # base64 RSA-PKCS1v15-SHA256
     client_seq      = Column(Integer, nullable=True)
+
+
+class ProxyMessageQueueRecord(Base):
+    """M3 message durability — queued messages awaiting recipient ack.
+
+    Schema validated in the M0.3 spike (imp/m0_storage_spike.md):
+    ~53k enqueue/s single writer, <1ms p99 dequeue, 1M TTL sweep in ~5s.
+
+    A row is enqueued when a message arrives and cannot be confirmed
+    delivered (recipient offline, WS send failed, etc.). It is dequeued
+    on explicit ack, or swept when ttl_expires_at passes. Metadata-only
+    audit survives in session_messages — this table holds the ciphertext
+    and is pruned aggressively.
+
+    ``delivery_status`` values:
+      0 = pending   — enqueued, awaiting delivery/ack
+      1 = delivered — recipient ack'd, row eligible for pruning
+      2 = expired   — TTL passed before ack, sender notified
+    """
+
+    __tablename__ = "proxy_message_queue"
+    __table_args__ = (
+        UniqueConstraint(
+            "recipient_agent_id", "idempotency_key",
+            name="uq_proxy_queue_idempotency",
+        ),
+        Index(
+            "idx_proxy_queue_recipient_pending",
+            "recipient_agent_id", "seq",
+        ),
+        Index(
+            "idx_proxy_queue_ttl",
+            "ttl_expires_at",
+        ),
+    )
+
+    msg_id              = Column(String(64), primary_key=True)
+    session_id          = Column(String(128), nullable=False, index=True)
+    recipient_agent_id  = Column(String(256), nullable=False)
+    sender_agent_id     = Column(String(256), nullable=False)
+    ciphertext          = Column(LargeBinary, nullable=False)
+    seq                 = Column(Integer, nullable=False)
+    enqueued_at         = Column(DateTime(timezone=True), nullable=False,
+                                 default=lambda: datetime.now(timezone.utc))
+    ttl_expires_at      = Column(DateTime(timezone=True), nullable=False)
+    delivery_status     = Column(SmallInteger, nullable=False, default=0, index=True)
+    attempts            = Column(SmallInteger, nullable=False, default=0)
+    idempotency_key     = Column(String(256), nullable=True)
+    delivered_at        = Column(DateTime(timezone=True), nullable=True)
+    expired_at          = Column(DateTime(timezone=True), nullable=True)
 
 
 class RfqRecord(Base):
