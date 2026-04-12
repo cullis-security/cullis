@@ -4,36 +4,20 @@ name: smoke
 # and the PR must not merge. See demo_network/README.md for what exactly
 # is covered.
 #
-# Paths filter: PRs that only touch docs, the TS SDK, legacy examples, or
-# other workflow files skip this job — the smoke exercises only the
-# Python broker, MCP proxy, Python SDK, and migrations.
+# Runs on EVERY PR so the required status check always reports. When no
+# behavioral code changed (docs-only, helm-only, sdk-ts-only, etc.) the
+# job skips the heavy work and reports success. The filter below decides
+# what counts as "behavioral code".
 
 on:
   push:
     branches: [main]
-    paths:
-      - "app/**"
-      - "mcp_proxy/**"
-      - "cullis_sdk/**"
-      - "alembic/**"
-      - "demo_network/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - ".github/workflows/smoke.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "app/**"
-      - "mcp_proxy/**"
-      - "cullis_sdk/**"
-      - "alembic/**"
-      - "demo_network/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - ".github/workflows/smoke.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   # Cancel superseded runs on the same branch / PR so a rebase doesn't
@@ -58,15 +42,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect behavioral code changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'app/**'
+              - 'mcp_proxy/**'
+              - 'cullis_sdk/**'
+              - 'alembic/**'
+              - 'demo_network/**'
+              - 'requirements.txt'
+              - 'Dockerfile'
+              - '.github/workflows/smoke.yml'
+
+      - name: Skip (no behavioral code changed)
+        if: steps.filter.outputs.code != 'true'
+        run: |
+          echo "No files in behavioral code paths changed in this PR."
+          echo "Smoke check reports success without running the full stack."
+
       - name: Docker + Compose version
+        if: steps.filter.outputs.code == 'true'
         run: |
           docker --version
           docker compose version
 
       - name: Enable BuildKit cache
+        if: steps.filter.outputs.code == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Run smoke (./demo_network/smoke.sh full)
+        if: steps.filter.outputs.code == 'true'
         working-directory: demo_network
         env:
           PKI_KEY_TYPE: ${{ matrix.key_type }}
@@ -77,7 +85,7 @@ jobs:
         # is needed.
 
       - name: Collect logs on failure
-        if: failure()
+        if: failure() && steps.filter.outputs.code == 'true'
         working-directory: demo_network
         run: |
           echo "::group::docker compose ps"
@@ -90,7 +98,7 @@ jobs:
           done
 
       - name: Teardown (defensive)
-        if: always()
+        if: always() && steps.filter.outputs.code == 'true'
         working-directory: demo_network
         run: |
           ./smoke.sh down || true
