@@ -8,6 +8,12 @@ broker:
   logFormat: text
   replicaCount: 1
   prometheusEnabled: true
+  # Vault StatefulSet below runs in dev mode on plain HTTP. Without this
+  # flag the broker refuses to talk to Vault and /readyz stays at 503.
+  # Never set this in production — production uses Vault HTTPS.
+  extraEnv:
+    - name: VAULT_ALLOW_HTTP
+      value: "true"
   resources:
     limits:
       cpu: "500m"
