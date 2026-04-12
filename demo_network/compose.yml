@@ -159,6 +159,9 @@ services:
         condition: service_healthy
     environment:
       ADMIN_SECRET: "demo-admin-secret-change-me"
+      # Fixed dashboard signing key so admin sessions survive broker restart
+      # (A4 assertion). In prod this goes into a secrets manager.
+      DASHBOARD_SIGNING_KEY: "demo-dashboard-signing-key-32chars-long-enough"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
       BROKER_PUBLIC_URL: "https://broker.cullis.test:8443"

@@ -260,18 +260,30 @@ async def test_message_on_expired_session(client: AsyncClient, dpop):
 # 7. Webhook SSRF — loopback URLs rejected
 # ────────────────────────────────────────────────────────────────────────
 
-async def test_webhook_ssrf_localhost_blocked():
-    """Webhook URLs pointing to localhost/loopback must be rejected."""
+def test_webhook_ssrf_localhost_blocked(monkeypatch):
+    """Webhook URLs pointing to localhost/loopback must be rejected.
+
+    The project's `.env` sets POLICY_WEBHOOK_ALLOW_PRIVATE_IPS=true for the
+    Docker demo network, which would let loopback URLs through. This test
+    temporarily forces the guard back on to exercise the production path.
+    """
+    from app.config import get_settings
     from app.policy.webhook import _validate_and_resolve_webhook_url
 
-    with pytest.raises(ValueError, match="loopback"):
-        _validate_and_resolve_webhook_url("http://localhost:8080/pdp")
+    # Force the production posture regardless of .env.
+    get_settings().policy_webhook_allow_private_ips = False
+    try:
+        with pytest.raises(ValueError, match="loopback"):
+            _validate_and_resolve_webhook_url("http://localhost:8080/pdp")
 
-    with pytest.raises(ValueError, match="loopback"):
-        _validate_and_resolve_webhook_url("http://127.0.0.1:8080/pdp")
+        with pytest.raises(ValueError, match="loopback"):
+            _validate_and_resolve_webhook_url("http://127.0.0.1:8080/pdp")
 
-    with pytest.raises(ValueError, match="loopback"):
-        _validate_and_resolve_webhook_url("http://[::1]:8080/pdp")
+        with pytest.raises(ValueError, match="loopback"):
+            _validate_and_resolve_webhook_url("http://[::1]:8080/pdp")
+    finally:
+        # Restore whatever the settings had (re-read from .env).
+        get_settings.cache_clear()
 
 
 # ────────────────────────────────────────────────────────────────────────

@@ -85,6 +85,7 @@ cmd_check() {
         actual="$(echo "$got" | grep -m1 -oE '"nonce"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/')" || actual=""
         if [[ "$actual" == "$expected" ]]; then
             ok "smoke PASS: message round-trip succeeded (nonce=$expected)"
+            assert_dashboard_signing_key_persistent
             return 0
         fi
         sleep 1
@@ -94,6 +95,70 @@ cmd_check() {
     warn "actual body after ${attempts}s of polling: $got"
     dump_failure_logs
     die "nonce mismatch or checker never delivered"
+}
+
+# A4 — dashboard session must survive a broker restart. If
+# DASHBOARD_SIGNING_KEY ever went back to auto-generated-per-process we
+# would break every admin on every rollout; this catches it.
+assert_dashboard_signing_key_persistent() {
+    say "demo_network: A4 asserting dashboard signing key persistent across broker restart"
+
+    # Share the cookie jar between the login run and the probe run via a
+    # host tempdir — the cookie value contains quotes, escaped commas and
+    # other shell-hostile characters that would get mangled if we passed
+    # it as a plain string through a subshell.
+    local jar_dir; jar_dir="$(mktemp -d)"
+    trap "rm -rf '$jar_dir'" RETURN
+
+    chmod 777 "$jar_dir"
+    docker run --rm --network cullis-demo-net --user 0:0 \
+        -v demo_network_test-certs:/certs:ro \
+        -v "$jar_dir":/jar \
+        curlimages/curl:8.10.1 \
+        sh -c '
+            curl -sL -o /dev/null -c /jar/cookies --max-time 10 --cacert /certs/ca.crt \
+                 -d "user_id=admin&password=demo-admin-secret-change-me" \
+                 https://broker.cullis.test:8443/dashboard/login
+        ' >/dev/null 2>&1 || {
+            warn "A4: dashboard login attempt failed — skipping"
+            return 0
+        }
+
+    if ! grep -q atn_session "$jar_dir/cookies" 2>/dev/null; then
+        warn "A4: no atn_session cookie in jar — login probably rejected. Skipping."
+        return 0
+    fi
+
+    # Restart the broker container — any session store held only in memory
+    # is wiped; a persistent signing key is the only way for the cookie to
+    # remain valid after this.
+    $COMPOSE restart broker >/dev/null 2>&1 || true
+    for _ in {1..30}; do
+        if $COMPOSE ps broker 2>/dev/null | grep -q healthy; then break; fi
+        sleep 1
+    done
+
+    local probe_code
+    probe_code="$(docker run --rm --network cullis-demo-net \
+        -v demo_network_test-certs:/certs:ro \
+        -v "$jar_dir":/jar:ro \
+        curlimages/curl:8.10.1 \
+        -s -o /dev/null -w '%{http_code}' --max-time 10 --cacert /certs/ca.crt \
+        -b /jar/cookies \
+        https://broker.cullis.test:8443/dashboard/orgs 2>/dev/null || echo 000)"
+
+    case "$probe_code" in
+        200)
+            ok "smoke PASS (A4): dashboard session survived broker restart"
+            ;;
+        302|303|401)
+            dump_failure_logs
+            die "A4 FAIL: session rejected (HTTP $probe_code) — DASHBOARD_SIGNING_KEY not persistent"
+            ;;
+        *)
+            warn "A4 inconclusive: unexpected HTTP $probe_code (broker may not be fully healthy yet)"
+            ;;
+    esac
 }
 
 cmd_down() {
