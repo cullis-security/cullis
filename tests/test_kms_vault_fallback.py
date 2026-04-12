@@ -12,15 +12,21 @@ The deadlock these tests guard against:
 Only 404 triggers fallback. Real Vault outages (500, timeout) must
 propagate so operators are not misled.
 """
-import os
 from pathlib import Path
 
 import httpx
 import pytest
 
-os.environ.setdefault("VAULT_ALLOW_HTTP", "true")
-
 from app.kms.vault import VaultKMSProvider, VaultSecretNotFound
+
+
+@pytest.fixture(autouse=True)
+def _allow_http(monkeypatch):
+    """Scope VAULT_ALLOW_HTTP to this file only — setting it at module
+    level via os.environ leaked into tests that explicitly check the
+    HTTPS-enforcement (test_audit_r2_t3::TestVaultTLSEnforcement).
+    """
+    monkeypatch.setenv("VAULT_ALLOW_HTTP", "true")
 
 
 # A self-signed throwaway CA and key, test-only. Regenerable with:
