@@ -214,12 +214,64 @@ def _phase4() -> None:
         client.close()
 
 
+def _phase5() -> None:
+    """MCP Proxy ingress — A8. sender calls GET /v1/ingress/tools on its
+    own proxy (proxy-a). The proxy validates the broker-issued JWT via
+    JWKS, checks the DPoP proof, and returns 200 with the allowed tools
+    (empty list since sender's scope doesn't match any proxy tools, but
+    200 is the assertion — it proves the JWKS fetch + DPoP validation
+    wiring at the proxy side still works).
+    """
+    proxy_url = os.environ.get("INGRESS_URL", "")
+    if not proxy_url:
+        print("sender: [phase5] skipped (INGRESS_URL not set)")
+        return
+
+    print(f"sender: [phase5] calling proxy ingress {proxy_url}")
+    client = CullisClient(BROKER_URL, verify_tls=CA_BUNDLE)
+    try:
+        client.login(AGENT_ID, ORG_ID, CERT_PATH, KEY_PATH)
+        # The SDK doesn't have a public helper for non-broker DPoP calls;
+        # reuse the internal _dpop_proof + http client directly — this is a
+        # smoke test, not production code.
+        import httpx
+        # The proxy requires a DPoP Server Nonce (RFC 9449 §8) — the first
+        # call gets 401 "use_dpop_nonce" with the nonce in DPoP-Nonce
+        # response header; retry with that nonce baked into the proof.
+        with httpx.Client(verify=CA_BUNDLE, timeout=10.0) as h:
+            nonce = None
+            resp = None
+            for attempt in range(2):
+                client._dpop_nonce = nonce
+                dpop = client._dpop_proof("GET", proxy_url, access_token=client.token)
+                resp = h.get(
+                    proxy_url,
+                    headers={
+                        "Authorization": f"DPoP {client.token}",
+                        "DPoP": dpop,
+                    },
+                )
+                if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
+                    nonce = resp.headers.get("DPoP-Nonce")
+                    continue
+                break
+        if resp.status_code != 200:
+            raise SystemExit(
+                f"sender: [phase5] ingress returned {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+        print(f"sender: [phase5] OK — ingress returned 200 with {len(resp.json())} tool(s)")
+    finally:
+        client.close()
+
+
 def main() -> int:
     os.environ["SSL_CERT_FILE"] = CA_BUNDLE
     _phase1()
     _phase2()
     _phase3()
     _phase4()
+    _phase5()
     return 0
 
 

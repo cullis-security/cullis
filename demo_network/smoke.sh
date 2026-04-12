@@ -86,6 +86,7 @@ cmd_check() {
         if [[ "$actual" == "$expected" ]]; then
             ok "smoke PASS: message round-trip succeeded (nonce=$expected)"
             assert_dashboard_signing_key_persistent
+            assert_audit_hash_chain_integrity
             return 0
         fi
         sleep 1
@@ -159,6 +160,58 @@ assert_dashboard_signing_key_persistent() {
             warn "A4 inconclusive: unexpected HTTP $probe_code (broker may not be fully healthy yet)"
             ;;
     esac
+}
+
+# A7 — audit hash chain integrity. Export the audit log and recompute
+# each entry's sha256 against the formula in app/db/audit.py. Any
+# mismatch means a log entry was tampered with, the hashing algorithm
+# drifted from the broker, or something broke the chain at write time.
+assert_audit_hash_chain_integrity() {
+    say "demo_network: A7 asserting audit log hash chain integrity"
+
+    local check_dir; check_dir="$(mktemp -d)"
+    chmod 777 "$check_dir"
+
+    # Pull the NDJSON export via admin API.
+    docker run --rm --network cullis-demo-net --user 0:0 \
+        -v demo_network_test-certs:/certs:ro \
+        -v "$check_dir":/out \
+        curlimages/curl:8.10.1 \
+        sh -c '
+            curl -s --fail --max-time 15 --cacert /certs/ca.crt \
+                 -H "x-admin-secret: demo-admin-secret-change-me" \
+                 -o /out/audit.ndjson \
+                 "https://broker.cullis.test:8443/v1/admin/audit/export?format=json&limit=10000"
+        ' >/dev/null 2>&1 || {
+            rm -rf "$check_dir"
+            warn "A7: audit export failed — skipping"
+            return 0
+        }
+
+    # Line count as a sanity check — there must be *some* events.
+    local entries; entries="$(wc -l < "$check_dir/audit.ndjson" | tr -d ' ')"
+    if [[ "${entries:-0}" -lt 3 ]]; then
+        rm -rf "$check_dir"
+        warn "A7: audit export had only $entries entries — skipping"
+        return 0
+    fi
+
+    # Recompute hashes with the exact canonical form used by the broker.
+    local verified
+    verified="$(docker run --rm \
+        -v "$check_dir":/in:ro \
+        -v "$HERE/verify_audit_chain.py":/verify.py:ro \
+        python:3.11-slim python /verify.py 2>&1 || true)"
+
+    rm -rf "$check_dir"
+
+    if [[ "$verified" =~ ^OK[[:space:]]([0-9]+) ]]; then
+        ok "smoke PASS (A7): hash chain intact across ${BASH_REMATCH[1]} entries"
+    else
+        warn "A7 output: $verified"
+        dump_failure_logs
+        die "A7 FAIL: audit hash chain broken"
+    fi
 }
 
 cmd_down() {

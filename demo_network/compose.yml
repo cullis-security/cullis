@@ -337,6 +337,8 @@ services:
       UNBOUND_AGENT_ID:        "demo-org-a::unbound-agent"
       UNBOUND_AGENT_CERT_PATH: /state/demo-org-a/unbound-agent.pem
       UNBOUND_AGENT_KEY_PATH:  /state/demo-org-a/unbound-agent-key.pem
+      # Phase 5 — MCP Proxy ingress call for the A8 assertion.
+      INGRESS_URL:             "https://proxy-a.cullis.test:8443/v1/ingress/tools"
     volumes:
       - bootstrap-state:/state:ro
       - test-certs:/certs:ro
