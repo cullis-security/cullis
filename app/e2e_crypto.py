@@ -190,7 +190,6 @@ def verify_inner_signature(
     signed the plaintext, not just the ciphertext. Returns True if valid,
     raises ValueError if invalid.
     """
-    import base64
     from cryptography import x509 as crypto_x509
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric import padding as asym_pad
