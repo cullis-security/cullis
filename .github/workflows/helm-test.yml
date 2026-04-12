@@ -165,6 +165,21 @@ jobs:
             --image=curlimages/curl:8.10.1 -- \
             curl -sf --max-time 10 http://$SVC:$PORT/readyz
 
+      - name: Dump /readyz body on failure
+        if: failure() && steps.filter.outputs.helm == 'true'
+        run: |
+          if [ "${{ matrix.chart }}" = "cullis" ]; then
+            SVC=cullis-broker PORT=8000
+          else
+            SVC=cullis-proxy PORT=9100
+          fi
+          echo "::group::/readyz body"
+          kubectl -n cullis-test run curl-readyz-dump --rm -i --restart=Never \
+            --image=curlimages/curl:8.10.1 -- \
+            curl -s --max-time 10 "http://$SVC:$PORT/readyz" || true
+          echo ""
+          echo "::endgroup::"
+
       - name: Dump logs on failure
         if: failure() && steps.filter.outputs.helm == 'true'
         run: |
