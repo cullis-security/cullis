@@ -79,4 +79,24 @@ disclosure policy.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+Cullis uses a split licensing model. By contributing, you agree that your contribution is licensed under the same terms as the component you are modifying:
+
+- Contributions to `app/` or `mcp_proxy/` are licensed under [FSL-1.1-Apache-2.0](LICENSE).
+- Contributions to `cullis_sdk/` or `enterprise-kit/` are licensed under the [Apache License 2.0](cullis_sdk/LICENSE).
+- Contributions to `sdk-ts/` are licensed under the [MIT License](sdk-ts/LICENSE).
+
+See [NOTICE](NOTICE) for the full component-by-component map.
+
+## Developer Certificate of Origin (DCO)
+
+Every commit must be signed off to certify that you have the right to submit it under the applicable license. This is a lightweight alternative to a formal CLA, used by the Linux kernel and many other projects.
+
+Add the sign-off automatically with:
+
+```bash
+git commit -s -m "Your commit message"
+```
+
+This appends a line like `Signed-off-by: Your Name <you@example.com>` to your commit message. The full text of the DCO is at [developercertificate.org](https://developercertificate.org/).
+
+Pull requests whose commits are not signed off will be asked to amend and re-push.

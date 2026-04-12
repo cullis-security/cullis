@@ -269,7 +269,14 @@ Security vulnerabilities: see [SECURITY.md](SECURITY.md) for private reporting g
 
 ## License
 
-[Apache License 2.0](LICENSE)
+Cullis uses a split licensing model:
+
+- **Broker (`app/`) and MCP Proxy (`mcp_proxy/`)** — [Functional Source License 1.1, Apache 2.0 Future License (FSL-1.1-Apache-2.0)](LICENSE). Permits all non-competing use (internal deployments, professional services, research, modifications, forks). Each release automatically becomes [Apache 2.0](LICENSE-APACHE-2.0) two years after its publication date.
+- **Python SDK (`cullis_sdk/`)** — [Apache License 2.0](cullis_sdk/LICENSE). Permissive, permanent.
+- **TypeScript SDK (`sdk-ts/`)** — [MIT License](sdk-ts/LICENSE). Permissive, permanent.
+- **Integration templates (`enterprise-kit/`)** — [Apache License 2.0](enterprise-kit/LICENSE). Permissive, permanent.
+
+See [NOTICE](NOTICE) for the component-by-component map and the rationale behind the choice.
 
 ---
 

@@ -1,0 +1,42 @@
+Cullis
+Copyright 2026 Cullis Security
+
+This repository contains multiple components under different licenses:
+
+| Path                 | License                                       | Notes                                                             |
+| -------------------- | --------------------------------------------- | ----------------------------------------------------------------- |
+| `app/`               | FSL-1.1-Apache-2.0 (see LICENSE)              | Broker core. Converts to Apache-2.0 two years after each release. |
+| `mcp_proxy/`         | FSL-1.1-Apache-2.0 (see LICENSE)              | MCP Proxy. Converts to Apache-2.0 two years after each release.   |
+| `cullis_sdk/`        | Apache-2.0 (see `cullis_sdk/LICENSE`)         | Python SDK for agents. Permissive, permanent.                     |
+| `sdk-ts/`            | MIT (see `sdk-ts/LICENSE`)                    | TypeScript SDK for agents. Permissive, permanent.                 |
+| `enterprise-kit/`    | Apache-2.0 (see `enterprise-kit/LICENSE`)     | Integration templates and examples. Permissive, permanent.        |
+| `demo_network/`      | FSL-1.1-Apache-2.0 (covered by root LICENSE)  | Demo stack bundled with broker+proxy.                             |
+| `tests/`             | FSL-1.1-Apache-2.0 (covered by root LICENSE)  |                                                                   |
+| `docs/`, `scripts/`  | FSL-1.1-Apache-2.0 (covered by root LICENSE)  |                                                                   |
+
+## Why FSL on the broker and proxy?
+
+FSL permits all non-competing use — internal deployments, professional services
+on behalf of customers, research, modifications, forks. It only restricts a
+third party from re-selling Cullis itself as a substitute managed service.
+Every FSL-licensed release automatically converts to the Apache License 2.0
+two years after its publication date.
+
+## Why Apache-2.0 / MIT on the SDKs?
+
+SDKs are the integration surface for agent developers. They must carry zero
+friction, now and forever. The Apache 2.0 (Python) and MIT (TypeScript) terms
+match the conventions of each ecosystem.
+
+## Trademarks
+
+"Cullis" is a trademark of Cullis Security. The license grants above do not
+include permission to use the "Cullis" name, logo, or other trademarks. Forks
+and derivative works must adopt a different name.
+
+## Contributions
+
+Contributions to this repository are accepted under the Developer Certificate
+of Origin (DCO) — see `CONTRIBUTING.md`. By signing off on your commits, you
+certify that you have the right to submit the contribution under the
+corresponding component's license.
