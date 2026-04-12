@@ -42,10 +42,14 @@ def _build_provider() -> KMSProvider:
                 "KMS_BACKEND=vault requires VAULT_ADDR and VAULT_TOKEN to be set"
             )
         _log.info("KMS backend: vault  (%s  path=%s)", settings.vault_addr, settings.vault_secret_path)
+        # Filesystem fallback paths only matter on first boot before the
+        # post-install Vault-push Job runs. See VaultKMSProvider docstring.
         return VaultKMSProvider(
             vault_addr=settings.vault_addr,
             vault_token=settings.vault_token,
             secret_path=settings.vault_secret_path,
+            fallback_key_path=settings.broker_ca_key_path,
+            fallback_cert_path=settings.broker_ca_cert_path,
         )
 
     if backend == "local":

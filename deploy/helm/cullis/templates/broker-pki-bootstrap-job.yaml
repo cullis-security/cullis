@@ -1,26 +1,36 @@
 {{- if .Values.broker.pki.bootstrap.enabled }}
-# Post-install / post-upgrade Helm hook — generates the broker CA on a
-# fresh cluster and pushes it into Vault so the broker can finish its
-# /readyz checks without manual `kubectl exec vault-0 ...`. See
-# docs/k8s-quickstart.md for the end-to-end flow.
+{{- $saName := include "cullis.broker.pkiBootstrap.serviceAccountName" . -}}
+# Split into two Jobs so `helm install --wait` converges without the
+# chicken-and-egg deadlock: the broker Deployment mounts
+# cullis-broker-pki as a Secret volume, so that Secret must exist
+# BEFORE `--wait` starts polling the Deployment for readiness.
 #
-# Hook ordering:
 #   pre-install   (weight -10): ConfigMap + RBAC (ServiceAccount, Role, RoleBinding)
-#   post-install  (weight  -5): this Job
-# pre-install covers the RBAC/ConfigMap so they exist when the Job runs.
-# post-install is used for the Job itself because internal-Vault dev
-# mode ships as a StatefulSet that comes up during the main install
-# phase — a pre-install Job would have nothing to push to. The broker
-# pod simply waits in ContainerCreating until the Secret appears.
+#   pre-install   (weight  -5): Job 1 — generate CA, create k8s Secret
+#   (main resources apply + --wait)
+#   post-install  (weight  -5): Job 2 — push CA to Vault (only if pushToVault)
+#
+# Rationale for the split:
+#   - Job 1 must run pre-install because broker-deployment.yaml mounts
+#     the Secret directly; --wait blocks on Deployment readiness, which
+#     never happens without the Secret.
+#   - Job 2 must run post-install because internal Vault is a
+#     StatefulSet that only exists as a main resource. A pre-install
+#     Job has nothing to push to. The bootstrap script is idempotent:
+#     it reads the Secret created by Job 1 and pushes its contents.
+#
+# Both Jobs share the same ConfigMap and RBAC (already pre-install,
+# weight -10 in broker-pki-bootstrap-rbac.yaml).
+---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "cullis.broker.pkiBootstrap.serviceAccountName" . }}
+  name: {{ $saName }}-secret
   labels:
     {{- include "cullis.labels" . | nindent 4 }}
     app.kubernetes.io/component: broker-pki-bootstrap
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
@@ -33,7 +43,7 @@ spec:
         app.kubernetes.io/component: broker-pki-bootstrap
     spec:
       restartPolicy: OnFailure
-      serviceAccountName: {{ include "cullis.broker.pkiBootstrap.serviceAccountName" . }}
+      serviceAccountName: {{ $saName }}
       {{- with .Values.broker.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -55,19 +65,7 @@ spec:
             - name: PKI_KEY_TYPE
               value: {{ .Values.broker.pki.bootstrap.keyType | quote }}
             - name: PUSH_TO_VAULT
-              value: {{ .Values.broker.pki.bootstrap.pushToVault | quote }}
-            {{- if .Values.broker.pki.bootstrap.pushToVault }}
-            - name: VAULT_ADDR
-              value: {{ include "cullis.vaultAddr" . | quote }}
-            - name: VAULT_SECRET_PATH
-              value: {{ .Values.vault.secretPath | quote }}
-            - name: VAULT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "cullis.broker.secretName" . }}
-                  key: VAULT_TOKEN
-                  optional: true
-            {{- end }}
+              value: "false"
           volumeMounts:
             - name: script
               mountPath: /bootstrap
@@ -84,6 +82,81 @@ spec:
       volumes:
         - name: script
           configMap:
-            name: {{ include "cullis.broker.pkiBootstrap.serviceAccountName" . }}-script
+            name: {{ $saName }}-script
             defaultMode: 0555
+{{- if .Values.broker.pki.bootstrap.pushToVault }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $saName }}-vault
+  labels:
+    {{- include "cullis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker-pki-bootstrap
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "cullis.labels" . | nindent 8 }}
+        app.kubernetes.io/component: broker-pki-bootstrap
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ $saName }}
+      {{- with .Values.broker.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bootstrap
+          image: {{ include "cullis.broker.pkiBootstrap.image" . }}
+          imagePullPolicy: {{ .Values.broker.pki.bootstrap.image.pullPolicy }}
+          command: ["python", "/bootstrap/pki_bootstrap.py"]
+          env:
+            - name: TARGET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: TARGET_SECRET_NAME
+              value: {{ include "cullis.broker.pkiSecretName" . | quote }}
+            - name: PKI_KEY_TYPE
+              value: {{ .Values.broker.pki.bootstrap.keyType | quote }}
+            - name: PUSH_TO_VAULT
+              value: "true"
+            - name: VAULT_ADDR
+              value: {{ include "cullis.vaultAddr" . | quote }}
+            - name: VAULT_SECRET_PATH
+              value: {{ .Values.vault.secretPath | quote }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cullis.broker.secretName" . }}
+                  key: VAULT_TOKEN
+                  optional: true
+          volumeMounts:
+            - name: script
+              mountPath: /bootstrap
+              readOnly: true
+          {{- with .Values.broker.pki.bootstrap.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: script
+          configMap:
+            name: {{ $saName }}-script
+            defaultMode: 0555
+{{- end }}
 {{- end }}

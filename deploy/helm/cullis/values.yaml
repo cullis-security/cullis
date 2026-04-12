@@ -199,8 +199,12 @@ broker:
       # rsa = 4096-bit.
       keyType: rsa
       # -- Also push the generated PEMs into Vault at VAULT_SECRET_PATH.
-      # Required when KMS_BACKEND=vault (the default). Disable only when
-      # running with KMS_BACKEND=local.
+      # Recommended when KMS_BACKEND=vault (the default). On first boot
+      # the broker reads the CA from the filesystem-mounted Secret as a
+      # fallback if Vault returns 404, so `helm install --wait` does not
+      # deadlock on readyz. Subsequent boots read from Vault. Disable
+      # only when running with KMS_BACKEND=local or when Vault is
+      # pre-seeded out of band.
       pushToVault: true
       # -- Image used by the Job. Reuses the broker image by default
       # because it already ships cryptography + httpx. The Job only

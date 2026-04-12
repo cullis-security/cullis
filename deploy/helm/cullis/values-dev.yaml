@@ -14,6 +14,12 @@ broker:
   extraEnv:
     - name: VAULT_ALLOW_HTTP
       value: "true"
+    # Force unbuffered stdout so log lines and tracebacks are flushed
+    # immediately. Without this, CPython's line-buffering in a non-TTY
+    # container loses the last N lines when the process exits, making
+    # startup crashes invisible in `kubectl logs`.
+    - name: PYTHONUNBUFFERED
+      value: "1"
   pki:
     # Zero-touch CA on evaluation clusters: the chart renders a Job
     # that generates a self-signed broker CA on first install and
@@ -44,6 +50,11 @@ redis:
 
 vault:
   internal: true
+  # kmsBackend=vault works on first boot even before the post-install
+  # Vault-push Job runs: VaultKMSProvider falls back to reading the CA
+  # from the Secret mounted at /app/certs (written by the pre-install
+  # Job). Subsequent boots read from Vault directly. Real Vault outages
+  # (500, timeouts) still propagate and the broker still fails loud.
   kmsBackend: vault
   devRootToken: "dev-root-token"
 
