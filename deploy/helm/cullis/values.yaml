@@ -95,9 +95,26 @@ broker:
     # - secretRef:
     #     name: cullis-vault-token   # CSI-mounted Vault token
 
+  # -- Bring Your Own CA (BYOCA). If `existingSecret` is set, the chart
+  # mounts that Secret at `mountPath` on the broker pod. The customer
+  # creates the Secret externally with kubectl or their secret manager:
+  #
+  #   kubectl -n cullis create secret generic broker-pki \
+  #     --from-file=broker-ca.pem=/path/to/your/ca.crt \
+  #     --from-file=broker-ca-key.pem=/path/to/your/ca.key
+  #
+  # The broker's default Settings() reads `certs/broker-ca.pem` and
+  # `certs/broker-ca-key.pem` (relative to /app), so mountPath defaults
+  # to /app/certs. Leave existingSecret empty to use `extraVolumes` /
+  # `extraVolumeMounts` directly (same effect, more verbose).
+  pki:
+    existingSecret: ""
+    mountPath: /app/certs
+
   # -- Volumes injected into the broker pod. Loops via `range` over the
   # full list so every Kubernetes Volume source (ConfigMap, Secret,
-  # emptyDir, projected, CSI, etc.) is supported.
+  # emptyDir, projected, CSI, etc.) is supported. Combined with any
+  # volume mounted via `pki.existingSecret` above.
   extraVolumes: []
     #
     # --- Pattern 1: mount an internal-CA bundle for Vault HTTPS ---
