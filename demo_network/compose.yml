@@ -228,6 +228,10 @@ services:
       PROXY_PUBLIC_URL: "https://proxy-b.cullis.test:8443"
       PROXY_DB_PATH: /data/mcp_proxy.db
       STATE_DIR: /state
+      # Exercise the PDP DENY branch: proxy-b refuses any session that
+      # involves demo-org-a::banned-sender, on either side. Smoke asserts
+      # that sender gets 403 when logging in as this agent.
+      POLICY_RULES: '{"blocked_agents": ["demo-org-a::banned-sender"]}'
     volumes:
       - bootstrap-state:/state:ro
       - proxy-b-data:/data
@@ -309,15 +313,19 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL:       "https://broker.cullis.test:8443"
-      AGENT_ID:         "demo-org-a::sender"
-      ORG_ID:           "demo-org-a"
-      PEER_AGENT_ID:    "demo-org-b::checker"
-      PEER_ORG_ID:      "demo-org-b"
-      AGENT_CERT_PATH:  /state/demo-org-a/sender.pem
-      AGENT_KEY_PATH:   /state/demo-org-a/sender-key.pem
-      CA_BUNDLE:        /certs/ca.crt
-      SMOKE_NONCE:      "${SMOKE_NONCE:-nonce-unset}"
+      BROKER_URL:              "https://broker.cullis.test:8443"
+      AGENT_ID:                "demo-org-a::sender"
+      ORG_ID:                  "demo-org-a"
+      PEER_AGENT_ID:           "demo-org-b::checker"
+      PEER_ORG_ID:             "demo-org-b"
+      AGENT_CERT_PATH:         /state/demo-org-a/sender.pem
+      AGENT_KEY_PATH:          /state/demo-org-a/sender-key.pem
+      CA_BUNDLE:               /certs/ca.crt
+      SMOKE_NONCE:             "${SMOKE_NONCE:-nonce-unset}"
+      # Phase 2 — banned agent for the PDP DENY assertion.
+      BANNED_AGENT_ID:         "demo-org-a::banned-sender"
+      BANNED_AGENT_CERT_PATH:  /state/demo-org-a/banned-sender.pem
+      BANNED_AGENT_KEY_PATH:   /state/demo-org-a/banned-sender-key.pem
     volumes:
       - bootstrap-state:/state:ro
       - test-certs:/certs:ro

@@ -1,13 +1,22 @@
 """
-Smoke-test sender: opens a session with demo-org-b::checker and sends a
-single message containing the nonce injected at smoke startup. Exits 0 on
-success, non-zero on any failure.
+Smoke-test sender. Two phases in one container:
+
+  Phase 1 — happy path: open a session with demo-org-b::checker, send the
+            nonce, continue.
+
+  Phase 2 — DENY assertion: log in as demo-org-a::banned-sender and attempt
+            the same session. proxy-b's PDP must refuse with 403. If the
+            session opens successfully, the smoke fails (exit 1) — that
+            means policy enforcement is silently broken.
+
+Both phases run serially in the same container; exits 0 only when phase 1
+delivered AND phase 2 was refused.
 """
-import json
 import os
 import sys
 import time
-import ssl
+
+import httpx as _h
 
 from cullis_sdk import CullisClient
 
@@ -21,61 +30,102 @@ KEY_PATH    = os.environ["AGENT_KEY_PATH"]
 NONCE       = os.environ["SMOKE_NONCE"]
 CA_BUNDLE   = os.environ.get("CA_BUNDLE", "/certs/ca.crt")
 
+# Phase 2 — banned agent, must be rejected by the PDP.
+BANNED_AGENT_ID  = os.environ.get("BANNED_AGENT_ID", "")
+BANNED_CERT_PATH = os.environ.get("BANNED_AGENT_CERT_PATH", "")
+BANNED_KEY_PATH  = os.environ.get("BANNED_AGENT_KEY_PATH", "")
 
-def main() -> int:
-    # Let httpx inside the SDK use our test CA bundle.
-    os.environ["SSL_CERT_FILE"] = CA_BUNDLE
 
-    # Build an SSL context that trusts only the test CA — passed through the
-    # SDK's verify_tls hook is not available, so we rely on SSL_CERT_FILE
-    # being picked up by certifi via the python ssl module.
+def _phase1() -> None:
+    print(f"sender: [phase1] logging in as {AGENT_ID}")
     client = CullisClient(BROKER_URL, verify_tls=CA_BUNDLE)
     try:
-        print(f"sender: logging in as {AGENT_ID}")
         client.login(AGENT_ID, ORG_ID, CERT_PATH, KEY_PATH)
 
-        print(f"sender: opening session with {PEER_AGENT}")
+        print(f"sender: [phase1] opening session with {PEER_AGENT}")
         try:
             session_id = client.open_session(
                 target_agent_id=PEER_AGENT,
                 target_org_id=PEER_ORG,
                 capabilities=["message.exchange"],
             )
-        except Exception as exc:
-            # Surface the broker response body — the SDK only raises a generic
-            # HTTPStatusError which loses the JSON detail that tells us why.
-            import httpx as _h
-            if isinstance(exc, _h.HTTPStatusError):
-                print(f"sender: open_session failed — body: {exc.response.text[:500]}")
+        except _h.HTTPStatusError as exc:
+            print(f"sender: [phase1] open_session failed body: {exc.response.text[:500]}")
             raise
 
-        # The session is pending until the checker accepts it. Wait up to 30s.
-        for attempt in range(30):
+        # Session is pending until checker accepts — wait up to 30s.
+        for _ in range(30):
             sessions = client.list_sessions()
             s = next((x for x in sessions if x.session_id == session_id), None)
             if s and getattr(s, "status", "") == "active":
                 break
             time.sleep(1)
         else:
-            raise SystemExit(f"sender: session {session_id} not accepted within 30s")
+            raise SystemExit(f"sender: [phase1] session {session_id} not accepted within 30s")
 
         payload = {
-            "nonce":     NONCE,
-            "sent_at":   int(time.time()),
-            "from":      AGENT_ID,
+            "nonce":   NONCE,
+            "sent_at": int(time.time()),
+            "from":    AGENT_ID,
         }
-        print(f"sender: sending payload {payload!r}")
+        print(f"sender: [phase1] sending payload {payload!r}")
         client.send(
             session_id=session_id,
             sender_agent_id=AGENT_ID,
             payload=payload,
             recipient_agent_id=PEER_AGENT,
         )
-
-        print(f"sender: OK — message delivered to {PEER_AGENT} (session {session_id})")
-        return 0
+        print(f"sender: [phase1] OK — delivered to {PEER_AGENT} (session {session_id})")
     finally:
         client.close()
+
+
+def _phase2() -> None:
+    """Assert that the PDP refuses the banned agent.
+
+    The banned agent is still fully credentialed — binding approved, cert
+    valid — so login works. The refusal must come from the /pdp/policy
+    webhook call, not from a broken binding. That exercises the full
+    policy webhook path end-to-end.
+    """
+    if not BANNED_AGENT_ID or not BANNED_CERT_PATH or not BANNED_KEY_PATH:
+        print("sender: [phase2] skipped (BANNED_AGENT_* not set)")
+        return
+
+    print(f"sender: [phase2] logging in as {BANNED_AGENT_ID}")
+    client = CullisClient(BROKER_URL, verify_tls=CA_BUNDLE)
+    try:
+        client.login(BANNED_AGENT_ID, ORG_ID, BANNED_CERT_PATH, BANNED_KEY_PATH)
+
+        print(f"sender: [phase2] attempting session with {PEER_AGENT} — expect DENY")
+        try:
+            client.open_session(
+                target_agent_id=PEER_AGENT,
+                target_org_id=PEER_ORG,
+                capabilities=["message.exchange"],
+            )
+        except _h.HTTPStatusError as exc:
+            if exc.response.status_code == 403:
+                print(f"sender: [phase2] OK — PDP refused session (body: {exc.response.text[:200]})")
+                return
+            raise SystemExit(
+                f"sender: [phase2] expected 403 from PDP, got {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            )
+
+        raise SystemExit(
+            "sender: [phase2] session OPENED for banned agent — policy "
+            "enforcement is broken. Smoke fails."
+        )
+    finally:
+        client.close()
+
+
+def main() -> int:
+    os.environ["SSL_CERT_FILE"] = CA_BUNDLE
+    _phase1()
+    _phase2()
+    return 0
 
 
 if __name__ == "__main__":

@@ -60,6 +60,14 @@ async def main() -> int:
             "webhook_url":   f"{proxy_public}/pdp/policy",
             "org_status":    "active",
         }
+
+        # Optional PDP policy rules — passed as JSON via POLICY_RULES env var
+        # so each proxy can have a different ruleset. Smoke configures
+        # proxy-b with a blocked_agents list so the DENY branch of the
+        # webhook path is exercised every run.
+        policy_rules = os.environ.get("POLICY_RULES", "").strip()
+        if policy_rules:
+            rows["policy_rules"] = policy_rules
         for k, v in rows.items():
             await db.execute(
                 "INSERT INTO proxy_config (key, value) VALUES (?, ?) "

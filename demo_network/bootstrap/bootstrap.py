@@ -43,6 +43,12 @@ ORGS = [
         "org_id": "demo-org-a", "display_name": "Demo Org A", "flow": "join",
         "agent_role": "sender",
         "capabilities": ["message.exchange"],
+        # Extra agent to exercise the DENY branch of the PDP: proxy-b's
+        # policy_rules list this agent as blocked, so any session it opens
+        # with the checker must be refused.
+        "extra_agents": [
+            {"role": "banned-sender", "capabilities": ["message.exchange"]},
+        ],
         "webhook_url": "https://proxy-a.cullis.test:8443/pdp/policy",
     },
     # Onboarding via admin-register + POST /onboarding/attach (simulates the
@@ -344,11 +350,17 @@ def main() -> int:
                     "Secret rotation or registration broken."
                 )
 
-        # 5. For each org, register its agent + approve its binding. The
-        #    smoke's sender/checker use these certs to auth directly against
-        #    the broker.
+        # 5. For each org, register its primary agent + any extra agents
+        #    (e.g. the banned-sender used to prove the PDP DENY branch).
         for org in ORGS:
             _provision_agent(client, org)
+            for extra in org.get("extra_agents") or []:
+                _provision_agent(client, {
+                    "org_id":       org["org_id"],
+                    "display_name": org["display_name"],
+                    "agent_role":   extra["role"],
+                    "capabilities": extra["capabilities"],
+                })
 
     (STATE / "orgs.json").write_text(json.dumps([
         {"org_id": o["org_id"], "display_name": o["display_name"], "flow": o["flow"]}
