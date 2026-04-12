@@ -95,26 +95,10 @@ broker:
     # - secretRef:
     #     name: cullis-vault-token   # CSI-mounted Vault token
 
-  # -- Bring Your Own CA (BYOCA). If `existingSecret` is set, the chart
-  # mounts that Secret at `mountPath` on the broker pod. The customer
-  # creates the Secret externally with kubectl or their secret manager:
-  #
-  #   kubectl -n cullis create secret generic broker-pki \
-  #     --from-file=broker-ca.pem=/path/to/your/ca.crt \
-  #     --from-file=broker-ca-key.pem=/path/to/your/ca.key
-  #
-  # The broker's default Settings() reads `certs/broker-ca.pem` and
-  # `certs/broker-ca-key.pem` (relative to /app), so mountPath defaults
-  # to /app/certs. Leave existingSecret empty to use `extraVolumes` /
-  # `extraVolumeMounts` directly (same effect, more verbose).
-  pki:
-    existingSecret: ""
-    mountPath: /app/certs
-
   # -- Volumes injected into the broker pod. Loops via `range` over the
   # full list so every Kubernetes Volume source (ConfigMap, Secret,
   # emptyDir, projected, CSI, etc.) is supported. Combined with any
-  # volume mounted via `pki.existingSecret` above.
+  # volume mounted via `pki.existingSecret` below.
   extraVolumes: []
     #
     # --- Pattern 1: mount an internal-CA bundle for Vault HTTPS ---
@@ -176,6 +160,64 @@ broker:
     #   mountPath: /tmp
     # - name: cache
     #   mountPath: /var/cache/cullis
+
+  # -- Broker PKI (the root CA used to sign agent certificates).
+  #
+  # The broker's Settings() expects `broker-ca.pem` + `broker-ca-key.pem`
+  # on disk at `pki.mountPath`. Two ways to populate them:
+  #
+  #   1. BYOCA (production-preferred) — create a Kubernetes Secret
+  #      out-of-band with those two keys and set `pki.existingSecret`
+  #      to its name. The chart will mount it read-only.
+  #
+  #   2. Bootstrap (evaluation / dev clusters) — flip
+  #      `pki.bootstrap.enabled=true` and the chart will render a Job
+  #      that generates a fresh self-signed CA on first install, writes
+  #      it into a Secret, and (optionally) pushes it into Vault so
+  #      KMS_BACKEND=vault resolves without manual `kubectl exec`.
+  pki:
+    # -- Name of an existing Secret holding `broker-ca.pem` +
+    # `broker-ca-key.pem`. Leave empty to rely on bootstrap below
+    # or to hand-wire via extraVolumes / extraVolumeMounts.
+    existingSecret: ""
+    # -- Mount path for the CA Secret. Must match the broker's
+    # Settings().broker_ca_cert_path which defaults to `certs/` relative
+    # to WORKDIR=/app, i.e. /app/certs.
+    mountPath: /app/certs
+    bootstrap:
+      # -- Render a post-install Job that generates a self-signed broker
+      # CA and writes it into a Secret. OFF by default — production
+      # deployments should ship a CA via existingSecret. Useful for
+      # evaluating on kind/k3d and for hermetic CI.
+      enabled: false
+      # -- Name of the Secret the Job creates / updates. When empty the
+      # chart derives it from the release name. The same value is mounted
+      # into the broker when existingSecret is also empty, so the default
+      # is "bootstrap creates it AND broker consumes it".
+      secretName: ""
+      # -- Key algorithm for the generated CA ("rsa" | "ec"). ec = P-256,
+      # rsa = 4096-bit.
+      keyType: rsa
+      # -- Also push the generated PEMs into Vault at VAULT_SECRET_PATH.
+      # Required when KMS_BACKEND=vault (the default). Disable only when
+      # running with KMS_BACKEND=local.
+      pushToVault: true
+      # -- Image used by the Job. Reuses the broker image by default
+      # because it already ships cryptography + httpx. The Job only
+      # reads /app/pki_bootstrap.py which is mounted from a ConfigMap
+      # the chart renders next to this Job.
+      image:
+        repository: ""   # defaults to broker.image.repository
+        tag: ""          # defaults to broker.image.tag (chart appVersion)
+        pullPolicy: IfNotPresent
+      # -- Resources for the short-lived bootstrap Job.
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
 
   # -- Additional annotations on broker pods. Common use:
   #    - Vault Agent Injector (vault.hashicorp.com/agent-inject: "true")

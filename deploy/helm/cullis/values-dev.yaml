@@ -14,6 +14,14 @@ broker:
   extraEnv:
     - name: VAULT_ALLOW_HTTP
       value: "true"
+  pki:
+    # Zero-touch CA on evaluation clusters: the chart renders a Job
+    # that generates a self-signed broker CA on first install and
+    # pushes it into the in-cluster Vault. For production use BYOCA
+    # via broker.pki.existingSecret instead (see values.yaml).
+    bootstrap:
+      enabled: true
+      pushToVault: true
   resources:
     limits:
       cpu: "500m"

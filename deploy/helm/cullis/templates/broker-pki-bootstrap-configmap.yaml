@@ -1,0 +1,18 @@
+{{- if .Values.broker.pki.bootstrap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cullis.broker.pkiBootstrap.serviceAccountName" . }}-script
+  labels:
+    {{- include "cullis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker-pki-bootstrap
+  annotations:
+    # Render alongside RBAC so the Job can read this script. Match the
+    # Job's hook so Helm keeps the trio in lock-step during upgrade.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  pki_bootstrap.py: |-
+{{ .Files.Get "files/pki_bootstrap.py" | indent 4 }}
+{{- end }}

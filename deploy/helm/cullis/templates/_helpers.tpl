@@ -214,6 +214,45 @@ Resolved VAULT_ADDR for the in-cluster fallback.
 {{- end -}}
 
 {{/*
+Name of the Secret holding the broker CA (broker-ca.pem + broker-ca-key.pem).
+Resolution order:
+  1. broker.pki.existingSecret (explicit BYOCA)
+  2. broker.pki.bootstrap.secretName (explicit bootstrap override)
+  3. bootstrap default: <release>-broker-pki (when bootstrap enabled)
+Returns empty string when no PKI source is configured — caller must
+guard with `if`.
+*/}}
+{{- define "cullis.broker.pkiSecretName" -}}
+{{- if .Values.broker.pki.existingSecret -}}
+{{- .Values.broker.pki.existingSecret -}}
+{{- else if .Values.broker.pki.bootstrap.enabled -}}
+{{- if .Values.broker.pki.bootstrap.secretName -}}
+{{- .Values.broker.pki.bootstrap.secretName -}}
+{{- else -}}
+{{- printf "%s-broker-pki" (include "cullis.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Name of the ServiceAccount used by the PKI bootstrap Job (needs
+create/get Secrets RBAC in the release namespace).
+*/}}
+{{- define "cullis.broker.pkiBootstrap.serviceAccountName" -}}
+{{- printf "%s-broker-pki-bootstrap" (include "cullis.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Broker PKI bootstrap image — defaults to the broker image (which ships
+cryptography + httpx).
+*/}}
+{{- define "cullis.broker.pkiBootstrap.image" -}}
+{{- $repo := .Values.broker.pki.bootstrap.image.repository | default .Values.broker.image.repository -}}
+{{- $tag  := .Values.broker.pki.bootstrap.image.tag | default (.Values.broker.image.tag | default .Chart.AppVersion) -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end -}}
+
+{{/*
 Name of the TLS secret referenced by the Ingress.
 */}}
 {{- define "cullis.ingress.tlsSecretName" -}}

@@ -117,13 +117,10 @@ spec:
                   - /bin/sh
                   - -c
                   - sleep {{ .Values.broker.preStopSleepSeconds }}
-          {{- if or .Values.broker.pki.existingSecret .Values.broker.extraVolumeMounts }}
+          {{- $pkiSecret := include "cullis.broker.pkiSecretName" . }}
+          {{- if or $pkiSecret .Values.broker.extraVolumeMounts }}
           volumeMounts:
-            {{- if .Values.broker.pki.existingSecret }}
-            # Mount the pre-existing PKI Secret at /app/certs where
-            # the broker's Settings() expects broker-ca.pem and
-            # broker-ca-key.pem by default. BYOCA pattern — the
-            # customer creates this Secret separately.
+            {{- if $pkiSecret }}
             - name: broker-pki
               mountPath: {{ .Values.broker.pki.mountPath }}
               readOnly: true
@@ -132,13 +129,14 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
-      {{- if or .Values.broker.pki.existingSecret .Values.broker.extraVolumes }}
+      {{- $pkiSecret := include "cullis.broker.pkiSecretName" . }}
+      {{- if or $pkiSecret .Values.broker.extraVolumes }}
       volumes:
-        {{- if .Values.broker.pki.existingSecret }}
+        {{- if $pkiSecret }}
         - name: broker-pki
           secret:
-            secretName: {{ .Values.broker.pki.existingSecret }}
-            defaultMode: 0400
+            secretName: {{ $pkiSecret }}
+            defaultMode: 0444
         {{- end }}
         {{- with .Values.broker.extraVolumes }}
         {{- toYaml . | nindent 8 }}
