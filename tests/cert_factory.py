@@ -36,39 +36,53 @@ import jwt
 _broker_ca_key: rsa.RSAPrivateKey | None = None
 _broker_ca_cert: x509.Certificate | None = None
 
-# Cache org CA: org_id → (org_ca_key, org_ca_cert)
-_org_ca_cache: dict[str, tuple] = {}
+# Cache org CA: (org_id, key_type) → (org_ca_key, org_ca_cert)
+_org_ca_cache: dict[tuple[str, str], tuple] = {}
 
-# Cache agent cert: (agent_id, org_id) → (agent_key, agent_cert)
+# Cache agent cert: (agent_id, org_id, trust_domain, key_type) → (agent_key, agent_cert)
 # Guarantees the same agent always uses the same key within a test run
-_agent_cert_cache: dict[tuple[str, str], tuple] = {}
+_agent_cert_cache: dict[tuple, tuple] = {}
 
-# Cache alternate cert: (agent_id, org_id) → (agent_key, agent_cert)
+# Cache alternate cert: (agent_id, org_id, key_type) → (agent_key, agent_cert)
 # Used for thumbprint pinning tests — different key, same identity
-_agent_alt_cert_cache: dict[tuple[str, str], tuple] = {}
+_agent_alt_cert_cache: dict[tuple, tuple] = {}
 
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _gen_key(bits: int = 2048) -> rsa.RSAPrivateKey:
-    return rsa.generate_private_key(public_exponent=65537, key_size=bits)
+def _gen_key(bits: int = 2048, key_type: str = "rsa"):
+    """Generate an RSA or EC (P-256) private key. Used everywhere below."""
+    if key_type == "rsa":
+        return rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    if key_type == "ec":
+        return ec.generate_private_key(ec.SECP256R1())
+    raise ValueError(f"Unsupported key_type: {key_type!r}")
 
 
-def _key_pem(key: rsa.RSAPrivateKey) -> str:
+def _key_pem(key) -> str:
     return key.private_bytes(
         serialization.Encoding.PEM,
-        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
 
 
-def _pub_pem(key: rsa.RSAPrivateKey) -> str:
+def _pub_pem(key) -> str:
     return key.public_key().public_bytes(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+
+
+def _jwt_alg_for(key) -> str:
+    """Return the JWT `alg` that matches the provided private key."""
+    if isinstance(key, rsa.RSAPrivateKey):
+        return "RS256"
+    if isinstance(key, ec.EllipticCurvePrivateKey):
+        return "ES256"
+    raise ValueError(f"Unsupported key type: {type(key).__name__}")
 
 
 def init_broker_keys() -> tuple[str, str]:
@@ -104,18 +118,19 @@ def init_broker_keys() -> tuple[str, str]:
     return _key_pem(key), _pub_pem(key)
 
 
-def _get_org_ca(org_id: str) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+def _get_org_ca(org_id: str, key_type: str = "rsa") -> tuple:
     """Return (org_ca_key, org_ca_cert), generating them if necessary."""
     global _broker_ca_key, _broker_ca_cert
 
-    if org_id in _org_ca_cache:
-        return _org_ca_cache[org_id]
+    cache_key = (org_id, key_type)
+    if cache_key in _org_ca_cache:
+        return _org_ca_cache[cache_key]
 
     if _broker_ca_key is None:
         init_broker_keys()
 
     now = _now()
-    key = _gen_key(2048)
+    key = _gen_key(2048, key_type=key_type)
     subject = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, f"{org_id} Test CA"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
@@ -131,13 +146,13 @@ def _get_org_ca(org_id: str) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .sign(_broker_ca_key, hashes.SHA256())
     )
-    _org_ca_cache[org_id] = (key, cert)
+    _org_ca_cache[cache_key] = (key, cert)
     return key, cert
 
 
-def get_org_ca_pem(org_id: str) -> str:
+def get_org_ca_pem(org_id: str, key_type: str = "rsa") -> str:
     """Return the PEM of the org's CA certificate (for upload to the broker)."""
-    _, org_ca_cert = _get_org_ca(org_id)
+    _, org_ca_cert = _get_org_ca(org_id, key_type=key_type)
     return org_ca_cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
@@ -145,23 +160,27 @@ def make_agent_cert(
     agent_id: str,
     org_id: str,
     trust_domain: str | None = None,
-) -> tuple[rsa.RSAPrivateKey, x509.Certificate]:
+    key_type: str = "rsa",
+) -> tuple:
     """
     Generate (or return from cache) the agent certificate signed by the org CA.
     The cache guarantees the same agent always uses the same key within a test run,
     enabling message signature verification.
 
-    trust_domain: se fornito, aggiunge un SAN URI SPIFFE al certificato.
-                  La cache usa (agent_id, org_id, trust_domain) come chiave.
+    trust_domain: if set, adds a SPIFFE URI SAN to the cert.
+    key_type:     "rsa" (default) or "ec" (P-256). Must match the org CA key_type
+                  for the cache — the org CA is signed by the broker CA (RSA), the
+                  agent cert is signed by the org CA whose key_type determines the
+                  signature algorithm.
     """
-    cache_key = (agent_id, org_id, trust_domain)
+    cache_key = (agent_id, org_id, trust_domain, key_type)
     if cache_key in _agent_cert_cache:
         return _agent_cert_cache[cache_key]
 
-    org_ca_key, org_ca_cert = _get_org_ca(org_id)
+    org_ca_key, org_ca_cert = _get_org_ca(org_id, key_type=key_type)
 
     now = _now()
-    key = _gen_key(2048)
+    key = _gen_key(2048, key_type=key_type)
     subject = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, agent_id),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
@@ -177,7 +196,7 @@ def make_agent_cert(
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
     )
     if trust_domain is not None:
-        # Aggiunge SAN URI SPIFFE: spiffe://trust-domain/org/agent-name
+        # Add SPIFFE URI SAN: spiffe://trust-domain/org/agent-name
         _, agent_name = agent_id.split("::", 1)
         spiffe_id = f"spiffe://{trust_domain}/{org_id}/{agent_name}"
         builder = builder.add_extension(
@@ -507,6 +526,7 @@ def make_assertion(
     org_id: str,
     jti: str | None = "auto",
     trust_domain: str | None = None,
+    key_type: str = "rsa",
 ) -> str:
     """
     Generate a valid client_assertion JWT for agent_id/org_id.
@@ -516,8 +536,11 @@ def make_assertion(
     jti=<string>          → uses the provided value (for replay tests)
     jti=None              → omits the jti field from the payload (for validation tests)
     trust_domain          → if provided, the cert will include a SPIFFE SAN URI
+    key_type              → "rsa" (default) or "ec" — drives RS256 / ES256 JWT alg
     """
-    agent_key, agent_cert = make_agent_cert(agent_id, org_id, trust_domain=trust_domain)
+    agent_key, agent_cert = make_agent_cert(
+        agent_id, org_id, trust_domain=trust_domain, key_type=key_type,
+    )
 
     cert_der = agent_cert.public_bytes(serialization.Encoding.DER)
     x5c = [base64.b64encode(cert_der).decode()]
@@ -536,4 +559,7 @@ def make_assertion(
         payload["jti"] = jti
     # jti=None → not included in the payload
 
-    return jwt.encode(payload, _key_pem(agent_key), algorithm="RS256", headers={"x5c": x5c})
+    return jwt.encode(
+        payload, _key_pem(agent_key),
+        algorithm=_jwt_alg_for(agent_key), headers={"x5c": x5c},
+    )
