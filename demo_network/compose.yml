@@ -329,6 +329,14 @@ services:
       BANNED_AGENT_ID:         "demo-org-a::banned-sender"
       BANNED_AGENT_CERT_PATH:  /state/demo-org-a/banned-sender.pem
       BANNED_AGENT_KEY_PATH:   /state/demo-org-a/banned-sender-key.pem
+      # Phase 3 — revoked-cert agent for the A5 assertion.
+      REVOKED_AGENT_ID:        "demo-org-a::revoked-agent"
+      REVOKED_AGENT_CERT_PATH: /state/demo-org-a/revoked-agent.pem
+      REVOKED_AGENT_KEY_PATH:  /state/demo-org-a/revoked-agent-key.pem
+      # Phase 4 — agent with revoked binding for the A6 assertion.
+      UNBOUND_AGENT_ID:        "demo-org-a::unbound-agent"
+      UNBOUND_AGENT_CERT_PATH: /state/demo-org-a/unbound-agent.pem
+      UNBOUND_AGENT_KEY_PATH:  /state/demo-org-a/unbound-agent-key.pem
     volumes:
       - bootstrap-state:/state:ro
       - test-certs:/certs:ro

@@ -48,6 +48,14 @@ ORGS = [
         # with the checker must be refused.
         "extra_agents": [
             {"role": "banned-sender", "capabilities": ["message.exchange"]},
+            # Agent whose x509 cert will be admin-revoked after creation; the
+            # smoke then proves login fails with 401 (A5).
+            {"role": "revoked-agent", "capabilities": ["message.exchange"],
+             "revoke_after_creation": True},
+            # Agent whose cert is valid but whose binding is revoked — smoke
+            # proves session open fails with 403 even though login succeeds (A6).
+            {"role": "unbound-agent", "capabilities": ["message.exchange"],
+             "revoke_binding_after_creation": True},
         ],
         "webhook_url": "https://proxy-a.cullis.test:8443/pdp/policy",
     },
@@ -202,6 +210,56 @@ def _gen_agent_cert(agent_id: str, org_id: str, ca_cert_pem: bytes,
     return cert_pem, key_pem
 
 
+def _revoke_agent_binding(client: httpx.Client, org_id: str, agent_id: str) -> None:
+    """Admin-revoke the agent's binding. Session open must fail 403 after."""
+    org_secret = (STATE / org_id / "org_secret").read_text().strip()
+    r = client.get(
+        f"{BROKER_URL}/v1/registry/bindings",
+        params={"org_id": org_id},
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    r.raise_for_status()
+    bindings = r.json()
+    binding = next((b for b in bindings if b.get("agent_id") == agent_id), None)
+    if binding is None:
+        raise SystemExit(f"bootstrap: no binding found for {agent_id}")
+
+    r = client.post(
+        f"{BROKER_URL}/v1/registry/bindings/{binding['id']}/revoke",
+        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    if r.status_code != 200:
+        raise SystemExit(f"binding revoke failed for {agent_id}: {r.status_code} {r.text}")
+    print(f"bootstrap: revoked binding {binding['id']} for {agent_id}")
+
+
+def _revoke_agent_cert(client: httpx.Client, org_id: str, agent_id: str, role: str) -> None:
+    """Admin-revoke the agent's current cert. Login afterwards must fail 401."""
+    cert_pem = (STATE / org_id / f"{role}.pem").read_bytes()
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    serial_hex = format(cert.serial_number, "x")
+    try:
+        not_after = cert.not_valid_after_utc
+    except AttributeError:
+        not_after = cert.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+
+    r = client.post(
+        f"{BROKER_URL}/v1/admin/certs/revoke",
+        json={
+            "serial_hex":     serial_hex,
+            "org_id":         org_id,
+            "agent_id":       agent_id,
+            "reason":         "smoke-A5-test",
+            "revoked_by":     "smoke-bootstrap",
+            "cert_not_after": not_after.isoformat(),
+        },
+        headers=_admin_headers(),
+    )
+    if r.status_code != 200:
+        raise SystemExit(f"cert revoke failed for {agent_id}: {r.status_code} {r.text}")
+    print(f"bootstrap: revoked cert {serial_hex} for {agent_id}")
+
+
 def _provision_agent(client: httpx.Client, org: dict) -> str:
     """Register an agent + binding for the given org; returns the agent_id."""
     org_id = org["org_id"]
@@ -248,11 +306,11 @@ def _provision_agent(client: httpx.Client, org: dict) -> str:
         # Already exists — fetch its id.
         r = client.get(
             f"{BROKER_URL}/v1/registry/bindings",
-            params={"agent_id": agent_id},
+            params={"org_id": org_id},
             headers={"x-org-id": org_id, "x-org-secret": org_secret},
         )
         r.raise_for_status()
-        binding_id = next(b["id"] for b in r.json() if b["org_id"] == org_id)
+        binding_id = next(b["id"] for b in r.json() if b.get("agent_id") == agent_id)
     else:
         raise SystemExit(f"binding create failed for {agent_id}: {r.status_code} {r.text}")
 
@@ -355,12 +413,16 @@ def main() -> int:
         for org in ORGS:
             _provision_agent(client, org)
             for extra in org.get("extra_agents") or []:
-                _provision_agent(client, {
+                extra_agent_id = _provision_agent(client, {
                     "org_id":       org["org_id"],
                     "display_name": org["display_name"],
                     "agent_role":   extra["role"],
                     "capabilities": extra["capabilities"],
                 })
+                if extra.get("revoke_after_creation"):
+                    _revoke_agent_cert(client, org["org_id"], extra_agent_id, extra["role"])
+                if extra.get("revoke_binding_after_creation"):
+                    _revoke_agent_binding(client, org["org_id"], extra_agent_id)
 
     (STATE / "orgs.json").write_text(json.dumps([
         {"org_id": o["org_id"], "display_name": o["display_name"], "flow": o["flow"]}

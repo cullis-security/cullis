@@ -35,6 +35,17 @@ BANNED_AGENT_ID  = os.environ.get("BANNED_AGENT_ID", "")
 BANNED_CERT_PATH = os.environ.get("BANNED_AGENT_CERT_PATH", "")
 BANNED_KEY_PATH  = os.environ.get("BANNED_AGENT_KEY_PATH", "")
 
+# Phase 3 — agent whose cert has been admin-revoked. Login must 401.
+REVOKED_AGENT_ID  = os.environ.get("REVOKED_AGENT_ID", "")
+REVOKED_CERT_PATH = os.environ.get("REVOKED_AGENT_CERT_PATH", "")
+REVOKED_KEY_PATH  = os.environ.get("REVOKED_AGENT_KEY_PATH", "")
+
+# Phase 4 — agent with valid cert but revoked binding. Login succeeds, but
+# session open must fail 403.
+UNBOUND_AGENT_ID  = os.environ.get("UNBOUND_AGENT_ID", "")
+UNBOUND_CERT_PATH = os.environ.get("UNBOUND_AGENT_CERT_PATH", "")
+UNBOUND_KEY_PATH  = os.environ.get("UNBOUND_AGENT_KEY_PATH", "")
+
 
 def _phase1() -> None:
     print(f"sender: [phase1] logging in as {AGENT_ID}")
@@ -121,10 +132,94 @@ def _phase2() -> None:
         client.close()
 
 
+def _phase3() -> None:
+    """Assert that a revoked cert can no longer log in (A5)."""
+    if not REVOKED_AGENT_ID or not REVOKED_CERT_PATH or not REVOKED_KEY_PATH:
+        print("sender: [phase3] skipped (REVOKED_AGENT_* not set)")
+        return
+
+    print(f"sender: [phase3] logging in as {REVOKED_AGENT_ID} — expect 401")
+    client = CullisClient(BROKER_URL, verify_tls=CA_BUNDLE)
+    try:
+        try:
+            client.login(REVOKED_AGENT_ID, ORG_ID, REVOKED_CERT_PATH, REVOKED_KEY_PATH)
+        except PermissionError as exc:
+            # SDK wraps httpx HTTPStatusError into PermissionError with HTTP code in msg.
+            if "401" in str(exc) or "revoked" in str(exc).lower():
+                print(f"sender: [phase3] OK — revoked cert refused: {str(exc)[:200]}")
+                return
+            raise SystemExit(f"sender: [phase3] expected 401 revoked-cert refusal, got: {exc}")
+        except _h.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                print(f"sender: [phase3] OK — revoked cert refused (body: {exc.response.text[:200]})")
+                return
+            raise SystemExit(
+                f"sender: [phase3] expected 401 from /auth/token, got {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            )
+
+        raise SystemExit(
+            "sender: [phase3] login SUCCEEDED for revoked agent — revocation "
+            "not enforced. Smoke fails."
+        )
+    finally:
+        client.close()
+
+
+def _phase4() -> None:
+    """Assert that a revoked binding blocks session open (A6)."""
+    if not UNBOUND_AGENT_ID or not UNBOUND_CERT_PATH or not UNBOUND_KEY_PATH:
+        print("sender: [phase4] skipped (UNBOUND_AGENT_* not set)")
+        return
+
+    print(f"sender: [phase4] logging in as {UNBOUND_AGENT_ID} — expect 403 at login or session")
+    client = CullisClient(BROKER_URL, verify_tls=CA_BUNDLE)
+    try:
+        try:
+            client.login(UNBOUND_AGENT_ID, ORG_ID, UNBOUND_CERT_PATH, UNBOUND_KEY_PATH)
+        except PermissionError as exc:
+            if "403" in str(exc) or "binding" in str(exc).lower():
+                print(f"sender: [phase4] OK — login refused (binding gate): {str(exc)[:200]}")
+                return
+            raise SystemExit(f"sender: [phase4] expected 403 binding refusal at login, got: {exc}")
+        except _h.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                print(f"sender: [phase4] OK — login refused (HTTP {exc.response.status_code}, body: {exc.response.text[:200]})")
+                return
+            raise
+
+        # If login somehow succeeded (older broker version), session open
+        # must still fail.
+        print(f"sender: [phase4] login surprisingly OK, expect refusal on session open")
+        try:
+            client.open_session(
+                target_agent_id=PEER_AGENT,
+                target_org_id=PEER_ORG,
+                capabilities=["message.exchange"],
+            )
+        except _h.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                print(f"sender: [phase4] OK — session refused (HTTP {exc.response.status_code})")
+                return
+            raise SystemExit(
+                f"sender: [phase4] expected 401/403 for revoked binding, got "
+                f"{exc.response.status_code}: {exc.response.text[:300]}"
+            )
+
+        raise SystemExit(
+            "sender: [phase4] both login and session OPENED for agent with "
+            "revoked binding — binding revocation not enforced. Smoke fails."
+        )
+    finally:
+        client.close()
+
+
 def main() -> int:
     os.environ["SSL_CERT_FILE"] = CA_BUNDLE
     _phase1()
     _phase2()
+    _phase3()
+    _phase4()
     return 0
 
 
