@@ -100,7 +100,8 @@ async def lifespan(app: FastAPI):
     # Debug: logger.info is dropped because configure_logging leaves the
     # agent_trust logger at default WARNING in text mode. Use print to
     # stderr with explicit flush so every step is visible in kubectl logs.
-    import sys, traceback as _tb
+    import sys
+    import traceback as _tb
     def _step(msg: str) -> None:
         print(f"LIFESPAN: {msg}", file=sys.stderr, flush=True)
     try:
