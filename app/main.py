@@ -97,24 +97,41 @@ async def _drain_watcher() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.config import validate_config
-    validate_config(settings)
-    init_telemetry()
+    # Log every startup step so a crash shows *where* it crashed in
+    # `kubectl logs`, not just the last buffered line before exit 3.
+    # The explicit try/except at the end guarantees the traceback is
+    # flushed even when uvicorn swallows it on lifespan failure.
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        FastAPIInstrumentor.instrument_app(app)
-    except Exception:
-        pass
-    await init_db()
-    from app.kms.admin_secret import ensure_bootstrapped
-    await ensure_bootstrapped()
-    await init_redis(settings.redis_url)
-    from app.broker.ws_manager import ws_manager
-    await ws_manager.init_redis()
-    async with AsyncSessionLocal() as db:
-        restored = await restore_sessions(db, session_store)
-        if restored:
-            logger.info("Restored %d session(s) from DB", restored)
+        logger.info("lifespan: validate_config")
+        from app.config import validate_config
+        validate_config(settings)
+        logger.info("lifespan: init_telemetry")
+        init_telemetry()
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            FastAPIInstrumentor.instrument_app(app)
+        except Exception:
+            pass
+        logger.info("lifespan: init_db")
+        await init_db()
+        logger.info("lifespan: ensure_bootstrapped (admin_secret)")
+        from app.kms.admin_secret import ensure_bootstrapped
+        await ensure_bootstrapped()
+        logger.info("lifespan: init_redis")
+        await init_redis(settings.redis_url)
+        logger.info("lifespan: ws_manager.init_redis")
+        from app.broker.ws_manager import ws_manager
+        await ws_manager.init_redis()
+        logger.info("lifespan: restore_sessions")
+        async with AsyncSessionLocal() as db:
+            restored = await restore_sessions(db, session_store)
+            if restored:
+                logger.info("Restored %d session(s) from DB", restored)
+        logger.info("lifespan: startup steps complete")
+    except BaseException as exc:
+        logger.exception("lifespan: startup failed with %s: %s", type(exc).__name__, exc)
+        import sys; sys.stderr.flush(); sys.stdout.flush()
+        raise
 
     # ── Install SIGTERM/SIGINT handlers for graceful shutdown ────────────────
     # The handler flips _shutdown_event so:
