@@ -168,3 +168,8 @@ WS_QUEUE_DRAINED_COUNTER = meter.create_counter(
     description="Messages pushed to a client via queue-drain on WS connect/resume (M3).",
     unit="1",
 )
+MESSAGE_EXPIRED_COUNTER = meter.create_counter(
+    name="atn.message.expired",
+    description="Queued messages flipped to expired by the sweeper (M3).",
+    unit="1",
+)

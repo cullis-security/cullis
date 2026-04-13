@@ -66,6 +66,48 @@ async def _emit_closed_event(session: Session, reason: SessionCloseReason) -> No
             )
 
 
+async def _sweep_message_queue() -> int:
+    """Expire TTL-lapsed queued messages and notify their senders (M3.6).
+
+    Runs on each sweeper cycle. Isolated so DB or WS failures don't
+    kill the session sweep. Returns the number of messages expired.
+    """
+    try:
+        from app.broker import message_queue as mq
+        from app.broker.ws_manager import ws_manager
+        from app.db.database import AsyncSessionLocal
+        from app.telemetry_metrics import MESSAGE_EXPIRED_COUNTER
+    except Exception:
+        return 0
+
+    try:
+        async with AsyncSessionLocal() as db:
+            notices = await mq.sweep_expired(db)
+    except Exception:
+        _log.exception("sweeper: message queue sweep failed")
+        return 0
+
+    for n in notices:
+        payload = {
+            "type": "message_expired",
+            "session_id": n.session_id,
+            "msg_id": n.msg_id,
+            "recipient_agent_id": n.recipient_agent_id,
+            "reason": "ttl",
+        }
+        try:
+            await ws_manager.send_to_agent(n.sender_agent_id, payload)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug(
+                "message_expired notify failed for sender %s (msg %s): %s",
+                n.sender_agent_id, n.msg_id, exc,
+            )
+
+    if notices:
+        MESSAGE_EXPIRED_COUNTER.add(len(notices))
+    return len(notices)
+
+
 async def _persist_closed(session: Session) -> None:
     """Persist the close to the DB. Isolated so failures don't kill the sweep."""
     try:
@@ -119,6 +161,9 @@ async def sweep_once(
             session.session_id, reason.value,
             session.initiator_agent_id, session.target_agent_id,
         )
+
+    # M3.6 — also sweep TTL-expired queued messages (independent of session close).
+    await _sweep_message_queue()
 
     SESSION_SWEEPER_CYCLES_COUNTER.add(1, {"closed": str(closed)})
     return closed
