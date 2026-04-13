@@ -58,6 +58,12 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    # First-boot: no admin password set yet → go straight to /setup.
+    # No login form is shown until the operator has picked a password.
+    from app.kms.admin_secret import is_admin_password_user_set
+    if not await is_admin_password_user_set():
+        return RedirectResponse(url="/dashboard/setup", status_code=303)
+
     session = get_session(request)
     if session.logged_in:
         return RedirectResponse(url="/dashboard", status_code=303)
@@ -75,6 +81,12 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
     client_ip = request.client.host if request.client else "unknown"
     await rate_limiter.check(client_ip, "dashboard.login")
 
+    from app.kms.admin_secret import is_admin_password_user_set
+    # Guard: if the admin password hasn't been set yet, you can't sign in —
+    # the operator has to pick a password via /dashboard/setup first.
+    if not await is_admin_password_user_set():
+        return RedirectResponse(url="/dashboard/setup", status_code=303)
+
     form = await request.form()
     user_id = form.get("user_id", "").strip().lower()
     password = form.get("password", "")
@@ -82,46 +94,25 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
     if not user_id or not password:
         return templates.TemplateResponse("login.html", {
             "request": request, "error": "User and password are required.",
+            "admin_oidc_enabled": False,
         })
 
     # Check if it's the admin
     if user_id == "admin":
         from app.kms.admin_secret import (
             get_admin_secret_hash, verify_admin_password,
-            is_admin_password_user_set,
         )
         stored_hash = await get_admin_secret_hash()
-        user_set = await is_admin_password_user_set()
-
-        # Path 1 — password has been chosen via /dashboard/setup:
-        # only the stored bcrypt hash is trusted. The .env ADMIN_SECRET
-        # is no longer accepted (shake-out P0-06).
-        if user_set:
-            if verify_admin_password(password, stored_hash):
-                response = RedirectResponse(url="/dashboard", status_code=303)
-                set_session(response, role="admin")
-                return response
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": "Invalid credentials.",
-                "admin_oidc_enabled": False,
-            })
-
-        # Path 2 — first-boot bootstrap: no user-set password yet.
-        # Accept either the stored hash (bootstrapped in a previous
-        # deploy before this change) or the .env ADMIN_SECRET, then
-        # force the admin through /dashboard/setup before they can
-        # use the rest of the dashboard.
-        import hmac as _hmac
-        from app.config import get_settings
-        ok = False
-        if stored_hash and verify_admin_password(password, stored_hash):
-            ok = True
-        elif _hmac.compare_digest(password, get_settings().admin_secret):
-            ok = True
-        if ok:
-            response = RedirectResponse(url="/dashboard/setup", status_code=303)
+        # Only the stored bcrypt hash is trusted. The .env ADMIN_SECRET
+        # is not accepted as a dashboard credential (shake-out P0-06).
+        if verify_admin_password(password, stored_hash):
+            response = RedirectResponse(url="/dashboard", status_code=303)
             set_session(response, role="admin")
             return response
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": "Invalid credentials.",
+            "admin_oidc_enabled": False,
+        })
 
     # Otherwise try as org
     from app.registry.org_store import verify_org_credentials
@@ -133,6 +124,7 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
 
     return templates.TemplateResponse("login.html", {
         "request": request, "error": "Invalid credentials.",
+        "admin_oidc_enabled": False,
     })
 
 
@@ -151,39 +143,35 @@ async def logout(request: Request):
 # First-boot admin password setup (shake-out P0-06)
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Flow:
+# Flow (setup-first-no-login, matches mcp_proxy /register pattern):
 #   1. Fresh deploy: no hash, no user_set flag.
-#   2. Admin logs in with .env ADMIN_SECRET. login_submit issues a session
-#      but redirects straight to /dashboard/setup instead of /dashboard.
-#   3. Admin submits a new password + confirm on /dashboard/setup. The
-#      password is bcrypt-hashed, stored in the KMS backend, and the
-#      user_set flag is flipped to true.
-#   4. Future logins accept only the stored hash — .env ADMIN_SECRET is
-#      no longer a valid dashboard credential.
+#   2. Any hit to /dashboard/login → redirects to /dashboard/setup.
+#      The setup page is served without authentication.
+#   3. Admin submits password + confirm on /dashboard/setup. The password is
+#      bcrypt-hashed, stored in the KMS backend, and user_set is flipped true.
+#   4. Admin is redirected to /dashboard/login and signs in with the new
+#      password.  From this moment on .env ADMIN_SECRET is no longer a
+#      dashboard credential — only the stored hash is trusted.  (ADMIN_SECRET
+#      remains valid for the `x-admin-secret` HTTP API header used by
+#      onboarding/policy/org admin routes — see those routers.)
 #
-# MIN_ADMIN_PASSWORD_LENGTH mirrors the proxy dashboard's policy and is
-# intentionally lax: we enforce length only, no complexity rules (per
-# NIST SP 800-63B guidance and the P0-06 product directive).
+# MIN_ADMIN_PASSWORD_LENGTH is intentionally lax: length only, no complexity
+# rules, per NIST SP 800-63B guidance and the P0-06 product directive.
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
 
 
 @router.get("/setup", response_class=HTMLResponse)
 async def admin_setup_page(request: Request):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        return RedirectResponse(url="/dashboard", status_code=303)
-
+    # The setup page is public when user_set=false — this is the first
+    # landing spot on a fresh deploy, no session required.  Once the
+    # password has been picked, the page redirects callers to /login.
     from app.kms.admin_secret import is_admin_password_user_set
     if await is_admin_password_user_set():
-        # Already set up; send the admin to the normal change-password flow.
-        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
+        return RedirectResponse(url="/dashboard/login", status_code=303)
 
     return templates.TemplateResponse("admin_setup.html", {
         "request": request,
-        "csrf_token": session.csrf_token,
         "min_length": MIN_ADMIN_PASSWORD_LENGTH,
         "error": None,
     })
@@ -191,26 +179,15 @@ async def admin_setup_page(request: Request):
 
 @router.post("/setup", response_class=HTMLResponse)
 async def admin_setup_submit(request: Request, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        return RedirectResponse(url="/dashboard", status_code=303)
-
     from app.kms.admin_secret import (
         is_admin_password_user_set,
         set_admin_secret_hash,
         mark_admin_password_user_set,
     )
+    # State guard: the setup form is one-shot.  Once a password has been
+    # chosen, further POSTs bounce to /login — prevents replay/overwrite.
     if await is_admin_password_user_set():
-        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
-
-    if not await verify_csrf(request, session):
-        return templates.TemplateResponse("admin_setup.html", {
-            "request": request, "csrf_token": session.csrf_token,
-            "min_length": MIN_ADMIN_PASSWORD_LENGTH,
-            "error": "Invalid CSRF token.",
-        }, status_code=400)
+        return RedirectResponse(url="/dashboard/login", status_code=303)
 
     form = await request.form()
     password = str(form.get("password", ""))
@@ -218,7 +195,7 @@ async def admin_setup_submit(request: Request, db: AsyncSession = Depends(get_db
 
     def _err(msg: str, status: int = 400):
         return templates.TemplateResponse("admin_setup.html", {
-            "request": request, "csrf_token": session.csrf_token,
+            "request": request,
             "min_length": MIN_ADMIN_PASSWORD_LENGTH, "error": msg,
         }, status_code=status)
 
@@ -247,96 +224,8 @@ async def admin_setup_submit(request: Request, db: AsyncSession = Depends(get_db
     await log_event(db, "admin.first_boot_password_set", "ok",
                     details={"source": "dashboard", "actor": "admin"})
 
-    # Force a fresh sign-in with the newly chosen password, so the
-    # existing session (issued from the .env fallback) cannot be
-    # reused to skip the setup wall on any future state changes.
-    response = RedirectResponse(url="/dashboard/login", status_code=303)
-    clear_session(response)
-    return response
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public Organization Registration (no login required)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/register", response_class=HTMLResponse)
-async def register_page(request: Request):
-    return templates.TemplateResponse("register.html", {
-        "request": request, "error": None, "success": None, "form": {},
-    })
-
-
-@router.post("/register", response_class=HTMLResponse)
-async def register_submit(request: Request, db: AsyncSession = Depends(get_db)):
-    from app.rate_limit.limiter import rate_limiter
-    client_ip = request.client.host if request.client else "unknown"
-    await rate_limiter.check(client_ip, "dashboard.login")
-
-    form_data = await request.form()
-    org_id = form_data.get("org_id", "").strip().lower()
-    display_name = form_data.get("display_name", "").strip()
-    secret = form_data.get("secret", "")
-    secret_confirm = form_data.get("secret_confirm", "")
-
-    invite_code = form_data.get("invite_token", "").strip()
-    form = {"org_id": org_id, "display_name": display_name}
-
-    if not org_id or not display_name or not secret:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": "All fields are required.", "success": None,
-        })
-
-    # Validate invite token — required to prevent unsolicited registrations
-    if not invite_code:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": "An invite token is required to register.", "success": None,
-        })
-    from app.onboarding.invite_store import validate_and_consume
-    invite_record = await validate_and_consume(db, invite_code, org_id)
-    if not invite_record:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": "Invalid or expired invite token.", "success": None,
-        })
-
-    if secret != secret_confirm:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": "Passwords do not match.", "success": None,
-        })
-
-    if len(secret) < 6:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": "Password must be at least 6 characters.", "success": None,
-        })
-
-    id_err = _validate_id(org_id, "Organization ID")
-    if id_err:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": id_err, "success": None,
-        })
-
-    existing = await get_org_by_id(db, org_id)
-    if existing:
-        return templates.TemplateResponse("register.html", {
-            "request": request, "form": form,
-            "error": f"Organization '{org_id}' already exists.", "success": None,
-        })
-
-    await register_org(db, org_id=org_id, display_name=display_name,
-                       secret=secret, metadata={"source": "self-registration"},
-                       status="pending")
-    await log_event(db, "onboarding.self_registration", "ok", org_id=org_id,
-                    details={"display_name": display_name, "source": "dashboard"})
-
-    return templates.TemplateResponse("register.html", {
-        "request": request, "form": {}, "error": None,
-        "success": org_id,
-    })
+    # Admin now signs in with the password they just chose.
+    return RedirectResponse(url="/dashboard/login", status_code=303)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1011,12 +900,8 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
     if isinstance(session, RedirectResponse):
         return session
 
-    # Shake-out P0-06: an admin who logged in via the .env bootstrap
-    # credential must set a real password before reaching the overview.
-    if session.is_admin:
-        from app.kms.admin_secret import is_admin_password_user_set
-        if not await is_admin_password_user_set():
-            return RedirectResponse(url="/dashboard/setup", status_code=303)
+    # Note: the /setup-before-login invariant is enforced at /dashboard/login
+    # now — any logged-in session implies user_set=true, so no redirect here.
 
     org_filter = session.org_id  # None for admin = all
 

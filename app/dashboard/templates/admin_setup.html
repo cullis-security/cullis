@@ -4,51 +4,24 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Set admin password — Cullis Trust Broker</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/tailwind.css">
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        surface: { 950:'#0a0f1a', 900:'#111827', 800:'#1a1f2e' },
-                        accent:  { 400:'#00e5c7', 500:'#00c9ae' },
-                    }
-                }
-            }
-        }
-    </script>
     <style>
-        body { font-family: 'DM Sans', sans-serif; background: #0a0f1a; }
-        @keyframes fade-up {
-            from { opacity: 0; transform: translateY(12px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
-        .fade-up { animation: fade-up 0.5s ease-out; }
-        .delay-100 { animation-delay: 0.08s; }
-        .delay-200 { animation-delay: 0.16s; }
-        @keyframes glow-pulse {
-            0%, 100% { opacity: 0.45; }
-            50%      { opacity: 0.8; }
-        }
-        .glow-pulse { animation: glow-pulse 4s ease-in-out infinite; }
-        input:focus {
-            outline: none;
-            border-color: #00e5c7;
-            box-shadow: 0 0 0 2px rgba(0, 229, 199, 0.15);
-        }
         .match-ok  { color: #00e5c7; }
         .match-bad { color: #f87171; }
     </style>
 </head>
-<body class="h-full flex items-center justify-center py-12">
+<body class="h-full flex items-center justify-center">
 
-<div class="glow-pulse" style="position:fixed;top:50%;left:50%;width:720px;height:720px;transform:translate(-50%,-50%);background:radial-gradient(circle, rgba(0,229,199,0.06) 0%, rgba(14,165,233,0.02) 40%, transparent 70%);pointer-events:none;z-index:0;"></div>
-<div style="position:fixed;inset:0;background-image:linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);background-size:48px 48px;pointer-events:none;z-index:0;"></div>
+<!-- Background radial glow -->
+<div class="glow-pulse" style="position:fixed;top:50%;left:50%;width:700px;height:700px;transform:translate(-50%,-50%);background:radial-gradient(circle, rgba(0,229,199,0.05) 0%, rgba(14,165,233,0.02) 40%, transparent 70%);pointer-events:none;z-index:0;"></div>
 
-<div class="w-full max-w-md relative z-10 px-6">
+<!-- Grid pattern overlay -->
+<div style="position:fixed;inset:0;background-image:linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);background-size:48px 48px;pointer-events:none;z-index:0;"></div>
 
-    <div class="text-center mb-10 fade-up">
+<div class="w-full max-w-md relative z-10 fade-up">
+    <!-- Brand -->
+    <div class="text-center mb-10">
         <div class="inline-flex items-center justify-center gap-3 mb-3">
             <img src="/static/cullis.svg" alt="Cullis" style="height: 48px; width: auto; filter: drop-shadow(0 0 18px rgba(0,229,199,0.3));">
         </div>
@@ -59,72 +32,54 @@
     </div>
 
     {% if error %}
-    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400 fade-up delay-100">
-        {{ error }}
-    </div>
+    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
     {% endif %}
 
-    <div class="bg-surface-900/60 border border-gray-800/50 rounded-lg p-7 backdrop-blur-sm fade-up delay-100"
-         style="box-shadow: 0 0 60px rgba(0,229,199,0.04), 0 8px 32px rgba(0,0,0,0.4);">
-
-        <div class="mb-6">
-            <h2 class="text-white text-base font-semibold" style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.06em;">
+    <!-- Setup card -->
+    <div class="bg-surface-900/60 border border-gray-800/50 rounded-lg p-6 backdrop-blur-sm" style="box-shadow: 0 0 40px rgba(0,229,199,0.03);">
+        <div class="mb-5">
+            <h2 class="text-white text-sm font-semibold uppercase tracking-wider" style="font-family: 'Chakra Petch', sans-serif;">
                 Set the admin password
             </h2>
-            <p class="text-xs text-gray-500 mt-1 leading-relaxed">
-                First-time setup. You just signed in with the bootstrap credential from
-                <span class="text-gray-300" style="font-family: 'JetBrains Mono', monospace;">.env</span>.
-                Pick a real password &mdash; it replaces the bootstrap secret for all future logins.
-                Username is fixed: <span class="text-gray-300" style="font-family: 'JetBrains Mono', monospace;">admin</span>.
+            <p class="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
+                First-time setup. Choose a password for the
+                <span class="text-gray-300 font-mono">admin</span> account. This password
+                unlocks the dashboard from now on.
             </p>
         </div>
 
         <form method="post" action="/dashboard/setup" class="space-y-5" id="setup-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div>
-                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
-                    New password
-                </label>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Password</label>
                 <input type="password" name="password" id="password" required autofocus autocomplete="new-password"
                        minlength="{{ min_length }}"
-                       placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
-                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-700 transition-all"
-                       style="font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em;">
+                       placeholder="Enter a new password"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 transition-all font-mono">
                 <p class="text-[10px] text-gray-600 mt-1.5">
-                    Minimum {{ min_length }} characters. Stored as a bcrypt hash &mdash; never in plain text.
+                    Minimum {{ min_length }} characters. Stored as a bcrypt hash — never in plain text.
                 </p>
             </div>
-
             <div>
-                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
-                    Confirm password
-                </label>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Confirm Password</label>
                 <input type="password" name="password_confirm" id="password_confirm" required autocomplete="new-password"
                        minlength="{{ min_length }}"
-                       placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
-                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-700 transition-all"
-                       style="font-family: 'JetBrains Mono', monospace; letter-spacing: 0.05em;">
+                       placeholder="Re-enter the password"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 transition-all font-mono">
                 <p id="match-hint" class="text-[10px] text-gray-600 mt-1.5">&nbsp;</p>
             </div>
-
             <button type="submit"
                     class="w-full px-4 py-3 text-sm font-semibold rounded transition-all"
-                    style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.1em; text-transform: uppercase;"
-                    onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 32px rgba(0,229,199,0.25)'; this.style.transform='translateY(-1px)'"
+                    style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.08em; text-transform: uppercase;"
+                    onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 30px rgba(0,229,199,0.2)'; this.style.transform='translateY(-1px)'"
                     onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'; this.style.transform='none'">
-                Save &amp; continue &rarr;
+                Set Password
             </button>
         </form>
     </div>
 
-    <div class="mt-8 text-center fade-up delay-200">
-        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-700/40 bg-amber-900/10">
-            <span class="inline-block w-1.5 h-1.5 rounded-full" style="background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.7);"></span>
-            <span class="text-[10px] uppercase tracking-[0.18em] text-amber-500/80" style="font-family: 'JetBrains Mono', monospace;">
-                First boot &middot; bootstrap credential in use
-            </span>
-        </div>
-    </div>
+    <p class="text-center text-[10px] text-gray-700 mt-8 uppercase tracking-widest">
+        Cullis Agent Trust Network &middot; First Boot
+    </p>
 </div>
 
 <script>

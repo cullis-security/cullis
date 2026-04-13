@@ -142,6 +142,12 @@ services:
       # before ./smoke.sh up) to generate the demo broker CA with ECDSA P-256
       # instead of the default RSA-4096. Used by the smoke-all-ecc CI variant.
       PKI_KEY_TYPE:      "${PKI_KEY_TYPE:-rsa}"
+      # Pre-seed the admin password into Vault so the broker comes up
+      # already past the /dashboard/setup wall. Keeps the smoke single-shot
+      # (no interactive password pick) after the setup-first-no-login flow.
+      # Long-term follow-up: expose a CLI/API that bypasses the UI setup
+      # for CI/unattended deploys; for now we seed the backend directly.
+      SEED_BROKER_ADMIN_PASSWORD: "demo-admin-secret-change-me"
     volumes:
       - broker-certs:/broker-certs
       - vault-token:/vault-token:ro

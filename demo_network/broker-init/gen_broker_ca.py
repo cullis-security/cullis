@@ -59,12 +59,23 @@ def _maybe_push_to_vault(priv_pem: bytes, pub_pem: bytes) -> None:
     import time
 
     url = f"{vault_addr.rstrip('/')}/v1/{secret_path}"
-    body = {
-        "data": {
-            "private_key_pem": priv_pem.decode(),
-            "public_key_pem":  pub_pem.decode(),
-        }
+    data_fields = {
+        "private_key_pem": priv_pem.decode(),
+        "public_key_pem":  pub_pem.decode(),
     }
+    # Pre-seed the admin password so the broker skips /dashboard/setup on
+    # first boot. The smoke logs in programmatically with curl — this keeps
+    # it single-shot after the setup-first-no-login flow landed. Tied to
+    # ADMIN_SECRET via an env var so demo/prod deployments stay aligned.
+    seed_pw = os.environ.get("SEED_BROKER_ADMIN_PASSWORD", "")
+    if seed_pw:
+        import bcrypt
+        pw_hash = bcrypt.hashpw(
+            seed_pw.encode(), bcrypt.gensalt(rounds=10)
+        ).decode()
+        data_fields["admin_secret_hash"] = pw_hash
+        data_fields["admin_password_user_set"] = "true"
+    body = {"data": data_fields}
     # Respect a caller-supplied CA bundle (test CA + Vault CA merged).
     ca_bundle = os.environ.get("SSL_CERT_FILE") or True
     last_exc: Exception | None = None
