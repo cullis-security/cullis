@@ -8,7 +8,7 @@
 #   ./deploy_proxy.sh --standalone
 #
 # What this changes vs the base compose:
-#   - Swaps the external "agent-trust_default" network (same-host assumption)
+#   - Swaps the external "cullis-broker_default" network (same-host assumption)
 #     for an internal bridge, so the proxy can start without the broker being
 #     on the same docker host.
 #   - Expects MCP_PROXY_BROKER_URL to be the broker's PUBLIC reachable URL

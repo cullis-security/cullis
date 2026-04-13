@@ -161,10 +161,12 @@ if [[ "$ACTION" == "rebuild" ]]; then
 fi
 
 # If shared-network, make sure the broker network exists; otherwise compose
-# will fail with an obtuse "network agent-trust_default not found".
+# will fail with an obtuse "network cullis-broker_default not found".
+# Network name derives from the broker's COMPOSE_PROJECT_NAME ("cullis-broker"
+# pinned in deploy_broker.sh per shake-out P0-03).
 if [[ $STANDALONE -eq 0 ]]; then
-    if ! docker network inspect agent-trust_default >/dev/null 2>&1; then
-        die "Network 'agent-trust_default' not found. Either start the broker first (./deploy_broker.sh) or rerun with --standalone for a remote broker."
+    if ! docker network inspect cullis-broker_default >/dev/null 2>&1; then
+        die "Network 'cullis-broker_default' not found. Either start the broker first (./deploy_broker.sh --dev) or rerun with --standalone for a remote broker."
     fi
 fi
 

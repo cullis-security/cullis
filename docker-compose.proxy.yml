@@ -14,8 +14,10 @@
 #   ./deploy_proxy.sh --prod                # fail-fast on insecure defaults
 #
 # Prerequisites (shared mode):
-#   - Broker running on this host (docker compose up -d or ./deploy_broker.sh)
-#   - The network "agent-trust_default" must exist
+#   - Broker running on this host (./deploy_broker.sh --dev or --prod-*)
+#   - The network "cullis-broker_default" must exist (created by the
+#     broker compose project; name derives from COMPOSE_PROJECT_NAME
+#     which deploy_broker.sh pins to "cullis-broker")
 # =============================================================================
 
 services:
@@ -71,7 +73,7 @@ services:
 networks:
   broker_net:
     external: true
-    name: agent-trust_default
+    name: cullis-broker_default
 
 volumes:
   mcp_proxy_data:
