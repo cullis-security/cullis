@@ -102,10 +102,18 @@ async def _count_rows(agent_id: str, status: int | None = None) -> int:
 def test_m3_offline_enqueue_then_drain_then_ack():
     """End-to-end happy path — the flow that justifies M3 existing."""
     # conftest disables drain/sweep via env to keep test_ws sane; this
-    # e2e test deliberately needs them enabled.
+    # e2e test deliberately needs them enabled. Restore the guard at the
+    # end of the test so subsequent tests (test_ws.*) keep their isolation.
     import os as _os
-    _os.environ.pop("CULLIS_DISABLE_QUEUE_OPS", None)
+    _prev = _os.environ.pop("CULLIS_DISABLE_QUEUE_OPS", None)
+    try:
+        _run_m3_e2e_body()
+    finally:
+        if _prev is not None:
+            _os.environ["CULLIS_DISABLE_QUEUE_OPS"] = _prev
 
+
+def _run_m3_e2e_body():
     dpop_a = DPoPHelper()
     dpop_b = DPoPHelper()
     org_a, agent_a = "m3e2e-a", "m3e2e-a::sender"
