@@ -31,21 +31,26 @@ jobs:
     # path. The "ec" entry boots the same stack with broker CA, org CAs and
     # agent certs all ECDSA-P256 — proves the all-ECC claim on every PR
     # touching crypto-adjacent code.
-    name: demo_network smoke (${{ matrix.key_type }}, ${{ matrix.proxy_db }})
+    # Job name format kept stable for the branch-protection required-check
+    # contract:
+    #   - "demo_network smoke (rsa)"           — golden path, sqlite (REQUIRED)
+    #   - "demo_network smoke (ec)"            — all-ECC, sqlite (REQUIRED)
+    #   - "demo_network smoke (rsa, postgres)" — ADR-001 Phase 1.4, additive
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # rsa+sqlite is the canonical golden path. ec+sqlite proves the
-        # all-ECC PKI claim. rsa+postgres exercises the ADR-001 Phase 1.4
-        # Postgres backend without inflating the matrix to 4 legs.
         include:
-          - key_type: rsa
+          - name: "demo_network smoke (rsa)"
+            key_type: rsa
             proxy_db: sqlite
-          - key_type: ec
+          - name: "demo_network smoke (ec)"
+            key_type: ec
             proxy_db: sqlite
-          - key_type: rsa
+          - name: "demo_network smoke (rsa, postgres)"
+            key_type: rsa
             proxy_db: postgres
 
     steps:
