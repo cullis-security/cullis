@@ -59,8 +59,6 @@ agent.sh
 CLAUDE.md
 CHANGELOG.md
 .claude/
-deploy_broker.sh
-deploy_proxy.sh
 enterprise-lab/
 org-node/
 backups/
@@ -75,3 +73,6 @@ postgresql+asyncpg:/
 
 # Nginx proxy (TLS private keys, per-VM configs)
 nginx-proxy/
+
+# Manual shake-out session notes (local, not published)
+shake-out-notes.md
