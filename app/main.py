@@ -97,24 +97,47 @@ async def _drain_watcher() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.config import validate_config
-    validate_config(settings)
-    init_telemetry()
+    # Debug: logger.info is dropped because configure_logging leaves the
+    # agent_trust logger at default WARNING in text mode. Use print to
+    # stderr with explicit flush so every step is visible in kubectl logs.
+    import sys
+    import traceback as _tb
+    def _step(msg: str) -> None:
+        print(f"LIFESPAN: {msg}", file=sys.stderr, flush=True)
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        FastAPIInstrumentor.instrument_app(app)
-    except Exception:
-        pass
-    await init_db()
-    from app.kms.admin_secret import ensure_bootstrapped
-    await ensure_bootstrapped()
-    await init_redis(settings.redis_url)
-    from app.broker.ws_manager import ws_manager
-    await ws_manager.init_redis()
-    async with AsyncSessionLocal() as db:
-        restored = await restore_sessions(db, session_store)
-        if restored:
-            logger.info("Restored %d session(s) from DB", restored)
+        _step("validate_config")
+        from app.config import validate_config
+        validate_config(settings)
+        _step("init_telemetry")
+        init_telemetry()
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            FastAPIInstrumentor.instrument_app(app)
+        except Exception:
+            pass
+        _step("init_db")
+        await init_db()
+        _step("ensure_bootstrapped (admin_secret)")
+        from app.kms.admin_secret import ensure_bootstrapped
+        await ensure_bootstrapped()
+        _step("init_redis")
+        await init_redis(settings.redis_url)
+        _step("ws_manager.init_redis")
+        from app.broker.ws_manager import ws_manager
+        await ws_manager.init_redis()
+        _step("restore_sessions")
+        async with AsyncSessionLocal() as db:
+            restored = await restore_sessions(db, session_store)
+            if restored:
+                logger.info("Restored %d session(s) from DB", restored)
+        _step("startup steps complete")
+    except BaseException as exc:
+        print(
+            f"LIFESPAN FAILED: {type(exc).__name__}: {exc}\n"
+            f"{_tb.format_exc()}",
+            file=sys.stderr, flush=True,
+        )
+        raise
 
     # ── Install SIGTERM/SIGINT handlers for graceful shutdown ────────────────
     # The handler flips _shutdown_event so:
@@ -351,14 +374,23 @@ async def readyz():
 
     checks: dict[str, str] = {}
 
+    def _fail(check: str, exc: Exception) -> JSONResponse:
+        checks[check] = f"error: {exc}"
+        # Surface on stderr so `kubectl logs` shows why /readyz went 503.
+        # Kubelet probes don't log response bodies, so without this we have
+        # no way to diagnose a stuck deploy from the cluster side.
+        import sys
+        print(f"READYZ FAIL [{check}]: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+
     # Database
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         checks["database"] = "ok"
     except Exception as exc:
-        checks["database"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("database", exc)
 
     # Redis (optional — skip if not configured)
     try:
@@ -370,8 +402,7 @@ async def readyz():
         else:
             checks["redis"] = "not_configured"
     except Exception as exc:
-        checks["redis"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("redis", exc)
 
     # KMS
     try:
@@ -380,8 +411,7 @@ async def readyz():
         await kms.get_broker_public_key_pem()
         checks["kms"] = "ok"
     except Exception as exc:
-        checks["kms"] = f"error: {exc}"
-        return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
+        return _fail("kms", exc)
 
     return {"status": "ready", "checks": checks}
 

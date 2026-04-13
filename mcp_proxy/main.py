@@ -308,18 +308,26 @@ async def readyz():
             {"status": "not_ready", "checks": checks}, status_code=503,
         )
 
-    # JWKS cache freshness
+    # JWKS cache freshness — distinguish "never fetched" from "stale".
+    # A proxy that has never talked to the broker (e.g. first boot in
+    # a fresh cluster, broker not up yet) should NOT fail readyz: it
+    # can still serve egress endpoints and will fetch JWKS lazily when
+    # an ingress request needs it. Only "was fresh, now stale" is a
+    # real readiness problem worth propagating to the load balancer.
     jwks = get_jwks_client()
     if jwks is not None and (jwks._jwks_url or jwks._override_path):
-        age = time.time() - jwks._last_fetch if jwks._last_fetch > 0 else float("inf")
-        max_age = get_settings().jwks_refresh_interval_seconds * 2
-        if age <= max_age:
-            checks["jwks_cache"] = "ok"
+        if jwks._last_fetch == 0:
+            checks["jwks_cache"] = "initializing"
         else:
-            checks["jwks_cache"] = f"stale (age={age:.0f}s, max={max_age}s)"
-            return JSONResponse(
-                {"status": "not_ready", "checks": checks}, status_code=503,
-            )
+            age = time.time() - jwks._last_fetch
+            max_age = get_settings().jwks_refresh_interval_seconds * 2
+            if age <= max_age:
+                checks["jwks_cache"] = "ok"
+            else:
+                checks["jwks_cache"] = f"stale (age={age:.0f}s, max={max_age}s)"
+                return JSONResponse(
+                    {"status": "not_ready", "checks": checks}, status_code=503,
+                )
     else:
         checks["jwks_cache"] = "not_configured"
 
