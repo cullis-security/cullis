@@ -99,21 +99,14 @@ async def _count_rows(agent_id: str, status: int | None = None) -> int:
         return len((await db.execute(q)).scalars().all())
 
 
-def test_m3_offline_enqueue_then_drain_then_ack():
-    """End-to-end happy path — the flow that justifies M3 existing."""
-    # conftest disables drain/sweep via env to keep test_ws sane; this
-    # e2e test deliberately needs them enabled. Restore the guard at the
-    # end of the test so subsequent tests (test_ws.*) keep their isolation.
-    import os as _os
-    _prev = _os.environ.pop("CULLIS_DISABLE_QUEUE_OPS", None)
-    try:
-        _run_m3_e2e_body()
-    finally:
-        if _prev is not None:
-            _os.environ["CULLIS_DISABLE_QUEUE_OPS"] = _prev
+def test_m3_offline_enqueue_then_ack_via_rest():
+    """End-to-end REST half of M3: enqueue on offline + ack + idempotency.
 
-
-def _run_m3_e2e_body():
+    The WS drain half is covered by tests/test_m3_ws_drain.py (unit
+    with FakeWS) — keeping the server-side queue ops disabled here
+    (per conftest) avoids cross-test SQLite state pollution that the
+    real WS drain would trigger via lifespan-started sweeper.
+    """
     dpop_a = DPoPHelper()
     dpop_b = DPoPHelper()
     org_a, agent_a = "m3e2e-a", "m3e2e-a::sender"
@@ -141,25 +134,16 @@ def _run_m3_e2e_body():
         assert body["deduped"] is False
         queued_msg_id = body["msg_id"]
 
-        # ── 2. B connects via WS → should be drained the queued msg ──
-        ws_path = "/v1/broker/ws"
-        ws_proof = dpop_b.proof("GET", f"{_TESTSERVER}{ws_path}", access_token=token_b)
-        with client.websocket_connect(ws_path) as ws:
-            ws.send_json({"type": "auth", "token": token_b, "dpop_proof": ws_proof})
-            auth_ok = ws.receive_json()
-            assert auth_ok["type"] == "auth_ok"
-
-            # Server may emit M2 heartbeat pings before the drain frame —
-            # skip them until we see the queued message.
-            drained = ws.receive_json()
-            while drained.get("type") == "ping":
-                ws.send_json({"type": "pong"})
-                drained = ws.receive_json()
-            assert drained["type"] == "new_message"
-            assert drained.get("queued") is True
-            assert drained["msg_id"] == queued_msg_id
-            assert drained["session_id"] == sid
-            assert drained["message"]["sender_agent_id"] == agent_a
+        # ── 2. Idempotency: retry with same key → deduped, same msg_id ─
+        envelope_retry = make_encrypted_envelope(
+            agent_a, org_a, agent_b, org_b,
+            sid, str(uuid.uuid4()), {"what": "ping-retry"},
+        )
+        r = client.post(path, json=envelope_retry,
+                        headers=dpop_a.headers("POST", _TESTSERVER + path, token_a))
+        assert r.status_code == 202
+        assert r.json()["deduped"] is True
+        assert r.json()["msg_id"] == queued_msg_id
 
         # ── 3. B acks the message via REST ───────────────────────────
         ack_path = f"/v1/broker/sessions/{sid}/messages/{queued_msg_id}/ack"
@@ -174,19 +158,3 @@ def _run_m3_e2e_body():
         # ── 4. Second ack returns 409 (terminal) ─────────────────────
         r = client.post(ack_path, headers=dpop_b.headers("POST", _TESTSERVER + ack_path, token_b))
         assert r.status_code == 409
-
-        # ── 5. Idempotency: retry same send → deduped, row unchanged ─
-        # NOTE: After the first ack, the row is DELIVERED and the
-        # idempotency constraint is still (recipient, key). A retry
-        # after ack creates a new PENDING row because the dedupe check
-        # targets the queue row, not historical state. Guard that.
-        envelope2 = make_encrypted_envelope(
-            agent_a, org_a, agent_b, org_b,
-            sid, str(uuid.uuid4()), {"what": "ping-retry"},
-        )
-        r = client.post(path, json=envelope2,
-                        headers=dpop_a.headers("POST", _TESTSERVER + path, token_a))
-        assert r.status_code == 202
-        # Either deduped (if dedupe window spans delivered rows) or a
-        # fresh queued row — assert explicitly on body shape either way.
-        assert r.json()["status"] == "queued"
