@@ -153,3 +153,13 @@ POLICY_DUAL_ORG_MISMATCH_COUNTER = meter.create_counter(
     ),
     unit="1",
 )
+MESSAGE_QUEUED_COUNTER = meter.create_counter(
+    name="atn.message.queued",
+    description="Messages enqueued because the recipient was not connected (M3).",
+    unit="1",
+)
+MESSAGE_QUEUE_DEDUPED_COUNTER = meter.create_counter(
+    name="atn.message.queue_deduped",
+    description="Enqueue attempts collapsed by idempotency key (M3).",
+    unit="1",
+)
