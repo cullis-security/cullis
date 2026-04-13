@@ -10,9 +10,12 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from mcp_proxy.config import get_settings, validate_config
@@ -178,12 +181,16 @@ async def security_headers(request: Request, call_next):
         from mcp_proxy.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
 
-    # CSP on dashboard pages
-    if request.url.path.startswith("/proxy"):
+    # CSP on dashboard pages.
+    # Shake-out P0-09 + P1-10: htmx and Tailwind are now bundled under /static,
+    # so cdn.tailwindcss.com and unpkg.com are no longer whitelisted.
+    # Google Fonts is still allowed for the webfonts link (consider bundling next).
+    if request.url.path.startswith("/proxy") or request.url.path.startswith("/static"):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'"
@@ -274,6 +281,13 @@ app.include_router(egress_router)
 
 from mcp_proxy.dashboard.router import router as dashboard_router
 app.include_router(dashboard_router)
+
+# Static assets for the dashboard (compiled Tailwind CSS + bundled htmx).
+# Shake-out P0-09 + P1-10: serve /static/css/tailwind.css and /static/vendor/htmx.min.js
+# locally instead of pulling from cdn.tailwindcss.com / unpkg.com.
+_static_dir = Path(__file__).parent / "dashboard" / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -4,32 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Join — Cullis</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/tailwind.css">
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        surface: { 950:'#0a0f1a', 900:'#111827', 800:'#1a1f2e' },
-                        accent: { 400:'#00e5c7', 500:'#00c9ae' },
-                    }
-                }
-            }
-        }
-    </script>
-    <style>
-        body { font-family: 'DM Sans', sans-serif; background: #0a0f1a; }
-        @keyframes fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-        .fade-up { animation: fade-up 0.5s ease-out; }
-        @keyframes glow-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 0.8; } }
-        .glow-pulse { animation: glow-pulse 4s ease-in-out infinite; }
-        input:focus {
-            outline: none;
-            border-color: #00e5c7;
-            box-shadow: 0 0 0 2px rgba(0, 229, 199, 0.15);
-        }
-    </style>
 </head>
 <body class="h-full flex items-center justify-center">
 

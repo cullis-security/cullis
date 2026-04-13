@@ -27,6 +27,27 @@ pytest tests/ -v
 python scripts/demo/sender.py
 ```
 
+## Frontend Assets (Dashboard)
+
+The broker and proxy dashboards ship compiled Tailwind CSS and a bundled copy
+of htmx — no CDN dependency. Generated CSS is `.gitignore`'d; you need to
+build it once before running the broker outside Docker:
+
+```bash
+# Uses the Tailwind standalone CLI (no Node/npm install required).
+./scripts/build_frontend.sh
+# or with watch mode while iterating on templates:
+./scripts/build_frontend.sh --watch
+```
+
+The Docker images (`Dockerfile`, `mcp_proxy/Dockerfile`) run the build in a
+dedicated stage, so `./deploy_broker.sh`, `./deploy_demo.sh`, and
+`./deploy_proxy.sh` already produce the CSS automatically.
+
+Templates should rely on Tailwind utility classes only — inline `tailwind.config = {...}`
+blocks are not supported anymore (they required the runtime CDN build).
+Update `tailwind.config.js` at the repo root if you need new theme tokens.
+
 ## Code Conventions
 
 - **Async:** All DB and HTTP code uses async/await
