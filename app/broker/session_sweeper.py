@@ -78,7 +78,7 @@ async def _sweep_message_queue() -> int:
     by ``tests/test_m3_sweeper_ttl.py`` calling this function in
     isolation, so we don't lose coverage.
     """
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if os.environ.get("CULLIS_DISABLE_QUEUE_OPS") == "1":
         return 0
 
     try:

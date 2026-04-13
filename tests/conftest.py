@@ -1,5 +1,13 @@
 import os
 
+# M3.6 — disable broker queue ops invoked from lifespan/WS-connect paths.
+# The in-memory SQLite StaticPool used in tests cannot sustain the
+# accumulated TestClient lifecycles and would deadlock the suite around
+# test_ws. Dedicated unit tests in tests/test_m3_* clear this var to
+# exercise the helpers directly.
+os.environ["CULLIS_DISABLE_QUEUE_OPS"] = "1"
+
+
 # ── Test environment overrides ─────────────────────────────────────────────
 # Pydantic Settings reads .env after OS env vars. We force every variable
 # that would otherwise leak from a developer's local .env into the test

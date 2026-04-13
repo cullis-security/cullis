@@ -46,7 +46,7 @@ async def test_sweep_message_queue_expires_and_notifies(monkeypatch):
     # Bypass the under-pytest skip guard added in session_sweeper to avoid
     # SQLite StaticPool contention — this test exercises the function
     # deliberately, so we want it to run.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("CULLIS_DISABLE_QUEUE_OPS", raising=False)
 
     captured: list[tuple[str, dict]] = []
 
@@ -84,14 +84,14 @@ async def test_sweep_message_queue_expires_and_notifies(monkeypatch):
 
 
 async def test_sweep_message_queue_noop_when_empty(monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("CULLIS_DISABLE_QUEUE_OPS", raising=False)
     from app.broker.session_sweeper import _sweep_message_queue
     n = await _sweep_message_queue()
     assert n == 0
 
 
 async def test_sweep_message_queue_tolerates_ws_failures(monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("CULLIS_DISABLE_QUEUE_OPS", raising=False)
 
     async def fake_send(*_args, **_kwargs):
         raise RuntimeError("boom")

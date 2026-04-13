@@ -962,6 +962,13 @@ async def _drain_queue_for_agent(
     the frames, it does not mutate state. Delivered frames carry
     ``queued: true`` and ``msg_id`` so the SDK knows to ack.
     """
+    import os as _os
+    if _os.environ.get("CULLIS_DISABLE_QUEUE_OPS") == "1":
+        # Set by tests/conftest.py to avoid SQLite StaticPool contention
+        # with test_ws TestClient lifecycles. Drain logic is covered by
+        # tests/test_m3_ws_drain.py with a FakeWS + isolated DB.
+        return 0
+
     from app.broker import message_queue as mq
     from app.telemetry_metrics import WS_QUEUE_DRAINED_COUNTER
     import json as _json_inner

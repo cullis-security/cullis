@@ -38,6 +38,13 @@ async def db_session():
     await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _enable_drain(monkeypatch):
+    """conftest.py disables drain via CULLIS_DISABLE_QUEUE_OPS to keep
+    test_ws sane; clear it here so the unit tests can exercise drain."""
+    monkeypatch.delenv("CULLIS_DISABLE_QUEUE_OPS", raising=False)
+
+
 @pytest.mark.asyncio
 async def test_drain_pushes_pending_in_seq_order(db_session):
     payload_b = {"iv": "aa", "ciphertext": "bb"}
