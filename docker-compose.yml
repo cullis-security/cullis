@@ -28,6 +28,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    restart: unless-stopped
 
   postgres:
     image: postgres:16-alpine
@@ -42,6 +43,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -50,6 +52,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   jaeger:
     image: jaegertracing/all-in-one:1.58
@@ -58,6 +61,7 @@ services:
       - "4317:4317"
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
 
   # Mock PDPs removed — each org runs its own PDP via the MCP Proxy.
   # See docker-compose.proxy.yml for the built-in PDP.
@@ -121,6 +125,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 15s
+    restart: unless-stopped
 
 volumes:
   postgres_data:

@@ -73,6 +73,7 @@ ARG_DOMAIN=""
 ARG_EMAIL=""
 ARG_CERT=""
 ARG_KEY=""
+ACTION="up"              # "up" | "down" | "rebuild"
 
 print_help() {
     cat <<EOF
@@ -86,11 +87,17 @@ Profiles (mutually exclusive):
   --prod-byoca                Production with Bring Your Own CA cert
                               Requires --domain, --cert, --key
 
+Lifecycle actions (mutually exclusive, no profile needed):
+  --down                      Stop + remove containers (volumes preserved)
+  --down --purge              Stop + remove containers AND volumes (data lost)
+  --rebuild                   Rebuild images and restart (use after git pull)
+
 Options:
   --domain <name>             FQDN for production deployment
   --email  <addr>             Email for Let's Encrypt notifications (--prod-acme only)
   --cert   <path>             Path to TLS certificate PEM (--prod-byoca only)
   --key    <path>             Path to TLS private key PEM (--prod-byoca only)
+  --purge                     With --down: also remove data volumes (destructive)
   --help, -h                  Show this help and exit
 
 Examples:
@@ -99,11 +106,15 @@ Examples:
   $0 --prod-byoca --domain broker.example.com \\
                   --cert /etc/ssl/cullis/fullchain.pem \\
                   --key  /etc/ssl/cullis/privkey.pem
+  $0 --down                   # stop containers, keep data
+  $0 --down --purge           # stop + wipe data volumes
+  $0 --rebuild                # rebuild images after git pull + restart
 
 When no profile is given, the script runs in interactive mode (legacy).
 EOF
 }
 
+PURGE=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dev)         MODE="development"; TLS_PROFILE="selfsigned"; shift ;;
@@ -114,6 +125,9 @@ while [[ $# -gt 0 ]]; do
         --email)       ARG_EMAIL="${2:-}"; shift 2 ;;
         --cert)        ARG_CERT="${2:-}"; shift 2 ;;
         --key)         ARG_KEY="${2:-}"; shift 2 ;;
+        --down)        ACTION="down"; shift ;;
+        --rebuild)     ACTION="rebuild"; shift ;;
+        --purge)       PURGE=1; shift ;;
         --help|-h)     print_help; exit 0 ;;
         *)             die "Unknown argument: $1 (use --help)" ;;
     esac
@@ -153,6 +167,35 @@ fi
 
 command -v openssl &>/dev/null  || die "openssl is not installed"
 ok "openssl found"
+
+# ─── Lifecycle short-circuits (down/rebuild) ─────────────────────────────────
+# These actions don't need TLS profiles, mode selection, or env generation —
+# they just wrap docker compose in the right project namespace.
+if [[ "$ACTION" == "down" ]]; then
+    step "Stopping broker"
+    if [[ $PURGE -eq 1 ]]; then
+        warn "--purge specified — data volumes will be removed (Postgres + Vault)"
+        $COMPOSE down -v
+        ok "Broker stopped and volumes purged"
+    else
+        $COMPOSE down
+        ok "Broker stopped (data volumes preserved — use --down --purge to wipe)"
+    fi
+    exit 0
+fi
+
+if [[ "$ACTION" == "rebuild" ]]; then
+    step "Rebuilding broker images"
+    [[ ! -f "$SCRIPT_DIR/.env" ]] && die ".env not found — run full deploy first (./deploy_broker.sh --dev or --prod-*)"
+    $COMPOSE build --pull
+    ok "Images rebuilt"
+    step "Restarting broker"
+    $COMPOSE up -d
+    ok "Broker restarted with new images"
+    warn "If Alembic migrations changed, they run automatically on broker startup — tail logs to confirm:"
+    echo "       $COMPOSE logs -f broker"
+    exit 0
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. Interactive mode selection
