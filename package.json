@@ -1,0 +1,15 @@
+{
+  "name": "cullis-dashboard-styles",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tailwind CLI build for broker + proxy dashboards (not published)",
+  "scripts": {
+    "build:broker": "tailwindcss -i ./app/dashboard/static_src/input.css -o ./app/static/css/tailwind.css --minify",
+    "build:proxy": "tailwindcss -i ./mcp_proxy/dashboard/static_src/input.css -o ./mcp_proxy/dashboard/static/css/tailwind.css --minify",
+    "build": "npm run build:broker && npm run build:proxy",
+    "watch:broker": "tailwindcss -i ./app/dashboard/static_src/input.css -o ./app/static/css/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.10"
+  }
+}

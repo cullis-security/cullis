@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design-system base layer for the Cullis broker dashboard.
+ * Keep in sync with mcp_proxy/dashboard/static_src/input.css.
+ */
+
+@layer base {
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: #0a0f1a;
+    color: #e5e7eb;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Chakra Petch', sans-serif;
+  }
+  code, .font-mono, [class*="mono"] {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /*
+   * Shake-out P0-07: form controls must inherit the dark theme.
+   * Browsers default <input>/<textarea>/<select> to white bg + black text;
+   * on our dark canvas this shows up as white-on-white until text is
+   * selected. Force surface-800 bg and surface-100-ish text globally.
+   * Templates that set their own bg-* / text-* classes override this.
+   */
+  input:not([type='checkbox']):not([type='radio']):not([type='submit']):not([type='button']):not([type='reset']),
+  textarea,
+  select {
+    background-color: #1a1f2e;
+    color: #f3f4f6;
+    caret-color: #00e5c7;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: #6b7280;
+  }
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: #00e5c7;
+    box-shadow: 0 0 0 2px rgba(0, 229, 199, 0.15);
+  }
+  /* Firefox autofill */
+  input:-webkit-autofill,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: #f3f4f6;
+    -webkit-box-shadow: 0 0 0 1000px #1a1f2e inset;
+    caret-color: #00e5c7;
+  }
+}
+
+@layer components {
+  /* HTMX indicators */
+  [hx-indicator] .htmx-indicator { display: none; }
+  .htmx-request .htmx-indicator { display: inline-block; }
+
+  .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+  .sse-flash { animation: sse-flash 0.6s ease-out; }
+  .fade-up { animation: fade-up 0.5s ease-out; }
+  .glow-pulse { animation: glow-pulse 4s ease-in-out infinite; }
+  .toast-enter { animation: toast-in 0.3s ease-out; }
+
+  .card-glow { transition: box-shadow 0.3s ease, border-color 0.3s ease; }
+  .card-glow:hover {
+    box-shadow: 0 0 20px rgba(0, 229, 199, 0.06);
+    border-color: rgba(0, 229, 199, 0.15);
+  }
+
+  .toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 100;
+  }
+
+  .nav-active {
+    background: rgba(0, 229, 199, 0.08);
+    color: #00e5c7;
+    border-left: 2px solid #00e5c7;
+  }
+  .nav-item {
+    border-left: 2px solid transparent;
+    transition: all 0.15s ease;
+  }
+  .nav-item:hover:not(.nav-active) {
+    background: rgba(255, 255, 255, 0.03);
+    color: #d1d5db;
+  }
+
+  .table-row-hover:hover { background: rgba(0, 229, 199, 0.03); }
+}
+
+@layer utilities {
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0f1a; }
+  ::-webkit-scrollbar-thumb { background: #252b3d; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #363d52; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+@keyframes sse-flash {
+  0% { opacity: 0.6; }
+  100% { opacity: 0; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+@keyframes toast-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

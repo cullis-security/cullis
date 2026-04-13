@@ -306,11 +306,14 @@ async def security_headers(request: Request, call_next):
     if not any(request.url.path.startswith(p) for p in _no_dpop_nonce):
         from app.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
-    if request.url.path.startswith("/dashboard"):
+    if request.url.path.startswith("/dashboard") or request.url.path.startswith("/static"):
+        # Shake-out P0-09 + P1-10: htmx and Tailwind are bundled under /static,
+        # so cdn.tailwindcss.com and unpkg.com are no longer whitelisted.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
             "frame-ancestors 'none'"
