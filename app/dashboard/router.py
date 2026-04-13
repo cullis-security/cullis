@@ -86,20 +86,40 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
 
     # Check if it's the admin
     if user_id == "admin":
-        from app.kms.admin_secret import get_admin_secret_hash, verify_admin_password
+        from app.kms.admin_secret import (
+            get_admin_secret_hash, verify_admin_password,
+            is_admin_password_user_set,
+        )
         stored_hash = await get_admin_secret_hash()
-        if verify_admin_password(password, stored_hash):
-            response = RedirectResponse(url="/dashboard", status_code=303)
-            set_session(response, role="admin")
-            return response
-        # Fallback: compare with .env plaintext secret.
-        # Covers: Vault down (stored_hash is None), stale local hash
-        # file from a previous deployment, or CI environments without
-        # a KMS backend.
+        user_set = await is_admin_password_user_set()
+
+        # Path 1 — password has been chosen via /dashboard/setup:
+        # only the stored bcrypt hash is trusted. The .env ADMIN_SECRET
+        # is no longer accepted (shake-out P0-06).
+        if user_set:
+            if verify_admin_password(password, stored_hash):
+                response = RedirectResponse(url="/dashboard", status_code=303)
+                set_session(response, role="admin")
+                return response
+            return templates.TemplateResponse("login.html", {
+                "request": request, "error": "Invalid credentials.",
+                "admin_oidc_enabled": False,
+            })
+
+        # Path 2 — first-boot bootstrap: no user-set password yet.
+        # Accept either the stored hash (bootstrapped in a previous
+        # deploy before this change) or the .env ADMIN_SECRET, then
+        # force the admin through /dashboard/setup before they can
+        # use the rest of the dashboard.
         import hmac as _hmac
         from app.config import get_settings
-        if _hmac.compare_digest(password, get_settings().admin_secret):
-            response = RedirectResponse(url="/dashboard", status_code=303)
+        ok = False
+        if stored_hash and verify_admin_password(password, stored_hash):
+            ok = True
+        elif _hmac.compare_digest(password, get_settings().admin_secret):
+            ok = True
+        if ok:
+            response = RedirectResponse(url="/dashboard/setup", status_code=303)
             set_session(response, role="admin")
             return response
 
@@ -122,6 +142,114 @@ async def logout(request: Request):
     if session.logged_in:
         if not await verify_csrf(request, session):
             raise HTTPException(status_code=403, detail="Invalid CSRF token")
+    response = RedirectResponse(url="/dashboard/login", status_code=303)
+    clear_session(response)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# First-boot admin password setup (shake-out P0-06)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Flow:
+#   1. Fresh deploy: no hash, no user_set flag.
+#   2. Admin logs in with .env ADMIN_SECRET. login_submit issues a session
+#      but redirects straight to /dashboard/setup instead of /dashboard.
+#   3. Admin submits a new password + confirm on /dashboard/setup. The
+#      password is bcrypt-hashed, stored in the KMS backend, and the
+#      user_set flag is flipped to true.
+#   4. Future logins accept only the stored hash — .env ADMIN_SECRET is
+#      no longer a valid dashboard credential.
+#
+# MIN_ADMIN_PASSWORD_LENGTH mirrors the proxy dashboard's policy and is
+# intentionally lax: we enforce length only, no complexity rules (per
+# NIST SP 800-63B guidance and the P0-06 product directive).
+
+MIN_ADMIN_PASSWORD_LENGTH = 12
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def admin_setup_page(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    from app.kms.admin_secret import is_admin_password_user_set
+    if await is_admin_password_user_set():
+        # Already set up; send the admin to the normal change-password flow.
+        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
+
+    return templates.TemplateResponse("admin_setup.html", {
+        "request": request,
+        "csrf_token": session.csrf_token,
+        "min_length": MIN_ADMIN_PASSWORD_LENGTH,
+        "error": None,
+    })
+
+
+@router.post("/setup", response_class=HTMLResponse)
+async def admin_setup_submit(request: Request, db: AsyncSession = Depends(get_db)):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not session.is_admin:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    from app.kms.admin_secret import (
+        is_admin_password_user_set,
+        set_admin_secret_hash,
+        mark_admin_password_user_set,
+    )
+    if await is_admin_password_user_set():
+        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
+
+    if not await verify_csrf(request, session):
+        return templates.TemplateResponse("admin_setup.html", {
+            "request": request, "csrf_token": session.csrf_token,
+            "min_length": MIN_ADMIN_PASSWORD_LENGTH,
+            "error": "Invalid CSRF token.",
+        }, status_code=400)
+
+    form = await request.form()
+    password = str(form.get("password", ""))
+    confirm = str(form.get("password_confirm", ""))
+
+    def _err(msg: str, status: int = 400):
+        return templates.TemplateResponse("admin_setup.html", {
+            "request": request, "csrf_token": session.csrf_token,
+            "min_length": MIN_ADMIN_PASSWORD_LENGTH, "error": msg,
+        }, status_code=status)
+
+    if not password or not confirm:
+        return _err("Both fields are required.")
+    if len(password) < MIN_ADMIN_PASSWORD_LENGTH:
+        return _err(
+            f"Password must be at least {MIN_ADMIN_PASSWORD_LENGTH} characters."
+        )
+    if password != confirm:
+        return _err("The two passwords do not match.")
+
+    import bcrypt
+    new_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    try:
+        await set_admin_secret_hash(new_hash)
+        await mark_admin_password_user_set()
+    except Exception as exc:
+        _log.error("Failed to persist admin password during setup: %s", exc)
+        return _err(
+            "Failed to save the new password. Check the broker logs "
+            "for details (KMS backend may be unreachable).",
+            status=500,
+        )
+
+    await log_event(db, "admin.first_boot_password_set", "ok",
+                    details={"source": "dashboard", "actor": "admin"})
+
+    # Force a fresh sign-in with the newly chosen password, so the
+    # existing session (issued from the .env fallback) cannot be
+    # reused to skip the setup wall on any future state changes.
     response = RedirectResponse(url="/dashboard/login", status_code=303)
     clear_session(response)
     return response
@@ -882,6 +1010,13 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return session
+
+    # Shake-out P0-06: an admin who logged in via the .env bootstrap
+    # credential must set a real password before reaching the overview.
+    if session.is_admin:
+        from app.kms.admin_secret import is_admin_password_user_set
+        if not await is_admin_password_user_set():
+            return RedirectResponse(url="/dashboard/setup", status_code=303)
 
     org_filter = session.org_id  # None for admin = all
 

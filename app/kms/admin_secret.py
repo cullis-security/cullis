@@ -1,9 +1,19 @@
 """
 Admin secret management — stores the admin password hash in the KMS backend.
 
-On first boot the plaintext ADMIN_SECRET from .env is hashed with bcrypt and
-persisted to Vault (or a local file when KMS_BACKEND=local).  Subsequent
-boots read the hash from the backend and cache it in memory.
+First-boot flow (shake-out P0-06):
+  A fresh deploy stores no hash and no "user-set" flag.  The plaintext
+  ADMIN_SECRET from .env is accepted exactly once on the login page as a
+  bootstrap credential, and the admin is then forced onto /dashboard/setup
+  to pick a real password.  Once the admin submits that form the chosen
+  password is bcrypt-hashed, persisted, and the "user-set" flag is marked
+  true — from that moment on .env ADMIN_SECRET is no longer accepted for
+  dashboard login.
+
+  ADMIN_SECRET remains useful for other purposes (bootstrap automation,
+  CI where the full dashboard setup is skipped, and initial access when a
+  deploy's Vault is unreachable): callers that need the plaintext secret
+  still read it from settings.admin_secret directly.
 
 The dashboard "change admin password" feature calls set_admin_secret_hash()
 which updates both the backend and the in-memory cache atomically.
@@ -18,8 +28,10 @@ import httpx
 _log = logging.getLogger("agent_trust.admin_secret")
 
 _cached_hash: str | None = None
+_cached_user_set: bool | None = None
 _VAULT_TIMEOUT = 10
 _LOCAL_HASH_PATH = pathlib.Path("certs/.admin_secret_hash")
+_LOCAL_USER_SET_PATH = pathlib.Path("certs/.admin_password_user_set")
 
 # Dummy hash for constant-time verification when no hash is available.
 _DUMMY_HASH: str = bcrypt.hashpw(b"dummy", bcrypt.gensalt(rounds=12)).decode()
@@ -102,6 +114,18 @@ def _write_local_hash(hash_str: str) -> None:
     os.chmod(_LOCAL_HASH_PATH, 0o600)
 
 
+def _read_local_user_set() -> bool:
+    if _LOCAL_USER_SET_PATH.exists():
+        return _LOCAL_USER_SET_PATH.read_text().strip().lower() == "true"
+    return False
+
+
+def _write_local_user_set(value: bool) -> None:
+    _LOCAL_USER_SET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _LOCAL_USER_SET_PATH.write_text(("true" if value else "false") + "\n")
+    os.chmod(_LOCAL_USER_SET_PATH, 0o600)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -126,7 +150,12 @@ async def get_admin_secret_hash() -> str | None:
 
 
 async def set_admin_secret_hash(new_hash: str) -> None:
-    """Persist a new admin secret hash and update the in-memory cache."""
+    """Persist a new admin secret hash and update the in-memory cache.
+
+    This function only stores the hash — the "user-set" flag is set
+    explicitly by mark_admin_password_user_set() after a successful
+    first-boot setup form submission.
+    """
     global _cached_hash
     from app.config import get_settings
     backend = get_settings().kms_backend.lower()
@@ -142,31 +171,71 @@ async def set_admin_secret_hash(new_hash: str) -> None:
     _log.info("Admin secret hash updated in %s backend", backend)
 
 
-async def ensure_bootstrapped() -> None:
-    """Bootstrap the admin secret hash from .env on first boot.
+async def is_admin_password_user_set() -> bool:
+    """Return True if the admin explicitly set a password via the setup form.
 
-    If the backend already contains a hash, this is a no-op.
+    A hash may exist in the backend from a previous deploy even when the
+    user never went through the setup flow on *this* instance — that is
+    why we track the "user set" state as a separate flag rather than
+    inferring it from hash presence.
     """
-    existing = await get_admin_secret_hash()
-    if existing:
-        _log.info("Admin secret hash already present in KMS backend")
-        return
+    global _cached_user_set
+    if _cached_user_set is not None:
+        return _cached_user_set
 
     from app.config import get_settings
-    settings = get_settings()
-    plaintext = settings.admin_secret
+    backend = get_settings().kms_backend.lower()
 
-    new_hash = bcrypt.hashpw(plaintext.encode(), bcrypt.gensalt(rounds=12)).decode()
+    if backend == "vault":
+        secret = await _read_vault_secret()
+        if secret and "data" in secret:
+            raw = secret["data"].get("admin_password_user_set", "false")
+            _cached_user_set = str(raw).strip().lower() == "true"
+        else:
+            _cached_user_set = False
+    else:
+        _cached_user_set = _read_local_user_set()
 
-    try:
-        await set_admin_secret_hash(new_hash)
-        _log.info("Admin secret bootstrapped from .env to %s backend", settings.kms_backend)
-    except Exception as exc:
-        _log.warning(
-            "Could not bootstrap admin secret to %s: %s  — "
-            "falling back to .env comparison until next restart",
-            settings.kms_backend, exc,
-        )
+    return _cached_user_set
+
+
+async def mark_admin_password_user_set() -> None:
+    """Flip the "user has picked a password" flag to true and cache it."""
+    global _cached_user_set
+    from app.config import get_settings
+    backend = get_settings().kms_backend.lower()
+
+    if backend == "vault":
+        ok = await _write_vault_field("admin_password_user_set", "true")
+        if not ok:
+            raise RuntimeError(
+                "Failed to write admin_password_user_set to Vault"
+            )
+    else:
+        _write_local_user_set(True)
+
+    _cached_user_set = True
+    _log.info("Admin password marked as user-set in %s backend", backend)
+
+
+async def ensure_bootstrapped() -> None:
+    """First-boot hook.
+
+    Historically this hashed the .env ADMIN_SECRET and stored it in the
+    KMS backend, which meant a fresh operator never had to set a password
+    — they simply inherited whatever was in .env.  Shake-out P0-06 made
+    that a P0 UX problem: a stranger who cloned the repo had no on-screen
+    hint about credentials and had to grep the .env file.
+
+    The broker dashboard now forces the operator through /dashboard/setup
+    on the first login, so there is nothing to bootstrap here.  We keep
+    the function name for compatibility with app.main's lifespan and for
+    tooling that may import it.
+    """
+    _log.info(
+        "Admin secret bootstrap: skipping auto-hash from .env "
+        "(first-boot password is set via /dashboard/setup)"
+    )
 
 
 def verify_admin_password(password: str, stored_hash: str | None = None) -> bool:

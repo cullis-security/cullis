@@ -160,11 +160,25 @@ def reset_admin_secret_cache():
     can cause admin login to fail: verify_admin_password() rejects
     the password against the wrong hash, and the hmac fallback is
     skipped because stored_hash is not None.
+
+    We also seed a bcrypt hash of the .env ADMIN_SECRET and flip the
+    "user-set" flag to True, so by default every test behaves as a
+    post-setup deployment: admin login goes through the bcrypt path
+    and the dashboard does not redirect to /dashboard/setup. Tests
+    that specifically exercise the first-boot flow reset both values
+    to their fresh-deploy defaults locally.
     """
     import app.kms.admin_secret as _admin_mod
-    _admin_mod._cached_hash = None
+    import bcrypt as _bcrypt
+    from app.config import get_settings as _gs
+    _plain = _gs().admin_secret
+    _admin_mod._cached_hash = _bcrypt.hashpw(
+        _plain.encode(), _bcrypt.gensalt(rounds=4)
+    ).decode()
+    _admin_mod._cached_user_set = True
     yield
     _admin_mod._cached_hash = None
+    _admin_mod._cached_user_set = None
 
 
 @pytest.fixture(autouse=True)
