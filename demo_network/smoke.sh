@@ -20,7 +20,25 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
 SERVICES_ON_FAILURE=(broker proxy-a proxy-b bootstrap sender checker)
-COMPOSE="docker compose"
+
+# PROXY_DB=postgres activates compose.postgres.yml so the proxies run on a
+# real Postgres instead of the default per-proxy SQLite. Used by the CI
+# matrix leg added in ADR-001 Phase 1.4.
+PROXY_DB="${PROXY_DB:-sqlite}"
+case "$PROXY_DB" in
+    sqlite)
+        COMPOSE="docker compose"
+        ;;
+    postgres)
+        COMPOSE="docker compose -f compose.yml -f compose.postgres.yml"
+        SERVICES_ON_FAILURE+=(proxy-db)
+        ;;
+    *)
+        echo "PROXY_DB must be 'sqlite' or 'postgres' (got: $PROXY_DB)" >&2
+        exit 2
+        ;;
+esac
+
 NONCE_FILE="$HERE/.last-nonce"
 
 # ANSI colors (fall back to no-op when not a TTY)

@@ -147,8 +147,37 @@ app.kubernetes.io/component: postgres
 {{- end -}}
 
 {{/*
-SQLite database URL pointing at the PVC mount.
+Resolve the proxy database URL. Precedence (high → low):
+  1. postgres.externalUrl  → user-managed Postgres (preferred for prod)
+  2. postgres.internal     → in-cluster Postgres StatefulSet
+  3. SQLite on the PVC     → default, single-replica only
+
+Phase 1.4 (ADR-001): when Postgres is in use the proxy reads PROXY_DB_URL
+from the ConfigMap; SQLite path keeps emitting MCP_PROXY_DATABASE_URL for
+backwards compatibility with deployments still on the legacy env name.
 */}}
 {{- define "cullis-proxy.databaseUrl" -}}
+{{- if .Values.postgres.externalUrl -}}
+{{- .Values.postgres.externalUrl -}}
+{{- else if .Values.postgres.internal -}}
+{{- printf "postgresql+asyncpg://%s:%s@%s:%d/%s"
+    .Values.postgres.username
+    .Values.postgres.password
+    (include "cullis-proxy.postgres.fullname" .)
+    (int .Values.postgres.port)
+    .Values.postgres.database -}}
+{{- else -}}
 {{- printf "sqlite+aiosqlite:///%s/mcp_proxy.db" .Values.persistence.mountPath -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+True when the chart is configured to run on Postgres (either external or
+in-cluster). Used to skip the SQLite PVC and to gate Postgres-specific
+secret keys.
+*/}}
+{{- define "cullis-proxy.usesPostgres" -}}
+{{- if or .Values.postgres.externalUrl .Values.postgres.internal -}}
+true
+{{- end -}}
 {{- end -}}

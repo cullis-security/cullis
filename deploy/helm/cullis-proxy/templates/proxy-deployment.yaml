@@ -118,12 +118,15 @@ spec:
                   - -c
                   - sleep {{ .Values.proxy.preStopSleepSeconds }}
           volumeMounts:
+            {{- if not (include "cullis-proxy.usesPostgres" .) }}
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
             {{- with .Values.proxy.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        {{- if not (include "cullis-proxy.usesPostgres" .) }}
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
@@ -131,6 +134,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- end }}
         {{- with .Values.proxy.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

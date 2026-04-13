@@ -5,6 +5,7 @@ Tables:
   - internal_agents: locally registered agents (for egress API key auth)
   - audit_log: append-only immutable audit trail
   - proxy_config: key-value store for broker uplink config from setup wizard
+  - local_*: ADR-001 Phase 4 surface, schema-only until then
 
 Design choices:
   - SQLAlchemy Core with AsyncEngine — single async driver, portable SQLite/Postgres
@@ -12,7 +13,11 @@ Design choices:
   - WAL mode enabled on SQLite for concurrent readers (no-op on Postgres)
   - get_db() yields an AsyncConnection already inside engine.begin(): callers no
     longer call db.commit(), transactions commit on context exit.
+  - Schema bootstrap runs Alembic programmatically. Legacy SQLite proxies that
+    pre-date Alembic are stamped at 0001_initial_snapshot before upgrade so
+    their existing tables aren't recreated.
 """
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -20,11 +25,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
-from sqlalchemy import text
+from alembic import command
+from alembic.config import Config as AlembicConfig
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from mcp_proxy.db_models import metadata
+
+_PROXY_PKG_DIR = Path(__file__).resolve().parent
+_ALEMBIC_INI = _PROXY_PKG_DIR / "alembic.ini"
+_ALEMBIC_INITIAL_REVISION = "0001_initial_snapshot"
 
 _log = logging.getLogger("mcp_proxy")
 
@@ -52,34 +63,136 @@ def _sqlite_path(db_url: str) -> str | None:
     return None
 
 
+def _alembic_config(url: str) -> AlembicConfig:
+    cfg = AlembicConfig(str(_ALEMBIC_INI))
+    cfg.set_main_option("sqlalchemy.url", url)
+    return cfg
+
+
+_LEGACY_TABLES = frozenset({"internal_agents", "audit_log", "proxy_config"})
+
+
+def _detect_legacy_unstamped(sync_conn) -> bool:
+    """True when any pre-Phase-1 table exists but alembic_version is missing.
+
+    Two scenarios produce legacy-unstamped state:
+      1. Pre-Phase-1 deployments that created the full _SCHEMA_SQL via raw
+         CREATE TABLE IF NOT EXISTS.
+      2. The demo_network proxy-init seed container, which writes only
+         proxy_config (broker uplink config) before the proxy boots.
+
+    Either way, alembic must be stamped at 0001_initial_snapshot so the
+    upgrade chain doesn't try to recreate tables that already exist.
+    """
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+    if "alembic_version" in table_names:
+        return False
+    return bool(_LEGACY_TABLES & table_names)
+
+
+def _run_migrations_sync(url: str) -> None:
+    """Run alembic stamp (if needed) + upgrade head. Synchronous on purpose:
+    invoked from a thread via asyncio.to_thread to avoid blocking the loop.
+
+    Stamp-existing detection runs only on SQLite — no proxy was ever deployed
+    on Postgres pre-Phase-1, so legacy unstamped Postgres DBs cannot exist.
+
+    Two legacy-unstamped scenarios are handled:
+      - Full legacy schema (pre-Phase-1 deploy): all three legacy tables
+        present → just stamp 0001 and upgrade.
+      - Partial legacy (e.g. demo_network proxy-init has seeded only
+        proxy_config): create the missing legacy tables idempotently via
+        metadata.create_all so the stamped revision matches reality, then
+        stamp + upgrade. Without this, alembic would skip CREATE TABLE for
+        internal_agents / audit_log because 0001 is assumed already applied.
+    """
+    cfg = _alembic_config(url)
+
+    needs_stamp = False
+    sqlite_path = _sqlite_path(url)
+    if sqlite_path and sqlite_path != ":memory:" and Path(sqlite_path).exists():
+        from sqlalchemy import create_engine as create_sync_engine
+        sync_url = url.replace("sqlite+aiosqlite://", "sqlite://", 1)
+        try:
+            sync_engine = create_sync_engine(sync_url, future=True)
+            with sync_engine.connect() as conn:
+                needs_stamp = _detect_legacy_unstamped(conn)
+            if needs_stamp:
+                # Fill in any legacy tables missing from a partial seed so
+                # the 0001 stamp accurately describes the on-disk schema.
+                from mcp_proxy.db_models import (
+                    AuditLogEntry,
+                    InternalAgent,
+                    ProxyConfig,
+                )
+                with sync_engine.begin() as conn:
+                    metadata.create_all(
+                        bind=conn,
+                        tables=[
+                            InternalAgent.__table__,
+                            AuditLogEntry.__table__,
+                            ProxyConfig.__table__,
+                        ],
+                    )
+            sync_engine.dispose()
+        except Exception as exc:
+            _log.debug("Pre-migration inspection skipped: %s", exc)
+
+    if needs_stamp:
+        _log.info("Legacy schema detected — stamping %s before upgrade",
+                  _ALEMBIC_INITIAL_REVISION)
+        command.stamp(cfg, _ALEMBIC_INITIAL_REVISION)
+
+    command.upgrade(cfg, "head")
+
+
 async def init_db(db_url: str) -> None:
-    """Initialize the module-level AsyncEngine and ensure schema exists.
+    """Initialize the module-level AsyncEngine and run Alembic migrations.
 
     Accepts either a SQLAlchemy URL (``sqlite+aiosqlite:///path``) or a raw
     filesystem path for backward compatibility.
 
-    Schema bootstrap still uses ``metadata.create_all`` — callers that want
-    Alembic-managed upgrades should run ``alembic upgrade head`` out of band.
+    Schema bootstrap runs ``alembic upgrade head``. Pre-Phase-1 SQLite
+    deployments (which created tables outside Alembic) are detected and
+    stamped at 0001_initial_snapshot first, so existing rows survive.
+
+    Set ``PROXY_SKIP_MIGRATIONS=1`` to skip the alembic step — used by tests
+    that build their own engine inside the same process.
     """
     global _engine
+    import os
 
     url = _normalize_url(db_url)
 
     # Ensure parent directory exists for SQLite file DBs
     sqlite_path = _sqlite_path(url)
-    if sqlite_path:
+    if sqlite_path and sqlite_path != ":memory:":
         parent = Path(sqlite_path).parent
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
 
+    if os.environ.get("PROXY_SKIP_MIGRATIONS") == "1":
+        _log.warning("PROXY_SKIP_MIGRATIONS=1 — using metadata.create_all "
+                     "instead of alembic upgrade head")
+        _engine = create_async_engine(url, echo=False, future=True)
+        async with _engine.begin() as conn:
+            if _engine.dialect.name == "sqlite":
+                await conn.execute(text("PRAGMA journal_mode=WAL"))
+            await conn.run_sync(metadata.create_all)
+        _log.info("Database initialized (no-migrations mode): %s", url)
+        return
+
+    # Run alembic in a worker thread — alembic.command is synchronous and
+    # would block the event loop otherwise.
+    await asyncio.to_thread(_run_migrations_sync, url)
+
     _engine = create_async_engine(url, echo=False, future=True)
-
-    async with _engine.begin() as conn:
-        if _engine.dialect.name == "sqlite":
+    if _engine.dialect.name == "sqlite":
+        async with _engine.begin() as conn:
             await conn.execute(text("PRAGMA journal_mode=WAL"))
-        await conn.run_sync(metadata.create_all)
 
-    _log.info("Database initialized: %s", url)
+    _log.info("Database initialized (alembic upgrade head): %s", url)
 
 
 async def dispose_db() -> None:

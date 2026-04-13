@@ -237,18 +237,19 @@ proxy:
 # Persistence — SQLite DB backing the proxy.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Postgres — NOT used by the current proxy code (mcp_proxy/db.py uses
-# aiosqlite directly). These hooks are kept as forward-compatible stubs for
-# a future Postgres backend and are disabled by default. Do not enable them
-# unless the proxy image has Postgres support wired in.
+# Postgres — supported runtime backend since ADR-001 Phase 1.3. When either
+# `externalUrl` or `internal: true` is set, the proxy reads PROXY_DB_URL
+# (and the legacy MCP_PROXY_DATABASE_URL alias) pointing at Postgres, and
+# the SQLite PVC is skipped entirely.
 # ---------------------------------------------------------------------------
 postgres:
-  # -- Set to true to deploy a dedicated in-cluster Postgres StatefulSet
-  # for the proxy. Today the proxy does not read from Postgres; enabling
-  # this only provisions the infrastructure.
+  # -- Deploy a dedicated in-cluster Postgres StatefulSet for the proxy.
+  # Suitable for dev/staging; production should set `externalUrl` to a
+  # managed instance instead.
   internal: false
-  # -- External Postgres URL (SQLAlchemy async format). Used to override
-  # MCP_PROXY_DATABASE_URL when the proxy image supports it.
+  # -- External Postgres URL (SQLAlchemy async format,
+  # `postgresql+asyncpg://user:pass@host:port/db`). Wins over `internal`
+  # when both are set.
   externalUrl: ""
 
   # Only used when internal: true — settings for the bundled StatefulSet.

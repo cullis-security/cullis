@@ -1,0 +1,47 @@
+# Postgres overlay for the demo-network smoke test (ADR-001 Phase 1.4).
+#
+# Activated by `./smoke.sh full --postgres` or `PROXY_DB=postgres ./smoke.sh full`.
+#
+# Adds a single Postgres 16 service that hosts both proxies' databases (one
+# Postgres database per proxy) and overrides the proxy services to point at
+# it via PROXY_DB_URL — the legacy MCP_PROXY_DATABASE_URL stays set in
+# compose.yml as the fallback. PROXY_DB_URL wins per the runtime contract
+# in mcp_proxy/config.py.
+
+services:
+  proxy-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cullis_proxy
+      POSTGRES_PASSWORD: cullis_proxy_dev
+      POSTGRES_MULTIPLE_DATABASES: proxy_a,proxy_b
+    volumes:
+      - proxy-db-data:/var/lib/postgresql/data
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/00-multi-db.sh:ro
+    expose: ["5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cullis_proxy -d proxy_a && pg_isready -U cullis_proxy -d proxy_b"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  proxy-a:
+    depends_on:
+      proxy-db:
+        condition: service_healthy
+      proxy-a-init:
+        condition: service_completed_successfully
+    environment:
+      PROXY_DB_URL: "postgresql+asyncpg://cullis_proxy:cullis_proxy_dev@proxy-db:5432/proxy_a"
+
+  proxy-b:
+    depends_on:
+      proxy-db:
+        condition: service_healthy
+      proxy-b-init:
+        condition: service_completed_successfully
+    environment:
+      PROXY_DB_URL: "postgresql+asyncpg://cullis_proxy:cullis_proxy_dev@proxy-db:5432/proxy_b"
+
+volumes:
+  proxy-db-data:

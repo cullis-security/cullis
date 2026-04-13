@@ -5,8 +5,10 @@ All settings are read from environment variables (prefix MCP_PROXY_) or .env fil
 validate_config() enforces production-safety invariants at startup.
 """
 import logging
+import os
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _log = logging.getLogger("mcp_proxy.startup")
@@ -57,10 +59,21 @@ class ProxySettings(BaseSettings):
     pdp_url: str = ""
 
     # DB
+    # Default reads from MCP_PROXY_DATABASE_URL (legacy contract).
+    # PROXY_DB_URL (no prefix) takes precedence — see _apply_proxy_db_url_override.
+    # ADR-001 Phase 1.3 adds PROXY_DB_URL so Helm + smoke can target Postgres
+    # without touching the legacy MCP_PROXY_* surface.
     database_url: str = "sqlite+aiosqlite:///./mcp_proxy.db"
 
     # Rate limiting
     rate_limit_per_minute: int = 60
+
+    @model_validator(mode="after")
+    def _apply_proxy_db_url_override(self):
+        override = os.environ.get("PROXY_DB_URL")
+        if override:
+            self.database_url = override
+        return self
 
 
 def validate_config(settings: ProxySettings) -> None:
