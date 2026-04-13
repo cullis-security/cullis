@@ -163,3 +163,8 @@ MESSAGE_QUEUE_DEDUPED_COUNTER = meter.create_counter(
     description="Enqueue attempts collapsed by idempotency key (M3).",
     unit="1",
 )
+WS_QUEUE_DRAINED_COUNTER = meter.create_counter(
+    name="atn.ws.queue_drained",
+    description="Messages pushed to a client via queue-drain on WS connect/resume (M3).",
+    unit="1",
+)

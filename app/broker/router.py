@@ -949,6 +949,47 @@ async def get_rfq_status(
     return result
 
 
+async def _drain_queue_for_agent(
+    websocket: WebSocket,
+    agent_id: str,
+    db: AsyncSession,
+) -> int:
+    """Push queued offline messages to the just-connected agent (M3.6).
+
+    Called after ``auth_ok`` and at the end of ``_handle_ws_resume``.
+    Messages stay in the queue (status=pending) until the recipient
+    ack's via POST /messages/{msg_id}/ack — this function only pushes
+    the frames, it does not mutate state. Delivered frames carry
+    ``queued: true`` and ``msg_id`` so the SDK knows to ack.
+    """
+    from app.broker import message_queue as mq
+    from app.telemetry_metrics import WS_QUEUE_DRAINED_COUNTER
+    import json as _json_inner
+
+    pending = await mq.fetch_pending_for_recipient(db, agent_id)
+    for q in pending:
+        try:
+            payload = _json_inner.loads(q.ciphertext.decode())
+        except Exception:
+            _log.exception("drain: bad ciphertext in queue row %s", q.msg_id)
+            continue
+        await websocket.send_json({
+            "type": "new_message",
+            "session_id": q.session_id,
+            "msg_id": q.msg_id,
+            "queued": True,
+            "message": {
+                "seq": q.seq,
+                "sender_agent_id": q.sender_agent_id,
+                "payload": payload,
+                "timestamp": q.enqueued_at.isoformat(),
+            },
+        })
+    if pending:
+        WS_QUEUE_DRAINED_COUNTER.add(len(pending))
+    return len(pending)
+
+
 _WS_AUTH_TIMEOUT = 10  # seconds — max time to wait for initial auth message
 
 
@@ -1038,6 +1079,12 @@ async def _handle_ws_resume(
             "message": m,
             "replayed": True,
         })
+
+    # M3.6 — after in-session replay, drain offline queue for this agent.
+    try:
+        await _drain_queue_for_agent(websocket, agent_id, db)
+    except Exception:
+        _log.exception("WS drain failed for agent %s (resume path)", agent_id)
 
 
 @router.websocket("/ws")
@@ -1161,6 +1208,13 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
             await websocket.close()
             return
         await websocket.send_json({"type": "auth_ok", "agent_id": agent_id})
+
+        # M3.6 — drain any offline-queued messages for this agent.
+        # Best-effort: drain failures don't abort the WS session.
+        try:
+            await _drain_queue_for_agent(websocket, agent_id, db)
+        except Exception:
+            _log.exception("WS drain failed for agent %s (auth_ok path)", agent_id)
 
         # Step 4: keepalive loop with M2 server-initiated heartbeat.
         _WS_IDLE_TIMEOUT = 300   # 5 minutes — upper bound on total client inactivity
