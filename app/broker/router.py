@@ -459,6 +459,16 @@ async def close_session(
 async def send_message(
     session_id: str,
     envelope: MessageEnvelope,
+    ttl_seconds: int = Query(
+        default=300, ge=1, le=86400,
+        description="TTL for queued delivery when recipient is offline (M3). "
+                    "Ignored on direct WS push.",
+    ),
+    idempotency_key: str | None = Query(
+        default=None, max_length=128,
+        description="Optional dedupe key — a retry with the same "
+                    "(recipient_agent_id, idempotency_key) returns the same queued msg_id (M3).",
+    ),
     current_agent: TokenPayload = Depends(get_current_agent),
     store: SessionStore = Depends(get_session_store),
     db: AsyncSession = Depends(get_db),
@@ -469,7 +479,9 @@ async def send_message(
       - session is active and not expired
       - sender is a legitimate participant
       - nonce has not already been used (replay protection)
-    After saving, pushes the message via WS to the recipient if connected.
+    If the recipient is connected locally, the message is pushed via WS.
+    Otherwise it is persisted in the proxy message queue (M3) and drained
+    on the recipient's next WS connect/resume.
     """
     await rate_limiter.check(current_agent.agent_id, "broker.message")
 
@@ -652,7 +664,7 @@ async def send_message(
                     })
     _log.info("✔ message accepted + audit logged  (seq=%d, session=%s)", seq, session_id)
 
-    # Push WS to the recipient if connected
+    # ── Delivery: WS push if recipient locally connected, else enqueue (M3) ──
     recipient_id = (
         session.target_agent_id
         if current_agent.agent_id == session.initiator_agent_id
@@ -672,8 +684,50 @@ async def send_message(
         if envelope.client_seq is not None:
             ws_msg["message"]["client_seq"] = envelope.client_seq
         await ws_manager.send_to_agent(recipient_id, ws_msg)
+        response: dict = {"status": "accepted", "session_id": session_id}
+    else:
+        from app.broker import message_queue as mq
+        from app.telemetry_metrics import (
+            MESSAGE_QUEUED_COUNTER, MESSAGE_QUEUE_DEDUPED_COUNTER,
+        )
+        ciphertext = _json.dumps(
+            envelope.payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+        msg_id, inserted = await mq.enqueue(
+            db,
+            session_id=session_id,
+            recipient_agent_id=recipient_id,
+            sender_agent_id=current_agent.agent_id,
+            ciphertext=ciphertext,
+            seq=seq,
+            ttl_seconds=ttl_seconds,
+            idempotency_key=idempotency_key,
+        )
+        if inserted:
+            MESSAGE_QUEUED_COUNTER.add(1)
+        else:
+            MESSAGE_QUEUE_DEDUPED_COUNTER.add(1)
+        await log_event(
+            db, "broker.message_queued",
+            "ok" if inserted else "deduped",
+            agent_id=current_agent.agent_id, session_id=session_id,
+            org_id=current_agent.org,
+            details={
+                "msg_id": msg_id,
+                "recipient_agent_id": recipient_id,
+                "ttl_seconds": ttl_seconds,
+                "idempotency_key": idempotency_key,
+                "inserted": inserted,
+            },
+        )
+        response = {
+            "status": "queued",
+            "session_id": session_id,
+            "msg_id": msg_id,
+            "deduped": not inserted,
+        }
 
-    return {"status": "accepted", "session_id": session_id}
+    return response
 
 
 @router.get("/sessions", response_model=list[SessionResponse])
