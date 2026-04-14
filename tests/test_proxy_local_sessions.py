@@ -18,7 +18,6 @@ from mcp_proxy.local.models import SessionCloseReason, SessionStatus
 from mcp_proxy.local.persistence import restore_sessions, save_session
 from mcp_proxy.local.session import (
     LocalAgentSessionCapExceeded,
-    LocalSession,
     LocalSessionStore,
 )
 
