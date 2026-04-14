@@ -30,7 +30,6 @@ def test_build_server_registers_tools_and_sets_state(tmp_path: Path):
     tool_names = {t.name for t in mcp._tool_manager.list_tools()}
     expected = {
         "hello_site",
-        "connect",
         "discover_agents",
         "open_session",
         "send_message",
@@ -41,5 +40,8 @@ def test_build_server_registers_tools_and_sets_state(tmp_path: Path):
         "list_sessions",
         "select_session",
     }
+    # Legacy `connect` tool removed in Phase 2b — identity now loaded from
+    # ~/.cullis/identity/ populated by `cullis-connector enroll`.
+    assert "connect" not in tool_names
     missing = expected - tool_names
     assert not missing, f"Missing tools: {missing}"
