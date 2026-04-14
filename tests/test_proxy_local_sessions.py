@@ -192,6 +192,7 @@ async def proxy_app(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROXY_DATABASE_URL", url)
     monkeypatch.delenv("PROXY_DB_URL", raising=False)
     monkeypatch.setenv("PROXY_INTRA_ORG", "true")
+    monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
     # Settings singleton is lru_cache'd — flush between tests

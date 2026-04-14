@@ -6,7 +6,9 @@ Standalone component with ZERO imports from app/.
 
 Lifespan: validate_config -> init_db -> JWKS fetch -> yield -> cleanup
 """
+import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
@@ -119,6 +121,26 @@ async def lifespan(app: FastAPI):
     # PROXY_INTRA_ORG flag.
     app.state.local_ws_manager = LocalConnectionManager()
 
+    # Phase 3d — sweeper. Closes idle/TTL-expired local sessions and
+    # expires pending messages whose TTL lapsed, best-effort notifying
+    # peers. Only spawned when PROXY_INTRA_ORG is on (otherwise no
+    # intra-org traffic ever lands in local_* tables, so there's
+    # nothing to sweep). Also explicitly skippable via
+    # PROXY_LOCAL_SWEEPER_DISABLED=1 for deterministic tests.
+    if settings.intra_org_routing and os.environ.get("PROXY_LOCAL_SWEEPER_DISABLED") != "1":
+        from mcp_proxy.local.sweeper import sweeper_loop as _local_sweeper_loop
+        stop_event = asyncio.Event()
+        sweeper_task = asyncio.create_task(
+            _local_sweeper_loop(
+                local_store,
+                app.state.local_ws_manager,
+                stop_event=stop_event,
+            ),
+            name="local_sweeper",
+        )
+        app.state.local_sweeper_stop = stop_event
+        app.state.local_sweeper_task = sweeper_task
+
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
         settings.host, settings.port, settings.environment,
@@ -127,6 +149,20 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    stop_event = getattr(app.state, "local_sweeper_stop", None)
+    sweeper_task = getattr(app.state, "local_sweeper_task", None)
+    if stop_event is not None:
+        stop_event.set()
+    if sweeper_task is not None:
+        try:
+            await asyncio.wait_for(sweeper_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            sweeper_task.cancel()
+            try:
+                await sweeper_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
     ws_manager = getattr(app.state, "local_ws_manager", None)
     if ws_manager is not None:
         await ws_manager.shutdown()
