@@ -8,6 +8,7 @@ All endpoints require X-API-Key authentication (via get_agent_from_api_key).
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 
 import httpx
 
@@ -18,6 +19,7 @@ from mcp_proxy.auth.api_key import get_agent_from_api_key
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
 from mcp_proxy.egress.routing import decide_route
+from mcp_proxy.local import message_queue as local_queue
 from mcp_proxy.local.models import SessionCloseReason
 from mcp_proxy.local.persistence import save_session as save_local_session
 from mcp_proxy.local.session import (
@@ -64,6 +66,10 @@ class SendMessageRequest(BaseModel):
     session_id: str
     payload: dict
     recipient_agent_id: str
+    # ADR-001 Phase 3c — at-least-once fields (mirror broker M3 SDK params).
+    # Optional; omitting them keeps pre-3c client behavior.
+    ttl_seconds: int = Field(default=local_queue.DEFAULT_TTL_SECONDS, ge=10, le=3600)
+    idempotency_key: str | None = None
 
 
 class DiscoverRequest(BaseModel):
@@ -354,12 +360,87 @@ async def send_message(
     request: Request,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """Send E2E encrypted message via broker."""
+    """Send an E2E-encrypted message.
+
+    ADR-001 Phase 3c: when `body.session_id` refers to a local session,
+    the message is enqueued on `local_messages` and pushed over the
+    recipient's local WS if connected. Otherwise the request falls
+    through to the broker bridge exactly like before.
+    """
     _validate_session_id(body.session_id)
-    bridge = _get_bridge(request)
     request_id = str(uuid.uuid4())
     t0 = time.monotonic()
 
+    local_store = _get_local_store(request)
+    local_session = local_store.get(body.session_id) if local_store else None
+    if local_session is not None:
+        if not local_session.involves(agent.agent_id):
+            raise HTTPException(status_code=403, detail="not a participant")
+        if agent.agent_id == local_session.initiator_agent_id:
+            recipient = local_session.responder_agent_id
+        else:
+            recipient = local_session.initiator_agent_id
+
+        # Ciphertext is already E2E-encrypted by the SDK. The proxy stores
+        # it opaquely and never needs to decrypt on the local path.
+        import json as _json
+        payload_cipher = _json.dumps(body.payload, separators=(",", ":"))
+
+        try:
+            msg_id, inserted = await local_queue.enqueue(
+                session_id=body.session_id,
+                sender_agent_id=agent.agent_id,
+                recipient_agent_id=recipient,
+                payload_ciphertext=payload_cipher,
+                ttl_seconds=body.ttl_seconds,
+                idempotency_key=body.idempotency_key,
+            )
+        except Exception as exc:
+            logger.error("Local enqueue failed for %s: %s", agent.agent_id, exc)
+            raise HTTPException(status_code=500, detail="enqueue_failed") from exc
+
+        local_session.touch()
+        await save_local_session(local_session)
+
+        # Push-vs-queue: if the recipient is connected, deliver immediately.
+        # Even when we push, the row stays pending until the recipient ack's
+        # so a crash between send_json and ack does not drop the message.
+        ws_manager = getattr(request.app.state, "local_ws_manager", None)
+        pushed = False
+        if ws_manager is not None and ws_manager.is_connected(recipient):
+            pushed = await ws_manager.send_to_agent(
+                recipient,
+                {
+                    "type": "new_message",
+                    "session_id": body.session_id,
+                    "msg_id": msg_id,
+                    "sender_agent_id": agent.agent_id,
+                    "payload": body.payload,
+                    "enqueued_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+        duration_ms = (time.monotonic() - t0) * 1000
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="egress_send_local",
+            status="success",
+            detail=(
+                f"session={body.session_id} recipient={recipient} "
+                f"msg_id={msg_id} inserted={inserted} pushed={pushed}"
+            ),
+            request_id=request_id,
+            duration_ms=duration_ms,
+        )
+        return {
+            "status": "sent",
+            "session_id": body.session_id,
+            "msg_id": msg_id,
+            "delivered_via": "ws" if pushed else "queue",
+            "duplicate": not inserted,
+        }
+
+    bridge = _get_bridge(request)
     try:
         await bridge.send_message(
             agent.agent_id,
@@ -406,8 +487,38 @@ async def poll_messages(
     after: int = -1,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """Poll for messages in a session."""
+    """Poll for messages in a session (local or broker).
+
+    Local path returns pending messages for the caller; the caller must
+    still hit the ack endpoint before we flip them to `delivered`. That
+    keeps at-least-once semantics even when clients prefer REST polling
+    over the WebSocket push.
+    """
     _validate_session_id(session_id)
+
+    local_store = _get_local_store(request)
+    local_session = local_store.get(session_id) if local_store else None
+    if local_session is not None:
+        if not local_session.involves(agent.agent_id):
+            raise HTTPException(status_code=403, detail="not a participant")
+        local_session.touch()
+        await save_local_session(local_session)
+        pending = await local_queue.fetch_pending_for_recipient(agent.agent_id)
+        # Only messages that belong to this session — the queue is global
+        # per recipient but the caller asked for a specific session.
+        msgs = [m for m in pending if m.session_id == session_id]
+        payload = [
+            {
+                "msg_id": m.msg_id,
+                "session_id": m.session_id,
+                "sender_agent_id": m.sender_agent_id,
+                "payload_ciphertext": m.payload_ciphertext,
+                "enqueued_at": m.enqueued_at.isoformat() if m.enqueued_at else None,
+            }
+            for m in msgs
+        ]
+        return {"messages": payload, "count": len(payload), "scope": "local"}
+
     bridge = _get_bridge(request)
     try:
         messages = await bridge.poll_messages(agent.agent_id, session_id, after)
@@ -421,6 +532,40 @@ async def poll_messages(
             ) from exc
         logger.error("Failed to poll messages for %s: %s", agent.agent_id, exc)
         raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+
+
+@router.post("/sessions/{session_id}/messages/{msg_id}/ack")
+async def ack_message(
+    session_id: str,
+    msg_id: str,
+    request: Request,
+    agent: InternalAgent = Depends(get_agent_from_api_key),
+):
+    """Acknowledge delivery of a queued local message (ADR-001 Phase 3c).
+
+    Only applies to local sessions. Cross-org ack stays implicit via the
+    broker's M3 ack endpoint. Returns 404 when the msg_id doesn't exist,
+    is already delivered, or belongs to another recipient (same shape
+    across all three to avoid enumeration).
+    """
+    _validate_session_id(session_id)
+    local_store = _get_local_store(request)
+    local_session = local_store.get(session_id) if local_store else None
+    if local_session is None:
+        raise HTTPException(status_code=404, detail="session_not_local")
+    if not local_session.involves(agent.agent_id):
+        raise HTTPException(status_code=403, detail="not a participant")
+
+    ok = await local_queue.mark_delivered(msg_id, agent.agent_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="message_not_found")
+    await log_audit(
+        agent_id=agent.agent_id,
+        action="egress_ack_local",
+        status="success",
+        detail=f"session={session_id} msg_id={msg_id}",
+    )
+    return {"status": "acked", "msg_id": msg_id}
 
 
 @router.post("/discover")
