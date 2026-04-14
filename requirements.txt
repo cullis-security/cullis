@@ -31,3 +31,5 @@ opentelemetry-exporter-prometheus>=0.46b0
 prometheus-client>=0.20.0
 pytest>=8.3.4
 pytest-asyncio>=0.25.2
+mcp>=1.0
+PyYAML>=6.0
