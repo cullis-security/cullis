@@ -15,7 +15,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from mcp_proxy.auth.api_key import get_agent_from_api_key
+from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
+from mcp_proxy.egress.routing import decide_route
+from mcp_proxy.local.models import SessionCloseReason
+from mcp_proxy.local.persistence import save_session as save_local_session
+from mcp_proxy.local.session import (
+    LocalAgentSessionCapExceeded,
+    LocalSession,
+    LocalSessionStore,
+)
 from mcp_proxy.models import InternalAgent
 
 logger = logging.getLogger("mcp_proxy.egress.router")
@@ -85,6 +94,47 @@ def _get_bridge(request: Request):
     return bridge
 
 
+def _get_local_store(request: Request) -> LocalSessionStore | None:
+    """Return the local session store when ADR-001 Phase 3 is active."""
+    return getattr(request.app.state, "local_session_store", None)
+
+
+def _should_route_intra(recipient_agent_id: str, target_org_id: str = "") -> bool:
+    """Check whether the caller should be routed by the local store.
+
+    Called from each session endpoint before falling through to the
+    broker bridge. When PROXY_INTRA_ORG is off, always false (preserves
+    the pre-Phase-2 behavior). When on, the session-open path prefers
+    the explicit target_org_id (authoritative from the caller's intent);
+    other paths fall back to the SPIFFE-driven decide_route helper.
+    """
+    settings = get_settings()
+    if not settings.intra_org_routing:
+        return False
+    if target_org_id:
+        return target_org_id == settings.org_id
+    route = decide_route(
+        recipient_agent_id,
+        local_org=settings.org_id,
+        local_trust_domain=settings.trust_domain,
+    )
+    return route == "intra"
+
+
+def _local_session_to_dict(session: LocalSession) -> dict:
+    return {
+        "session_id": session.session_id,
+        "initiator_agent_id": session.initiator_agent_id,
+        "target_agent_id": session.responder_agent_id,
+        "status": session.status.value,
+        "requested_capabilities": list(session.requested_capabilities),
+        "created_at": session.created_at.isoformat(),
+        "last_activity_at": session.last_activity_at.isoformat(),
+        "close_reason": session.close_reason.value if session.close_reason else None,
+        "scope": "local",
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,11 +146,49 @@ async def open_session(
     request: Request,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """Open a broker session on behalf of internal agent."""
-    bridge = _get_bridge(request)
+    """Open a session on behalf of an internal agent.
+
+    ADR-001 Phase 3a: when `PROXY_INTRA_ORG` is on and the target resolves
+    to this proxy's (trust_domain, org), the session is created in the
+    local store and never touches the broker. Otherwise the request falls
+    through to the broker bridge exactly like before.
+    """
     request_id = str(uuid.uuid4())
     t0 = time.monotonic()
 
+    local_store = _get_local_store(request)
+    if local_store is not None and _should_route_intra(body.target_agent_id, body.target_org_id):
+        try:
+            session = local_store.create(
+                initiator_agent_id=agent.agent_id,
+                responder_agent_id=body.target_agent_id,
+                requested_capabilities=body.capabilities,
+            )
+            await save_local_session(session)
+            duration_ms = (time.monotonic() - t0) * 1000
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="egress_session_open_local",
+                status="success",
+                detail=f"target={body.target_agent_id} session={session.session_id}",
+                request_id=request_id,
+                duration_ms=duration_ms,
+            )
+            return OpenSessionResponse(session_id=session.session_id, status="opened")
+        except LocalAgentSessionCapExceeded as exc:
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="egress_session_open_local",
+                status="error",
+                detail=str(exc)[:500],
+                request_id=request_id,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={"error": "session_cap_exceeded", "current": exc.current, "cap": exc.cap},
+            ) from exc
+
+    bridge = _get_bridge(request)
     try:
         session_id = await bridge.open_session(
             agent.agent_id,
@@ -141,14 +229,25 @@ async def list_sessions(
     status: str | None = None,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """List broker sessions for the authenticated agent."""
-    bridge = _get_bridge(request)
-    try:
-        sessions = await bridge.list_sessions(agent.agent_id, status)
-        return {"sessions": sessions}
-    except Exception as exc:
-        logger.error("Failed to list sessions for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+    """List sessions for the authenticated agent — local + broker merged."""
+    local_store = _get_local_store(request)
+    local_sessions: list[dict] = []
+    if local_store is not None:
+        for s in local_store.list_for_agent(agent.agent_id):
+            if status is None or s.status.value == status:
+                local_sessions.append(_local_session_to_dict(s))
+
+    broker_sessions: list[dict] = []
+    bridge = getattr(request.app.state, "broker_bridge", None)
+    if bridge is not None:
+        try:
+            broker_sessions = await bridge.list_sessions(agent.agent_id, status)
+        except Exception as exc:
+            logger.error("Failed to list broker sessions for %s: %s", agent.agent_id, exc)
+            # Broker failure degrades to local-only listing rather than 502.
+            broker_sessions = []
+
+    return {"sessions": local_sessions + broker_sessions}
 
 
 @router.post("/sessions/{session_id}/accept")
@@ -157,8 +256,25 @@ async def accept_session(
     request: Request,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """Accept a pending broker session."""
+    """Accept a pending session (local or broker)."""
     _validate_session_id(session_id)
+    local_store = _get_local_store(request)
+    if local_store is not None:
+        async with local_store._lock:
+            session = local_store.get(session_id)
+            if session is not None:
+                if session.responder_agent_id != agent.agent_id:
+                    raise HTTPException(status_code=403, detail="not the responder")
+                session = local_store.activate(session_id)
+                await save_local_session(session)
+                await log_audit(
+                    agent_id=agent.agent_id,
+                    action="egress_session_accept_local",
+                    status="success",
+                    detail=f"session={session_id}",
+                )
+                return {"status": "accepted", "session_id": session_id}
+
     bridge = _get_bridge(request)
     try:
         await bridge.accept_session(agent.agent_id, session_id)
@@ -189,8 +305,25 @@ async def close_session(
     request: Request,
     agent: InternalAgent = Depends(get_agent_from_api_key),
 ):
-    """Close a broker session."""
+    """Close a session (local or broker)."""
     _validate_session_id(session_id)
+    local_store = _get_local_store(request)
+    if local_store is not None:
+        async with local_store._lock:
+            session = local_store.get(session_id)
+            if session is not None:
+                if not session.involves(agent.agent_id):
+                    raise HTTPException(status_code=403, detail="not a participant")
+                session = local_store.close(session_id, SessionCloseReason.normal)
+                await save_local_session(session)
+                await log_audit(
+                    agent_id=agent.agent_id,
+                    action="egress_session_close_local",
+                    status="success",
+                    detail=f"session={session_id}",
+                )
+                return {"status": "closed", "session_id": session_id}
+
     bridge = _get_bridge(request)
     try:
         await bridge.close_session(agent.agent_id, session_id)

@@ -99,6 +99,19 @@ async def lifespan(app: FastAPI):
     else:
         _log.warning("No broker_url configured — egress endpoints will return 503")
 
+    # ADR-001 Phase 3a — local session store (intra-org mini-broker).
+    # Instantiated regardless of the feature flag so the DB schema is always
+    # readable; the egress router only dispatches into it when the flag is on
+    # and the routing decision returns "intra".
+    from mcp_proxy.local.persistence import restore_sessions
+    from mcp_proxy.local.session import LocalSessionStore
+    local_store = LocalSessionStore()
+    try:
+        await restore_sessions(local_store)
+    except Exception as exc:
+        _log.warning("Failed to restore local sessions from DB: %s", exc)
+    app.state.local_session_store = local_store
+
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
         settings.host, settings.port, settings.environment,
@@ -107,8 +120,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
-    if hasattr(app.state, "broker_bridge"):
-        await app.state.broker_bridge.shutdown()
+    bridge = getattr(app.state, "broker_bridge", None)
+    if bridge is not None:
+        await bridge.shutdown()
     if _jwks_client:
         await _jwks_client.close()
     await dispose_db()
