@@ -9,7 +9,6 @@ from sqlalchemy import delete
 from app.broker.federation import (
     EVENT_AGENT_REGISTERED,
     EVENT_AGENT_REVOKED,
-    EVENT_AGENT_ROTATED,
     EVENT_BINDING_GRANTED,
     EVENT_BINDING_REVOKED,
     EVENT_POLICY_REMOVED,
