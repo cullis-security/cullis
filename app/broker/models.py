@@ -29,7 +29,6 @@ class SessionCloseReason(str, Enum):
     policy_revoked = "policy_revoked"  # binding/policy revocation
     pending_timeout = "pending_timeout"  # accept not received within pending window
     rejected = "rejected"            # explicit reject() by target
-    canceled = "canceled"            # A2A tasks/cancel (ADR-002 Phase 2b)
 
 
 class SessionRequest(BaseModel):
