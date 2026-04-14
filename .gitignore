@@ -57,7 +57,6 @@ run.sh
 reset.sh
 agent.sh
 CLAUDE.md
-CHANGELOG.md
 .claude/
 enterprise-lab/
 org-node/
@@ -82,3 +81,18 @@ node_modules/
 package-lock.json
 app/static/css/tailwind.css
 mcp_proxy/dashboard/static/css/tailwind.css
+
+# Staged files for the standalone `cullis-connector` PyPI build. They
+# are copied in from the monorepo root by packaging/pypi/build.sh and
+# are never authored in-place — the source of truth lives at repo root.
+packaging/pypi/cullis_connector/
+packaging/pypi/README_PKG.md
+packaging/pypi/LICENSE
+packaging/pypi/LICENSE-APACHE-2.0
+packaging/pypi/NOTICE
+packaging/pypi/CHANGELOG.md
+
+# Python build outputs
+dist/
+build/
+*.egg-info/

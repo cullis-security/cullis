@@ -1,0 +1,232 @@
+# Release pipeline for `cullis-connector`.
+#
+# Triggered by pushing a tag of the form `connector-vX.Y.Z`. On tag push:
+#
+#   1. Run the connector test subset to gate the release.
+#   2. Build a standalone PyPI wheel + sdist from packaging/pypi/.
+#   3. Build and push the Docker image to ghcr.io (multi-arch).
+#   4. Build PyInstaller binaries for Linux and macOS (best effort).
+#   5. Create a GitHub Release and attach wheel, sdist, and binaries.
+#   6. Optionally publish to PyPI (gated on PYPI_TOKEN presence).
+#
+# This workflow is intentionally isolated from the main CI pipeline: it
+# must not run on PRs or pushes to main. Only tag pushes trigger it.
+
+name: release-connector
+
+on:
+  push:
+    tags:
+      - "connector-v*"
+
+# Minimal default permissions; individual jobs grant what they need.
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. Tests ─────────────────────────────────────────────────────────
+  test:
+    name: Test connector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run connector tests
+        env:
+          OTEL_ENABLED: "false"
+          DATABASE_URL: "sqlite+aiosqlite://"
+        run: pytest tests/connector tests/test_enrollment.py --tb=short
+
+  # ── 2. Build wheel + sdist (standalone PyPI distribution) ───────────
+  build-python:
+    name: Build Python distributions
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Extract version from tag
+        id: extract-version
+        run: |
+          # connector-v1.2.3 → 1.2.3
+          version="${GITHUB_REF_NAME#connector-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing version: ${version}"
+
+      - name: Install build tool
+        run: python -m pip install --upgrade pip build
+
+      - name: Build wheel + sdist
+        run: python -m build --outdir dist/ packaging/pypi
+
+      - name: Smoke test wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/cullis_connector-*.whl
+          /tmp/smoke/bin/cullis-connector --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+          retention-days: 7
+
+  # ── 3. Docker image → ghcr.io ───────────────────────────────────────
+  build-docker:
+    name: Build & push Docker image
+    needs: [test, build-python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cullis-connector
+          tags: |
+            type=match,pattern=connector-v(.*),group=1
+            type=raw,value=latest
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 4. PyInstaller binaries (best effort, per-OS) ────────────────────
+  build-binaries:
+    name: Build binary (${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build binary
+        run: bash packaging/pyinstaller/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}
+          path: dist/cullis-connector-*
+          retention-days: 7
+
+  # ── 5. GitHub Release ────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-python, build-docker, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p dist
+          find release-assets -type f \( -name 'cullis_connector-*' -o -name 'cullis-connector-*' \) \
+            -exec cp -v {} dist/ \;
+          ls -lah dist/
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#connector-v}"
+          # Grab the section matching ## [vX.Y.Z] or ## vX.Y.Z up to the next ## heading.
+          awk "/^## \\[?v?${version}\\]?/{flag=1; next} /^## /{flag=0} flag" CHANGELOG.md \
+            > release-notes.md || true
+          if [[ ! -s release-notes.md ]]; then
+            echo "Release ${GITHUB_REF_NAME}" > release-notes.md
+          fi
+          cat release-notes.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Cullis Connector ${{ github.ref_name }}"
+          body_path: release-notes.md
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
+
+  # ── 6. PyPI upload (opt-in via PYPI_TOKEN secret) ────────────────────
+  #
+  # TODO: once PYPI_TOKEN is provisioned in repository secrets, remove
+  # the `if:` guard below. Until then this job is a no-op on releases.
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build-python
+    runs-on: ubuntu-latest
+    if: ${{ false }}  # TODO: flip to `${{ secrets.PYPI_TOKEN != '' }}` once provisioned
+    environment:
+      name: pypi
+      url: https://pypi.org/p/cullis-connector
+    permissions:
+      id-token: write  # for PyPI trusted publishing once configured
+    steps:
+      - name: Download wheel + sdist
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+          # Switch to trusted publishing (OIDC) once the PyPI project
+          # is configured; then `password` can be dropped.

@@ -33,3 +33,17 @@ __pycache__/
 imp/
 drafts/
 demo/
+
+# Build outputs (keep the Docker build context small; the connector
+# Dockerfile builds the wheel fresh inside the builder stage).
+dist/
+build/
+*.egg-info/
+node_modules/
+sdk-ts/node_modules/
+sdk-ts/dist/
+
+# Test / coverage caches
+.coverage
+htmlcov/
+tests/connector/__pycache__/

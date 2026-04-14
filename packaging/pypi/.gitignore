@@ -1,0 +1,13 @@
+# These staged files are copied in at build time by `build.sh` and are
+# not tracked in git — the monorepo root is their source of truth.
+#
+# IMPORTANT: We deliberately do NOT list `cullis_connector/` here even
+# though it is copied in fresh on every build. Hatchling respects
+# `.gitignore` when selecting sdist/wheel contents, so ignoring the
+# package directory here would result in an empty wheel.
+
+README_PKG.md
+LICENSE
+LICENSE-APACHE-2.0
+NOTICE
+CHANGELOG.md
