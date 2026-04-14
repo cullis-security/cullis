@@ -20,6 +20,13 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+connector = [
+    "mcp>=1.0",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+cullis-connector = "cullis_connector.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["cullis_sdk"]
+packages = ["cullis_sdk", "cullis_connector"]

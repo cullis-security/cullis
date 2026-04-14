@@ -8,6 +8,8 @@ Covers:
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -15,6 +17,15 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from mcp_proxy.local.ws_manager import LocalConnectionManager
+
+# Starlette's sync TestClient deadlocks the inner anyio loop on single-core
+# GHA runners when it's invoked from inside an `@pytest.mark.asyncio` test —
+# in particular for the one case that completes a real WS handshake. Tracked
+# in #68; will go away once the test moves to httpx_ws / async websockets.
+_CI_HANG_SKIP = pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Hangs on GHA runners (#68) — sync TestClient + asyncio loop deadlock.",
+)
 
 
 # ── LocalConnectionManager unit tests ───────────────────────────────
@@ -159,6 +170,7 @@ async def test_ws_rejects_invalid_api_key(proxy_app):
     assert exc.value.code == 4401
 
 
+@_CI_HANG_SKIP
 @pytest.mark.asyncio
 async def test_ws_accepts_valid_api_key_and_registers(proxy_app):
     app, _ = proxy_app
