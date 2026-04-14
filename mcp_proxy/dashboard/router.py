@@ -1918,6 +1918,173 @@ async def vault_migrate_keys(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Connector enrollments (Phase 2c — admin review UI)
+#
+# The JSON API lives under /v1/admin/enrollments/* (mcp_proxy.enrollment.router).
+# These routes render the HTML dashboard page and accept form-based POST
+# submissions so the approve/reject flow matches the prevailing form+CSRF
+# pattern used by the rest of the dashboard (agents/create, vault/save, etc).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_agent_manager(request: Request):
+    """Return a usable AgentManager for enrollment approval.
+
+    Prefers ``app.state.agent_manager`` (set in tests), then the one
+    embedded in ``app.state.broker_bridge``, then falls back to
+    constructing one on the fly and loading the Org CA from config.
+    """
+    from mcp_proxy.egress.agent_manager import AgentManager
+
+    mgr = getattr(request.app.state, "agent_manager", None)
+    if mgr is not None:
+        return mgr
+
+    bridge = getattr(request.app.state, "broker_bridge", None)
+    if bridge is not None:
+        embedded = getattr(bridge, "_agent_manager", None)
+        if embedded is not None:
+            return embedded
+
+    # Fallback: construct from config. ``load_org_ca_from_config`` is a
+    # no-op when no CA is stored; the enrollment service will then raise a
+    # clean 503 that we surface in the page.
+    from mcp_proxy.config import get_settings
+
+    settings = get_settings()
+    return AgentManager(org_id=settings.org_id, trust_domain=settings.trust_domain)
+
+
+@router.get("/enrollments", response_class=HTMLResponse)
+async def enrollments_page(request: Request):
+    """Admin-only list of pending Connector enrollment requests."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from mcp_proxy.db import get_db as _get_db
+    from mcp_proxy.enrollment import service as _enrollment_service
+
+    async with _get_db() as conn:
+        pending = await _enrollment_service.list_pending(conn)
+
+    flash = request.query_params.get("flash")
+    flash_kind = request.query_params.get("flash_kind", "success")
+    error = request.query_params.get("error")
+
+    return templates.TemplateResponse("enrollments.html", _ctx(
+        request, session,
+        active="enrollments",
+        pending=pending,
+        flash=flash,
+        flash_kind=flash_kind,
+        error=error,
+    ))
+
+
+@router.post("/enrollments/{session_id}/approve")
+async def enrollments_approve(request: Request, session_id: str):
+    """Form-based approve handler. Calls the service and redirects back."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.db import get_db as _get_db
+    from mcp_proxy.enrollment import service as _enrollment_service
+
+    form = await request.form()
+    agent_id = str(form.get("agent_id", "")).strip()
+    capabilities_raw = str(form.get("capabilities", "")).strip()
+    groups_raw = str(form.get("groups", "")).strip()
+
+    if not agent_id:
+        return RedirectResponse(
+            url="/proxy/enrollments?error=agent_id+is+required",
+            status_code=303,
+        )
+
+    capabilities = [c.strip() for c in capabilities_raw.split(",") if c.strip()]
+    groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+
+    agent_manager = _resolve_agent_manager(request)
+
+    try:
+        async with _get_db() as conn:
+            record = await _enrollment_service.approve(
+                conn,
+                session_id=session_id,
+                agent_id=agent_id,
+                capabilities=capabilities,
+                groups=groups,
+                admin_name=session.role or "admin",
+                agent_manager=agent_manager,
+            )
+    except _enrollment_service.EnrollmentError as exc:
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"/proxy/enrollments?error={quote(str(exc))}",
+            status_code=303,
+        )
+
+    _log.info(
+        "enrollment_approved via dashboard: session=%s agent=%s admin=%s",
+        session_id, record.get("agent_id_assigned"), session.role,
+    )
+    from urllib.parse import quote
+    msg = f"Approved enrollment — agent {record.get('agent_id_assigned', agent_id)} issued"
+    return RedirectResponse(
+        url=f"/proxy/enrollments?flash={quote(msg)}",
+        status_code=303,
+    )
+
+
+@router.post("/enrollments/{session_id}/reject")
+async def enrollments_reject(request: Request, session_id: str):
+    """Form-based reject handler. Calls the service and redirects back."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.db import get_db as _get_db
+    from mcp_proxy.enrollment import service as _enrollment_service
+
+    form = await request.form()
+    reason = str(form.get("reason", "")).strip()
+    if not reason:
+        return RedirectResponse(
+            url="/proxy/enrollments?error=Rejection+reason+is+required",
+            status_code=303,
+        )
+
+    try:
+        async with _get_db() as conn:
+            await _enrollment_service.reject(
+                conn,
+                session_id=session_id,
+                reason=reason,
+                admin_name=session.role or "admin",
+            )
+    except _enrollment_service.EnrollmentError as exc:
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"/proxy/enrollments?error={quote(str(exc))}",
+            status_code=303,
+        )
+
+    _log.info(
+        "enrollment_rejected via dashboard: session=%s admin=%s",
+        session_id, session.role,
+    )
+    return RedirectResponse(
+        url="/proxy/enrollments?flash=Enrollment+rejected&flash_kind=success",
+        status_code=303,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HTMX badge fragments
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1934,6 +2101,30 @@ async def badge_agents(request: Request):
     if active:
         return HTMLResponse(
             f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-teal-500/20 text-teal-400">{active}</span>'
+        )
+    return HTMLResponse("")
+
+
+@router.get("/badge/enrollments")
+async def badge_enrollments(request: Request):
+    """Return pending enrollment count badge fragment."""
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+
+    from mcp_proxy.db import get_db as _get_db
+    from mcp_proxy.enrollment import service as _enrollment_service
+
+    try:
+        async with _get_db() as conn:
+            pending = await _enrollment_service.list_pending(conn)
+    except Exception:  # table may not exist in pre-migrated setups
+        return HTMLResponse("")
+
+    count = len(pending)
+    if count:
+        return HTMLResponse(
+            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-amber-500/20 text-amber-400">{count}</span>'
         )
     return HTMLResponse("")
 
