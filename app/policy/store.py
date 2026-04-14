@@ -32,6 +32,11 @@ async def create_policy(
     policy_type: str,
     rules: dict,
 ) -> PolicyRecord:
+    from app.broker.federation import (
+        EVENT_POLICY_UPDATED,
+        publish_federation_event,
+    )
+
     record = PolicyRecord(
         policy_id=policy_id,
         org_id=org_id,
@@ -39,6 +44,16 @@ async def create_policy(
         rules_json=json.dumps(rules),
     )
     db.add(record)
+    await db.flush()
+    await publish_federation_event(
+        db,
+        org_id=org_id,
+        event_type=EVENT_POLICY_UPDATED,
+        payload={
+            "policy_id": policy_id,
+            "policy_type": policy_type,
+        },
+    )
     await db.commit()
     await db.refresh(record)
     return record
@@ -67,10 +82,24 @@ async def list_policies(
 
 
 async def deactivate_policy(db: AsyncSession, policy_id: str) -> PolicyRecord | None:
+    from app.broker.federation import (
+        EVENT_POLICY_REMOVED,
+        publish_federation_event,
+    )
+
     record = await get_policy(db, policy_id)
     if not record:
         return None
     record.is_active = False
+    await publish_federation_event(
+        db,
+        org_id=record.org_id,
+        event_type=EVENT_POLICY_REMOVED,
+        payload={
+            "policy_id": policy_id,
+            "policy_type": record.policy_type,
+        },
+    )
     await db.commit()
     await db.refresh(record)
     return record

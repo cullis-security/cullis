@@ -331,6 +331,11 @@ v1.include_router(policy_router)
 v1.include_router(onboarding_router)
 v1.include_router(admin_router)
 
+# ADR-001 Phase 4a — federation event stream for proxies to mirror
+# broker state (agent lifecycle, policies, bindings) via SSE.
+from app.broker.federation_router import router as federation_router
+v1.include_router(federation_router)
+
 # ADR-002 Phase 2a — A2A protocol adapter (read-only AgentCard + directory).
 # Gated on settings.a2a_adapter (default False) so existing deployments
 # see no surface change.

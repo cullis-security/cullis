@@ -102,6 +102,22 @@ async def revoke_cert(
         delete(RevokedCert).where(RevokedCert.cert_not_after < now - timedelta(minutes=30))
     )
 
+    # Federation event so proxies can drop the cert from their cache.
+    from app.broker.federation import (
+        EVENT_AGENT_REVOKED,
+        publish_federation_event,
+    )
+    await publish_federation_event(
+        db,
+        org_id=org_id,
+        event_type=EVENT_AGENT_REVOKED,
+        payload={
+            "agent_id": agent_id,
+            "serial_hex": serial_hex,
+            "reason": reason,
+        },
+    )
+
     await db.commit()
 
     # Fetch the inserted record to return

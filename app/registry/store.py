@@ -56,6 +56,11 @@ async def register_agent(db: AsyncSession, agent_id: str, org_id: str, display_n
                           capabilities: list[str], metadata: dict,
                           secret: str | None = None,
                           description: str = "") -> AgentRecord:
+    from app.broker.federation import (
+        EVENT_AGENT_REGISTERED,
+        publish_federation_event,
+    )
+
     record = AgentRecord(
         agent_id=agent_id,
         org_id=org_id,
@@ -66,6 +71,17 @@ async def register_agent(db: AsyncSession, agent_id: str, org_id: str, display_n
         metadata_json=json.dumps(metadata),
     )
     db.add(record)
+    await db.flush()
+    await publish_federation_event(
+        db,
+        org_id=org_id,
+        event_type=EVENT_AGENT_REGISTERED,
+        payload={
+            "agent_id": agent_id,
+            "display_name": display_name,
+            "capabilities": capabilities,
+        },
+    )
     await db.commit()
     await db.refresh(record)
     return record
@@ -125,6 +141,11 @@ async def rotate_agent_cert(db: AsyncSession, agent_id: str, new_cert_pem: str) 
     Rotate an agent's pinned certificate. Called only from explicit rotate endpoints.
     Returns the new thumbprint. Also invalidates active tokens.
     """
+    from app.broker.federation import (
+        EVENT_AGENT_ROTATED,
+        publish_federation_event,
+    )
+
     agent = await get_agent_by_id(db, agent_id)
     if agent is None:
         raise ValueError(f"Agent '{agent_id}' not found")
@@ -133,6 +154,15 @@ async def rotate_agent_cert(db: AsyncSession, agent_id: str, new_cert_pem: str) 
     agent.cert_pem = new_cert_pem
     agent.cert_thumbprint = new_thumbprint
     agent.token_invalidated_at = datetime.now(timezone.utc).replace(microsecond=0)
+    await publish_federation_event(
+        db,
+        org_id=agent.org_id,
+        event_type=EVENT_AGENT_ROTATED,
+        payload={
+            "agent_id": agent_id,
+            "thumbprint": new_thumbprint,
+        },
+    )
     await db.commit()
     return new_thumbprint
 

@@ -84,6 +84,11 @@ async def get_binding_by_org_agent(
 async def approve_binding(
     db: AsyncSession, binding_id: int, approved_by: str
 ) -> BindingRecord | None:
+    from app.broker.federation import (
+        EVENT_BINDING_GRANTED,
+        publish_federation_event,
+    )
+
     binding = await get_binding(db, binding_id)
     if not binding:
         return None
@@ -92,16 +97,40 @@ async def approve_binding(
     binding.status = "approved"
     binding.approved_at = datetime.now(timezone.utc)
     binding.approved_by = approved_by
+    await publish_federation_event(
+        db,
+        org_id=binding.org_id,
+        event_type=EVENT_BINDING_GRANTED,
+        payload={
+            "binding_id": binding_id,
+            "agent_id": binding.agent_id,
+            "scope": binding.scope,
+        },
+    )
     await db.commit()
     await db.refresh(binding)
     return binding
 
 
 async def revoke_binding(db: AsyncSession, binding_id: int) -> BindingRecord | None:
+    from app.broker.federation import (
+        EVENT_BINDING_REVOKED,
+        publish_federation_event,
+    )
+
     binding = await get_binding(db, binding_id)
     if not binding:
         return None
     binding.status = "revoked"
+    await publish_federation_event(
+        db,
+        org_id=binding.org_id,
+        event_type=EVENT_BINDING_REVOKED,
+        payload={
+            "binding_id": binding_id,
+            "agent_id": binding.agent_id,
+        },
+    )
     await db.commit()
     await db.refresh(binding)
     return binding
