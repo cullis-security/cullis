@@ -1,12 +1,12 @@
 # Cullis Enterprise Sandbox — compose topology
 #
-# Status: SCAFFOLD ONLY (Blocco 1 in progress)
-# Plan:   imp/enterprise_sandbox_plan.md
+# Blocco 1: skeleton + 2 brokers cross-org.
+# - 3 networks: orga-internal, orgb-internal, public-wan
+# - Only brokers live on public-wan (simulates internet between orgs)
+# - Local KMS (filesystem), HTTP only — TLS + Vault arrive in Blocco 2
+# - No proxy/IdP/SPIRE yet — added in Blocchi 2/3/4
 #
-# Three networks:
-#   - orga-internal: contains all Org A services (IdP, Vault, SPIRE, proxy, connector, agent)
-#   - orgb-internal: mirror for Org B
-#   - public-wan:    only brokers live here; simulates internet between orgs
+# Plan: imp/enterprise_sandbox_plan.md
 
 networks:
   orga-internal:
@@ -19,11 +19,155 @@ networks:
     name: cullis-sandbox-wan
     driver: bridge
 
-# Services will be added incrementally per block.
-# Blocco 1: ca-init-{a,b}, postgres-{a,b}, redis-{a,b}, broker-{a,b}
-# Blocco 2: vault-{a,b}, proxy-{a,b}
-# Blocco 3: keycloak-{a,b}
-# Blocco 4: spire-server-{a,b}, spire-agent-{a,b}, connector-{a,b}, agent-{a,b}
-services: {}
+volumes:
+  broker-ca-a:
+  broker-ca-b:
+  postgres-a-data:
+  postgres-b-data:
 
-volumes: {}
+# Anchors for DRY per-org configuration.
+x-broker-base: &broker-base
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  environment: &broker-env-base
+    ADMIN_SECRET: "sandbox-admin-secret-change-me"
+    DASHBOARD_SIGNING_KEY: "sandbox-dashboard-signing-key-32chars-long"
+    KMS_BACKEND: "local"
+    POLICY_BACKEND: "webhook"
+    POLICY_ENFORCEMENT: "true"
+    POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
+    OTEL_ENABLED: "false"
+    ENVIRONMENT: "development"
+    FORWARDED_ALLOW_IPS: "172.16.0.0/12"
+  entrypoint: ["sh", "-c"]
+  command:
+    - |
+      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 172.16.0.0/12
+  expose: ["8000"]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 15s
+
+services:
+
+  # ── Org A ──────────────────────────────────────────────────────────────────
+
+  broker-ca-init-a:
+    build: ./broker-ca-init
+    environment:
+      ORG_ID: orga
+    volumes:
+      - broker-ca-a:/broker-certs
+    networks: [orga-internal]
+    restart: "no"
+
+  postgres-a:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     atn
+      POSTGRES_PASSWORD: atn-sandbox
+      POSTGRES_DB:       agent_trust
+    volumes:
+      - postgres-a-data:/var/lib/postgresql/data
+    networks: [orga-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atn -d agent_trust"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-a:
+    image: redis:7-alpine
+    networks: [orga-internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  broker-a:
+    <<: *broker-base
+    depends_on:
+      broker-ca-init-a:
+        condition: service_completed_successfully
+      postgres-a:
+        condition: service_healthy
+      redis-a:
+        condition: service_healthy
+    environment:
+      <<: *broker-env-base
+      BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
+      BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
+      BROKER_PUBLIC_URL: "http://broker-a:8000"
+      DATABASE_URL: "postgresql+asyncpg://atn:atn-sandbox@postgres-a:5432/agent_trust"
+      REDIS_URL: "redis://redis-a:6379"
+      TRUST_DOMAIN: "orga.test"
+    volumes:
+      - broker-ca-a:/broker-certs:ro
+    networks:
+      orga-internal:
+      public-wan:
+        aliases: [broker-a]
+
+  # ── Org B ──────────────────────────────────────────────────────────────────
+
+  broker-ca-init-b:
+    build: ./broker-ca-init
+    environment:
+      ORG_ID: orgb
+    volumes:
+      - broker-ca-b:/broker-certs
+    networks: [orgb-internal]
+    restart: "no"
+
+  postgres-b:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     atn
+      POSTGRES_PASSWORD: atn-sandbox
+      POSTGRES_DB:       agent_trust
+    volumes:
+      - postgres-b-data:/var/lib/postgresql/data
+    networks: [orgb-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atn -d agent_trust"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis-b:
+    image: redis:7-alpine
+    networks: [orgb-internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  broker-b:
+    <<: *broker-base
+    depends_on:
+      broker-ca-init-b:
+        condition: service_completed_successfully
+      postgres-b:
+        condition: service_healthy
+      redis-b:
+        condition: service_healthy
+    environment:
+      <<: *broker-env-base
+      BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
+      BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
+      BROKER_PUBLIC_URL: "http://broker-b:8000"
+      DATABASE_URL: "postgresql+asyncpg://atn:atn-sandbox@postgres-b:5432/agent_trust"
+      REDIS_URL: "redis://redis-b:6379"
+      TRUST_DOMAIN: "orgb.test"
+    volumes:
+      - broker-ca-b:/broker-certs:ro
+    networks:
+      orgb-internal:
+      public-wan:
+        aliases: [broker-b]
