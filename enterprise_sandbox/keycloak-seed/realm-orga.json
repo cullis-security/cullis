@@ -30,14 +30,14 @@
   ],
   "clients": [
     {
-      "clientId": "cullis-broker-dashboard",
+      "clientId": "cullis-proxy-dashboard",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
       "secret": "orga-oidc-client-secret-change-me",
       "redirectUris": [
-        "http://broker:8000/dashboard/oidc/callback",
-        "http://localhost:8000/dashboard/oidc/callback"
+        "http://localhost:9100/proxy/oidc/callback",
+        "http://proxy-a:9100/proxy/oidc/callback"
       ],
       "webOrigins": ["+"],
       "standardFlowEnabled": true,

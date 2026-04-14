@@ -68,6 +68,17 @@ async def main() -> int:
         policy_rules = os.environ.get("POLICY_RULES", "").strip()
         if policy_rules:
             rows["policy_rules"] = policy_rules
+
+        # Optional per-proxy OIDC config (PR #87) — if all three are set, the
+        # proxy dashboard enables SSO login via that IdP.
+        oidc_issuer = os.environ.get("OIDC_ISSUER_URL", "").strip()
+        oidc_client = os.environ.get("OIDC_CLIENT_ID", "").strip()
+        oidc_secret = os.environ.get("OIDC_CLIENT_SECRET", "").strip()
+        if oidc_issuer and oidc_client:
+            rows["oidc_issuer_url"] = oidc_issuer
+            rows["oidc_client_id"] = oidc_client
+            if oidc_secret:
+                rows["oidc_client_secret"] = oidc_secret
         for k, v in rows.items():
             await db.execute(
                 "INSERT INTO proxy_config (key, value) VALUES (?, ?) "

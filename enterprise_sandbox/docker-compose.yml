@@ -166,21 +166,14 @@ services:
     depends_on:
       broker:
         condition: service_healthy
-      keycloak-a:
-        condition: service_started
-      keycloak-b:
-        condition: service_started
     environment:
       BROKER_URL:   "http://broker:8000"
       ADMIN_SECRET: "sandbox-admin-secret-change-me"
       STATE_DIR:    /state
       POSTGRES_DSN: "postgresql://atn:atn-sandbox@postgres:5432/agent_trust"
-      ORGA_OIDC_ISSUER: "http://keycloak-a:8180/realms/orga"
-      ORGA_OIDC_CLIENT_ID: "cullis-broker-dashboard"
-      ORGA_OIDC_CLIENT_SECRET: "orga-oidc-client-secret-change-me"
-      ORGB_OIDC_ISSUER: "http://keycloak-b:8280/realms/orgb"
-      ORGB_OIDC_CLIENT_ID: "cullis-broker-dashboard"
-      ORGB_OIDC_CLIENT_SECRET: "orgb-oidc-client-secret-change-me"
+      # Per PR #88 the broker no longer has per-org OIDC login — OIDC is
+      # configured per-proxy via proxy-init below. Bootstrap just creates
+      # the orgs on the broker and writes CA/secret to /state.
     volumes:
       - bootstrap-state:/state
     networks: [public-wan]
@@ -194,11 +187,14 @@ services:
       bootstrap:
         condition: service_completed_successfully
     environment:
-      ORG_ID:           "orga"
-      BROKER_URL:       "http://broker:8000"
-      PROXY_PUBLIC_URL: "http://proxy-a:9100"
-      PROXY_DB_PATH:    /data/mcp_proxy.db
-      STATE_DIR:        /state
+      ORG_ID:              "orga"
+      BROKER_URL:          "http://broker:8000"
+      PROXY_PUBLIC_URL:    "http://localhost:9100"
+      PROXY_DB_PATH:       /data/mcp_proxy.db
+      STATE_DIR:           /state
+      OIDC_ISSUER_URL:     "http://keycloak-a:8180/realms/orga"
+      OIDC_CLIENT_ID:      "cullis-proxy-dashboard"
+      OIDC_CLIENT_SECRET:  "orga-oidc-client-secret-change-me"
     volumes:
       - bootstrap-state:/state:ro
       - proxy-a-data:/data
@@ -214,11 +210,11 @@ services:
     environment:
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
-      MCP_PROXY_PROXY_PUBLIC_URL:  "http://proxy-a:9100"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "http://localhost:9100"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
-      MCP_PROXY_ALLOWED_ORIGINS:   "http://proxy-a:9100"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100"
       MCP_PROXY_ENVIRONMENT:       "development"
     volumes:
       - proxy-a-data:/data
@@ -228,6 +224,7 @@ services:
       public-wan:
         aliases: [proxy-a]
     expose: ["9100"]
+    ports: ["9100:9100"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
       interval: 5s
@@ -243,11 +240,14 @@ services:
       bootstrap:
         condition: service_completed_successfully
     environment:
-      ORG_ID:           "orgb"
-      BROKER_URL:       "http://broker:8000"
-      PROXY_PUBLIC_URL: "http://proxy-b:9100"
-      PROXY_DB_PATH:    /data/mcp_proxy.db
-      STATE_DIR:        /state
+      ORG_ID:              "orgb"
+      BROKER_URL:          "http://broker:8000"
+      PROXY_PUBLIC_URL:    "http://localhost:9200"
+      PROXY_DB_PATH:       /data/mcp_proxy.db
+      STATE_DIR:           /state
+      OIDC_ISSUER_URL:     "http://keycloak-b:8280/realms/orgb"
+      OIDC_CLIENT_ID:      "cullis-proxy-dashboard"
+      OIDC_CLIENT_SECRET:  "orgb-oidc-client-secret-change-me"
     volumes:
       - bootstrap-state:/state:ro
       - proxy-b-data:/data
@@ -263,11 +263,11 @@ services:
     environment:
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
-      MCP_PROXY_PROXY_PUBLIC_URL:  "http://proxy-b:9100"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "http://localhost:9200"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-b"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orgb"
-      MCP_PROXY_ALLOWED_ORIGINS:   "http://proxy-b:9100"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9200"
       MCP_PROXY_ENVIRONMENT:       "development"
     volumes:
       - proxy-b-data:/data
@@ -277,6 +277,7 @@ services:
       public-wan:
         aliases: [proxy-b]
     expose: ["9100"]
+    ports: ["9200:9100"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
       interval: 5s
