@@ -163,7 +163,7 @@ async def test_cli_cross_verify_detects_content_divergence(client, tmp_path):
     )
 
     # Tamper B's details — CLI cross-reconcile must catch the divergence
-    lines_b = [json.loads(l) for l in resp_b.text.strip().split("\n") if l]
+    lines_b = [json.loads(ln) for ln in resp_b.text.strip().split("\n") if ln]
     for ln in lines_b:
         if ln.get("kind") == "entry":
             ln["details"] = '{"x": 999}'
