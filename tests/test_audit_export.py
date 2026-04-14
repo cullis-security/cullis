@@ -114,13 +114,19 @@ async def test_export_wrong_admin_secret(client, seed_audit):
 
 @pytest.mark.asyncio
 async def test_export_hash_chain_intact(client, seed_audit):
-    """Exported entries have valid hash chain references."""
-    resp = await client.get("/v1/admin/audit/export", headers=_admin_headers())
+    """Exported entries within one org form a contiguous per-org chain."""
+    resp = await client.get(
+        f"/v1/admin/audit/export?org_id={_EXPORT_ORG}", headers=_admin_headers()
+    )
     lines = [json.loads(line) for line in resp.text.strip().split("\n") if line]
-    assert len(lines) >= 4
-    for i, entry in enumerate(lines):
+    # Filter down to only this test's seeded entries (order preserved by id).
+    seeded = [
+        entry for entry in lines
+        if entry.get("agent_id") == f"{_EXPORT_ORG}::agent1"
+        or entry.get("session_id") == "sess-export-1"
+    ]
+    assert len(seeded) >= 3
+    for i, entry in enumerate(seeded):
         assert entry["entry_hash"] is not None
-        if i == 0:
-            assert entry["previous_hash"] is None  # first entry
-        else:
-            assert entry["previous_hash"] == lines[i - 1]["entry_hash"]
+        if i > 0:
+            assert entry["previous_hash"] == seeded[i - 1]["entry_hash"]

@@ -671,6 +671,9 @@ async def export_audit_logs(
                 "details": e.details,
                 "entry_hash": e.entry_hash,
                 "previous_hash": e.previous_hash,
+                "chain_seq": e.chain_seq,
+                "peer_org_id": e.peer_org_id,
+                "peer_row_hash": e.peer_row_hash,
             }) + "\n"
 
     return StreamingResponse(
