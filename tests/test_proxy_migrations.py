@@ -27,6 +27,10 @@ EXPECTED_TABLES = {
     "local_policies",
     "local_audit",
     "pending_enrollments",
+    "cached_federated_agents",
+    "cached_policies",
+    "cached_bindings",
+    "federation_cursor",
     "alembic_version",
 }
 
@@ -61,7 +65,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0003_add_pending_enrollments",)]
+    assert rows == [("0004_add_federation_cache",)]
 
 
 @pytest.mark.asyncio
@@ -121,7 +125,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0003_add_pending_enrollments",)]
+    assert version == [("0004_add_federation_cache",)]
 
 
 @pytest.mark.asyncio
