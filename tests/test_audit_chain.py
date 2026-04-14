@@ -57,6 +57,8 @@ async def test_hash_determinism(audit_db):
         entry.id, ts, entry.event_type,
         entry.agent_id, entry.session_id, entry.org_id,
         entry.result, entry.details, entry.previous_hash,
+        chain_seq=entry.chain_seq,
+        peer_org_id=entry.peer_org_id,
     )
     assert entry.entry_hash == recomputed
 
@@ -95,3 +97,148 @@ async def test_verify_chain_empty(audit_db):
     assert is_valid is True
     assert total == 0
     assert broken_id == 0
+
+
+# ── Per-org chain tests (hash chain split per org_id) ─────────────
+
+async def test_per_org_chains_independent(audit_db):
+    """Events for different orgs must land in different chains — an
+    entry for org A does not link to the previous entry for org B."""
+    a1 = await log_event(audit_db, "e1", "ok", org_id="acme")
+    b1 = await log_event(audit_db, "e1", "ok", org_id="bravo")
+    a2 = await log_event(audit_db, "e2", "ok", org_id="acme")
+    b2 = await log_event(audit_db, "e2", "ok", org_id="bravo")
+
+    # Genesis of each chain (seq=1) has no predecessor.
+    assert a1.chain_seq == 1
+    assert b1.chain_seq == 1
+    assert a1.previous_hash is None
+    assert b1.previous_hash is None
+
+    # Second event per-org links to its own org's first event.
+    assert a2.chain_seq == 2
+    assert b2.chain_seq == 2
+    assert a2.previous_hash == a1.entry_hash
+    assert b2.previous_hash == b1.entry_hash
+
+
+async def test_per_org_chain_seq_monotonic(audit_db):
+    seqs = []
+    for i in range(5):
+        e = await log_event(audit_db, f"e{i}", "ok", org_id="acme")
+        seqs.append(e.chain_seq)
+    assert seqs == [1, 2, 3, 4, 5]
+
+
+async def test_events_without_org_land_in_system_chain(audit_db):
+    e1 = await log_event(audit_db, "sys.bootstrap", "ok")  # no org_id
+    e2 = await log_event(audit_db, "sys.shutdown", "ok")
+    assert e1.org_id == "__system__"
+    assert e2.org_id == "__system__"
+    assert e2.previous_hash == e1.entry_hash
+
+
+async def test_verify_chain_per_org_filter(audit_db):
+    """verify_chain(org_id=X) checks only that org, succeeds on valid."""
+    for _ in range(3):
+        await log_event(audit_db, "e", "ok", org_id="acme")
+    for _ in range(3):
+        await log_event(audit_db, "e", "ok", org_id="bravo")
+
+    is_valid, total, _ = await verify_chain(audit_db, org_id="acme")
+    assert is_valid is True
+    assert total == 3
+
+
+async def test_tamper_in_one_org_does_not_break_other(audit_db):
+    """A broken chain in org A does not invalidate org B's chain."""
+    a1 = await log_event(audit_db, "e1", "ok", org_id="acme")
+    a2 = await log_event(audit_db, "e2", "ok", org_id="acme")
+    b1 = await log_event(audit_db, "e1", "ok", org_id="bravo")
+    b2 = await log_event(audit_db, "e2", "ok", org_id="bravo")
+
+    # Tamper acme's row 2
+    await audit_db.execute(
+        update(AuditLog).where(AuditLog.id == a2.id).values(details='{"bad": 1}')
+    )
+    await audit_db.commit()
+
+    # acme chain broken
+    ok_a, _, broken = await verify_chain(audit_db, org_id="acme")
+    assert ok_a is False
+    assert broken == a2.id
+    # bravo chain still intact
+    ok_b, total_b, _ = await verify_chain(audit_db, org_id="bravo")
+    assert ok_b is True
+    assert total_b == 2
+
+
+# ── Cross-org dual-write ──────────────────────────────────────────
+
+async def test_cross_org_dual_write_creates_two_rows(audit_db):
+    from app.db.audit import log_event_cross_org
+
+    row_a, row_b = await log_event_cross_org(
+        audit_db, "session.opened", "ok",
+        org_a="acme", org_b="bravo",
+        session_id="sess-xyz",
+        details={"initiator": "acme::buyer", "target": "bravo::supplier"},
+    )
+    # Same logical fact recorded on both sides
+    assert row_a.session_id == row_b.session_id
+    assert row_a.details == row_b.details
+    assert row_a.event_type == row_b.event_type
+    # Distinct chains
+    assert row_a.org_id == "acme"
+    assert row_b.org_id == "bravo"
+    assert row_a.chain_seq == 1
+    assert row_b.chain_seq == 1
+    # Cross-reference linkage in both directions
+    assert row_a.peer_org_id == "bravo"
+    assert row_b.peer_org_id == "acme"
+    assert row_a.peer_row_hash == row_b.entry_hash
+    assert row_b.peer_row_hash == row_a.entry_hash
+
+
+async def test_cross_org_both_chains_verify(audit_db):
+    from app.db.audit import log_event_cross_org
+
+    await log_event_cross_org(
+        audit_db, "session.opened", "ok",
+        org_a="acme", org_b="bravo",
+        details={"x": 1},
+    )
+    await log_event_cross_org(
+        audit_db, "message.forwarded", "ok",
+        org_a="acme", org_b="bravo",
+        details={"payload_hash": "abc123"},
+    )
+    ok_a, total_a, _ = await verify_chain(audit_db, org_id="acme")
+    ok_b, total_b, _ = await verify_chain(audit_db, org_id="bravo")
+    assert ok_a is True and total_a == 2
+    assert ok_b is True and total_b == 2
+
+
+async def test_cross_org_requires_distinct_orgs(audit_db):
+    from app.db.audit import log_event_cross_org
+
+    with pytest.raises(ValueError, match="distinct"):
+        await log_event_cross_org(
+            audit_db, "x", "ok", org_a="acme", org_b="acme"
+        )
+
+
+async def test_cross_org_mixed_with_intra_org(audit_db):
+    """A cross-org event and a subsequent intra-org event both chain
+    correctly per-org (seq keeps going)."""
+    from app.db.audit import log_event_cross_org
+
+    await log_event_cross_org(
+        audit_db, "e", "ok", org_a="acme", org_b="bravo"
+    )
+    intra = await log_event(audit_db, "intra", "ok", org_id="acme")
+    assert intra.chain_seq == 2  # follows cross-org acme row at seq=1
+    assert intra.previous_hash is not None
+
+    ok, total, _ = await verify_chain(audit_db, org_id="acme")
+    assert ok is True and total == 2
