@@ -204,6 +204,15 @@ async def lifespan(app: FastAPI):
         name="cullis-session-sweeper",
     )
 
+    # Audit TSA worker: periodically anchor per-org chain heads to an
+    # external RFC 3161 TSA. Opt-in via `audit_tsa_enabled` so default
+    # deployments don't call out to the network.
+    tsa_task = None
+    tsa_stop = None
+    if getattr(settings, "audit_tsa_enabled", False):
+        from app.audit.tsa_worker import start_worker_task
+        tsa_task, tsa_stop = start_worker_task(settings)
+
     yield
 
     # ── Drain phase ──────────────────────────────────────────────────────────
@@ -234,6 +243,15 @@ async def lifespan(app: FastAPI):
         await sweeper_task
     except (asyncio.CancelledError, Exception):
         pass
+
+    # Stop the TSA worker cleanly if it was started.
+    if tsa_task is not None and tsa_stop is not None:
+        tsa_stop.set()
+        tsa_task.cancel()
+        try:
+            await tsa_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     await ws_manager.shutdown()
     await close_redis()

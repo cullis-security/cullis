@@ -168,6 +168,29 @@ class _BrokenTsa(TsaClient):
         return False
 
 
+async def test_start_worker_task_returns_cancellable_task(clean_audit):
+    """Lifespan wiring: start_worker_task must return (task, stop_event)
+    and stop cleanly when the event is set, without leaking a running
+    loop. This mirrors how app.main.lifespan drives shutdown."""
+    import asyncio
+    from app.audit.tsa_worker import start_worker_task
+
+    class _S:
+        audit_tsa_backend = "mock"
+        audit_tsa_url = "mock://x"
+        audit_tsa_interval_seconds = 3600  # long — we'll cancel via event
+
+    task, stop = start_worker_task(_S())
+    try:
+        # Let the first tick run (empty DB → no anchors, returns fast).
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 async def test_worker_continues_when_tsa_fails(clean_audit):
     """TSA backend failure must not corrupt the chain nor raise out
     of the worker. Next tick retries."""
