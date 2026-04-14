@@ -57,9 +57,27 @@
         <div class="mb-6">
             <h2 class="text-white text-base font-semibold" style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.06em;">
                 Sign in
+                {% if display_name %}
+                <span class="block text-xs text-gray-500 font-normal mt-1" style="font-family: 'JetBrains Mono', monospace; text-transform: none; letter-spacing: 0;">{{ display_name }}</span>
+                {% endif %}
             </h2>
             <p class="text-xs text-gray-500 mt-1">Enter the admin password to access the dashboard.</p>
         </div>
+
+        {% if oidc_enabled %}
+        <!-- SSO button -->
+        <a href="/proxy/oidc/start"
+           class="flex items-center justify-center gap-2 w-full px-4 py-3 mb-4 text-sm font-semibold rounded transition-all border border-accent-400/40 text-accent-400 hover:bg-accent-400/10"
+           style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.1em; text-transform: uppercase;">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            Sign in with SSO
+        </a>
+        <div class="flex items-center gap-3 my-4">
+            <div class="flex-1 h-px bg-gray-800/60"></div>
+            <span class="text-[10px] uppercase tracking-[0.2em] text-gray-600">or password</span>
+            <div class="flex-1 h-px bg-gray-800/60"></div>
+        </div>
+        {% endif %}
 
         <form method="post" action="/proxy/login" class="space-y-5">
             <div>

@@ -1,0 +1,29 @@
+{# HTMX partial: list of cached federated agents for one org. #}
+{% if agents %}
+<div class="divide-y divide-gray-800/40">
+    {% for a in agents %}
+    <div class="flex items-center gap-4 py-2.5 pl-8 pr-3 text-xs">
+        <div class="flex-1 min-w-0">
+            <div class="font-mono text-gray-200 truncate">{{ a.agent_id }}</div>
+            {% if a.display_name and a.display_name != a.agent_id %}
+            <div class="text-[10px] text-gray-600 truncate">{{ a.display_name }}</div>
+            {% endif %}
+        </div>
+        <div class="hidden md:block text-[10px] text-gray-600">
+            {% if a.capabilities %}
+                {{ a.capabilities | length }} cap{% if a.capabilities | length != 1 %}s{% endif %}
+            {% else %}
+                <span class="text-gray-700">no caps</span>
+            {% endif %}
+        </div>
+        {% if a.revoked %}
+        <span class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider bg-red-500/10 text-red-400 border border-red-500/30">revoked</span>
+        {% else %}
+        <span class="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">active</span>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="py-3 pl-8 text-xs text-gray-600 italic">No cached agents for this org.</div>
+{% endif %}

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block header_title %}Settings{% endblock %}
+{% block content %}
+<div class="max-w-3xl space-y-6">
+
+    {% if error %}
+    <div class="p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+    {% if success %}
+    <div class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded text-sm text-emerald-400">{{ success }}</div>
+    {% endif %}
+
+    <!-- OIDC card -->
+    <div class="bg-surface-900/60 border border-gray-800/60 rounded-lg p-6">
+        <div class="mb-5">
+            <h2 class="text-base font-semibold text-white" style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.06em;">
+                Single Sign-On (OIDC)
+            </h2>
+            <p class="text-xs text-gray-500 mt-1">
+                Configure an OpenID Connect identity provider so administrators can sign in with your corporate IdP.
+                Uses OAuth 2.0 Authorization Code Flow with PKCE.
+            </p>
+        </div>
+
+        <form method="post" action="/proxy/settings" class="space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div>
+                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                    Issuer URL
+                </label>
+                <input type="url" name="oidc_issuer_url" value="{{ issuer_url }}"
+                       placeholder="https://idp.example.com"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-700"
+                       style="font-family: 'JetBrains Mono', monospace;">
+                <p class="text-[10px] text-gray-600 mt-1">The base URL of your IdP. The proxy appends <code>/.well-known/openid-configuration</code>.</p>
+            </div>
+
+            <div>
+                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                    Client ID
+                </label>
+                <input type="text" name="oidc_client_id" value="{{ client_id }}"
+                       placeholder="cullis-proxy"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-700"
+                       style="font-family: 'JetBrains Mono', monospace;">
+            </div>
+
+            <div>
+                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                    Client Secret
+                    {% if has_client_secret %}
+                    <span class="ml-2 text-emerald-400 normal-case tracking-normal">(value stored — leave blank to keep it)</span>
+                    {% else %}
+                    <span class="ml-2 text-gray-600 normal-case tracking-normal">(not set)</span>
+                    {% endif %}
+                </label>
+                <input type="password" name="oidc_client_secret" value="" autocomplete="new-password"
+                       placeholder="{% if has_client_secret %}••••••••{% else %}(optional — public clients may omit){% endif %}"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-700"
+                       style="font-family: 'JetBrains Mono', monospace;">
+                <p class="text-[10px] text-gray-600 mt-1">
+                    For confidential clients. Empty input leaves the stored value untouched.
+                </p>
+            </div>
+
+            <div class="pt-2">
+                <button type="submit"
+                        class="px-5 py-2.5 text-xs font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.1em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'"
+                        onmouseout="this.style.background='#00e5c7'">
+                    Save Settings
+                </button>
+            </div>
+        </form>
+
+        {% if issuer_url and client_id %}
+        <div class="mt-6 p-3 bg-surface-950 border border-gray-800/60 rounded">
+            <p class="text-[10px] text-gray-600 uppercase tracking-[0.2em] mb-1">Callback URL (register this at your IdP)</p>
+            <code class="text-xs text-accent-400 break-all" style="font-family: 'JetBrains Mono', monospace;">
+                {{ request.base_url | string | replace('http://', 'https://') | trim('/') }}/proxy/oidc/callback
+            </code>
+        </div>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}

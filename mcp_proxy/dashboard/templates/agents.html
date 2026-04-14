@@ -44,11 +44,27 @@
     <div class="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
     {% endif %}
 
+    <!-- Section tabs (in-page anchors) -->
+    <div class="flex items-center gap-1 mb-6 border-b border-gray-800/60">
+        <a href="#local"
+           class="px-4 py-2 text-xs font-semibold uppercase tracking-wider border-b-2 border-accent-400 text-accent-400"
+           style="font-family: 'Chakra Petch', sans-serif;">
+            Local
+            <span class="ml-2 text-[10px] text-gray-500">{{ agents | length }}</span>
+        </a>
+        <a href="#federated"
+           class="px-4 py-2 text-xs font-semibold uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300"
+           style="font-family: 'Chakra Petch', sans-serif;">
+            Federated
+            <span class="ml-2 text-[10px] text-gray-600">{{ federated_orgs | default([]) | length }} orgs</span>
+        </a>
+    </div>
+
     <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
+    <div id="local" class="flex items-center justify-between mb-6">
         <div>
-            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Internal Agents</h2>
-            <p class="text-xs text-gray-600 mt-0.5">{{ agents | length }} registered</p>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Local Agents</h2>
+            <p class="text-xs text-gray-600 mt-0.5">{{ agents | length }} registered on this proxy</p>
         </div>
         <button onclick="document.getElementById('create-panel').classList.toggle('hidden')"
                 class="px-4 py-2 text-xs font-semibold rounded transition-all"
@@ -187,5 +203,69 @@
             </tbody>
         </table>
     </div>
+
+    <!-- ─── Federated (accordion) ─────────────────────────────────── -->
+    <div id="federated" class="mt-12">
+        <div class="flex items-center justify-between mb-5">
+            <div>
+                <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Federated Agents</h2>
+                <p class="text-xs text-gray-600 mt-0.5">
+                    {% set _orgs = federated_orgs | default([]) %}
+                    {{ _orgs | length }} peer org{% if _orgs | length != 1 %}s{% endif %}
+                    visible via the broker federation cache
+                </p>
+            </div>
+        </div>
+
+        {% set _orgs = federated_orgs | default([]) %}
+        {% if not _orgs %}
+        <div class="bg-surface-900/60 border border-gray-800/50 rounded-lg p-8 text-center">
+            <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <p class="text-sm text-gray-600">No federated orgs cached yet</p>
+            <p class="text-xs text-gray-700 mt-1">
+                Federation sync must be enabled
+                (<code class="font-mono text-gray-600">PROXY_FEDERATION_SYNC=true</code>)
+                and the broker must have published at least one agent event.
+            </p>
+        </div>
+        {% else %}
+        <div class="bg-surface-900/60 border border-gray-800/50 rounded-lg overflow-hidden">
+            {% for org in _orgs %}
+            {% set _open = org.org_id in (open_orgs | default([])) %}
+            <details class="group border-b border-gray-800/40 last:border-b-0"{% if _open %} open{% endif %}>
+                <summary class="flex items-center gap-3 px-5 py-3.5 cursor-pointer hover:bg-surface-950/60 transition-colors"
+                         hx-get="/proxy/agents/federated/{{ org.org_id }}"
+                         hx-trigger="toggle once from:closest details[open]"
+                         hx-target="next .fed-body"
+                         hx-swap="innerHTML">
+                    <svg class="w-3.5 h-3.5 text-gray-500 transition-transform group-open:rotate-90"
+                         fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <div class="flex-1">
+                        <div class="text-sm text-white font-semibold">{{ org.display_name }}</div>
+                        <div class="text-[10px] text-gray-600 font-mono">{{ org.org_id }}</div>
+                    </div>
+                    <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-info-400/10 text-info-400 border border-info-400/30">
+                        {{ org.agent_count }} agent{% if org.agent_count != 1 %}s{% endif %}
+                    </span>
+                </summary>
+                <div class="fed-body pb-2 bg-surface-950/40">
+                    {% if _open %}
+                    <div hx-get="/proxy/agents/federated/{{ org.org_id }}"
+                         hx-trigger="load"
+                         hx-swap="outerHTML">
+                        <div class="py-3 pl-8 text-xs text-gray-600">Loading…</div>
+                    </div>
+                    {% else %}
+                    <div class="py-3 pl-8 text-xs text-gray-600">Loading…</div>
+                    {% endif %}
+                </div>
+            </details>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
 </div>
 {% endblock %}

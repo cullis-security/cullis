@@ -153,10 +153,14 @@ async def _store_ca_key_in_vault(vault_addr: str, vault_token: str, org_id: str,
 
 
 async def _post_login_redirect() -> str:
-    """Where to send a freshly-authenticated admin: setup if no broker, agents otherwise."""
+    """Where to send a freshly-authenticated admin.
+
+    - No broker uplink yet     -> /proxy/setup (wizard)
+    - Fully configured         -> /proxy/overview (landing)
+    """
     from mcp_proxy.db import get_config
     org_id = await get_config("org_id")
-    return "/proxy/agents" if org_id else "/proxy/setup"
+    return "/proxy/overview" if org_id else "/proxy/setup"
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -183,9 +187,15 @@ async def login_page(request: Request):
     if session.logged_in:
         return RedirectResponse(url=await _post_login_redirect(), status_code=303)
 
+    from mcp_proxy.dashboard.oidc import is_oidc_configured
+    oidc_enabled = await is_oidc_configured()
+    display_name = await _load_display_name()
+
     return templates.TemplateResponse("login.html", {
         "request": request,
         "error": None,
+        "oidc_enabled": oidc_enabled,
+        "display_name": display_name,
     })
 
 
@@ -852,6 +862,14 @@ async def agents_page(request: Request):
     agents = await list_agents()
     has_ca = bool(await get_config("org_ca_cert"))
 
+    # Federated peers grouped by org. Read-only view over the Phase 4b
+    # cache — safe to show even when the subscriber is not running (rows
+    # are simply stale, not wrong). Accordion expansion is wired via a
+    # HTMX partial at /proxy/agents/federated/{org}.
+    own_org_id = await get_config("org_id") or ""
+    federated_orgs = await _load_federated_orgs(exclude_org=own_org_id)
+    open_orgs = _parse_open_orgs(request.query_params.get("open"))
+
     return templates.TemplateResponse("agents.html", _ctx(
         request, session,
         active="agents",
@@ -860,7 +878,53 @@ async def agents_page(request: Request):
         has_ca=has_ca,
         new_api_key=None,
         new_agent_id=None,
+        federated_orgs=federated_orgs,
+        open_orgs=open_orgs,
     ))
+
+
+def _parse_open_orgs(raw: str | None) -> set[str]:
+    if not raw:
+        return set()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+async def _load_federated_orgs(exclude_org: str = "") -> list[dict]:
+    """Aggregate cached federated agents by org_id.
+
+    Returns a list of dicts: {org_id, display_name, agent_count, last_updated_at}.
+    Display name falls back to the org_id when the cache has no display
+    name cached (Phase 4b only stores agent-level names).
+    """
+    from sqlalchemy import text as _text
+
+    from mcp_proxy.db import get_db as _get_db
+
+    try:
+        async with _get_db() as conn:
+            result = await conn.execute(
+                _text(
+                    "SELECT org_id, COUNT(*) AS agent_count, "
+                    "MAX(updated_at) AS last_updated_at "
+                    "FROM cached_federated_agents "
+                    "WHERE revoked = 0 AND org_id != :own "
+                    "GROUP BY org_id ORDER BY org_id"
+                ),
+                {"own": exclude_org},
+            )
+            rows = result.mappings().all()
+    except Exception:
+        return []
+
+    return [
+        {
+            "org_id": r["org_id"],
+            "display_name": r["org_id"],
+            "agent_count": int(r["agent_count"] or 0),
+            "last_updated_at": r["last_updated_at"],
+        }
+        for r in rows
+    ]
 
 
 @router.post("/agents/create")
@@ -2152,3 +2216,343 @@ async def badge_audit(request: Request):
             f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-teal-500/20 text-teal-400">{count}</span>'
         )
     return HTMLResponse("")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Overview (post-login landing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/overview", response_class=HTMLResponse)
+async def overview_page(request: Request):
+    """Landing page after login: org name, broker uplink, federation status."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from mcp_proxy.db import get_config, list_agents
+
+    org_id = await get_config("org_id") or ""
+    display_name = await get_config("display_name") or ""
+    broker_url = await get_config("broker_url") or ""
+    org_status = await get_config("org_status") or ""
+
+    # Federation subscriber live stats, if running
+    fed_stats = getattr(request.app.state, "federation_subscriber_stats", None)
+    fed_running = getattr(request.app.state, "federation_subscriber_task", None) is not None
+
+    # Counts
+    local_agents = await list_agents()
+    local_count = len(local_agents)
+
+    federated_count = 0
+    federated_orgs = 0
+    try:
+        from sqlalchemy import text as _text
+        from mcp_proxy.db import get_db as _get_db
+        async with _get_db() as conn:
+            row = (await conn.execute(
+                _text(
+                    "SELECT COUNT(*) AS c, COUNT(DISTINCT org_id) AS o "
+                    "FROM cached_federated_agents WHERE revoked = 0"
+                )
+            )).mappings().first()
+            if row:
+                federated_count = int(row["c"] or 0)
+                federated_orgs = int(row["o"] or 0)
+    except Exception:
+        # cache table may not exist on very old schemas
+        pass
+
+    return templates.TemplateResponse("overview.html", _ctx(
+        request, session,
+        active="overview",
+        org_id=org_id,
+        display_name=display_name,
+        broker_url=broker_url,
+        org_status=org_status,
+        local_count=local_count,
+        federated_count=federated_count,
+        federated_orgs=federated_orgs,
+        fed_stats=fed_stats,
+        fed_running=fed_running,
+    ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings (OIDC config)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    """Display current OIDC config (issuer + client_id) with an edit form.
+
+    The client_secret is NEVER rendered. We only show whether a value is set.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from mcp_proxy.dashboard.oidc import load_oidc_config
+
+    cfg = await load_oidc_config()
+    return templates.TemplateResponse("settings.html", _ctx(
+        request, session,
+        active="settings",
+        issuer_url=cfg["issuer_url"],
+        client_id=cfg["client_id"],
+        has_client_secret=bool(cfg["client_secret"]),
+        error=None,
+        success=None,
+    ))
+
+
+@router.post("/settings")
+async def settings_submit(request: Request):
+    """Persist OIDC settings. Empty client_secret leaves the stored value
+    untouched so the admin can update other fields without resupplying it."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.dashboard.oidc import load_oidc_config, save_oidc_config
+    from mcp_proxy.db import log_audit
+
+    form = await request.form()
+    issuer_url = str(form.get("oidc_issuer_url", "")).strip()
+    client_id = str(form.get("oidc_client_id", "")).strip()
+    client_secret_raw = str(form.get("oidc_client_secret", ""))
+
+    errors: list[str] = []
+    if issuer_url and not issuer_url.startswith(("http://", "https://")):
+        errors.append("Issuer URL must start with http:// or https://")
+    if issuer_url and not client_id:
+        errors.append("Client ID is required when issuer URL is set.")
+
+    if errors:
+        cfg = await load_oidc_config()
+        return templates.TemplateResponse("settings.html", _ctx(
+            request, session,
+            active="settings",
+            issuer_url=issuer_url or cfg["issuer_url"],
+            client_id=client_id or cfg["client_id"],
+            has_client_secret=bool(cfg["client_secret"]),
+            error="; ".join(errors),
+            success=None,
+        ), status_code=400)
+
+    # Only overwrite client_secret if the admin typed something. An empty
+    # input means "keep current value" — otherwise an admin who only wants
+    # to rename the client_id would silently lose the stored secret.
+    secret_arg = client_secret_raw if client_secret_raw != "" else None
+    await save_oidc_config(issuer_url, client_id, secret_arg)
+
+    await log_audit(
+        agent_id="admin",
+        action="settings.oidc_update",
+        status="success",
+        detail=f"issuer={issuer_url or '(cleared)'}, client_id={client_id or '(cleared)'}",
+    )
+
+    cfg = await load_oidc_config()
+    return templates.TemplateResponse("settings.html", _ctx(
+        request, session,
+        active="settings",
+        issuer_url=cfg["issuer_url"],
+        client_id=cfg["client_id"],
+        has_client_secret=bool(cfg["client_secret"]),
+        error=None,
+        success="OIDC configuration saved.",
+    ))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OIDC login (Sign-in with SSO)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _oidc_redirect_uri(request: Request) -> str:
+    """Build the OIDC callback URL.
+
+    Prefers the configured proxy_public_url (so the IdP sees a stable
+    externally-reachable URL), falls back to the request base URL for
+    dev/test environments.
+    """
+    from mcp_proxy.config import get_settings as _s
+    pub = _s().proxy_public_url
+    if pub:
+        return pub.rstrip("/") + "/proxy/oidc/callback"
+    return str(request.base_url).rstrip("/") + "/proxy/oidc/callback"
+
+
+@router.get("/oidc/start")
+async def oidc_start(request: Request):
+    """Initiate the OIDC authorization-code + PKCE flow."""
+    from mcp_proxy.dashboard.oidc import (
+        OidcError,
+        build_authorization_url,
+        create_oidc_state,
+        load_oidc_config,
+    )
+    from mcp_proxy.dashboard.session import set_oidc_state
+
+    cfg = await load_oidc_config()
+    if not cfg["issuer_url"] or not cfg["client_id"]:
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "SSO is not configured on this proxy. Ask an administrator.",
+            "oidc_enabled": False,
+            "display_name": await _load_display_name(),
+        }, status_code=400)
+
+    flow_state = create_oidc_state()
+    redirect_uri = _oidc_redirect_uri(request)
+
+    try:
+        auth_url = await build_authorization_url(
+            cfg["issuer_url"], cfg["client_id"], redirect_uri, flow_state,
+        )
+    except OidcError as exc:
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": f"SSO error: {exc}",
+            "oidc_enabled": True,
+            "display_name": await _load_display_name(),
+        }, status_code=502)
+
+    response = RedirectResponse(url=auth_url, status_code=303)
+    set_oidc_state(response, flow_state.to_dict())
+    return response
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(request: Request):
+    """Handle the IdP redirect: verify state, exchange code, set session."""
+    import hmac as _hmac
+
+    from mcp_proxy.dashboard.oidc import (
+        OidcError,
+        OidcFlowState,
+        exchange_code_for_identity,
+        load_oidc_config,
+    )
+    from mcp_proxy.dashboard.session import clear_oidc_state, get_oidc_state
+    from mcp_proxy.db import log_audit
+
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    err = request.query_params.get("error")
+    err_desc = request.query_params.get("error_description")
+
+    def _login_err(msg: str, status: int = 400):
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": msg,
+            "oidc_enabled": True,
+        }, status_code=status)
+
+    if err:
+        return _login_err(f"SSO provider error: {err_desc or err}")
+    if not code or not state:
+        return _login_err("Missing authorization code or state from SSO provider.")
+
+    flow_data = get_oidc_state(request)
+    if not flow_data:
+        return _login_err("SSO session expired or invalid. Please try again.")
+    if not _hmac.compare_digest(state, flow_data.get("state", "")):
+        return _login_err("SSO state mismatch — possible CSRF attack.", status=403)
+
+    cfg = await load_oidc_config()
+    if not cfg["issuer_url"] or not cfg["client_id"]:
+        return _login_err("SSO is not configured on this proxy.")
+
+    flow_state = OidcFlowState.from_dict(flow_data)
+    redirect_uri = _oidc_redirect_uri(request)
+
+    try:
+        identity = await exchange_code_for_identity(
+            cfg["issuer_url"], cfg["client_id"], cfg["client_secret"] or None,
+            redirect_uri, code, flow_state,
+        )
+    except OidcError as exc:
+        _log.warning("OIDC callback failed: %s", exc)
+        await log_audit(
+            agent_id="admin",
+            action="auth.oidc_login",
+            status="error",
+            detail=str(exc)[:200],
+        )
+        return _login_err(f"SSO authentication failed: {exc}", status=401)
+
+    await log_audit(
+        agent_id="admin",
+        action="auth.oidc_login",
+        status="success",
+        detail=f"sub={identity.sub}, email={identity.email or '?'}, issuer={identity.issuer}",
+    )
+
+    response = RedirectResponse(url=await _post_login_redirect(), status_code=303)
+    clear_oidc_state(response)
+    set_session(response, role="admin")
+    return response
+
+
+async def _load_display_name() -> str:
+    """Safe helper: org display name for the login page header."""
+    from mcp_proxy.db import get_config
+    try:
+        return (await get_config("display_name")) or ""
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Federated-agents partial (accordion expansion)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/agents/federated/{org_id}", response_class=HTMLResponse)
+async def federated_org_agents(request: Request, org_id: str):
+    """HTMX partial: list the cached federated agents for a given peer org.
+
+    Rendered inside the accordion row when the user expands it. Returns
+    an empty fragment (never an error page) on missing cache or unknown
+    org so the accordion degrades gracefully.
+    """
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("", status_code=401)
+
+    from sqlalchemy import text as _text
+    from mcp_proxy.db import get_db as _get_db
+
+    rows: list[dict] = []
+    try:
+        async with _get_db() as conn:
+            result = await conn.execute(
+                _text(
+                    "SELECT agent_id, display_name, capabilities, revoked, updated_at "
+                    "FROM cached_federated_agents WHERE org_id = :org "
+                    "ORDER BY agent_id"
+                ),
+                {"org": org_id},
+            )
+            for r in result.mappings().all():
+                try:
+                    caps = json.loads(r["capabilities"] or "[]")
+                except Exception:
+                    caps = []
+                rows.append({
+                    "agent_id": r["agent_id"],
+                    "display_name": r["display_name"] or r["agent_id"],
+                    "capabilities": caps,
+                    "revoked": bool(r["revoked"]),
+                    "updated_at": r["updated_at"],
+                })
+    except Exception:
+        rows = []
+
+    return templates.TemplateResponse("_federated_agents_rows.html", {
+        "request": request,
+        "agents": rows,
+        "org_id": org_id,
+    })
