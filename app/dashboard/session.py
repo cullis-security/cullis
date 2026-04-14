@@ -1,12 +1,13 @@
 """
 Dashboard session management — signed cookie-based authentication.
 
-Two roles:
-  - admin: full access to all orgs, agents, sessions, audit. Can approve/reject orgs.
-  - org:   scoped to a single organization. Can manage own agents and bindings.
+Single role: ``admin`` (network operator). The org-tenant role was removed —
+tenants now log in on the per-org proxy (see ADR-001). Only the network
+admin has a session on the broker dashboard.
 
 The session is stored in a signed cookie (HMAC-SHA256). No server-side session
-store needed — the cookie contains the role and org_id, verified on every request.
+store needed — the cookie contains the role (always ``admin``), verified on
+every request.
 
 CSRF protection: a per-session token is embedded in the cookie and must be
 present as a hidden form field on every state-changing POST request.
@@ -30,8 +31,8 @@ _COOKIE_MAX_AGE = 8 * 3600  # 8 hours
 
 @dataclass
 class DashboardSession:
-    role: str           # "admin" | "org"
-    org_id: str | None  # None for admin, org_id for org users
+    role: str           # "admin" — org role removed in the network-admin-only refactor
+    org_id: str | None  # always None for admin; kept for template compatibility
     csrf_token: str = ""
     logged_in: bool = True
 
@@ -96,20 +97,35 @@ def get_session(request: Request) -> DashboardSession:
     if data.get("exp", 0) < time.time():
         return _NO_SESSION
 
+    # Only admin sessions are valid on the broker dashboard. Legacy org cookies
+    # (pre network-admin-only refactor) are treated as logged-out.
+    role = data.get("role", "none")
+    if role != "admin":
+        return _NO_SESSION
+
     return DashboardSession(
-        role=data.get("role", "none"),
-        org_id=data.get("org_id"),
+        role=role,
+        org_id=None,
         csrf_token=data.get("csrf_token", ""),
         logged_in=True,
     )
 
 
-def set_session(response: Response, role: str, org_id: str | None = None) -> str:
-    """Set a signed session cookie on the response. Returns the CSRF token."""
+def set_session(response: Response, role: str = "admin", org_id: str | None = None) -> str:
+    """Set a signed session cookie on the response. Returns the CSRF token.
+
+    Only ``role="admin"`` is valid on the broker dashboard. Any other role
+    is rejected so a legacy code path cannot silently mint an org session.
+    """
+    if role != "admin":
+        raise ValueError(
+            f"Invalid dashboard role {role!r}: the broker dashboard is network-admin only."
+        )
+    # org_id is accepted only for backward compatibility; it is never used.
     csrf_token = os.urandom(16).hex()
     payload = json.dumps({
         "role": role,
-        "org_id": org_id,
+        "org_id": None,
         "csrf_token": csrf_token,
         "exp": int(time.time()) + _COOKIE_MAX_AGE,
     })

@@ -1,11 +1,14 @@
 """
-Dashboard — role-based HTML views of the broker state.
+Dashboard — network-admin console for the broker.
 
-Two roles:
-  - admin:  sees all orgs, agents, sessions, audit. Can onboard orgs, approve/reject.
-  - org:    sees only own agents, own sessions, own audit. Can register agents.
+Single role: ``admin`` (network operator). All views are admin-only —
+org-tenant login was removed in the network-admin-only refactor (see
+ADR-001); tenants now administer their own org from the per-org proxy.
 
-Authentication via signed cookie set at /dashboard/login.
+Authentication via signed cookie set at /dashboard/login. Login can be
+either:
+  - password (default; first-boot flow picks an admin password)
+  - OIDC federation (optional, via ADMIN_OIDC_* settings)
 """
 import asyncio
 import io
@@ -87,44 +90,43 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
     if not await is_admin_password_user_set():
         return RedirectResponse(url="/dashboard/setup", status_code=303)
 
+    from app.config import get_settings as _gs
+    admin_oidc_enabled = bool(_gs().admin_oidc_issuer_url and _gs().admin_oidc_client_id)
+
     form = await request.form()
-    user_id = form.get("user_id", "").strip().lower()
     password = form.get("password", "")
+    # user_id is accepted for backward-compat but ignored — only the network
+    # admin can log in. An explicit "admin" user_id is optional.
+    user_id = form.get("user_id", "admin").strip().lower() or "admin"
 
-    if not user_id or not password:
+    if not password:
         return templates.TemplateResponse("login.html", {
-            "request": request, "error": "User and password are required.",
-            "admin_oidc_enabled": False,
+            "request": request, "error": "Password is required.",
+            "admin_oidc_enabled": admin_oidc_enabled,
         })
 
-    # Check if it's the admin
-    if user_id == "admin":
-        from app.kms.admin_secret import (
-            get_admin_secret_hash, verify_admin_password,
-        )
-        stored_hash = await get_admin_secret_hash()
-        # Only the stored bcrypt hash is trusted. The .env ADMIN_SECRET
-        # is not accepted as a dashboard credential (shake-out P0-06).
-        if verify_admin_password(password, stored_hash):
-            response = RedirectResponse(url="/dashboard", status_code=303)
-            set_session(response, role="admin")
-            return response
+    if user_id not in ("", "admin"):
+        # Org-tenant login was removed — tenants manage their org on the proxy.
         return templates.TemplateResponse("login.html", {
-            "request": request, "error": "Invalid credentials.",
-            "admin_oidc_enabled": False,
+            "request": request,
+            "error": "The broker dashboard is network-admin only. "
+                     "Org tenants should log in on their per-org proxy.",
+            "admin_oidc_enabled": admin_oidc_enabled,
         })
 
-    # Otherwise try as org
-    from app.registry.org_store import verify_org_credentials
-    org = await get_org_by_id(db, user_id)
-    if verify_org_credentials(org, password):
+    from app.kms.admin_secret import (
+        get_admin_secret_hash, verify_admin_password,
+    )
+    stored_hash = await get_admin_secret_hash()
+    # Only the stored bcrypt hash is trusted. The .env ADMIN_SECRET
+    # is not accepted as a dashboard credential (shake-out P0-06).
+    if verify_admin_password(password, stored_hash):
         response = RedirectResponse(url="/dashboard", status_code=303)
-        set_session(response, role="org", org_id=user_id)
+        set_session(response, role="admin")
         return response
-
     return templates.TemplateResponse("login.html", {
         "request": request, "error": "Invalid credentials.",
-        "admin_oidc_enabled": False,
+        "admin_oidc_enabled": admin_oidc_enabled,
     })
 
 
@@ -627,78 +629,55 @@ async def settings_oidc_mapping(request: Request, db: AsyncSession = Depends(get
 @router.get("/oidc/start")
 async def oidc_start(
     request: Request,
-    role: str = Query(...),
-    org_id: str | None = Query(default=None),
+    role: str = Query(default="admin"),
+    org_id: str | None = Query(default=None),  # deprecated; ignored
     db: AsyncSession = Depends(get_db),
 ):
-    """Initiate OIDC authorization code flow with PKCE."""
+    """Initiate network-admin OIDC authorization code flow with PKCE.
+
+    The ``role`` query param is retained for backward-compat but only
+    ``admin`` is supported — per-org SSO was removed from the broker.
+    """
     from app.config import get_settings
     from app.dashboard.oidc import create_oidc_state, build_authorization_url, OidcError
     from app.dashboard.session import set_oidc_state
 
     settings = get_settings()
+    admin_oidc_enabled = bool(settings.admin_oidc_issuer_url and settings.admin_oidc_client_id)
+
     if not settings.broker_public_url:
         return templates.TemplateResponse("login.html", {
             "request": request, "error": "OIDC requires BROKER_PUBLIC_URL to be configured.",
+            "admin_oidc_enabled": admin_oidc_enabled,
+        })
+
+    if role != "admin":
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "The broker dashboard is network-admin only. "
+                     "Org tenants should log in on their per-org proxy.",
+            "admin_oidc_enabled": admin_oidc_enabled,
+        })
+
+    if not settings.admin_oidc_issuer_url or not settings.admin_oidc_client_id:
+        return templates.TemplateResponse("login.html", {
+            "request": request, "error": "Admin SSO is not configured.",
             "admin_oidc_enabled": False,
         })
 
     redirect_uri = settings.broker_public_url.rstrip("/") + "/dashboard/oidc/callback"
+    issuer_url = settings.admin_oidc_issuer_url
+    client_id = settings.admin_oidc_client_id
 
-    if role == "org":
-        if not org_id:
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": "Organization ID is required for SSO login.",
-                "admin_oidc_enabled": False,
-            })
-        org = await get_org_by_id(db, org_id)
-        if not org or not org.oidc_enabled:
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": f"Organization '{org_id}' does not have SSO configured.",
-                "admin_oidc_enabled": False,
-            })
-        if org.status != "active":
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": f"Organization is '{org.status}', not active.",
-                "admin_oidc_enabled": False,
-            })
-        issuer_url = org.oidc_issuer_url
-        client_id = org.oidc_client_id
-    elif role == "admin":
-        if not settings.admin_oidc_issuer_url or not settings.admin_oidc_client_id:
-            return templates.TemplateResponse("login.html", {
-                "request": request, "error": "Admin SSO is not configured.",
-                "admin_oidc_enabled": False,
-            })
-        issuer_url = settings.admin_oidc_issuer_url
-        client_id = settings.admin_oidc_client_id
-    else:
-        return templates.TemplateResponse("login.html", {
-            "request": request, "error": "Invalid SSO role.",
-            "admin_oidc_enabled": False,
-        })
-
-    # If the org has a role mapping configured and it requests extra OIDC
-    # scopes (e.g. "groups" for Okta/AzureAD), pass them to the IdP.
-    additional_scopes: list[str] | None = None
-    if role == "org":
-        from app.registry.org_store import get_oidc_role_mapping
-        mapping = get_oidc_role_mapping(org)
-        if mapping:
-            extra = mapping.get("request_scopes")
-            if isinstance(extra, list) and extra:
-                additional_scopes = [str(s) for s in extra if s]
-
-    flow_state = create_oidc_state(role, org_id)
+    flow_state = create_oidc_state("admin", None)
     try:
         auth_url = await build_authorization_url(
             issuer_url, client_id, redirect_uri, flow_state,
-            additional_scopes=additional_scopes,
         )
     except OidcError as e:
         return templates.TemplateResponse("login.html", {
             "request": request, "error": f"SSO error: {e}",
-            "admin_oidc_enabled": bool(settings.admin_oidc_issuer_url),
+            "admin_oidc_enabled": admin_oidc_enabled,
         })
 
     response = RedirectResponse(url=auth_url, status_code=303)
@@ -749,21 +728,16 @@ async def oidc_callback(
     flow_state = OidcFlowState.from_dict(flow_data)
     redirect_uri = settings.broker_public_url.rstrip("/") + "/dashboard/oidc/callback"
 
-    # Determine OIDC config
-    if flow_state.role == "org":
-        org = await get_org_by_id(db, flow_state.org_id)
-        if not org or not org.oidc_enabled:
-            return _login_error("Organization SSO configuration not found.")
-        issuer_url = org.oidc_issuer_url
-        client_id = org.oidc_client_id
-        from app.registry.org_store import get_org_oidc_secret
-        client_secret = await get_org_oidc_secret(org)
-    elif flow_state.role == "admin":
-        issuer_url = settings.admin_oidc_issuer_url
-        client_id = settings.admin_oidc_client_id
-        client_secret = settings.admin_oidc_client_secret or None
-    else:
-        return _login_error("Invalid SSO role.")
+    # Only the admin OIDC flow is supported. Any legacy "org" state is rejected.
+    if flow_state.role != "admin":
+        return _login_error(
+            "Org-tenant SSO is not available on the broker dashboard. "
+            "Tenants log in on the per-org proxy."
+        )
+
+    issuer_url = settings.admin_oidc_issuer_url
+    client_id = settings.admin_oidc_client_id
+    client_secret = settings.admin_oidc_client_secret or None
 
     try:
         identity = await exchange_code_for_identity(
@@ -773,49 +747,14 @@ async def oidc_callback(
         _log.warning("OIDC callback failed: %s", e)
         return _login_error(f"SSO authentication failed: {e}")
 
-    # Per-org role mapping: validate IdP claims against the org's policy.
-    # If the org has not configured a mapping, the legacy behavior applies
-    # (any user authenticated through the org's IdP becomes "org admin").
-    if flow_state.role == "org":
-        from app.dashboard.oidc import validate_role_mapping
-        from app.registry.org_store import get_oidc_role_mapping
-
-        mapping = get_oidc_role_mapping(org)
-        allowed, reason = validate_role_mapping(mapping, identity.claims)
-        if not allowed:
-            await log_event(
-                db, "dashboard.oidc_login", "denied",
-                org_id=flow_state.org_id,
-                details={
-                    "role": flow_state.role,
-                    "sub": identity.sub,
-                    "email": identity.email,
-                    "issuer": identity.issuer,
-                    "deny_reason": reason,
-                },
-            )
-            _log.warning(
-                "OIDC role mapping denied: org=%s sub=%s reason=%s",
-                flow_state.org_id, identity.sub, reason,
-            )
-            return _login_error(
-                "You are not authorized to access this organization. "
-                "Contact your administrator."
-            )
-
-    # Create session
+    # Create admin session
     response = RedirectResponse(url="/dashboard", status_code=303)
     clear_oidc_state(response)
-
-    if flow_state.role == "admin":
-        set_session(response, role="admin")
-    else:
-        set_session(response, role="org", org_id=flow_state.org_id)
+    set_session(response, role="admin")
 
     await log_event(db, "dashboard.oidc_login", "ok",
-                    org_id=flow_state.org_id,
                     details={
-                        "role": flow_state.role,
+                        "role": "admin",
                         "sub": identity.sub,
                         "email": identity.email,
                         "issuer": identity.issuer,

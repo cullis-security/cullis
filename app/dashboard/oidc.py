@@ -2,7 +2,9 @@
 OIDC (OpenID Connect) client for dashboard federation.
 
 Supports OAuth 2.0 Authorization Code Flow with PKCE (RFC 7636).
-Used for both per-org and network-admin OIDC login.
+Used exclusively for the optional network-admin SSO login. Per-org OIDC
+login was removed when the broker dashboard became network-admin-only
+(org tenants now log in on the per-org proxy — see ADR-001).
 """
 import base64
 import hashlib
@@ -34,8 +36,8 @@ class OidcFlowState:
     state: str
     nonce: str
     code_verifier: str
-    role: str              # "admin" or "org"
-    org_id: str | None     # None for admin flow
+    role: str = "admin"            # only "admin" is supported on the broker
+    org_id: str | None = None      # unused; kept for cookie schema compat
 
     def to_dict(self) -> dict:
         return {
@@ -52,7 +54,7 @@ class OidcFlowState:
             state=d["state"],
             nonce=d["nonce"],
             code_verifier=d["code_verifier"],
-            role=d["role"],
+            role=d.get("role", "admin"),
             org_id=d.get("org_id"),
         )
 
@@ -153,8 +155,12 @@ def validate_role_mapping(mapping: dict | None, claims: dict) -> tuple[bool, str
     return True, "default_allow"
 
 
-def create_oidc_state(role: str, org_id: str | None = None) -> OidcFlowState:
-    """Generate cryptographically random state, nonce, and PKCE code_verifier."""
+def create_oidc_state(role: str = "admin", org_id: str | None = None) -> OidcFlowState:
+    """Generate cryptographically random state, nonce, and PKCE code_verifier.
+
+    ``role`` and ``org_id`` are retained only for test/callsite compatibility
+    — the broker OIDC flow always resolves to the network-admin session.
+    """
     return OidcFlowState(
         state=os.urandom(32).hex(),
         nonce=os.urandom(32).hex(),
