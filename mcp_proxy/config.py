@@ -77,6 +77,17 @@ class ProxySettings(BaseSettings):
     trust_domain: str = "cullis.local"
     intra_org_routing: bool = False
 
+    # ADR-001 §10 — Transport modes + full Guardian coverage.
+    # transport_intra_org selects the wire format for intra-org messages:
+    #   - envelope (default): today's behavior (E2E envelope even intra-org).
+    #   - mtls-only: signed-but-not-encrypted payload over mTLS, Guardian
+    #     inspects in-transit at the proxy. Zero E2E overhead intra-org.
+    #   - hybrid: accept both formats, prefer mtls-only when sender supports it.
+    # egress_inspection_enabled toggles the POST /v1/guardian/inspect_egress
+    # endpoint on the proxy. When off the endpoint returns 404 (default).
+    transport_intra_org: str = "envelope"
+    egress_inspection_enabled: bool = False
+
     # ADR-001 Phase 4c — Federation cache subscriber.
     # When enabled, a long-lived task tails the broker's federation
     # event stream and mirrors agent / policy / binding state into
@@ -101,6 +112,20 @@ class ProxySettings(BaseSettings):
         sync_flag = os.environ.get("PROXY_FEDERATION_SYNC")
         if sync_flag is not None:
             self.federation_sync_enabled = sync_flag.lower() in (
+                "1", "true", "yes", "on",
+            )
+        transport = os.environ.get("PROXY_TRANSPORT_INTRA_ORG")
+        if transport is not None:
+            normalized = transport.strip().lower()
+            if normalized not in ("envelope", "mtls-only", "hybrid"):
+                raise ValueError(
+                    f"PROXY_TRANSPORT_INTRA_ORG must be one of "
+                    f"envelope|mtls-only|hybrid, got {transport!r}"
+                )
+            self.transport_intra_org = normalized
+        egress_flag = os.environ.get("PROXY_EGRESS_INSPECTION_ENABLED")
+        if egress_flag is not None:
+            self.egress_inspection_enabled = egress_flag.lower() in (
                 "1", "true", "yes", "on",
             )
         return self

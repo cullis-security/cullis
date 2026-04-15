@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from cullis_sdk.auth import generate_dpop_keypair, build_dpop_proof, build_client_assertion
-from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.message_signer import sign_message, verify_signature
 from cullis_sdk.crypto.e2e import encrypt_for_agent, decrypt_from_agent
 from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult
 from cullis_sdk._logging import log, RED
@@ -478,6 +478,181 @@ class CullisClient:
                     raise ConnectionError(f"[{self._label}] Broker unreachable after 3 attempts.")
         # Unreachable — loop above either returns or raises.
         raise ConnectionError(f"[{self._label}] Broker send failed unexpectedly.")
+
+    def send_via_proxy(
+        self,
+        session_id: str,
+        payload: dict,
+        recipient_id: str,
+        *,
+        ttl_seconds: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Send a message through the local proxy (ADR-001 §10).
+
+        Queries ``/v1/egress/resolve`` first, then sends via
+        ``/v1/egress/send`` using the transport the proxy advertised.
+
+        - ``transport=mtls-only`` (intra-org): signs the plaintext with the
+          agent's private key and posts it as-is. The proxy verifies the
+          signature and enqueues for the recipient.
+        - ``transport=envelope`` (cross-org): raises ``NotImplementedError``
+          in this revision — envelope-via-proxy wiring lands in a follow-up.
+
+        ``recipient_id`` may be a SPIFFE URI (``spiffe://td/org/agent``) or
+        the internal ``org::agent`` form.
+
+        Requires proxy credentials from :meth:`from_enrollment` (API key)
+        AND a signing key from :meth:`login` or :meth:`from_spiffe_workload_api`
+        when the resolver picks ``mtls-only``.
+        """
+        headers = self.proxy_headers()
+
+        resolve_resp = self._http.post(
+            f"{self.base}/v1/egress/resolve",
+            headers=headers,
+            json={"recipient_id": recipient_id},
+        )
+        resolve_resp.raise_for_status()
+        decision = resolve_resp.json()
+        transport = decision["transport"]
+        target_agent_id = decision["target_agent_id"]
+
+        sender_agent_id = getattr(self, "_proxy_agent_id", None) or self._label
+        client_seq = self._client_seq.get(session_id, 0)
+        self._client_seq[session_id] = client_seq + 1
+
+        if transport == "mtls-only":
+            if not self._signing_key_pem:
+                raise RuntimeError(
+                    "mtls-only transport requires a signing key — "
+                    "initialize the client via login() or from_spiffe_workload_api()"
+                )
+            nonce = str(uuid.uuid4())
+            timestamp = int(time.time())
+            signature = sign_message(
+                self._signing_key_pem,
+                session_id,
+                sender_agent_id,
+                nonce,
+                timestamp,
+                payload,
+                client_seq=client_seq,
+            )
+            body: dict[str, Any] = {
+                "session_id": session_id,
+                "payload": payload,
+                "recipient_agent_id": target_agent_id,
+                "mode": "mtls-only",
+                "signature": signature,
+                "nonce": nonce,
+                "timestamp": timestamp,
+                "sender_seq": client_seq,
+            }
+        else:
+            raise NotImplementedError(
+                "envelope transport through the proxy is not wired in this "
+                "revision — use send() against the broker for cross-org until "
+                "the follow-up PR lands"
+            )
+
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+
+        resp = self._http.post(
+            f"{self.base}/v1/egress/send",
+            headers=headers,
+            json=body,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def receive_via_proxy(self, session_id: str) -> list[dict]:
+        """Poll the proxy for pending messages in ``session_id`` (ADR-001 §10).
+
+        Returns the verified plaintext payloads. For ``mtls-only`` frames the
+        signature is verified against the sender cert the proxy bundled in
+        the response; a frame that fails verification raises
+        ``ValueError`` rather than being silently dropped, so the caller
+        chooses whether to ack it, audit it, or abort.
+
+        Each returned dict has:
+          - ``msg_id`` (str)
+          - ``session_id`` (str)
+          - ``sender_agent_id`` (str)
+          - ``mode`` (``"mtls-only"`` | ``"envelope"``)
+          - ``payload`` (dict, plaintext — populated for mtls-only only)
+          - ``payload_ciphertext`` (str, populated for envelope only —
+            caller still decrypts with its own key)
+          - ``enqueued_at`` (ISO-8601)
+
+        ``envelope`` messages are handed back untouched; the existing
+        ``decrypt_from_agent`` helper remains the caller's responsibility
+        until the envelope-via-proxy pass-through lands in a follow-up.
+        """
+        headers = self.proxy_headers()
+        resp = self._http.get(
+            f"{self.base}/v1/egress/messages/{session_id}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        out: list[dict] = []
+        for m in data.get("messages", []):
+            if m.get("mode") == "mtls-only":
+                cert_pem = m.get("sender_cert_pem")
+                if not cert_pem:
+                    raise ValueError(
+                        f"msg {m.get('msg_id')}: mtls-only frame missing sender_cert_pem"
+                    )
+                ok = verify_signature(
+                    cert_pem,
+                    m["signature"],
+                    session_id,
+                    m["sender_agent_id"],
+                    m["nonce"],
+                    m["timestamp"],
+                    m["payload"],
+                    client_seq=m.get("sender_seq"),
+                )
+                if not ok:
+                    raise ValueError(
+                        f"msg {m.get('msg_id')}: signature verification failed"
+                    )
+                out.append({
+                    "msg_id": m["msg_id"],
+                    "session_id": m["session_id"],
+                    "sender_agent_id": m["sender_agent_id"],
+                    "mode": "mtls-only",
+                    "payload": m["payload"],
+                    "enqueued_at": m.get("enqueued_at"),
+                })
+            else:
+                out.append({
+                    "msg_id": m["msg_id"],
+                    "session_id": m["session_id"],
+                    "sender_agent_id": m["sender_agent_id"],
+                    "mode": "envelope",
+                    "payload_ciphertext": m.get("payload_ciphertext"),
+                    "enqueued_at": m.get("enqueued_at"),
+                })
+        return out
+
+    def ack_via_proxy(self, session_id: str, msg_id: str) -> bool:
+        """Acknowledge a local-queue message to the proxy (at-least-once)."""
+        resp = self._http.post(
+            f"{self.base}/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
+            headers=self.proxy_headers(),
+        )
+        if resp.status_code == 204:
+            return True
+        if resp.status_code in (404, 409):
+            return False
+        resp.raise_for_status()
+        return True
 
     def ack_message(self, session_id: str, msg_id: str) -> bool:
         """Acknowledge a queued offline message (M3.5).

@@ -130,4 +130,5 @@ async def get_agent_from_api_key(request: Request) -> InternalAgent:
         capabilities=agent_data["capabilities"],
         created_at=agent_data["created_at"],
         is_active=agent_data["is_active"],
+        cert_pem=agent_data.get("cert_pem"),
     )

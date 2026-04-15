@@ -9,6 +9,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 import httpx
 
@@ -70,11 +71,40 @@ class SendMessageRequest(BaseModel):
     # Optional; omitting them keeps pre-3c client behavior.
     ttl_seconds: int = Field(default=local_queue.DEFAULT_TTL_SECONDS, ge=10, le=3600)
     idempotency_key: str | None = None
+    # ADR-001 §10 — intra-org mtls-only mode. When omitted or "envelope",
+    # payload is opaque ciphertext (legacy behavior). When "mtls-only",
+    # payload is plaintext and signature + nonce + timestamp are required
+    # so the proxy can verify the sender's signature before enqueueing.
+    mode: Literal["envelope", "mtls-only"] = "envelope"
+    signature: str | None = None
+    nonce: str | None = None
+    timestamp: int | None = None
+    sender_seq: int | None = None
 
 
 class DiscoverRequest(BaseModel):
     capabilities: list[str] | None = None
     q: str | None = None
+
+
+class ResolveRequest(BaseModel):
+    """ADR-001 §10 — resolve a recipient and return routing path + metadata.
+
+    The SDK calls this before sending so it can choose the right wire
+    format: mtls-only (signed, not encrypted) for intra-org in the
+    mtls-only transport mode, or envelope (E2E encrypted) otherwise.
+    """
+    recipient_id: str
+
+
+class ResolveResponse(BaseModel):
+    path: Literal["intra-org", "cross-org"]
+    target_agent_id: str
+    target_org_id: str
+    target_spiffe: str | None = None
+    transport: Literal["envelope", "mtls-only"]
+    egress_inspection: bool = False
+    target_cert_pem: str | None = None
 
 
 class InvokeToolRequest(BaseModel):
@@ -381,10 +411,61 @@ async def send_message(
         else:
             recipient = local_session.initiator_agent_id
 
-        # Ciphertext is already E2E-encrypted by the SDK. The proxy stores
-        # it opaquely and never needs to decrypt on the local path.
+        # ADR-001 §10 — mtls-only path: sender signs plaintext, proxy verifies
+        # the signature before enqueueing. The stored blob carries mode +
+        # signature + nonce + timestamp so the recipient SDK can re-verify.
+        # Legacy envelope mode stores the opaque ciphertext as-is.
         import json as _json
-        payload_cipher = _json.dumps(body.payload, separators=(",", ":"))
+
+        if body.mode == "mtls-only":
+            from cullis_sdk.crypto import verify_signature
+
+            missing = [
+                f for f in ("signature", "nonce", "timestamp")
+                if getattr(body, f) is None
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"mtls-only requires fields: {', '.join(missing)}",
+                )
+            if not agent.cert_pem:
+                raise HTTPException(
+                    status_code=400,
+                    detail="sender has no cert — cannot verify mtls-only signature",
+                )
+            ok = verify_signature(
+                agent.cert_pem,
+                body.signature,
+                body.session_id,
+                agent.agent_id,
+                body.nonce,
+                body.timestamp,
+                body.payload,
+                client_seq=body.sender_seq,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=401,
+                    detail="mtls-only signature verification failed",
+                )
+            stored_blob = _json.dumps(
+                {
+                    "mode": "mtls-only",
+                    "payload": body.payload,
+                    "signature": body.signature,
+                    "nonce": body.nonce,
+                    "timestamp": body.timestamp,
+                    "sender_seq": body.sender_seq,
+                    "sender_cert_pem": agent.cert_pem,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            payload_cipher = stored_blob
+        else:
+            # Legacy envelope — ciphertext opaque.
+            payload_cipher = _json.dumps(body.payload, separators=(",", ":"))
 
         try:
             msg_id, inserted = await local_queue.enqueue(
@@ -408,17 +489,22 @@ async def send_message(
         ws_manager = getattr(request.app.state, "local_ws_manager", None)
         pushed = False
         if ws_manager is not None and ws_manager.is_connected(recipient):
-            pushed = await ws_manager.send_to_agent(
-                recipient,
-                {
-                    "type": "new_message",
-                    "session_id": body.session_id,
-                    "msg_id": msg_id,
-                    "sender_agent_id": agent.agent_id,
-                    "payload": body.payload,
-                    "enqueued_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+            push_frame = {
+                "type": "new_message",
+                "session_id": body.session_id,
+                "msg_id": msg_id,
+                "sender_agent_id": agent.agent_id,
+                "payload": body.payload,
+                "enqueued_at": datetime.now(timezone.utc).isoformat(),
+                "mode": body.mode,
+            }
+            if body.mode == "mtls-only":
+                push_frame["signature"] = body.signature
+                push_frame["nonce"] = body.nonce
+                push_frame["timestamp"] = body.timestamp
+                push_frame["sender_seq"] = body.sender_seq
+                push_frame["sender_cert_pem"] = agent.cert_pem
+            pushed = await ws_manager.send_to_agent(recipient, push_frame)
 
         duration_ms = (time.monotonic() - t0) * 1000
         await log_audit(
@@ -439,6 +525,15 @@ async def send_message(
             "delivered_via": "ws" if pushed else "queue",
             "duplicate": not inserted,
         }
+
+    if body.mode == "mtls-only":
+        # Cross-org through the broker cannot use mtls-only — broker is a
+        # non-trusted hop and must only see ciphertext. Reject early so the
+        # SDK caller surfaces a clear error instead of leaking plaintext.
+        raise HTTPException(
+            status_code=400,
+            detail="mtls-only is intra-org only; use envelope for cross-org sessions",
+        )
 
     bridge = _get_bridge(request)
     try:
@@ -507,16 +602,35 @@ async def poll_messages(
         # Only messages that belong to this session — the queue is global
         # per recipient but the caller asked for a specific session.
         msgs = [m for m in pending if m.session_id == session_id]
-        payload = [
-            {
+        import json as _json
+        payload = []
+        for m in msgs:
+            entry: dict = {
                 "msg_id": m.msg_id,
                 "session_id": m.session_id,
                 "sender_agent_id": m.sender_agent_id,
-                "payload_ciphertext": m.payload_ciphertext,
                 "enqueued_at": m.enqueued_at.isoformat() if m.enqueued_at else None,
             }
-            for m in msgs
-        ]
+            # mtls-only blobs are self-describing — parse out the signed
+            # plaintext + metadata so the recipient SDK can verify without
+            # guessing at wire shape. Legacy ciphertext stays opaque.
+            try:
+                parsed = _json.loads(m.payload_ciphertext)
+                if isinstance(parsed, dict) and parsed.get("mode") == "mtls-only":
+                    entry["mode"] = "mtls-only"
+                    entry["payload"] = parsed.get("payload")
+                    entry["signature"] = parsed.get("signature")
+                    entry["nonce"] = parsed.get("nonce")
+                    entry["timestamp"] = parsed.get("timestamp")
+                    entry["sender_seq"] = parsed.get("sender_seq")
+                    entry["sender_cert_pem"] = parsed.get("sender_cert_pem")
+                else:
+                    entry["mode"] = "envelope"
+                    entry["payload_ciphertext"] = m.payload_ciphertext
+            except (ValueError, TypeError):
+                entry["mode"] = "envelope"
+                entry["payload_ciphertext"] = m.payload_ciphertext
+            payload.append(entry)
         return {"messages": payload, "count": len(payload), "scope": "local"}
 
     bridge = _get_bridge(request)
@@ -566,6 +680,93 @@ async def ack_message(
         detail=f"session={session_id} msg_id={msg_id}",
     )
     return {"status": "acked", "msg_id": msg_id}
+
+
+@router.post("/resolve", response_model=ResolveResponse)
+async def resolve_recipient(
+    body: ResolveRequest,
+    request: Request,
+    agent: InternalAgent = Depends(get_agent_from_api_key),
+):
+    """Resolve a recipient and tell the SDK how to send.
+
+    ADR-001 §10: routing decision happens here, before the sender
+    encrypts anything. Response tells the SDK which wire format to use
+    (envelope vs mtls-only) and whether egress inspection is required.
+
+    Invariants:
+      - path == "intra-org" iff SPIFFE trust_domain and org both match local
+        (or recipient uses internal `org::agent` form with matching org).
+      - transport == "mtls-only" only when path is intra-org AND the proxy
+        is configured with transport_intra_org != "envelope".
+      - target_cert_pem is populated for intra-org mtls-only so the SDK
+        can validate the peer certificate at mTLS handshake time.
+    """
+    from sqlalchemy import text
+
+    from mcp_proxy.db import get_db
+    from mcp_proxy.spiffe import InvalidRecipient, parse_recipient
+
+    settings = get_settings()
+
+    try:
+        trust_domain, target_org, target_agent = parse_recipient(body.recipient_id)
+    except InvalidRecipient as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    route = decide_route(
+        body.recipient_id,
+        local_org=settings.org_id,
+        local_trust_domain=settings.trust_domain,
+    )
+
+    target_spiffe: str | None = None
+    if trust_domain is not None:
+        target_spiffe = f"spiffe://{trust_domain}/{target_org}/{target_agent}"
+
+    if route == "intra":
+        intra_enabled = settings.intra_org_routing
+        transport: Literal["envelope", "mtls-only"] = "envelope"
+        if intra_enabled and settings.transport_intra_org in ("mtls-only", "hybrid"):
+            transport = "mtls-only"
+
+        target_cert_pem: str | None = None
+        if transport == "mtls-only":
+            async with get_db() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT cert_pem, is_active FROM local_agents "
+                        "WHERE agent_id = :agent_id"
+                    ),
+                    {"agent_id": target_agent},
+                )
+                row = result.mappings().first()
+                if row is None or not row["is_active"]:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"intra-org target not found: {target_agent}",
+                    )
+                target_cert_pem = row["cert_pem"]
+
+        return ResolveResponse(
+            path="intra-org",
+            target_agent_id=target_agent,
+            target_org_id=target_org,
+            target_spiffe=target_spiffe,
+            transport=transport,
+            egress_inspection=settings.egress_inspection_enabled,
+            target_cert_pem=target_cert_pem,
+        )
+
+    return ResolveResponse(
+        path="cross-org",
+        target_agent_id=target_agent,
+        target_org_id=target_org,
+        target_spiffe=target_spiffe,
+        transport="envelope",
+        egress_inspection=settings.egress_inspection_enabled,
+        target_cert_pem=None,
+    )
 
 
 @router.post("/discover")

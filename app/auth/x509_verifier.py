@@ -35,18 +35,168 @@ from app.telemetry_metrics import X509_VERIFY_DURATION_HISTOGRAM
 
 _AUDIENCE = "agent-trust-broker"
 _ALLOWED_HASH_ALGORITHMS = (hashes.SHA256, hashes.SHA384, hashes.SHA512)
+_ALLOWED_EC_CURVES = (ec.SECP256R1, ec.SECP384R1, ec.SECP521R1)
+# Upper bound on the length of x5c we'll walk, to cap compute for a
+# malicious client that sends a pathological chain.
+_MAX_CHAIN_LENGTH = 6
+
+
+def _verify_sig(child: x509.Certificate, parent_pub) -> None:
+    """Verify that ``child`` was signed by ``parent_pub``.
+
+    Raises InvalidSignature on mismatch, or ValueError on unsupported key.
+    """
+    if not isinstance(child.signature_hash_algorithm, _ALLOWED_HASH_ALGORITHMS):
+        raise ValueError("weak signature hash algorithm")
+    if isinstance(parent_pub, rsa.RSAPublicKey):
+        parent_pub.verify(
+            child.signature,
+            child.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            child.signature_hash_algorithm,
+        )
+    elif isinstance(parent_pub, ec.EllipticCurvePublicKey):
+        parent_pub.verify(
+            child.signature,
+            child.tbs_certificate_bytes,
+            ec.ECDSA(child.signature_hash_algorithm),
+        )
+    else:
+        raise ValueError(f"unsupported parent key type: {type(parent_pub).__name__}")
+
+
+def _walk_chain(
+    leaf: x509.Certificate,
+    intermediates: list[x509.Certificate],
+    trust_anchor: x509.Certificate,
+    now: datetime.datetime,
+) -> None:
+    """
+    Validate chain ``leaf ← intermediates[0] ← … ← intermediates[-1] ← trust_anchor``.
+
+    - Each link verifies the child's signature against the parent's public key
+    - Every intermediate has BasicConstraints(CA=true) and KeyUsage.keyCertSign
+    - Path-length constraints are respected (parent's pathLenConstraint, if
+      set, bounds the number of non-self-issued CAs that follow)
+    - All certs in the chain are within their validity window
+    - Defence in depth: trust_anchor is not allowed inside ``intermediates``
+      (caller must strip) and the walk is bounded by _MAX_CHAIN_LENGTH
+
+    Raises HTTPException(401) on any failure.
+    """
+    if len(intermediates) > _MAX_CHAIN_LENGTH:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail=f"certificate chain too long (max {_MAX_CHAIN_LENGTH} intermediates)",
+        )
+
+    full = [leaf, *intermediates, trust_anchor]
+
+    # Reject obvious shape errors: same cert twice (loop), or trust_anchor
+    # also present as an intermediate (caller duplicated it in x5c).
+    seen: set[bytes] = set()
+    for c in full:
+        fp = hashlib.sha256(c.public_bytes(serialization.Encoding.DER)).digest()
+        if fp in seen:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="certificate chain contains a duplicate entry",
+            )
+        seen.add(fp)
+
+    # Temporal validity on every cert.
+    for c in full:
+        try:
+            nb = c.not_valid_before_utc
+            na = c.not_valid_after_utc
+        except AttributeError:
+            nb = c.not_valid_before.replace(tzinfo=datetime.timezone.utc)
+            na = c.not_valid_after.replace(tzinfo=datetime.timezone.utc)
+        if now < nb or now > na:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="certificate in chain is expired or not yet valid",
+            )
+
+    # Intermediate certs must be real CAs with signing key usage.
+    for inter in intermediates:
+        try:
+            bc = inter.extensions.get_extension_for_class(x509.BasicConstraints).value
+        except x509.ExtensionNotFound:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="intermediate certificate lacks BasicConstraints",
+            )
+        if not bc.ca:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="intermediate certificate is not a CA",
+            )
+        try:
+            ku = inter.extensions.get_extension_for_class(x509.KeyUsage).value
+            if not ku.key_cert_sign:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail="intermediate KeyUsage missing keyCertSign",
+                )
+        except x509.ExtensionNotFound:
+            # KeyUsage is recommended but not strictly mandatory for CAs.
+            pass
+
+    # Path length: each parent's pathLenConstraint bounds the number of
+    # non-self-issued CAs that MAY follow below it. Walking top-down
+    # (trust_anchor first) lets us enforce it simply.
+    for idx in range(len(full) - 1, 0, -1):
+        parent = full[idx]
+        below_ca_count = max(0, (idx - 1))  # intermediates remaining below
+        try:
+            bc = parent.extensions.get_extension_for_class(x509.BasicConstraints).value
+            if bc.path_length is not None and below_ca_count - 1 > bc.path_length:
+                # -1 because the leaf is not a CA, so it doesn't consume path length
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail=(f"certificate chain violates pathLenConstraint "
+                            f"(parent allows {bc.path_length} below, chain has "
+                            f"{max(0, below_ca_count - 1)} intermediates)"),
+                )
+        except x509.ExtensionNotFound:
+            # Non-CA wouldn't have BC; shouldn't reach here for intermediates
+            # or trust_anchor since we validated above.
+            pass
+
+    # Signature chain: each child verified against the next parent's pubkey.
+    for i in range(len(full) - 1):
+        child = full[i]
+        parent_pub = full[i + 1].public_key()
+        try:
+            _verify_sig(child, parent_pub)
+        except InvalidSignature:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail=(f"certificate chain broken at position {i} — "
+                        f"signature not produced by the next cert in the chain"),
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail=f"certificate chain verification failed: {exc}",
+            )
 
 
 async def verify_client_assertion(
     assertion: str,
     db: AsyncSession,
     request: Request | None = None,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, bool]:
     """
-    Verify a client_assertion JWT and return (agent_id, org_id, cert_pem, cert_thumbprint).
+    Verify a client_assertion JWT and return (agent_id, org_id, cert_pem,
+    cert_thumbprint, svid_mode).
     cert_pem is the agent certificate extracted from x5c — it is saved in DB
     by the auth router to allow verification of message signatures.
     cert_thumbprint is the SHA-256 hex digest of the DER-encoded certificate.
+    svid_mode is True iff identity was resolved via SPIFFE URI SAN + chain
+    walk (no CN/O present); callers use it to skip per-cert pinning since
+    SPIRE-style SVIDs rotate far too fast for thumbprint-level stickiness.
 
     When ``request`` is provided and ``mtls_binding`` is enabled in settings,
     also enforces RFC 8705-style confirmation that the mTLS client cert
@@ -70,11 +220,21 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
     if not x5c or not isinstance(x5c, list) or len(x5c) == 0:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="x5c header absent or empty")
 
-    # ── 2. Load agent cert from x5c[0] and compute thumbprint ──────────────
+    # ── 2. Load full x5c chain and compute leaf thumbprint ──────────────────
+    # RFC 7515 §4.1.6: x5c[0] is the leaf, each subsequent entry is the CA
+    # that signs the previous one. The trust anchor (Org CA) is NOT in x5c —
+    # it's looked up from the DB by org_id / trust_domain. Legacy clients
+    # send only the leaf (single-level chain vs the registered Org CA);
+    # SPIFFE/SPIRE clients send the full chain up to (but excluding) the
+    # Org CA — walked in section 5 below.
     try:
-        cert_der = base64.b64decode(x5c[0])
-        agent_cert = x509.load_der_x509_certificate(cert_der)
+        chain_certs = [
+            x509.load_der_x509_certificate(base64.b64decode(c)) for c in x5c
+        ]
+        agent_cert = chain_certs[0]
+        cert_der = agent_cert.public_bytes(serialization.Encoding.DER)
         cert_thumbprint = hashlib.sha256(cert_der).hexdigest()
+        intermediates = chain_certs[1:]  # may be empty in classic mode
     except Exception:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid agent certificate")
 
@@ -151,33 +311,20 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
             detail="Agent certificate uses a weak signature algorithm — SHA-256 or stronger required",
         )
 
-    with tracer.start_as_current_span("auth.x509_chain_verify"):
-        try:
-            ca_pub = org_ca.public_key()
-            if isinstance(ca_pub, rsa.RSAPublicKey):
-                ca_pub.verify(
-                    agent_cert.signature,
-                    agent_cert.tbs_certificate_bytes,
-                    padding.PKCS1v15(),
-                    agent_cert.signature_hash_algorithm,
-                )
-            elif isinstance(ca_pub, ec.EllipticCurvePublicKey):
-                ca_pub.verify(
-                    agent_cert.signature,
-                    agent_cert.tbs_certificate_bytes,
-                    ec.ECDSA(agent_cert.signature_hash_algorithm),
-                )
-            else:
-                raise ValueError(f"Unsupported CA key type: {type(ca_pub).__name__}")
-        except InvalidSignature:
-            raise HTTPException(
-                status.HTTP_401_UNAUTHORIZED,
-                detail="Agent certificate not signed by the registered org CA",
-            )
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Certificate chain verification failed")
+    # If the client accidentally included the Org CA as the last x5c entry,
+    # strip it — the Org CA is the trust anchor and lives server-side.
+    org_ca_der = org_ca.public_bytes(serialization.Encoding.DER)
+    if intermediates and intermediates[-1].public_bytes(serialization.Encoding.DER) == org_ca_der:
+        intermediates = intermediates[:-1]
+
+    with tracer.start_as_current_span("auth.x509_chain_verify") as _chain_span:
+        _chain_span.set_attribute("chain.length", len(intermediates) + 1)
+        _walk_chain(
+            leaf=agent_cert,
+            intermediates=intermediates,
+            trust_anchor=org_ca,
+            now=datetime.datetime.now(datetime.timezone.utc),
+        )
 
     # ── 5b. Enforce minimum RSA key size (2048 bits) ──────────────────────
     agent_pub_key = agent_cert.public_key()
@@ -188,7 +335,6 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
                 detail=f"Agent RSA key too small ({agent_pub_key.key_size} bits) — minimum 2048 required",
             )
     elif isinstance(agent_pub_key, ec.EllipticCurvePublicKey):
-        _ALLOWED_EC_CURVES = (ec.SECP256R1, ec.SECP384R1, ec.SECP521R1)
         if not isinstance(agent_pub_key.curve, _ALLOWED_EC_CURVES):
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
@@ -335,5 +481,6 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
 
     cert_pem = agent_cert.public_bytes(serialization.Encoding.PEM).decode()
     _span.set_attribute("cert.thumbprint", cert_thumbprint)
+    _span.set_attribute("auth.svid_mode", svid_mode)
     X509_VERIFY_DURATION_HISTOGRAM.record((_time.monotonic() - _t0) * 1000)
-    return agent_id, org_id, cert_pem, cert_thumbprint
+    return agent_id, org_id, cert_pem, cert_thumbprint, svid_mode

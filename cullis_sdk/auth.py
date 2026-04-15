@@ -100,9 +100,19 @@ def build_client_assertion(
         (assertion_jwt, jwt_algorithm) tuple.
     """
     cert_bytes = cert_pem.encode() if isinstance(cert_pem, str) else cert_pem
-    cert = crypto_x509.load_pem_x509_certificate(cert_bytes)
-    cert_der = cert.public_bytes(serialization.Encoding.DER)
-    x5c = [base64.b64encode(cert_der).decode()]
+    # Accept either a single PEM cert (classic BYOCA) or a concatenation of
+    # PEM blocks (SPIFFE/SPIRE SVID → [leaf, intermediate, …]). In the latter
+    # case we include the full chain in x5c so the broker can walk it back
+    # to the registered Org CA (the trust anchor is never included — it
+    # stays server-side).
+    chain_certs = crypto_x509.load_pem_x509_certificates(cert_bytes)
+    if not chain_certs:
+        raise ValueError("cert_pem contains no certificate")
+    cert = chain_certs[0]
+    x5c = [
+        base64.b64encode(c.public_bytes(serialization.Encoding.DER)).decode()
+        for c in chain_certs
+    ]
 
     now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
