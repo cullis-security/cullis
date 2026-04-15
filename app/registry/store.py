@@ -136,6 +136,37 @@ async def update_agent_cert(db: AsyncSession, agent_id: str, cert_pem: str,
     return False
 
 
+async def refresh_agent_cert_svid(
+    db: AsyncSession, agent_id: str, cert_pem: str, thumbprint: str,
+) -> bool:
+    """
+    Refresh the agent's stored cert without enforcing thumbprint pinning.
+
+    Used when the caller authenticated in SPIFFE/SVID mode: the leaf cert
+    rotates on a short schedule (SPIRE default ~1h), so pinning would
+    reject every second login. Identity is still bound by the chain walk
+    and the SPIFFE URI match — see ADR-003 §2.3. The broker still needs a
+    current cert_pem to verify outbound message signatures, so we overwrite
+    it on every SPIFFE-mode token issuance.
+
+    Returns True on success, False if the agent record is missing.
+    """
+    from app.auth.revocation import check_cert_not_revoked
+    from cryptography import x509 as _x509
+
+    cert_obj = _x509.load_pem_x509_certificate(cert_pem.encode())
+    serial_hex = format(cert_obj.serial_number, 'x')
+    await check_cert_not_revoked(db, serial_hex)
+
+    agent = await get_agent_by_id(db, agent_id)
+    if agent is None:
+        return False
+    agent.cert_pem = cert_pem
+    agent.cert_thumbprint = thumbprint
+    await db.commit()
+    return True
+
+
 async def rotate_agent_cert(db: AsyncSession, agent_id: str, new_cert_pem: str) -> str:
     """
     Rotate an agent's pinned certificate. Called only from explicit rotate endpoints.
