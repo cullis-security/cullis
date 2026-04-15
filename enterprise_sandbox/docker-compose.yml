@@ -356,6 +356,37 @@ services:
       retries: 20
       start_period: 20s
 
+  # Classic BYOCA agent living side-by-side with the SPIRE workload in
+  # Org A — exercises the CN/O auth branch and proves ADR-003 §2.6 mixed
+  # mode: same org, one trust_domain, different agents pick different
+  # auth methods.
+  byoca-a:
+    build:
+      context: ..
+      dockerfile: enterprise_sandbox/agent/Dockerfile
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      broker:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "http://broker:8000"
+      ORG_ID: "orga"
+      AGENT_NAME: "byoca-bot"
+      AGENT_AUTH: "byoca"
+      CERT_PATH: "/state/orga/agents/byoca-bot/agent.pem"
+      KEY_PATH:  "/state/orga/agents/byoca-bot/agent-key.pem"
+    volumes:
+      - bootstrap-state:/state:ro
+    networks: [orga-internal, public-wan]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 20s
+
   # ── Org B proxy ────────────────────────────────────────────────────────────
 
   proxy-b-init:

@@ -264,6 +264,18 @@ else
     fail "B4.5 agent-b SPIFFE auth"
 fi
 
+# B4.6 — classic BYOCA agent (byoca-bot) coexists with the SPIRE workload
+# in Org A (ADR-003 §2.6 mixed mode). Login uses a CN/O cert signed
+# directly by the Org CA — hits the classic code path with thumbprint
+# pinning active — while agent-a in the same org goes through the SPIFFE
+# SVID path with pinning skipped. Same broker, same org, different auth
+# branches resolving to different agent_ids.
+if docker compose ps byoca-a --format json | grep -q '"Health":"healthy"'; then
+    pass "B4.6 byoca-a classic auth OK (mixed mode alongside SPIRE in orga)"
+else
+    fail "B4.6 byoca-a classic auth"
+fi
+
 echo ""
 echo "[smoke] PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]
