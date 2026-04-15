@@ -1,0 +1,144 @@
+"""HTTP reverse-proxy forwarder for ADR-004 PR A.
+
+The SDK always connects to the proxy (never direct to broker). For operations
+that conceptually belong to the broker — auth token, sessions, registry — the
+proxy forwards the request as-is to the configured broker URL.
+
+Invariants:
+- Method / path / query / body pass through unchanged.
+- Authorization and DPoP headers pass through unchanged (the broker does the
+  actual verification — the proxy is transparent at the auth layer).
+- Host header from the inbound request is forwarded. The broker's DPoP htu
+  validator uses request.url (derived from Host); the SDK computed htu from
+  its own base URL, so they line up.
+- Hop-by-hop headers (RFC 7230 §6.1) are stripped.
+- Responses are returned verbatim with an extra `x-cullis-role: proxy` header
+  so SDKs can detect whether they are talking to a proxy or directly to the
+  broker.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Iterable
+
+import httpx
+from fastapi import APIRouter, HTTPException, Request, Response
+
+_log = logging.getLogger("mcp_proxy.reverse_proxy")
+
+FORWARDED_PREFIXES: tuple[str, ...] = (
+    "/v1/broker",
+    "/v1/auth",
+    "/v1/registry",
+)
+
+_HOP_BY_HOP = frozenset(
+    h.lower()
+    for h in (
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        # content-length is recomputed by httpx / starlette from the body.
+        "content-length",
+    )
+)
+
+
+def _filter_request_headers(headers: Iterable[tuple[bytes, bytes]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name, value in headers:
+        lname = name.decode("latin-1").lower()
+        if lname in _HOP_BY_HOP:
+            continue
+        out[lname] = value.decode("latin-1")
+    return out
+
+
+def _filter_response_headers(resp: httpx.Response) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name, value in resp.headers.items():
+        if name.lower() in _HOP_BY_HOP:
+            continue
+        out[name] = value
+    return out
+
+
+async def _forward(request: Request, broker_url: str, client: httpx.AsyncClient) -> Response:
+    target = broker_url.rstrip("/") + request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    body = await request.body()
+    headers = _filter_request_headers(request.headers.raw)
+
+    try:
+        upstream = await client.request(
+            request.method,
+            target,
+            content=body if body else None,
+            headers=headers,
+        )
+    except httpx.ConnectError as exc:
+        _log.warning("reverse-proxy: broker unreachable (%s): %s", target, exc)
+        raise HTTPException(status_code=502, detail="broker unreachable") from exc
+    except httpx.TimeoutException as exc:
+        _log.warning("reverse-proxy: broker timeout (%s): %s", target, exc)
+        raise HTTPException(status_code=504, detail="broker timeout") from exc
+
+    out_headers = _filter_response_headers(upstream)
+    out_headers["x-cullis-role"] = "proxy"
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=out_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+def build_reverse_proxy_router() -> APIRouter:
+    """Return an APIRouter that forwards the ADR-004 prefixes to the broker.
+
+    The handler reads broker URL and httpx client from ``request.app.state`` so
+    tests can monkey-patch either one and so the same router works regardless
+    of the lifespan-initialized values.
+    """
+    router = APIRouter(tags=["reverse-proxy"])
+
+    methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+
+    async def _handler(request: Request) -> Response:
+        broker_url: str | None = getattr(request.app.state, "reverse_proxy_broker_url", None)
+        client: httpx.AsyncClient | None = getattr(
+            request.app.state, "reverse_proxy_client", None,
+        )
+        if not broker_url or client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="reverse proxy not configured (broker_url missing)",
+            )
+        return await _forward(request, broker_url, client)
+
+    for prefix in FORWARDED_PREFIXES:
+        router.add_api_route(
+            f"{prefix}/{{path:path}}",
+            _handler,
+            methods=methods,
+            include_in_schema=False,
+        )
+        # Also match the bare prefix (no trailing segment) — FastAPI's `path:path`
+        # placeholder requires at least an empty segment, which matches ``/v1/auth/``
+        # but not ``/v1/auth``. Both are valid URLs, so register the bare form too.
+        router.add_api_route(
+            prefix,
+            _handler,
+            methods=methods,
+            include_in_schema=False,
+        )
+
+    return router

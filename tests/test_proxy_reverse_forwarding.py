@@ -1,0 +1,177 @@
+"""ADR-004 PR A — proxy reverse-proxy forwarding for /v1/broker, /v1/auth, /v1/registry.
+
+Verifies that the SDK can hit the proxy at ``http://proxy`` and the request is
+transparently forwarded to the broker with auth headers (DPoP, client_assertion
+x5c) and Host preserved, so the broker's DPoP ``htu`` check still passes.
+"""
+from __future__ import annotations
+
+import base64
+import uuid
+
+import pytest
+import pytest_asyncio
+from cryptography.hazmat.primitives import serialization
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app as broker_app  # ensures conftest side-effects load
+from tests.cert_factory import get_org_ca_pem, make_assertion
+from tests.conftest import ADMIN_HEADERS
+
+
+# The proxy forwards to this address; the same ASGI transport answers both the
+# proxy's lifespan check and the broker calls, so we can keep the URL arbitrary.
+BROKER_TARGET = "http://broker-test"
+
+
+@pytest_asyncio.fixture
+async def proxy_forwarding(tmp_path, monkeypatch):
+    """Spin up the proxy app wired to forward /v1/* to the in-memory broker app."""
+    db_file = tmp_path / "proxy.sqlite"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
+    # Any value — we overwrite app.state.reverse_proxy_client below anyway.
+    monkeypatch.setenv("MCP_PROXY_BROKER_URL", BROKER_TARGET)
+    monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+    from mcp_proxy.main import app as proxy_app
+
+    async with proxy_app.router.lifespan_context(proxy_app):
+        # Point the proxy's reverse-proxy httpx client at the in-memory broker.
+        broker_client = AsyncClient(
+            transport=ASGITransport(app=broker_app),
+            base_url=BROKER_TARGET,
+        )
+        proxy_app.state.reverse_proxy_client = broker_client
+        proxy_app.state.reverse_proxy_broker_url = BROKER_TARGET
+
+        proxy_transport = ASGITransport(app=proxy_app)
+        async with AsyncClient(transport=proxy_transport, base_url="http://test") as c:
+            try:
+                yield proxy_app, c
+            finally:
+                await broker_client.aclose()
+    get_settings.cache_clear()
+
+
+async def _register_agent_on_broker(agent_id: str, org_id: str) -> None:
+    """Provision org + CA + agent + approved binding directly on the broker app."""
+    # Use a short-lived AsyncClient straight to the broker so we don't pollute
+    # the proxy forwarding path during setup.
+    async with AsyncClient(
+        transport=ASGITransport(app=broker_app), base_url="http://test",
+    ) as broker:
+        org_secret = org_id + "-secret"
+        await broker.post(
+            "/v1/registry/orgs",
+            json={"org_id": org_id, "display_name": org_id, "secret": org_secret},
+            headers=ADMIN_HEADERS,
+        )
+        await broker.post(
+            f"/v1/registry/orgs/{org_id}/certificate",
+            json={"ca_certificate": get_org_ca_pem(org_id)},
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        await broker.post(
+            "/v1/registry/agents",
+            json={
+                "agent_id": agent_id, "org_id": org_id,
+                "display_name": agent_id, "capabilities": ["test.read"],
+            },
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        resp = await broker.post(
+            "/v1/registry/bindings",
+            json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+        binding_id = resp.json()["id"]
+        await broker.post(
+            f"/v1/registry/bindings/{binding_id}/approve",
+            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        )
+
+
+@pytest.mark.asyncio
+async def test_auth_token_via_proxy(proxy_forwarding, dpop):
+    """Agent auth via proxy: DPoP htu and x5c both propagate so broker accepts."""
+    _, client = proxy_forwarding
+
+    org_id = f"rp-org-{uuid.uuid4().hex[:6]}"
+    agent_id = f"{org_id}::agent-1"
+    await _register_agent_on_broker(agent_id, org_id)
+
+    # Prime the DPoP nonce via the proxy (health endpoint lives on the proxy
+    # itself, so prime directly from the broker to match the DPoP helper).
+    async with AsyncClient(
+        transport=ASGITransport(app=broker_app), base_url="http://test",
+    ) as broker:
+        prime = await broker.get("/health")
+        dpop._update_nonce(prime)
+
+    assertion = make_assertion(agent_id, org_id)
+    dpop_proof = dpop.proof("POST", "/v1/auth/token")
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop_proof},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token_type"] == "DPoP"
+    assert body["access_token"]
+    # The proxy tags every reverse-proxied response so SDKs can detect role.
+    assert resp.headers.get("x-cullis-role") == "proxy"
+
+
+@pytest.mark.asyncio
+async def test_dpop_nonce_header_propagates(proxy_forwarding, dpop):
+    """Broker-issued DPoP-Nonce header must survive reverse-proxy forwarding."""
+    _, client = proxy_forwarding
+
+    org_id = f"rp-nonce-{uuid.uuid4().hex[:6]}"
+    agent_id = f"{org_id}::agent-1"
+    await _register_agent_on_broker(agent_id, org_id)
+
+    # Send a proof without a nonce — the broker replies 401 use_dpop_nonce
+    # with a fresh DPoP-Nonce header. The proxy must forward that header
+    # verbatim so the SDK can retry with it.
+    dpop._nonce = None
+    assertion = make_assertion(agent_id, org_id)
+    proof_no_nonce = dpop.proof("POST", "/v1/auth/token", nonce=None)
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": proof_no_nonce},
+    )
+    assert resp.status_code == 401
+    assert "use_dpop_nonce" in resp.text
+    assert resp.headers.get("dpop-nonce"), "proxy dropped DPoP-Nonce header"
+    assert resp.headers.get("x-cullis-role") == "proxy"
+
+
+@pytest.mark.asyncio
+async def test_reverse_proxy_tags_role_header(proxy_forwarding):
+    """Any reverse-proxied response must carry x-cullis-role=proxy."""
+    _, client = proxy_forwarding
+
+    # /v1/registry/agents/search without DPoP returns 401 from the broker; we
+    # only need to verify the proxy tagged the response and forwarded the path.
+    resp = await client.get("/v1/registry/agents/search?pattern=*")
+    assert resp.status_code in (401, 422), resp.text
+    assert resp.headers.get("x-cullis-role") == "proxy"
+
+
+@pytest.mark.asyncio
+async def test_reverse_proxy_503_when_broker_url_unset(proxy_forwarding):
+    """With no broker_url configured, the reverse proxy short-circuits 503."""
+    proxy_app, client = proxy_forwarding
+    proxy_app.state.reverse_proxy_broker_url = None
+
+    resp = await client.post("/v1/auth/token", json={})
+    assert resp.status_code == 503, resp.text

@@ -59,6 +59,13 @@ class CullisClient:
         self._dpop_pubkey_jwk: dict | None = None
         self._dpop_nonce: str | None = None
 
+        # ADR-004 — last-seen server role (proxy|broker|None) from
+        # the `x-cullis-role` response header. The SDK's base URL can
+        # point either to a proxy (reverse-proxying to a broker) or to
+        # a broker directly; responses self-identify so tooling can
+        # detect which role is in front of it without a config change.
+        self.server_role: str | None = None
+
     def __enter__(self) -> CullisClient:
         return self
 
@@ -83,6 +90,9 @@ class CullisClient:
         nonce = response.headers.get("dpop-nonce")
         if nonce:
             self._dpop_nonce = nonce
+        role = response.headers.get("x-cullis-role")
+        if role:
+            self.server_role = role
 
     def _headers(self, method: str, path: str) -> dict:
         if not self.token:

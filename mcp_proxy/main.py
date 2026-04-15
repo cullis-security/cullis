@@ -80,6 +80,18 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.db import get_config
     broker_url = await get_config("broker_url") or settings.broker_url
     org_id = await get_config("org_id") or settings.org_id
+
+    # ADR-004 PR A — reverse-proxy httpx client. One shared AsyncClient so the
+    # forwarder re-uses HTTP/2 connections across requests. The broker URL is
+    # pinned on app.state so tests can override it before lifespan.
+    import httpx as _httpx
+    app.state.reverse_proxy_broker_url = broker_url
+    app.state.reverse_proxy_client = _httpx.AsyncClient(
+        timeout=30.0,
+        verify=settings.broker_verify_tls,
+        follow_redirects=False,
+    )
+
     if broker_url:
         from mcp_proxy.egress.agent_manager import AgentManager
         from mcp_proxy.egress.broker_bridge import BrokerBridge
@@ -218,6 +230,9 @@ async def lifespan(app: FastAPI):
     bridge = getattr(app.state, "broker_bridge", None)
     if bridge is not None:
         await bridge.shutdown()
+    rp_client = getattr(app.state, "reverse_proxy_client", None)
+    if rp_client is not None:
+        await rp_client.aclose()
     if _jwks_client:
         await _jwks_client.close()
     await dispose_db()
@@ -386,6 +401,12 @@ async def pdp_health():
     """PDP health check."""
     return {"status": "ok", "mode": "built-in"}
 
+
+# ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
+# /v1/registry/*. Registered before local handlers so the proxy owns these
+# paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.
+from mcp_proxy.reverse_proxy import build_reverse_proxy_router
+app.include_router(build_reverse_proxy_router())
 
 from mcp_proxy.ingress.router import router as ingress_router
 app.include_router(ingress_router)
