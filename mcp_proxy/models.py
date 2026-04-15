@@ -51,6 +51,7 @@ class InternalAgent(BaseModel):
     capabilities: list[str]
     created_at: str
     is_active: bool = True
+    cert_pem: str | None = None
 
 
 class AuditEntry(BaseModel):

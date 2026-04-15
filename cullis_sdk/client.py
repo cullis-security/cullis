@@ -479,6 +479,96 @@ class CullisClient:
         # Unreachable — loop above either returns or raises.
         raise ConnectionError(f"[{self._label}] Broker send failed unexpectedly.")
 
+    def send_via_proxy(
+        self,
+        session_id: str,
+        payload: dict,
+        recipient_id: str,
+        *,
+        ttl_seconds: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Send a message through the local proxy (ADR-001 §10).
+
+        Queries ``/v1/egress/resolve`` first, then sends via
+        ``/v1/egress/send`` using the transport the proxy advertised.
+
+        - ``transport=mtls-only`` (intra-org): signs the plaintext with the
+          agent's private key and posts it as-is. The proxy verifies the
+          signature and enqueues for the recipient.
+        - ``transport=envelope`` (cross-org): raises ``NotImplementedError``
+          in this revision — envelope-via-proxy wiring lands in a follow-up.
+
+        ``recipient_id`` may be a SPIFFE URI (``spiffe://td/org/agent``) or
+        the internal ``org::agent`` form.
+
+        Requires proxy credentials from :meth:`from_enrollment` (API key)
+        AND a signing key from :meth:`login` or :meth:`from_spiffe_workload_api`
+        when the resolver picks ``mtls-only``.
+        """
+        headers = self.proxy_headers()
+
+        resolve_resp = self._http.post(
+            f"{self.base}/v1/egress/resolve",
+            headers=headers,
+            json={"recipient_id": recipient_id},
+        )
+        resolve_resp.raise_for_status()
+        decision = resolve_resp.json()
+        transport = decision["transport"]
+        target_agent_id = decision["target_agent_id"]
+
+        sender_agent_id = getattr(self, "_proxy_agent_id", None) or self._label
+        client_seq = self._client_seq.get(session_id, 0)
+        self._client_seq[session_id] = client_seq + 1
+
+        if transport == "mtls-only":
+            if not self._signing_key_pem:
+                raise RuntimeError(
+                    "mtls-only transport requires a signing key — "
+                    "initialize the client via login() or from_spiffe_workload_api()"
+                )
+            nonce = str(uuid.uuid4())
+            timestamp = int(time.time())
+            signature = sign_message(
+                self._signing_key_pem,
+                session_id,
+                sender_agent_id,
+                nonce,
+                timestamp,
+                payload,
+                client_seq=client_seq,
+            )
+            body: dict[str, Any] = {
+                "session_id": session_id,
+                "payload": payload,
+                "recipient_agent_id": target_agent_id,
+                "mode": "mtls-only",
+                "signature": signature,
+                "nonce": nonce,
+                "timestamp": timestamp,
+                "sender_seq": client_seq,
+            }
+        else:
+            raise NotImplementedError(
+                "envelope transport through the proxy is not wired in this "
+                "revision — use send() against the broker for cross-org until "
+                "the follow-up PR lands"
+            )
+
+        if ttl_seconds is not None:
+            body["ttl_seconds"] = ttl_seconds
+        if idempotency_key is not None:
+            body["idempotency_key"] = idempotency_key
+
+        resp = self._http.post(
+            f"{self.base}/v1/egress/send",
+            headers=headers,
+            json=body,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def ack_message(self, session_id: str, msg_id: str) -> bool:
         """Acknowledge a queued offline message (M3.5).
 

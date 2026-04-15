@@ -71,6 +71,15 @@ class SendMessageRequest(BaseModel):
     # Optional; omitting them keeps pre-3c client behavior.
     ttl_seconds: int = Field(default=local_queue.DEFAULT_TTL_SECONDS, ge=10, le=3600)
     idempotency_key: str | None = None
+    # ADR-001 §10 — intra-org mtls-only mode. When omitted or "envelope",
+    # payload is opaque ciphertext (legacy behavior). When "mtls-only",
+    # payload is plaintext and signature + nonce + timestamp are required
+    # so the proxy can verify the sender's signature before enqueueing.
+    mode: Literal["envelope", "mtls-only"] = "envelope"
+    signature: str | None = None
+    nonce: str | None = None
+    timestamp: int | None = None
+    sender_seq: int | None = None
 
 
 class DiscoverRequest(BaseModel):
@@ -402,10 +411,60 @@ async def send_message(
         else:
             recipient = local_session.initiator_agent_id
 
-        # Ciphertext is already E2E-encrypted by the SDK. The proxy stores
-        # it opaquely and never needs to decrypt on the local path.
+        # ADR-001 §10 — mtls-only path: sender signs plaintext, proxy verifies
+        # the signature before enqueueing. The stored blob carries mode +
+        # signature + nonce + timestamp so the recipient SDK can re-verify.
+        # Legacy envelope mode stores the opaque ciphertext as-is.
         import json as _json
-        payload_cipher = _json.dumps(body.payload, separators=(",", ":"))
+
+        if body.mode == "mtls-only":
+            from cullis_sdk.crypto import verify_signature
+
+            missing = [
+                f for f in ("signature", "nonce", "timestamp")
+                if getattr(body, f) is None
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"mtls-only requires fields: {', '.join(missing)}",
+                )
+            if not agent.cert_pem:
+                raise HTTPException(
+                    status_code=400,
+                    detail="sender has no cert — cannot verify mtls-only signature",
+                )
+            ok = verify_signature(
+                agent.cert_pem,
+                body.signature,
+                body.session_id,
+                agent.agent_id,
+                body.nonce,
+                body.timestamp,
+                body.payload,
+                client_seq=body.sender_seq,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=401,
+                    detail="mtls-only signature verification failed",
+                )
+            stored_blob = _json.dumps(
+                {
+                    "mode": "mtls-only",
+                    "payload": body.payload,
+                    "signature": body.signature,
+                    "nonce": body.nonce,
+                    "timestamp": body.timestamp,
+                    "sender_seq": body.sender_seq,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            payload_cipher = stored_blob
+        else:
+            # Legacy envelope — ciphertext opaque.
+            payload_cipher = _json.dumps(body.payload, separators=(",", ":"))
 
         try:
             msg_id, inserted = await local_queue.enqueue(
@@ -429,17 +488,21 @@ async def send_message(
         ws_manager = getattr(request.app.state, "local_ws_manager", None)
         pushed = False
         if ws_manager is not None and ws_manager.is_connected(recipient):
-            pushed = await ws_manager.send_to_agent(
-                recipient,
-                {
-                    "type": "new_message",
-                    "session_id": body.session_id,
-                    "msg_id": msg_id,
-                    "sender_agent_id": agent.agent_id,
-                    "payload": body.payload,
-                    "enqueued_at": datetime.now(timezone.utc).isoformat(),
-                },
-            )
+            push_frame = {
+                "type": "new_message",
+                "session_id": body.session_id,
+                "msg_id": msg_id,
+                "sender_agent_id": agent.agent_id,
+                "payload": body.payload,
+                "enqueued_at": datetime.now(timezone.utc).isoformat(),
+                "mode": body.mode,
+            }
+            if body.mode == "mtls-only":
+                push_frame["signature"] = body.signature
+                push_frame["nonce"] = body.nonce
+                push_frame["timestamp"] = body.timestamp
+                push_frame["sender_seq"] = body.sender_seq
+            pushed = await ws_manager.send_to_agent(recipient, push_frame)
 
         duration_ms = (time.monotonic() - t0) * 1000
         await log_audit(
@@ -460,6 +523,15 @@ async def send_message(
             "delivered_via": "ws" if pushed else "queue",
             "duplicate": not inserted,
         }
+
+    if body.mode == "mtls-only":
+        # Cross-org through the broker cannot use mtls-only — broker is a
+        # non-trusted hop and must only see ciphertext. Reject early so the
+        # SDK caller surfaces a clear error instead of leaking plaintext.
+        raise HTTPException(
+            status_code=400,
+            detail="mtls-only is intra-org only; use envelope for cross-org sessions",
+        )
 
     bridge = _get_bridge(request)
     try:
