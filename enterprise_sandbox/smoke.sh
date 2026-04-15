@@ -276,6 +276,46 @@ else
     fail "B4.6 byoca-a classic auth"
 fi
 
+# B4.7 — full 3-agent A2A round-trip. Each agent opens a session with each
+# of the other two and sends one nonce payload. Every recipient's
+# /tmp/received.json accumulates the nonces. When the topology has
+# settled each agent has received exactly 2 nonces (one per peer).
+# This exercises: session open, peer auto-accept, broker routing,
+# E2E encryption, message signing, cross-org + intra-org both via broker,
+# mixed authentication (SPIRE leaf and classic leaf coexist).
+check_received() {
+    local container="$1" expected_from_a="$2" expected_from_b="$3"
+    docker compose exec -T "$container" python -c "
+import json, sys
+d = json.load(open('/tmp/received.json'))
+nonces = d['nonces']
+# Look for prefix '$expected_from_a->' and '$expected_from_b->' (at least one each)
+got_a = any(n.startswith('$expected_from_a->') for n in nonces)
+got_b = any(n.startswith('$expected_from_b->') for n in nonces)
+sys.exit(0 if (got_a and got_b) else 1)
+" 2>/dev/null
+}
+delivery_ok=true
+for i in $(seq 1 60); do
+    if check_received agent-a   "orga::byoca-bot" "orgb::agent-b" \
+       && check_received byoca-a "orga::agent-a"   "orgb::agent-b" \
+       && check_received agent-b  "orga::agent-a"   "orga::byoca-bot"; then
+        delivery_ok=true
+        break
+    fi
+    delivery_ok=false
+    sleep 1
+done
+if $delivery_ok; then
+    pass "B4.7 A2A messaging — each agent received nonces from both peers (cross-org + intra-org, mixed auth)"
+else
+    fail "B4.7 A2A messaging (not all 6 nonces delivered within 60s)"
+    for c in agent-a byoca-a agent-b; do
+        echo "  --- $c /tmp/received.json ---"
+        docker compose exec -T "$c" cat /tmp/received.json 2>/dev/null || echo "  (unreachable)"
+    done
+fi
+
 echo ""
 echo "[smoke] PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]

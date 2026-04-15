@@ -11,7 +11,10 @@ from app.auth.dpop import verify_dpop_proof, build_htu
 from app.config import get_settings
 from app.db.database import get_db
 from app.db.audit import log_event
-from app.registry.store import get_agent_by_id, update_agent_cert, invalidate_agent_tokens
+from app.registry.store import (
+    get_agent_by_id, update_agent_cert, refresh_agent_cert_svid,
+    invalidate_agent_tokens,
+)
 from app.registry.binding_store import get_approved_binding
 from app.rate_limit.limiter import rate_limiter
 from app.telemetry import tracer
@@ -89,11 +92,17 @@ async def issue_token(
                 detail="No approved binding for this agent and organization",
             )
 
-        # ── Certificate thumbprint pinning (anti Rogue CA) ───────────────────
-        # Skipped in SPIFFE mode: SPIRE rotates SVIDs every ~1h so the
-        # thumbprint changes constantly; identity is already bound by the
-        # chain walk + SPIFFE URI match (see ADR-003 §2.3).
-        if not svid_mode:
+        # ── Certificate storage ──────────────────────────────────────────────
+        # Classic BYOCA: enforce thumbprint pinning (anti Rogue CA).
+        # SPIFFE mode: overwrite the stored cert on every login — SPIRE
+        # rotates SVIDs on a short schedule, so pinning would reject every
+        # rotation. Identity in SPIFFE mode is bound by the chain walk +
+        # SPIFFE URI match instead (ADR-003 §2.3). The cert_pem still needs
+        # to be current on the server side so outbound-message signature
+        # verification in the broker can locate it.
+        if svid_mode:
+            await refresh_agent_cert_svid(db, agent_id, cert_pem, cert_thumbprint)
+        elif not svid_mode:
             pinned_ok = await update_agent_cert(db, agent_id, cert_pem, cert_thumbprint)
             if not pinned_ok:
                 from app.telemetry_metrics import CERT_PINNING_MISMATCH_COUNTER

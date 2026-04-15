@@ -1,27 +1,50 @@
-"""Sandbox demo agent — authenticates to broker via SPIFFE or classic BYOCA.
+"""Sandbox demo agent — SPIFFE or BYOCA auth + A2A messaging round-trip.
+
+Each agent authenticates to the broker, opens a session with every peer
+listed in ``/state/peers.json``, and sends a single nonce payload. In
+parallel it auto-accepts inbound sessions (so peers can send to it) and
+polls every active session for messages, accumulating received nonces
+to ``/tmp/received.json`` for the smoke suite to inspect.
 
 Env:
     BROKER_URL                e.g. http://broker:8000
     ORG_ID                    e.g. orga
     AGENT_NAME                short name (becomes {ORG_ID}::{AGENT_NAME})
     AGENT_AUTH                'spire' (default) or 'byoca'
-    SPIFFE_ENDPOINT_SOCKET    path to SPIRE Workload API socket (spire mode only)
-    CERT_PATH, KEY_PATH       PEM paths for classic BYOCA cert (byoca mode only)
-
-Scope: prove both auth paths work end-to-end against the same broker and
-that a classic BYOCA agent can live next to a SPIRE SVID agent inside
-the same org (ADR-003 §2.6 mixed mode).
-
-Cross-org messaging lives in a follow-up (Blocco 4c, issue #96).
+    SPIFFE_ENDPOINT_SOCKET    spire mode only
+    CERT_PATH, KEY_PATH       byoca mode only
+    PEERS_FILE                /state/peers.json (written by bootstrap)
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
+import threading
 import time
+import uuid
 
 from cullis_sdk import CullisClient
+
+
+RECEIVED_FILE = pathlib.Path("/tmp/received.json")
+_received_lock = threading.Lock()
+_received_nonces: list[str] = []
+
+
+def _persist_received() -> None:
+    with _received_lock:
+        data = {"nonces": list(_received_nonces)}
+    tmp = RECEIVED_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.rename(RECEIVED_FILE)
+
+
+def _record(nonce: str) -> None:
+    with _received_lock:
+        _received_nonces.append(nonce)
+    _persist_received()
 
 
 def wait_for_socket(path: str, timeout: float = 60.0) -> bool:
@@ -61,7 +84,6 @@ def _auth_spire(broker: str, org_id: str) -> CullisClient:
 def _auth_byoca(broker: str, org_id: str, agent_id: str) -> CullisClient:
     cert_path = os.environ["CERT_PATH"]
     key_path = os.environ["KEY_PATH"]
-    # Wait for bootstrap to publish the cert on the shared volume.
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if pathlib.Path(cert_path).exists() and pathlib.Path(key_path).exists():
@@ -76,16 +98,100 @@ def _auth_byoca(broker: str, org_id: str, agent_id: str) -> CullisClient:
     return client
 
 
+def _auto_accept_loop(client: CullisClient, self_id: str) -> None:
+    """Accept every pending session targeting this agent."""
+    seen: set[str] = set()
+    while True:
+        try:
+            sessions = client.list_sessions(status="pending")
+            for s in sessions:
+                if s.target_agent_id == self_id and s.session_id not in seen:
+                    try:
+                        client.accept_session(s.session_id)
+                        seen.add(s.session_id)
+                        print(f"[{self_id}] accepted session {s.session_id[:8]} "
+                              f"from {s.initiator_agent_id}", flush=True)
+                    except Exception as exc:
+                        print(f"[{self_id}] accept {s.session_id[:8]} failed: {exc!r}",
+                              flush=True)
+        except Exception as exc:
+            print(f"[{self_id}] list_sessions(pending) failed: {exc!r}", flush=True)
+        time.sleep(1)
+
+
+def _receive_loop(client: CullisClient, self_id: str) -> None:
+    """Poll every active session and record any nonce payloads."""
+    cursors: dict[str, int] = {}
+    while True:
+        try:
+            sessions = client.list_sessions(status="active")
+            for s in sessions:
+                sid = s.session_id
+                after = cursors.get(sid, -1)
+                try:
+                    msgs = client.poll(sid, after=after, poll_interval=0)
+                except Exception as exc:
+                    print(f"[{self_id}] poll {sid[:8]} failed: {exc!r}", flush=True)
+                    continue
+                for m in msgs:
+                    if isinstance(m.payload, dict) and "nonce" in m.payload:
+                        _record(m.payload["nonce"])
+                        print(f"[{self_id}] received nonce from {m.sender_agent_id}: "
+                              f"{m.payload['nonce']}", flush=True)
+                    cursors[sid] = max(cursors.get(sid, -1), m.seq)
+        except Exception as exc:
+            print(f"[{self_id}] list_sessions(active) failed: {exc!r}", flush=True)
+        time.sleep(1)
+
+
+def _send_to_peers(client: CullisClient, self_id: str, peers: list[str]) -> None:
+    """Open a session to each peer and send one nonce, retrying until the
+    session transitions from pending → active (peer accepts)."""
+    for peer_id in peers:
+        peer_org, _ = peer_id.split("::", 1)
+        try:
+            # target_agent_id is the full "{org}::{name}" form — broker's
+            # lookup is keyed on that, not on the short name.
+            session_id = client.open_session(
+                target_agent_id=peer_id,
+                target_org_id=peer_org,
+                capabilities=["sandbox.read"],
+            )
+        except Exception as exc:
+            print(f"[{self_id}] open_session {peer_id} failed: {exc!r}", flush=True)
+            continue
+        print(f"[{self_id}] session {session_id[:8]} opened → {peer_id}", flush=True)
+
+        nonce = f"{self_id}->{peer_id}:{uuid.uuid4().hex[:8]}"
+        for attempt in range(90):  # up to 90s for peer auto-accept
+            try:
+                client.send(
+                    session_id=session_id,
+                    sender_agent_id=self_id,
+                    payload={"nonce": nonce},
+                    recipient_agent_id=peer_id,
+                )
+                print(f"[{self_id}] sent nonce to {peer_id}", flush=True)
+                break
+            except Exception as exc:
+                if attempt < 89:
+                    time.sleep(1)
+                else:
+                    print(f"[{self_id}] send to {peer_id} giving up: {exc!r}",
+                          flush=True)
+
+
 def main() -> int:
     broker = os.environ["BROKER_URL"].rstrip("/")
     org_id = os.environ["ORG_ID"]
     name = os.environ["AGENT_NAME"]
     auth_mode = os.environ.get("AGENT_AUTH", "spire").lower()
-    agent_id = f"{org_id}::{name}"
+    peers_file = os.environ.get("PEERS_FILE", "/state/peers.json")
+    self_id = f"{org_id}::{name}"
 
-    # Wait for broker (we start in parallel with it)
     if not wait_for_http(f"{broker}/health", timeout=60):
-        print(f"[{agent_id}] FAIL: broker {broker} not reachable", file=sys.stderr, flush=True)
+        print(f"[{self_id}] FAIL: broker {broker} not reachable",
+              file=sys.stderr, flush=True)
         return 1
 
     try:
@@ -93,25 +199,51 @@ def main() -> int:
             client = _auth_spire(broker, org_id)
             auth_label = "SPIFFE"
         elif auth_mode == "byoca":
-            client = _auth_byoca(broker, org_id, agent_id)
+            client = _auth_byoca(broker, org_id, self_id)
             auth_label = "BYOCA"
         else:
-            print(f"[{agent_id}] FAIL: unknown AGENT_AUTH={auth_mode!r}",
+            print(f"[{self_id}] FAIL: unknown AGENT_AUTH={auth_mode!r}",
                   file=sys.stderr, flush=True)
             return 2
-    except Exception as e:
-        print(f"[{agent_id}] FAIL: {auth_mode} auth: {e!r}",
+    except Exception as exc:
+        print(f"[{self_id}] FAIL: {auth_mode} auth: {exc!r}",
               file=sys.stderr, flush=True)
         return 2
 
-    print(f"[{agent_id}] {auth_label} auth OK — token={client.token[:24] if client.token else None}...",
-          flush=True)
+    print(f"[{self_id}] {auth_label} auth OK — "
+          f"token={client.token[:24] if client.token else None}...", flush=True)
+    pathlib.Path("/tmp/ready").write_text(self_id + "\n")
+    _persist_received()  # initialize empty /tmp/received.json
 
-    # Ready-marker: smoke reads this to assert success without parsing logs.
-    pathlib.Path("/tmp/ready").write_text(agent_id + "\n")
+    # Load peer list written by bootstrap.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if pathlib.Path(peers_file).exists():
+            break
+        time.sleep(0.5)
+    try:
+        topology = json.loads(pathlib.Path(peers_file).read_text())
+        peers = topology.get(self_id, [])
+    except Exception as exc:
+        print(f"[{self_id}] WARN: peers file unreadable ({exc!r}), no sends",
+              flush=True)
+        peers = []
+    print(f"[{self_id}] peers: {peers}", flush=True)
 
-    # Keep alive (long-running responder). Token refresh via SVID rotation
-    # is a later concern — SDK currently does not auto-rotate.
+    threading.Thread(
+        target=_auto_accept_loop, args=(client, self_id), daemon=True,
+    ).start()
+    threading.Thread(
+        target=_receive_loop, args=(client, self_id), daemon=True,
+    ).start()
+
+    # Give peer containers a head start so their auto_accept loop is running
+    # when we open sessions toward them.
+    time.sleep(5)
+    if peers:
+        _send_to_peers(client, self_id, peers)
+
+    # Keep the process alive — daemons handle accept + receive in background.
     while True:
         time.sleep(30)
 

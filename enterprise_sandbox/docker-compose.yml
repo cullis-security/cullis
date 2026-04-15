@@ -340,8 +340,10 @@ services:
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
       SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
+      PEERS_FILE: "/state/peers.json"
     volumes:
       - spire-a-agent-socket:/run/spire/sockets:ro
+      - bootstrap-state:/state:ro
     networks: [orga-internal, public-wan]
     # Share PID namespace with spire-agent-a so the SPIRE unix WorkloadAttestor
     # can see this process via /proc/{pid}/exe and attest the unix:uid:1000
@@ -376,6 +378,7 @@ services:
       AGENT_AUTH: "byoca"
       CERT_PATH: "/state/orga/agents/byoca-bot/agent.pem"
       KEY_PATH:  "/state/orga/agents/byoca-bot/agent-key.pem"
+      PEERS_FILE: "/state/peers.json"
     volumes:
       - bootstrap-state:/state:ro
     networks: [orga-internal, public-wan]
@@ -529,8 +532,10 @@ services:
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
       SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
+      PEERS_FILE: "/state/peers.json"
     volumes:
       - spire-b-agent-socket:/run/spire/sockets:ro
+      - bootstrap-state:/state:ro
     networks: [orgb-internal, public-wan]
     pid: "service:spire-agent-b"
     restart: unless-stopped
