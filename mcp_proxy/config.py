@@ -49,7 +49,18 @@ class ProxySettings(BaseSettings):
     admin_secret: str = "change-me-in-production"
     dashboard_signing_key: str = ""
 
-    # Broker uplink (for egress)
+    # Standalone mode — ship the proxy as a product on its own, without a
+    # Cullis broker in front of it. When true:
+    #   - BrokerBridge and the reverse-proxy httpx client are not initialized.
+    #   - /readyz skips the JWKS cache check (there is no broker to fetch from).
+    #   - validate_config() does not require BROKER_JWKS_URL in production.
+    #   - Dashboard responses carry x-cullis-mode: standalone.
+    # Intra-org flows (enrollment, /v1/egress/*, local sessions, Guardian)
+    # keep working unchanged. Federation can be turned on later by flipping
+    # this to false and setting broker_url/broker_jwks_url.
+    standalone: bool = False
+
+    # Broker uplink (for egress) — ignored in standalone mode.
     broker_url: str = ""
     broker_verify_tls: bool = True  # verify broker TLS cert (disable only for dev)
     org_id: str = ""
@@ -128,6 +139,11 @@ class ProxySettings(BaseSettings):
             self.egress_inspection_enabled = egress_flag.lower() in (
                 "1", "true", "yes", "on",
             )
+        standalone_flag = os.environ.get("MCP_PROXY_STANDALONE")
+        if standalone_flag is not None:
+            self.standalone = standalone_flag.lower() in (
+                "1", "true", "yes", "on",
+            )
         return self
 
 
@@ -147,19 +163,25 @@ def validate_config(settings: ProxySettings) -> None:
             )
             raise SystemExit(1)
 
-        if not settings.broker_jwks_url:
-            _log.critical(
-                "BROKER_JWKS_URL is empty in production. "
-                "Set MCP_PROXY_BROKER_JWKS_URL to the broker JWKS endpoint."
-            )
-            raise SystemExit(1)
+        # JWKS is only required when the proxy fronts a broker. Standalone
+        # deploys (no broker) have no JWKS endpoint to fetch from; enforcing
+        # it would block the intended ship-on-its-own mode.
+        if not settings.standalone:
+            if not settings.broker_jwks_url:
+                _log.critical(
+                    "BROKER_JWKS_URL is empty in production. "
+                    "Set MCP_PROXY_BROKER_JWKS_URL to the broker JWKS "
+                    "endpoint, or set MCP_PROXY_STANDALONE=true to run "
+                    "without a broker."
+                )
+                raise SystemExit(1)
 
-        if settings.broker_jwks_url.startswith("http://"):
-            _log.critical(
-                "BROKER_JWKS_URL uses plain HTTP ('%s') in production. "
-                "Use HTTPS for JWKS endpoint.", settings.broker_jwks_url
-            )
-            raise SystemExit(1)
+            if settings.broker_jwks_url.startswith("http://"):
+                _log.critical(
+                    "BROKER_JWKS_URL uses plain HTTP ('%s') in production. "
+                    "Use HTTPS for JWKS endpoint.", settings.broker_jwks_url
+                )
+                raise SystemExit(1)
 
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:

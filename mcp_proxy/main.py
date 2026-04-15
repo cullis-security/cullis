@@ -76,21 +76,30 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.auth.dpop import generate_dpop_nonce
     generate_dpop_nonce()
 
-    # 5. Initialize BrokerBridge for egress (if broker_url configured)
+    # 5. Initialize BrokerBridge for egress (if broker_url configured and
+    # the proxy is not in standalone mode). Standalone deploys skip broker
+    # uplink entirely — the reverse-proxy catch-all will 503 on any
+    # federation-bound path, and /readyz won't fail on JWKS staleness.
     from mcp_proxy.db import get_config
-    broker_url = await get_config("broker_url") or settings.broker_url
-    org_id = await get_config("org_id") or settings.org_id
+    if settings.standalone:
+        broker_url = ""
+        org_id = settings.org_id
+        app.state.reverse_proxy_broker_url = None
+        app.state.reverse_proxy_client = None
+        _log.info("Standalone mode — broker uplink skipped.")
+    else:
+        broker_url = await get_config("broker_url") or settings.broker_url
+        org_id = await get_config("org_id") or settings.org_id
 
-    # ADR-004 PR A — reverse-proxy httpx client. One shared AsyncClient so the
-    # forwarder re-uses HTTP/2 connections across requests. The broker URL is
-    # pinned on app.state so tests can override it before lifespan.
-    import httpx as _httpx
-    app.state.reverse_proxy_broker_url = broker_url
-    app.state.reverse_proxy_client = _httpx.AsyncClient(
-        timeout=30.0,
-        verify=settings.broker_verify_tls,
-        follow_redirects=False,
-    )
+        # ADR-004 PR A — reverse-proxy httpx client. One shared AsyncClient
+        # so the forwarder re-uses HTTP/2 connections across requests.
+        import httpx as _httpx
+        app.state.reverse_proxy_broker_url = broker_url
+        app.state.reverse_proxy_client = _httpx.AsyncClient(
+            timeout=30.0,
+            verify=settings.broker_verify_tls,
+            follow_redirects=False,
+        )
 
     if broker_url:
         from mcp_proxy.egress.agent_manager import AgentManager
@@ -297,6 +306,12 @@ if _cors_origins:
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    # Let operators tell at a glance whether this proxy is running
+    # standalone or fronting a Cullis broker.
+    response.headers.setdefault(
+        "x-cullis-mode",
+        "standalone" if get_settings().standalone else "federation",
+    )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -474,6 +489,11 @@ async def readyz():
         return JSONResponse(
             {"status": "not_ready", "checks": checks}, status_code=503,
         )
+
+    # Standalone deploys have no broker, so no JWKS to check — skip.
+    if get_settings().standalone:
+        checks["jwks_cache"] = "standalone"
+        return {"status": "ready", "checks": checks}
 
     # JWKS cache freshness — distinguish "never fetched" from "stale".
     # A proxy that has never talked to the broker (e.g. first boot in
