@@ -406,6 +406,11 @@ async def pdp_health():
     return {"status": "ok", "mode": "built-in"}
 
 
+# ADR-004 PR D — proxy-native /v1/auth/sign-assertion. Must precede the
+# reverse-proxy catch-all so the sign endpoint wins route matching.
+from mcp_proxy.auth.sign_assertion import router as sign_assertion_router
+app.include_router(sign_assertion_router)
+
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these
 # paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.

@@ -318,6 +318,66 @@ class CullisClient:
                 f"[{agent_id}] Login failed (HTTP {e.response.status_code}): {e.response.text}"
             ) from e
 
+    def login_via_proxy(self) -> None:
+        """ADR-004 §2.4 — authenticate an enrolled agent via the local proxy.
+
+        The cert + key stay on the proxy; this call asks the proxy to mint a
+        short-lived client_assertion signed on the agent's behalf, then hands
+        that assertion to the broker's ``/v1/auth/token`` (via the
+        reverse-proxy) to receive a DPoP-bound access token.
+
+        Requires :attr:`_proxy_api_key` and :attr:`_proxy_agent_id` to be set —
+        typically via :meth:`from_enrollment`. After a successful call,
+        :attr:`token` holds the broker access token and all subsequent
+        ``_authed_request`` / ``discover`` / ``open_session`` / ``send`` calls
+        work exactly like a cert-based login.
+        """
+        api_key = getattr(self, "_proxy_api_key", None)
+        agent_id = getattr(self, "_proxy_agent_id", None)
+        if not api_key or not agent_id:
+            raise RuntimeError(
+                "login_via_proxy() requires proxy enrollment — "
+                "use CullisClient.from_enrollment() first",
+            )
+        self._label = agent_id
+
+        try:
+            sign_resp = self._http.post(
+                f"{self.base}/v1/auth/sign-assertion",
+                headers={"X-API-Key": api_key},
+            )
+            sign_resp.raise_for_status()
+            self._update_nonce(sign_resp)
+            assertion = sign_resp.json()["client_assertion"]
+
+            self._dpop_privkey, self._dpop_pubkey_jwk = generate_dpop_keypair()
+            token_url = f"{self.base}/v1/auth/token"
+
+            dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+            resp = self._http.post(
+                token_url,
+                json={"client_assertion": assertion},
+                headers={"DPoP": dpop_proof},
+            )
+            if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
+                self._update_nonce(resp)
+                dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+                resp = self._http.post(
+                    token_url,
+                    json={"client_assertion": assertion},
+                    headers={"DPoP": dpop_proof},
+                )
+            resp.raise_for_status()
+            self._update_nonce(resp)
+            self.token = resp.json()["access_token"]
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise ConnectionError(f"[{agent_id}] Proxy unreachable: {e}") from e
+        except httpx.HTTPStatusError as e:
+            raise PermissionError(
+                f"[{agent_id}] login_via_proxy failed "
+                f"(HTTP {e.response.status_code}): {e.response.text}"
+            ) from e
+
     # ── Registry ────────────────────────────────────────────────────
 
     def register(self, agent_id: str, org_id: str, display_name: str,
