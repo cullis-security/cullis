@@ -6,12 +6,10 @@ x5c) and Host preserved, so the broker's DPoP ``htu`` check still passes.
 """
 from __future__ import annotations
 
-import base64
 import uuid
 
 import pytest
 import pytest_asyncio
-from cryptography.hazmat.primitives import serialization
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app as broker_app  # ensures conftest side-effects load
