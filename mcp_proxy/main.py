@@ -76,11 +76,13 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.auth.dpop import generate_dpop_nonce
     generate_dpop_nonce()
 
-    # 5. Initialize BrokerBridge for egress (if broker_url configured and
-    # the proxy is not in standalone mode). Standalone deploys skip broker
-    # uplink entirely — the reverse-proxy catch-all will 503 on any
-    # federation-bound path, and /readyz won't fail on JWKS staleness.
+    # 5. Initialize AgentManager + BrokerBridge.
+    # AgentManager is always needed (it owns the Org CA used to mint internal
+    # agent certs, regardless of whether the proxy federates with a broker).
+    # BrokerBridge + reverse-proxy client are only initialized when federating.
     from mcp_proxy.db import get_config
+    from mcp_proxy.egress.agent_manager import AgentManager
+
     if settings.standalone:
         broker_url = ""
         org_id = settings.org_id
@@ -101,11 +103,20 @@ async def lifespan(app: FastAPI):
             follow_redirects=False,
         )
 
+    agent_mgr = AgentManager(org_id=org_id, trust_domain=settings.trust_domain)
+    await agent_mgr.load_org_ca_from_config()
+
+    # #115 — standalone first-boot: generate a fresh self-signed Org CA when
+    # no CA has been attached (no attach-ca invite ever consumed) and no
+    # broker is configured. Gated on standalone=true so federation deploys
+    # keep the attach-ca flow unchanged.
+    if settings.standalone and not agent_mgr.ca_loaded:
+        await agent_mgr.generate_org_ca()
+
+    app.state.agent_manager = agent_mgr
+
     if broker_url:
-        from mcp_proxy.egress.agent_manager import AgentManager
         from mcp_proxy.egress.broker_bridge import BrokerBridge
-        agent_mgr = AgentManager(org_id=org_id, trust_domain=settings.trust_domain)
-        await agent_mgr.load_org_ca_from_config()
         bridge = BrokerBridge(
             broker_url=broker_url,
             org_id=org_id,
