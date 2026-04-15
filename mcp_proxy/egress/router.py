@@ -457,6 +457,7 @@ async def send_message(
                     "nonce": body.nonce,
                     "timestamp": body.timestamp,
                     "sender_seq": body.sender_seq,
+                    "sender_cert_pem": agent.cert_pem,
                 },
                 separators=(",", ":"),
                 sort_keys=True,
@@ -502,6 +503,7 @@ async def send_message(
                 push_frame["nonce"] = body.nonce
                 push_frame["timestamp"] = body.timestamp
                 push_frame["sender_seq"] = body.sender_seq
+                push_frame["sender_cert_pem"] = agent.cert_pem
             pushed = await ws_manager.send_to_agent(recipient, push_frame)
 
         duration_ms = (time.monotonic() - t0) * 1000
@@ -600,16 +602,35 @@ async def poll_messages(
         # Only messages that belong to this session — the queue is global
         # per recipient but the caller asked for a specific session.
         msgs = [m for m in pending if m.session_id == session_id]
-        payload = [
-            {
+        import json as _json
+        payload = []
+        for m in msgs:
+            entry: dict = {
                 "msg_id": m.msg_id,
                 "session_id": m.session_id,
                 "sender_agent_id": m.sender_agent_id,
-                "payload_ciphertext": m.payload_ciphertext,
                 "enqueued_at": m.enqueued_at.isoformat() if m.enqueued_at else None,
             }
-            for m in msgs
-        ]
+            # mtls-only blobs are self-describing — parse out the signed
+            # plaintext + metadata so the recipient SDK can verify without
+            # guessing at wire shape. Legacy ciphertext stays opaque.
+            try:
+                parsed = _json.loads(m.payload_ciphertext)
+                if isinstance(parsed, dict) and parsed.get("mode") == "mtls-only":
+                    entry["mode"] = "mtls-only"
+                    entry["payload"] = parsed.get("payload")
+                    entry["signature"] = parsed.get("signature")
+                    entry["nonce"] = parsed.get("nonce")
+                    entry["timestamp"] = parsed.get("timestamp")
+                    entry["sender_seq"] = parsed.get("sender_seq")
+                    entry["sender_cert_pem"] = parsed.get("sender_cert_pem")
+                else:
+                    entry["mode"] = "envelope"
+                    entry["payload_ciphertext"] = m.payload_ciphertext
+            except (ValueError, TypeError):
+                entry["mode"] = "envelope"
+                entry["payload_ciphertext"] = m.payload_ciphertext
+            payload.append(entry)
         return {"messages": payload, "count": len(payload), "scope": "local"}
 
     bridge = _get_bridge(request)

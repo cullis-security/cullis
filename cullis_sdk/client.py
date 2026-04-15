@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from cullis_sdk.auth import generate_dpop_keypair, build_dpop_proof, build_client_assertion
-from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.message_signer import sign_message, verify_signature
 from cullis_sdk.crypto.e2e import encrypt_for_agent, decrypt_from_agent
 from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult
 from cullis_sdk._logging import log, RED
@@ -568,6 +568,91 @@ class CullisClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def receive_via_proxy(self, session_id: str) -> list[dict]:
+        """Poll the proxy for pending messages in ``session_id`` (ADR-001 §10).
+
+        Returns the verified plaintext payloads. For ``mtls-only`` frames the
+        signature is verified against the sender cert the proxy bundled in
+        the response; a frame that fails verification raises
+        ``ValueError`` rather than being silently dropped, so the caller
+        chooses whether to ack it, audit it, or abort.
+
+        Each returned dict has:
+          - ``msg_id`` (str)
+          - ``session_id`` (str)
+          - ``sender_agent_id`` (str)
+          - ``mode`` (``"mtls-only"`` | ``"envelope"``)
+          - ``payload`` (dict, plaintext — populated for mtls-only only)
+          - ``payload_ciphertext`` (str, populated for envelope only —
+            caller still decrypts with its own key)
+          - ``enqueued_at`` (ISO-8601)
+
+        ``envelope`` messages are handed back untouched; the existing
+        ``decrypt_from_agent`` helper remains the caller's responsibility
+        until the envelope-via-proxy pass-through lands in a follow-up.
+        """
+        headers = self.proxy_headers()
+        resp = self._http.get(
+            f"{self.base}/v1/egress/messages/{session_id}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        out: list[dict] = []
+        for m in data.get("messages", []):
+            if m.get("mode") == "mtls-only":
+                cert_pem = m.get("sender_cert_pem")
+                if not cert_pem:
+                    raise ValueError(
+                        f"msg {m.get('msg_id')}: mtls-only frame missing sender_cert_pem"
+                    )
+                ok = verify_signature(
+                    cert_pem,
+                    m["signature"],
+                    session_id,
+                    m["sender_agent_id"],
+                    m["nonce"],
+                    m["timestamp"],
+                    m["payload"],
+                    client_seq=m.get("sender_seq"),
+                )
+                if not ok:
+                    raise ValueError(
+                        f"msg {m.get('msg_id')}: signature verification failed"
+                    )
+                out.append({
+                    "msg_id": m["msg_id"],
+                    "session_id": m["session_id"],
+                    "sender_agent_id": m["sender_agent_id"],
+                    "mode": "mtls-only",
+                    "payload": m["payload"],
+                    "enqueued_at": m.get("enqueued_at"),
+                })
+            else:
+                out.append({
+                    "msg_id": m["msg_id"],
+                    "session_id": m["session_id"],
+                    "sender_agent_id": m["sender_agent_id"],
+                    "mode": "envelope",
+                    "payload_ciphertext": m.get("payload_ciphertext"),
+                    "enqueued_at": m.get("enqueued_at"),
+                })
+        return out
+
+    def ack_via_proxy(self, session_id: str, msg_id: str) -> bool:
+        """Acknowledge a local-queue message to the proxy (at-least-once)."""
+        resp = self._http.post(
+            f"{self.base}/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
+            headers=self.proxy_headers(),
+        )
+        if resp.status_code == 204:
+            return True
+        if resp.status_code in (404, 409):
+            return False
+        resp.raise_for_status()
+        return True
 
     def ack_message(self, session_id: str, msg_id: str) -> bool:
         """Acknowledge a queued offline message (M3.5).
