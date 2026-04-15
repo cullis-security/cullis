@@ -17,9 +17,12 @@ from tests.cert_factory import get_org_ca_pem, make_assertion
 from tests.conftest import ADMIN_HEADERS
 
 
-# The proxy forwards to this address; the same ASGI transport answers both the
-# proxy's lifespan check and the broker calls, so we can keep the URL arbitrary.
-BROKER_TARGET = "http://broker-test"
+# SDK base + broker target share the same URL so scope["server"] and the
+# forwarded X-Forwarded-Host/Proto all reconstruct the same htu that the SDK
+# signed. uvicorn's --proxy-headers promotion of X-Forwarded-* is out of scope
+# under ASGITransport, so matching the URLs is the simplest way to keep the
+# DPoP htu comparison honest in-test.
+BROKER_TARGET = "http://test"
 
 
 @pytest_asyncio.fixture

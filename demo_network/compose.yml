@@ -174,7 +174,11 @@ services:
       DASHBOARD_SIGNING_KEY: "demo-dashboard-signing-key-32chars-long-enough"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
-      BROKER_PUBLIC_URL: "https://broker.cullis.test:8443"
+      # ADR-004 — agents reach the broker via proxy-{a,b}, whose DPoP proofs
+      # claim htu=https://proxy-X.cullis.test:8443/... Leaving BROKER_PUBLIC_URL
+      # empty lets build_htu fall back to the Host header, which the proxy
+      # preserves via X-Forwarded-Host on forward (uvicorn --proxy-headers).
+      # BROKER_PUBLIC_URL: "https://broker.cullis.test:8443"
       DATABASE_URL: "postgresql+asyncpg://atn:atn-smoke@postgres:5432/agent_trust"
       REDIS_URL: "redis://redis:6379"
       KMS_BACKEND: "vault"
@@ -221,7 +225,9 @@ services:
         condition: service_completed_successfully
     environment:
       ORG_ID: "demo-org-a"
-      BROKER_URL: "https://broker.cullis.test:8443"
+      # ADR-004 — reverse-proxy forwards directly to broker:8000 (no Traefik
+      # in between), so X-Forwarded-* survive to the broker.
+      BROKER_URL: "http://broker:8000"
       PROXY_PUBLIC_URL: "https://proxy-a.cullis.test:8443"
       PROXY_DB_PATH: /data/mcp_proxy.db
       STATE_DIR: /state
@@ -237,7 +243,8 @@ services:
         condition: service_completed_successfully
     environment:
       ORG_ID: "demo-org-b"
-      BROKER_URL: "https://broker.cullis.test:8443"
+      # ADR-004 — reverse-proxy → broker:8000 internal (no Traefik).
+      BROKER_URL: "http://broker:8000"
       PROXY_PUBLIC_URL: "https://proxy-b.cullis.test:8443"
       PROXY_DB_PATH: /data/mcp_proxy.db
       STATE_DIR: /state
@@ -258,8 +265,11 @@ services:
       proxy-a-init:
         condition: service_completed_successfully
     environment:
-      MCP_PROXY_BROKER_URL: "https://broker.cullis.test:8443"
-      MCP_PROXY_BROKER_JWKS_URL: "https://broker.cullis.test:8443/.well-known/jwks.json"
+      # ADR-004 — reverse-proxy forwards directly to broker:8000 (bypasses
+      # Traefik), so X-Forwarded-Host / -Proto survive to the broker's
+      # --proxy-headers htu reconstruction.
+      MCP_PROXY_BROKER_URL: "http://broker:8000"
+      MCP_PROXY_BROKER_JWKS_URL: "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_PROXY_PUBLIC_URL: "https://proxy-a.cullis.test:8443"
       MCP_PROXY_ADMIN_SECRET: "demo-proxy-admin-a"
       MCP_PROXY_DATABASE_URL: "sqlite+aiosqlite:////data/mcp_proxy.db"
@@ -281,8 +291,9 @@ services:
       proxy-b-init:
         condition: service_completed_successfully
     environment:
-      MCP_PROXY_BROKER_URL: "https://broker.cullis.test:8443"
-      MCP_PROXY_BROKER_JWKS_URL: "https://broker.cullis.test:8443/.well-known/jwks.json"
+      # ADR-004 — reverse-proxy → broker:8000 internal (no Traefik in between).
+      MCP_PROXY_BROKER_URL: "http://broker:8000"
+      MCP_PROXY_BROKER_JWKS_URL: "http://broker:8000/.well-known/jwks.json"
       MCP_PROXY_PROXY_PUBLIC_URL: "https://proxy-b.cullis.test:8443"
       MCP_PROXY_ADMIN_SECRET: "demo-proxy-admin-b"
       MCP_PROXY_DATABASE_URL: "sqlite+aiosqlite:////data/mcp_proxy.db"
@@ -304,7 +315,8 @@ services:
       bootstrap:
         condition: service_completed_successfully
     environment:
-      BROKER_URL:       "https://broker.cullis.test:8443"
+      # ADR-004 — checker reaches the broker via proxy-b (reverse-proxy).
+      BROKER_URL:       "https://proxy-b.cullis.test:8443"
       AGENT_ID:         "demo-org-b::checker"
       ORG_ID:           "demo-org-b"
       AGENT_CERT_PATH:  /state/demo-org-b/checker.pem
@@ -326,7 +338,8 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL:              "https://broker.cullis.test:8443"
+      # ADR-004 — sender reaches the broker via proxy-a (reverse-proxy).
+      BROKER_URL:              "https://proxy-a.cullis.test:8443"
       AGENT_ID:                "demo-org-a::sender"
       ORG_ID:                  "demo-org-a"
       PEER_AGENT_ID:           "demo-org-b::checker"

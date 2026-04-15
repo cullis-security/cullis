@@ -92,7 +92,19 @@ class CullisClient:
             self._dpop_nonce = nonce
         role = response.headers.get("x-cullis-role")
         if role:
+            previous = self.server_role
             self.server_role = role
+            if role == "broker" and previous != "broker":
+                import warnings
+                warnings.warn(
+                    "CullisClient is connected directly to the broker. "
+                    "ADR-004: agents should always reach the broker through "
+                    "their local proxy (set broker_url=<proxy_url>). Direct "
+                    "broker access is deprecated and will be removed in a "
+                    "future release.",
+                    DeprecationWarning,
+                    stacklevel=3,
+                )
 
     def _headers(self, method: str, path: str) -> dict:
         if not self.token:

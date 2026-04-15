@@ -76,6 +76,21 @@ async def _forward(request: Request, broker_url: str, client: httpx.AsyncClient)
     body = await request.body()
     headers = _filter_request_headers(request.headers.raw)
 
+    # The broker's DPoP htu validator needs to reconstruct the URL the SDK
+    # used — but its Host reaches it via X-Forwarded-Host (uvicorn
+    # --proxy-headers honours it when the peer is in FORWARDED_ALLOW_IPS).
+    # The inbound Host header itself is discarded so shared ingress
+    # (Traefik, nginx) can't accidentally route the forwarded request back
+    # to the proxy's own vhost. httpx sets a fresh Host from broker_url.
+    inbound_host = headers.pop("host", None)
+    if inbound_host and not headers.get("x-forwarded-host"):
+        headers["x-forwarded-host"] = inbound_host
+    # If an upstream TLS terminator (Traefik, nginx) already set
+    # X-Forwarded-Proto=https, keep it — request.url.scheme here is "http"
+    # because the proxy listens on plain HTTP behind the terminator, and
+    # overwriting would cause the broker to reconstruct the wrong htu.
+    headers.setdefault("x-forwarded-proto", request.url.scheme)
+
     # Propagate the caller's IP so the broker's rate limiter can distinguish
     # per-agent load instead of collapsing every agent of an org onto the
     # single proxy IP. Broker must trust the proxy (FORWARDED_ALLOW_IPS) for
@@ -86,11 +101,6 @@ async def _forward(request: Request, broker_url: str, client: httpx.AsyncClient)
         headers["x-forwarded-for"] = (
             f"{existing}, {client_host}" if existing else client_host
         )
-        headers.setdefault("x-forwarded-proto", request.url.scheme)
-        if not headers.get("x-forwarded-host"):
-            host = request.headers.get("host")
-            if host:
-                headers["x-forwarded-host"] = host
 
     try:
         upstream = await client.request(

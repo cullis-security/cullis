@@ -308,6 +308,11 @@ else:
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    # ADR-004 — broker self-identifies so SDKs connected directly can warn
+    # about the deprecated path. The proxy forwards this header unchanged
+    # (the reverse-proxy middleware overwrites it with "proxy", so a caller
+    # that sees "broker" is definitively talking to the broker directly).
+    response.headers.setdefault("x-cullis-role", "broker")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"

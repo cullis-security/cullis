@@ -163,14 +163,24 @@ def build_htu(request: Request, settings) -> str:
     Priority:
     1. settings.broker_public_url + request path  — explicit override, use in
        production behind a reverse proxy / load balancer.
-    2. Starlette-reconstructed URL — works when uvicorn is started with
-       --proxy-headers and --forwarded-allow-ips.
+    2. X-Forwarded-Host / X-Forwarded-Proto — ADR-004: agents reach the broker
+       via their local proxy, which sets these headers from the original Host
+       seen by the SDK. uvicorn's --proxy-headers handles X-Forwarded-Proto
+       and X-Forwarded-For but not Host, so the broker has to promote it
+       itself. FORWARDED_ALLOW_IPS is the trust boundary (same as uvicorn).
+    3. Starlette-reconstructed URL — works when no proxy is in the path.
 
     Query string and fragment are always stripped (RFC 9449 §4.3).
     """
     if settings.broker_public_url:
         base = settings.broker_public_url.rstrip("/")
         return _normalize_htu(base + request.url.path)
+
+    fwd_host = request.headers.get("x-forwarded-host")
+    if fwd_host:
+        fwd_proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        return _normalize_htu(f"{fwd_proto}://{fwd_host}{request.url.path}")
+
     return _normalize_htu(str(request.url))
 
 
