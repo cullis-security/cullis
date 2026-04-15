@@ -50,17 +50,21 @@ async def sign_assertion(
     obtain a DPoP-bound access token from the broker. The key never leaves
     the proxy: only the short-lived signed assertion does (exp ≤ 5 min).
     """
-    bridge = getattr(request.app.state, "broker_bridge", None)
-    if bridge is None or bridge._agent_manager is None:
+    # Prefer the canonical app.state.agent_manager (present in both
+    # standalone and federation mode). Fall back to the BrokerBridge's
+    # own reference for older boot paths.
+    mgr = getattr(request.app.state, "agent_manager", None)
+    if mgr is None:
+        bridge = getattr(request.app.state, "broker_bridge", None)
+        mgr = getattr(bridge, "_agent_manager", None) if bridge else None
+    if mgr is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="agent manager not initialized (no broker uplink)",
+            detail="agent manager not initialized",
         )
 
     try:
-        cert_pem, key_pem = await bridge._agent_manager.get_agent_credentials(
-            agent.agent_id,
-        )
+        cert_pem, key_pem = await mgr.get_agent_credentials(agent.agent_id)
     except ValueError as exc:
         _log.warning(
             "sign-assertion: credentials unavailable for %s: %s",

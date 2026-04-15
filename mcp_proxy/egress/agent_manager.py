@@ -74,6 +74,80 @@ class AgentManager:
         logger.warning("Org CA not found in proxy_config — agent cert issuance unavailable")
         return False
 
+    async def generate_org_ca(self, *, validity_days: int = 3650) -> None:
+        """Generate a fresh self-signed Org CA and persist it to proxy_config.
+
+        Intended for standalone deploys (#115) where there is no broker to
+        run the attach-ca flow against. The CA is a long-lived root
+        (10 years by default); BasicConstraints(ca=True, path_length=1)
+        so a future SPIRE UpstreamAuthority can mint one intermediate
+        underneath without re-rooting.
+
+        Safe to call only when no Org CA is already loaded — callers should
+        gate on :attr:`ca_loaded` to avoid overwriting an attached CA.
+        """
+        if self.ca_loaded:
+            raise RuntimeError("Org CA already loaded — refusing to overwrite")
+
+        ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{self._org_id} CA"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
+        ])
+
+        now = datetime.now(timezone.utc)
+        ca_cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(ca_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=validity_days))
+            .add_extension(
+                x509.BasicConstraints(ca=True, path_length=1),
+                critical=True,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=False,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+                critical=False,
+            )
+            .sign(ca_key, hashes.SHA256())
+        )
+
+        ca_key_pem = ca_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+        await set_config("org_ca_key", ca_key_pem)
+        await set_config("org_ca_cert", ca_cert_pem)
+
+        self._org_ca_key = ca_key
+        self._org_ca_cert = ca_cert
+
+        logger.info(
+            "Self-signed Org CA generated (CN=%s, validity=%dd)",
+            f"{self._org_id} CA", validity_days,
+        )
+
     @property
     def ca_loaded(self) -> bool:
         return self._org_ca_key is not None and self._org_ca_cert is not None
