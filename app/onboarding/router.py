@@ -23,9 +23,11 @@ from app.db.audit import log_event
 from app.auth.revocation import revoke_cert, list_revoked_certs
 from app.registry.org_store import (
     get_org_by_id,
+    get_org_by_trust_domain,
     register_org,
     update_org_ca_cert,
     update_org_secret,
+    update_org_trust_domain,
     update_org_webhook,
     list_pending_orgs,
     set_org_status,
@@ -54,6 +56,11 @@ class JoinRequest(BaseModel):
     contact_email: str = ""        # informational for the admin
     webhook_url: str | None = None # PDP webhook URL — None means default-deny
     invite_token: str = Field(..., max_length=64)  # required invite token
+    # Optional SPIFFE trust domain — enables SVID-only auth for this org.
+    trust_domain: str | None = Field(
+        None, max_length=256,
+        pattern=r"^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$",
+    )
 
 
 class JoinResponse(BaseModel):
@@ -137,6 +144,14 @@ async def join_network(
         raise HTTPException(status.HTTP_409_CONFLICT,
                             detail="org_id already registered")
 
+    if body.trust_domain:
+        clash = await get_org_by_trust_domain(db, body.trust_domain)
+        if clash is not None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=f"trust_domain '{body.trust_domain}' already claimed by another org",
+            )
+
     org = await register_org(
         db,
         org_id=body.org_id,
@@ -144,6 +159,7 @@ async def join_network(
         secret=body.secret,
         metadata={"contact_email": body.contact_email},
         webhook_url=body.webhook_url,
+        trust_domain=body.trust_domain,
     )
     # Validate CA certificate before storing
     try:
@@ -200,6 +216,13 @@ class AttachCARequest(BaseModel):
     invite_token: str = Field(..., max_length=64)
     secret: str = Field(..., max_length=256)  # proxy-chosen secret, replaces the placeholder set at org creation
     webhook_url: str | None = None   # PDP webhook; if set, replaces any value the admin may have stored at creation
+    # Optional SPIFFE trust domain — enables SVID-only auth. If the org
+    # already has a trust_domain set by the broker admin and this value
+    # differs, the request is rejected with 409 to prevent silent override.
+    trust_domain: str | None = Field(
+        None, max_length=256,
+        pattern=r"^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$",
+    )
 
 
 class AttachCAResponse(BaseModel):
@@ -329,6 +352,27 @@ async def attach_ca(
                         details={"reason": "invite_consume_failed"})
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             detail="Invite token no longer valid")
+
+    # Trust domain: set if missing, reject mismatch, accept no-op.
+    if body.trust_domain:
+        if org.trust_domain and org.trust_domain != body.trust_domain:
+            await log_event(db, "onboarding.attach_rejected", "denied",
+                            org_id=org_id,
+                            details={"reason": "trust_domain_mismatch"})
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=(f"org '{org_id}' already has trust_domain "
+                        f"'{org.trust_domain}' on file"),
+            )
+        if not org.trust_domain:
+            clash = await get_org_by_trust_domain(db, body.trust_domain)
+            if clash is not None and clash.org_id != org_id:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    detail=(f"trust_domain '{body.trust_domain}' already "
+                            f"claimed by another org"),
+                )
+            await update_org_trust_domain(db, org_id, body.trust_domain)
 
     await update_org_ca_cert(db, org_id, body.ca_certificate)
     # The proxy now owns the org — rotate secret_hash to the proxy-chosen value.

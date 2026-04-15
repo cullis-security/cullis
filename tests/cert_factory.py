@@ -210,6 +210,80 @@ def make_agent_cert(
     return key, cert
 
 
+def make_svid_cert(
+    agent_name: str,
+    ca_org_id: str,
+    trust_domain: str,
+    spiffe_path: str | None = None,
+    key_type: str = "rsa",
+) -> tuple:
+    """
+    Produce an SPIRE-style SVID: cert signed by the org CA, EMPTY subject
+    (no CN/O), identity encoded only in a SPIFFE URI SAN.
+
+    ``ca_org_id``     identifies the org CA that signs the cert (controls chain).
+    ``trust_domain``  goes into the SPIFFE URI authority.
+    ``spiffe_path``   full path after the trust_domain (e.g. ``"workload/agent-a"``).
+                      If None, defaults to ``agent_name`` as a single segment.
+    """
+    org_ca_key, org_ca_cert = _get_org_ca(ca_org_id, key_type=key_type)
+    now = _now()
+    key = _gen_key(2048, key_type=key_type)
+    path = spiffe_path if spiffe_path is not None else agent_name
+    spiffe_id = f"spiffe://{trust_domain}/{path}"
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([]))  # SVIDs carry no CN/O
+        .issuer_name(org_ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.UniformResourceIdentifier(spiffe_id)]),
+            critical=True,
+        )
+    )
+    cert = builder.sign(org_ca_key, hashes.SHA256())
+    return key, cert, spiffe_id
+
+
+def make_svid_assertion(
+    agent_name: str,
+    ca_org_id: str,
+    trust_domain: str,
+    spiffe_path: str | None = None,
+    sub_override: str | None = None,
+    jti: str | None = "auto",
+) -> tuple[str, str]:
+    """Build a client_assertion JWT signed by an SVID-style cert.
+    Returns (assertion, spiffe_id) — spiffe_id is useful for assertions in tests.
+    """
+    agent_key, agent_cert, spiffe_id = make_svid_cert(
+        agent_name, ca_org_id, trust_domain, spiffe_path=spiffe_path,
+    )
+    cert_der = agent_cert.public_bytes(serialization.Encoding.DER)
+    x5c = [base64.b64encode(cert_der).decode()]
+    now = _now()
+    sub = sub_override if sub_override is not None else spiffe_id
+    payload = {
+        "sub": sub,
+        "iss": sub,
+        "aud": "agent-trust-broker",
+        "iat": int(now.timestamp()),
+        "exp": int((now + datetime.timedelta(minutes=5)).timestamp()),
+    }
+    if jti == "auto":
+        payload["jti"] = str(uuid.uuid4())
+    elif jti is not None:
+        payload["jti"] = jti
+    return jwt.encode(
+        payload, _key_pem(agent_key),
+        algorithm=_jwt_alg_for(agent_key), headers={"x5c": x5c},
+    ), spiffe_id
+
+
 def make_agent_cert_alternate(
     agent_id: str,
     org_id: str,
