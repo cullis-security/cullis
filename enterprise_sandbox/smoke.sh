@@ -316,6 +316,35 @@ else
     done
 fi
 
+# B4.8 — ADR-004: proxy-only topology.
+#
+# Each agent container is detached from public-wan, so there is no network
+# path from the agent to broker:8000. A direct TCP connect attempt must fail
+# (DNS resolution or connect timeout). This proves that the successful B4.4
+# / B4.5 / B4.6 auth flows and B4.7 A2A round-trip all travel through the
+# proxy reverse-proxy, not directly to the broker.
+B48_PROBE='
+import socket, sys
+s = socket.socket()
+s.settimeout(2)
+try:
+    s.connect(("broker", 8000))
+    # Connected — the proxy-only invariant is broken.
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+'
+B48_FAIL=0
+for c in agent-a byoca-a agent-b; do
+    if docker compose exec -T "$c" python -c "$B48_PROBE" 2>/dev/null; then
+        fail "B4.8 $c reached broker:8000 directly (LEAK — public-wan still attached?)"
+        B48_FAIL=1
+    fi
+done
+if [[ $B48_FAIL -eq 0 ]]; then
+    pass "B4.8 proxy-only — agent-a, byoca-a, agent-b cannot reach broker:8000 directly"
+fi
+
 echo ""
 echo "[smoke] PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 [[ $FAIL -eq 0 ]]

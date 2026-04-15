@@ -304,8 +304,12 @@ async def security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Cache-Control"] = "no-store"
 
-    # DPoP-Nonce on API responses only (not on dashboard/health routes)
-    _no_dpop_nonce = ("/proxy/", "/health", "/healthz", "/readyz")
+    # DPoP-Nonce on API responses only (not on dashboard/health routes, and
+    # not on ADR-004 reverse-proxied paths — those carry the broker's own
+    # DPoP-Nonce header verbatim; overriding it here would break the SDK's
+    # use_dpop_nonce retry loop).
+    from mcp_proxy.reverse_proxy import FORWARDED_PREFIXES as _RP_PREFIXES
+    _no_dpop_nonce = ("/proxy/", "/health", "/healthz", "/readyz") + _RP_PREFIXES
     if not any(request.url.path.startswith(p) for p in _no_dpop_nonce):
         from mcp_proxy.auth.dpop import get_current_dpop_nonce
         response.headers["DPoP-Nonce"] = get_current_dpop_nonce()
