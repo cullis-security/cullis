@@ -225,6 +225,56 @@ async def approve(
             "sid": session_id,
         },
     )
+
+    # Register the approved agent in the main internal_agents registry so it
+    # shows up in the dashboard and can authenticate via X-API-Key against
+    # /v1/egress/*. The connector does not use the API key (it authenticates
+    # via cert + DPoP), but it is surfaced on the dashboard for admin rotation
+    # and optional SDK paths. Without this step a device-code enrollment left
+    # the agent invisible in the UI — see the history of this function.
+    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+
+    raw_api_key = generate_api_key(agent_id)
+    api_key_hash = hash_api_key(raw_api_key)
+    existing = await conn.execute(
+        text("SELECT 1 FROM internal_agents WHERE agent_id = :aid"),
+        {"aid": agent_id},
+    )
+    if existing.first() is None:
+        await conn.execute(
+            text(
+                """INSERT INTO internal_agents
+                   (agent_id, display_name, capabilities, api_key_hash,
+                    cert_pem, created_at, is_active)
+                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1)"""
+            ),
+            {
+                "aid": agent_id,
+                "dn": agent_id,
+                "caps": json.dumps(capabilities),
+                "hash": api_key_hash,
+                "cert": cert_pem,
+                "created": now,
+            },
+        )
+        await conn.execute(
+            text(
+                """INSERT INTO audit_log
+                   (timestamp, agent_id, action, status, detail)
+                   VALUES (:ts, :aid, 'agent.create', 'success', :detail)"""
+            ),
+            {
+                "ts": now,
+                "aid": agent_id,
+                "detail": json.dumps({
+                    "source": "device_code_enrollment",
+                    "session_id": session_id,
+                    "admin": admin_name,
+                    "capabilities": capabilities,
+                }),
+            },
+        )
+
     return await get_record(conn, session_id)
 
 

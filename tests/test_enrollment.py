@@ -241,6 +241,64 @@ async def test_approve_signs_cert_and_marks_approved(db_engine):
     assert cert.public_key().public_numbers() == submitted_pub.public_numbers()
 
 
+@pytest.mark.asyncio
+async def test_approve_registers_agent_in_internal_registry(db_engine):
+    """Device-code approval must also land in internal_agents + audit_log.
+
+    Without this, the connector receives a valid cert but the agent is
+    invisible in the dashboard agents list — see the 2026-04-15 rc1 smoke
+    bug report.
+    """
+    from sqlalchemy import text as _text
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+
+    pubkey = _rsa_pubkey_pem()
+    async with get_db() as conn:
+        started = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey,
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+        )
+
+    async with get_db() as conn:
+        await service.approve(
+            conn,
+            session_id=started.session_id,
+            agent_id="claude-bot",
+            capabilities=["test.read"],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    # The agent must now be in internal_agents AND the audit_log.
+    async with get_db() as conn:
+        agents = (await conn.execute(
+            _text("SELECT agent_id, cert_pem, is_active FROM internal_agents"),
+        )).mappings().all()
+        audits = (await conn.execute(
+            _text(
+                "SELECT agent_id, action, status FROM audit_log "
+                "WHERE action = 'agent.create'",
+            ),
+        )).mappings().all()
+
+    assert len(agents) == 1, "device-code approval must insert one agent"
+    assert agents[0]["agent_id"] == "claude-bot"
+    assert bool(agents[0]["is_active"]) is True
+    assert agents[0]["cert_pem"], "cert_pem must be persisted on the agent row"
+
+    assert len(audits) == 1
+    assert audits[0]["agent_id"] == "claude-bot"
+    assert audits[0]["status"] == "success"
+
+
 # ── HTTP endpoint tests ────────────────────────────────────────────
 
 
