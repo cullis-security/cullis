@@ -41,6 +41,9 @@ class OrganizationRecord(Base):
     oidc_issuer_url = Column(String(512), nullable=True)
     oidc_client_id = Column(String(256), nullable=True)
     oidc_client_secret = Column(String(512), nullable=True)
+    # SPIFFE trust domain of the org, for SVID-only auth (no CN/O in cert).
+    # Nullable so legacy orgs keep working via CN/O-based agent certs.
+    trust_domain = Column(String(256), nullable=True, unique=True, index=True)
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())
@@ -72,6 +75,7 @@ async def register_org(
     metadata: dict | None = None,
     webhook_url: str | None = None,
     status: str = "active",
+    trust_domain: str | None = None,
 ) -> OrganizationRecord:
     record = OrganizationRecord(
         org_id=org_id,
@@ -80,8 +84,32 @@ async def register_org(
         metadata_json=json.dumps(metadata or {}),
         webhook_url=webhook_url,
         status=status,
+        trust_domain=trust_domain,
     )
     db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def get_org_by_trust_domain(
+    db: AsyncSession, trust_domain: str
+) -> OrganizationRecord | None:
+    result = await db.execute(
+        select(OrganizationRecord).where(OrganizationRecord.trust_domain == trust_domain)
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_org_trust_domain(
+    db: AsyncSession,
+    org_id: str,
+    trust_domain: str,
+) -> OrganizationRecord | None:
+    record = await get_org_by_id(db, org_id)
+    if record is None:
+        return None
+    record.trust_domain = trust_domain
     await db.commit()
     await db.refresh(record)
     return record

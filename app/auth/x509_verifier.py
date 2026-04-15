@@ -27,9 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jti_blacklist import check_and_consume_jti
 from app.auth.revocation import check_cert_not_revoked
-from app.registry.org_store import get_org_by_id
+from app.registry.org_store import get_org_by_id, get_org_by_trust_domain
 from app.config import get_settings
-from app.spiffe import internal_id_to_spiffe
+from app.spiffe import internal_id_to_spiffe, parse_spiffe_san
 from app.telemetry import tracer
 from app.telemetry_metrics import X509_VERIFY_DURATION_HISTOGRAM
 
@@ -78,19 +78,51 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
     except Exception:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Invalid agent certificate")
 
-    # ── 3. Extract CN (agent_id) and O (org_id) ──────────────────────────────
-    try:
-        cn_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-        org_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
-        if not cn_attrs or not org_attrs:
-            raise ValueError("CN or O missing from certificate")
+    # ── 3. Extract agent_id and org_id ───────────────────────────────────────
+    # Two supported modes:
+    #   (a) Classic agent cert — CN = agent_id, O = org_id
+    #   (b) SPIRE-style SVID — no CN/O in subject, identity encoded only
+    #       in the SPIFFE URI SAN. Look up the org by trust_domain and
+    #       derive agent_id from the path's last segment.
+    svid_mode = False
+    svid_spiffe_uri: str | None = None
+    cn_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    org_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
+    if cn_attrs and org_attrs:
         agent_id = cn_attrs[0].value
         org_id = org_attrs[0].value
-    except Exception:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Cert missing CN or O")
+        org = await get_org_by_id(db, org_id)
+    else:
+        try:
+            san_ext = agent_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            uri_sans = san_ext.value.get_values_for_type(x509.UniformResourceIdentifier)
+            spiffe_sans = [u for u in uri_sans if u.startswith("spiffe://")]
+        except x509.ExtensionNotFound:
+            spiffe_sans = []
+        if not spiffe_sans:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="Cert missing CN/O and no SPIFFE SAN URI present",
+            )
+        svid_spiffe_uri = spiffe_sans[0]
+        try:
+            trust_domain, spiffe_path = parse_spiffe_san(svid_spiffe_uri)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, detail="Malformed SPIFFE URI in SAN",
+            )
+        org = await get_org_by_trust_domain(db, trust_domain)
+        if org is None:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail=f"No organization registered for trust domain '{trust_domain}'",
+            )
+        agent_name = spiffe_path.rsplit("/", 1)[-1]
+        agent_id = f"{org.org_id}::{agent_name}"
+        org_id = org.org_id
+        svid_mode = True
 
     # ── 4. Load org CA from DB and verify it is a true CA ────────────────────
-    org = await get_org_by_id(db, org_id)
     if not org:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail=f"Organisation '{org_id}' not found")
     if org.status != "active":
@@ -211,7 +243,13 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
 
     # ── 10. Verify sub and iss — bind JWT tightly to the authenticated agent ──
     settings = get_settings()
-    expected_spiffe = internal_id_to_spiffe(agent_id, settings.trust_domain)
+    if svid_mode and svid_spiffe_uri is not None:
+        # In SVID mode the SPIFFE URI IS the authoritative identity;
+        # accept it (and the internal agent_id) as sub/iss.
+        expected_spiffe = svid_spiffe_uri
+    else:
+        org_td = org.trust_domain or settings.trust_domain
+        expected_spiffe = internal_id_to_spiffe(agent_id, org_td)
 
     sub = payload.get("sub")
     if sub not in (agent_id, expected_spiffe):
@@ -228,24 +266,27 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
         )
 
     # ── 11. Verify SPIFFE SAN (if present or required) ───────────────────────
-    try:
-        san_ext = agent_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        uri_sans = san_ext.value.get_values_for_type(x509.UniformResourceIdentifier)
-        spiffe_sans = [u for u in uri_sans if u.startswith("spiffe://")]
-    except x509.ExtensionNotFound:
-        spiffe_sans = []
+    # In svid_mode we already extracted + trusted the SAN above, so skip
+    # the redundant match check (would be tautological).
+    if not svid_mode:
+        try:
+            san_ext = agent_cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            uri_sans = san_ext.value.get_values_for_type(x509.UniformResourceIdentifier)
+            spiffe_sans = [u for u in uri_sans if u.startswith("spiffe://")]
+        except x509.ExtensionNotFound:
+            spiffe_sans = []
 
-    if spiffe_sans:
-        if expected_spiffe not in spiffe_sans:
+        if spiffe_sans:
+            if expected_spiffe not in spiffe_sans:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail="SPIFFE ID in SAN does not match the registered agent",
+                )
+        elif settings.require_spiffe_san:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
-                detail="SPIFFE ID in SAN does not match the registered agent",
+                detail="Certificate missing SPIFFE SAN URI (require_spiffe_san=true)",
             )
-    elif settings.require_spiffe_san:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            detail="Certificate missing SPIFFE SAN URI (require_spiffe_san=true)",
-        )
 
     # ── 12. JTI blacklist — replay protection ────────────────────────────────
     jti = payload.get("jti")

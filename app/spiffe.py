@@ -98,6 +98,33 @@ def spiffe_to_internal_id(spiffe_id: str) -> str:
     return f"{org_id}::{agent_name}"
 
 
+def parse_spiffe_san(spiffe_uri: str) -> tuple[str, str]:
+    """
+    Parse a SPIFFE URI and return (trust_domain, path).
+
+    Unlike ``spiffe_to_agent_id``, this does NOT assume a 2-component
+    ``org/agent-name`` path — it accepts any non-empty path, which is
+    what SPIRE-issued SVIDs look like (e.g.
+    ``spiffe://orga.test/workload/agent-a``). The path is returned
+    without the leading slash, with internal slashes preserved.
+
+    The last segment of the returned path is typically the usable
+    workload/agent name, but that's a caller policy decision.
+
+    Raises ValueError on malformed input.
+    """
+    validate_spiffe_id(spiffe_uri)
+    parsed = urlparse(spiffe_uri)
+    path = parsed.path.lstrip("/")
+    if not path:
+        raise ValueError(f"SPIFFE URI has empty path: '{spiffe_uri}'")
+    # Reject empty path components (e.g. "//" in the middle) by validating
+    # each one is a legal SPIFFE path component.
+    for part in path.split("/"):
+        _validate_path_component(part, "path segment")
+    return parsed.netloc, path
+
+
 def validate_spiffe_id(spiffe_id: str) -> bool:
     """
     Validate a SPIFFE ID according to the standard.
