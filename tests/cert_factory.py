@@ -118,11 +118,18 @@ def init_broker_keys() -> tuple[str, str]:
     return _key_pem(key), _pub_pem(key)
 
 
-def _get_org_ca(org_id: str, key_type: str = "rsa") -> tuple:
-    """Return (org_ca_key, org_ca_cert), generating them if necessary."""
+def _get_org_ca(
+    org_id: str, key_type: str = "rsa", path_length: int | None = 0,
+) -> tuple:
+    """Return (org_ca_key, org_ca_cert), generating them if necessary.
+
+    ``path_length`` defaults to 0 (Org CA directly signs end-entity certs,
+    classic BYOCA). Pass ``path_length=1`` for tests that need an
+    intermediate CA below (SPIRE-style 3-level chain).
+    """
     global _broker_ca_key, _broker_ca_cert
 
-    cache_key = (org_id, key_type)
+    cache_key = (org_id, key_type, path_length)
     if cache_key in _org_ca_cache:
         return _org_ca_cache[cache_key]
 
@@ -143,7 +150,10 @@ def _get_org_ca(org_id: str, key_type: str = "rsa") -> tuple:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + datetime.timedelta(days=1))
-        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=path_length),
+            critical=True,
+        )
         .sign(_broker_ca_key, hashes.SHA256())
     )
     _org_ca_cache[cache_key] = (key, cert)
@@ -208,6 +218,150 @@ def make_agent_cert(
     cert = builder.sign(org_ca_key, hashes.SHA256())
     _agent_cert_cache[cache_key] = (key, cert)
     return key, cert
+
+
+def get_org_ca_pem_for_chain(ca_org_id: str) -> str:
+    """PEM of an Org CA with pathLenConstraint=1 — required for 3-level
+    chain tests where the Org CA signs a SPIRE-style intermediate."""
+    _, org_ca_cert = _get_org_ca(ca_org_id, path_length=1)
+    return org_ca_cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def make_intermediate_ca(
+    ca_org_id: str,
+    name: str = "spire-intermediate",
+    path_length: int | None = 0,
+) -> tuple:
+    """
+    Generate an intermediate CA signed by the org CA (SPIRE-style).
+
+    The Org CA used as issuer is fetched with path_length=1 so it is
+    actually allowed to sign a CA below. path_length on the intermediate
+    itself defaults to 0 (end-entity only).
+
+    Returns (int_ca_key, int_ca_cert). Not cached — every call makes a new one.
+    """
+    org_ca_key, org_ca_cert = _get_org_ca(ca_org_id, path_length=1)
+    now = _now()
+    key = _gen_key(2048)
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, f"{ca_org_id} {name}"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, ca_org_id),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(org_ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=path_length),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False, content_commitment=False,
+                key_encipherment=False, data_encipherment=False,
+                key_agreement=False, key_cert_sign=True, crl_sign=True,
+                encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(org_ca_key, hashes.SHA256())
+    )
+    return key, cert
+
+
+def make_svid_with_chain(
+    agent_name: str,
+    ca_org_id: str,
+    trust_domain: str,
+    int_ca_key=None,
+    int_ca_cert=None,
+    spiffe_path: str | None = None,
+) -> tuple:
+    """
+    Build an SVID signed by an intermediate (SPIRE-style 3-level chain).
+
+    If ``int_ca_key``/``int_ca_cert`` are not provided, a fresh intermediate
+    is minted via ``make_intermediate_ca(ca_org_id)``.
+
+    Returns (svid_key, svid_cert, int_ca_cert, spiffe_id).
+    """
+    if int_ca_key is None or int_ca_cert is None:
+        int_ca_key, int_ca_cert = make_intermediate_ca(ca_org_id)
+
+    now = _now()
+    key = _gen_key(2048)
+    path = spiffe_path if spiffe_path is not None else agent_name
+    spiffe_id = f"spiffe://{trust_domain}/{path}"
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([]))
+        .issuer_name(int_ca_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.UniformResourceIdentifier(spiffe_id)]),
+            critical=True,
+        )
+        .sign(int_ca_key, hashes.SHA256())
+    )
+    return key, cert, int_ca_cert, spiffe_id
+
+
+def make_svid_chain_assertion(
+    agent_name: str,
+    ca_org_id: str,
+    trust_domain: str,
+    int_ca_key=None,
+    int_ca_cert=None,
+    spiffe_path: str | None = None,
+    extra_intermediates: list | None = None,
+    sub_override: str | None = None,
+    jti: str | None = "auto",
+) -> tuple[str, str]:
+    """
+    Build a client_assertion with x5c = [SVID, intermediate, ...] for
+    testing broker chain walk. ``extra_intermediates`` can inject
+    additional cert(s) between the SVID and the real intermediate
+    (e.g. for duplicate / wrong-order / cycle tests).
+
+    Returns (assertion, spiffe_id).
+    """
+    svid_key, svid_cert, int_cert, spiffe_id = make_svid_with_chain(
+        agent_name, ca_org_id, trust_domain,
+        int_ca_key=int_ca_key, int_ca_cert=int_ca_cert,
+        spiffe_path=spiffe_path,
+    )
+    chain = [svid_cert, int_cert]
+    if extra_intermediates:
+        # Insert after the leaf so the tampering is realistic.
+        chain = [svid_cert] + list(extra_intermediates) + [int_cert]
+    x5c = [
+        base64.b64encode(c.public_bytes(serialization.Encoding.DER)).decode()
+        for c in chain
+    ]
+    now = _now()
+    sub = sub_override if sub_override is not None else spiffe_id
+    payload = {
+        "sub": sub, "iss": sub, "aud": "agent-trust-broker",
+        "iat": int(now.timestamp()),
+        "exp": int((now + datetime.timedelta(minutes=5)).timestamp()),
+    }
+    if jti == "auto":
+        payload["jti"] = str(uuid.uuid4())
+    elif jti is not None:
+        payload["jti"] = jti
+    return jwt.encode(
+        payload, _key_pem(svid_key),
+        algorithm=_jwt_alg_for(svid_key), headers={"x5c": x5c},
+    ), spiffe_id
 
 
 def make_svid_cert(

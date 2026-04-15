@@ -184,6 +184,14 @@ async def join_network(
         if now > not_after or now < not_before:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 detail="CA certificate is expired or not yet valid")
+        # SPIFFE mode: Org CA must authorize at most one level of
+        # intermediate below (SPIRE signing intermediate). See ADR-003 §2.4.
+        if body.trust_domain and bc.path_length is not None and bc.path_length > 1:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(f"CA pathLenConstraint is {bc.path_length} — when "
+                        f"declaring a SPIFFE trust_domain, pathLen must be ≤ 1"),
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -332,6 +340,16 @@ async def attach_ca(
         if now > not_after or now < not_before:
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 detail="CA certificate is expired or not yet valid")
+        # SPIFFE mode: same pathLen check as /join — see ADR-003 §2.4.
+        # Use the incoming trust_domain if set in this request, else the
+        # one already stored on the org.
+        effective_td = body.trust_domain or org.trust_domain
+        if effective_td and bc.path_length is not None and bc.path_length > 1:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail=(f"CA pathLenConstraint is {bc.path_length} — when "
+                        f"declaring a SPIFFE trust_domain, pathLen must be ≤ 1"),
+            )
     except HTTPException:
         raise
     except Exception as exc:

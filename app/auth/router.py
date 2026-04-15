@@ -49,7 +49,7 @@ async def issue_token(
         dpop_jkt = await verify_dpop_proof(dpop, htm="POST", htu=htu, access_token=None)
 
         # ── Verify certificate and signature ─────────────────────────────────
-        agent_id, org_id, cert_pem, cert_thumbprint = await verify_client_assertion(
+        agent_id, org_id, cert_pem, cert_thumbprint, svid_mode = await verify_client_assertion(
             body.client_assertion, db, request=request,
         )
         span.set_attribute("agent.id", agent_id)
@@ -90,20 +90,24 @@ async def issue_token(
             )
 
         # ── Certificate thumbprint pinning (anti Rogue CA) ───────────────────
-        pinned_ok = await update_agent_cert(db, agent_id, cert_pem, cert_thumbprint)
-        if not pinned_ok:
-            from app.telemetry_metrics import CERT_PINNING_MISMATCH_COUNTER
-            AUTH_DENY_COUNTER.add(1, {"reason": "cert_thumbprint_mismatch"})
-            CERT_PINNING_MISMATCH_COUNTER.add(1, {"org_id": org_id})
-            await log_event(
-                db, "auth.token_request", "denied",
-                agent_id=agent_id, org_id=org_id,
-                details={"reason": "cert_thumbprint_mismatch", "presented": cert_thumbprint},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Certificate thumbprint mismatch — use the rotate-cert endpoint to update",
-            )
+        # Skipped in SPIFFE mode: SPIRE rotates SVIDs every ~1h so the
+        # thumbprint changes constantly; identity is already bound by the
+        # chain walk + SPIFFE URI match (see ADR-003 §2.3).
+        if not svid_mode:
+            pinned_ok = await update_agent_cert(db, agent_id, cert_pem, cert_thumbprint)
+            if not pinned_ok:
+                from app.telemetry_metrics import CERT_PINNING_MISMATCH_COUNTER
+                AUTH_DENY_COUNTER.add(1, {"reason": "cert_thumbprint_mismatch"})
+                CERT_PINNING_MISMATCH_COUNTER.add(1, {"org_id": org_id})
+                await log_event(
+                    db, "auth.token_request", "denied",
+                    agent_id=agent_id, org_id=org_id,
+                    details={"reason": "cert_thumbprint_mismatch", "presented": cert_thumbprint},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Certificate thumbprint mismatch — use the rotate-cert endpoint to update",
+                )
 
         token, expires_in = await create_access_token(
             agent_id, org_id, scope=binding.scope, dpop_jkt=dpop_jkt
