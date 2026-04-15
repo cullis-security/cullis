@@ -9,6 +9,9 @@ data:
   MCP_PROXY_HOST: "0.0.0.0"
   MCP_PROXY_PORT: {{ .Values.proxy.containerPort | quote }}
 
+  # #114 — standalone mode toggles broker uplink off.
+  MCP_PROXY_STANDALONE: {{ .Values.proxy.standalone | default false | quote }}
+
   {{- if .Values.proxy.brokerUrl }}
   MCP_PROXY_BROKER_URL: {{ .Values.proxy.brokerUrl | quote }}
   {{- end }}

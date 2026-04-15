@@ -124,10 +124,58 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 4. GitHub Release ────────────────────────────────────────────────
+  # ── 4. Helm chart → ghcr.io/cullis-security/charts/cullis-proxy ──────
+  publish-helm:
+    name: Package & push Helm chart
+    needs: [build-docker, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.14.4"
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Override chart + app version from tag
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # The tag is the source of truth; Chart.yaml's baked-in version
+          # is the floor for local development. Bump both in lockstep here
+          # so `helm install ... --version X.Y.Z` always matches the image.
+          sed -i "s/^version: .*/version: ${VERSION}/" deploy/helm/cullis-proxy/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" deploy/helm/cullis-proxy/Chart.yaml
+          head -15 deploy/helm/cullis-proxy/Chart.yaml
+
+      - name: Package chart
+        run: |
+          mkdir -p dist/charts
+          helm package deploy/helm/cullis-proxy --destination dist/charts
+          ls -lah dist/charts
+
+      - name: Push chart to OCI registry
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          helm push \
+            "dist/charts/cullis-proxy-${VERSION}.tgz" \
+            "oci://ghcr.io/${OWNER}/charts"
+
+  # ── 5. GitHub Release ────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: [build-docker, version]
+    needs: [build-docker, publish-helm, version]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -148,13 +196,27 @@ jobs:
           Release ${GITHUB_REF_NAME}
 
           Docker image: \`ghcr.io/${{ github.repository_owner }}/mcp-proxy:${version}\`
+          Helm chart:   \`oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-proxy:${version}\`
+
+          Standalone \`docker run\`:
 
           \`\`\`bash
           docker run -d --name cullis-proxy -p 9100:9100 \\
+            -e MCP_PROXY_STANDALONE=true \\
             -e MCP_PROXY_ORG_ID=acme \\
             -e MCP_PROXY_PROXY_PUBLIC_URL=https://cullis.acme.internal \\
             -v cullis-proxy-data:/data \\
             ghcr.io/${{ github.repository_owner }}/mcp-proxy:${version}
+          \`\`\`
+
+          Kubernetes:
+
+          \`\`\`bash
+          helm install cullis-proxy \\
+            oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-proxy \\
+            --version ${version} \\
+            --set proxy.orgId=acme \\
+            --set proxy.proxyPublicUrl=https://cullis.acme.internal
           \`\`\`
           NOTES
           fi

@@ -25,11 +25,19 @@ imagePullSecrets: []
 proxy:
   image:
     # -- Container image repository for the MCP proxy.
-    repository: ghcr.io/daenaihax/cullis-proxy
+    # Published by the release-proxy workflow on every `proxy-vX.Y.Z` tag.
+    repository: ghcr.io/cullis-security/mcp-proxy
     # -- Image tag. When empty the chart appVersion is used.
     tag: ""
     # -- Image pull policy.
     pullPolicy: IfNotPresent
+
+  # -- Standalone mode (#114). When true the proxy runs without a Cullis
+  # broker uplink — BrokerBridge is not initialized, reverse-proxy calls
+  # return 503, and the first boot auto-generates a self-signed Org CA
+  # (#115). Intra-org messaging, enrollment and the OIDC dashboard all
+  # keep working. Flip to `false` only when federating with a broker.
+  standalone: true
 
   # -- Static replica count. The proxy keeps state (SQLite, DPoP nonce,
   # JWKS cache) in-pod. Running >1 replica requires a RWX PVC backend
@@ -44,13 +52,15 @@ proxy:
   # -- Container port the proxy listens on. Matches the Dockerfile.
   containerPort: 9100
 
-  # -- Broker uplink URL. REQUIRED. In production MUST be HTTPS.
-  # The proxy calls this to join the org and bridge egress traffic.
+  # -- Broker uplink URL. Only required when `standalone: false`.
+  # In production MUST be HTTPS. The proxy calls this to join the org
+  # and bridge egress traffic.
   brokerUrl: ""
     # e.g. "https://broker.cullis.example.com"
 
-  # -- Broker JWKS endpoint used to validate broker-signed JWTs. REQUIRED
-  # in production (config.validate_config enforces HTTPS here).
+  # -- Broker JWKS endpoint used to validate broker-signed JWTs. Only
+  # required when `standalone: false` (config.validate_config enforces
+  # HTTPS here in production).
   brokerJwksUrl: ""
     # e.g. "https://broker.cullis.example.com/.well-known/jwks.json"
 
