@@ -29,6 +29,17 @@ volumes:
   bootstrap-state:
   proxy-a-data:
   proxy-b-data:
+  # Blocco 4 — SPIRE stacks per org
+  spire-a-server-api:
+  spire-a-server-data:
+  spire-a-token:
+  spire-a-agent-socket:
+  spire-a-agent-data:
+  spire-b-server-api:
+  spire-b-server-data:
+  spire-b-token:
+  spire-b-agent-socket:
+  spire-b-agent-data:
 
 services:
 
@@ -82,11 +93,11 @@ services:
       KMS_BACKEND: "local"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
-      # Use host-visible URL so OIDC redirect_uri matches browser origin.
-      # Both "broker:8000" and "localhost:8000" are registered in Keycloak
-      # realm JSON, but broker generates redirect_uri from this value, so
-      # localhost keeps the browser round-trip consistent.
-      BROKER_PUBLIC_URL: "http://localhost:8000"
+      # Used by DPoP htu validation. Agents on the docker network reach the
+      # broker via "http://broker:8000", so that's what their proofs claim.
+      # OIDC browser flow now lives on the proxies (PR #88) so this URL no
+      # longer needs to match a browser-typed host.
+      BROKER_PUBLIC_URL: "http://broker:8000"
       DATABASE_URL: "postgresql+asyncpg://atn:atn-sandbox@postgres:5432/agent_trust"
       REDIS_URL: "redis://redis:6379"
       POLICY_BACKEND: "webhook"
@@ -232,6 +243,123 @@ services:
       retries: 20
       start_period: 10s
 
+  # ── Blocco 4 — SPIRE stack per Org A ──────────────────────────────────────
+  #
+  # Topology per org:
+  #   spire-server-X       long-running server, UpstreamAuthority=disk (Org CA)
+  #   spire-server-X-init  one-shot: token generate + entry create
+  #   spire-agent-X        long-running agent, connects with join token
+  #   agent-X              Python workload, fetches SVID via Workload API socket
+  #
+  # Org CA from /state/{org_id}/ca.pem (written by bootstrap, path_length=1).
+
+  spire-server-a:
+    image: ghcr.io/spiffe/spire-server:1.9.5
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./spire/server-a.conf:/run/spire/config/server.conf:ro
+      - bootstrap-state:/state:ro
+      - spire-a-server-api:/tmp/spire-server/private
+      - spire-a-server-data:/run/spire/data
+    command: ["-config", "/run/spire/config/server.conf"]
+    networks:
+      orga-internal:
+        aliases: [spire-server-a]
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck", "-socketPath", "/tmp/spire-server/private/api.sock"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  spire-server-a-init:
+    build: ./spire/init
+    depends_on:
+      spire-server-a:
+        condition: service_healthy
+    volumes:
+      - spire-a-server-api:/tmp/spire-server/private
+      - spire-a-token:/token
+    networks: [orga-internal]
+    command:
+      - |
+        set -e
+        SOCK=/tmp/spire-server/private/api.sock
+        if [ ! -s /token/join_token ]; then
+          TOKEN=$$(spire-server token generate \
+            -socketPath $$SOCK -ttl 3600 | grep '^Token:' | awk '{print $$NF}')
+          echo "$$TOKEN" > /token/join_token
+          spire-server entry create \
+            -socketPath $$SOCK \
+            -spiffeID spiffe://orga.test/agent-a \
+            -parentID "spiffe://orga.test/spire/agent/join_token/$$TOKEN" \
+            -selector unix:uid:1000
+          echo "spire-server-a-init: token + entry created"
+        else
+          echo "spire-server-a-init: already initialized"
+        fi
+    restart: "no"
+
+  spire-agent-a:
+    build: ./spire/agent-wrapper
+    depends_on:
+      spire-server-a-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./spire/agent-a.conf:/run/spire/config/agent.conf:ro
+      - spire-a-token:/token:ro
+      - spire-a-agent-socket:/run/spire/sockets
+      - spire-a-agent-data:/run/spire/data
+    command:
+      - |
+        TOKEN=$$(cat /token/join_token)
+        exec spire-agent run \
+          -config /run/spire/config/agent.conf \
+          -joinToken "$$TOKEN"
+    networks: [orga-internal]
+    healthcheck:
+      test: ["CMD", "spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  agent-a:
+    build:
+      context: ..
+      dockerfile: enterprise_sandbox/agent/Dockerfile
+    depends_on:
+      spire-agent-a:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "http://broker:8000"
+      ORG_ID: "orga"
+      AGENT_NAME: "agent-a"
+      SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
+    volumes:
+      - spire-a-agent-socket:/run/spire/sockets:ro
+    networks: [orga-internal, public-wan]
+    # Share PID namespace with spire-agent-a so the SPIRE unix WorkloadAttestor
+    # can see this process via /proc/{pid}/exe and attest the unix:uid:1000
+    # selector. Without this, attestation fails with "could not resolve
+    # caller information".
+    pid: "service:spire-agent-a"
+    # Container exits ~5s after start: the broker rejects SPIRE-issued SVIDs
+    # because they have no CN/O subject (only the SPIFFE URI in SAN). Once
+    # the broker grows SPIFFE-aware x509 auth, re-enable the healthcheck
+    # below and remove restart: "no". Tracked in a separate issue.
+    restart: "no"
+    # healthcheck:
+    #   test: ["CMD", "test", "-f", "/tmp/ready"]
+    #   interval: 3s
+    #   timeout: 2s
+    #   retries: 20
+    #   start_period: 20s
+
   # ── Org B proxy ────────────────────────────────────────────────────────────
 
   proxy-b-init:
@@ -284,3 +412,105 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ── Blocco 4 — SPIRE stack per Org B ──────────────────────────────────────
+
+  spire-server-b:
+    image: ghcr.io/spiffe/spire-server:1.9.5
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./spire/server-b.conf:/run/spire/config/server.conf:ro
+      - bootstrap-state:/state:ro
+      - spire-b-server-api:/tmp/spire-server/private
+      - spire-b-server-data:/run/spire/data
+    command: ["-config", "/run/spire/config/server.conf"]
+    networks:
+      orgb-internal:
+        aliases: [spire-server-b]
+    healthcheck:
+      test: ["CMD", "/opt/spire/bin/spire-server", "healthcheck", "-socketPath", "/tmp/spire-server/private/api.sock"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  spire-server-b-init:
+    build: ./spire/init
+    depends_on:
+      spire-server-b:
+        condition: service_healthy
+    volumes:
+      - spire-b-server-api:/tmp/spire-server/private
+      - spire-b-token:/token
+    networks: [orgb-internal]
+    command:
+      - |
+        set -e
+        SOCK=/tmp/spire-server/private/api.sock
+        if [ ! -s /token/join_token ]; then
+          TOKEN=$$(spire-server token generate \
+            -socketPath $$SOCK -ttl 3600 | grep '^Token:' | awk '{print $$NF}')
+          echo "$$TOKEN" > /token/join_token
+          spire-server entry create \
+            -socketPath $$SOCK \
+            -spiffeID spiffe://orgb.test/agent-b \
+            -parentID "spiffe://orgb.test/spire/agent/join_token/$$TOKEN" \
+            -selector unix:uid:1000
+          echo "spire-server-b-init: token + entry created"
+        else
+          echo "spire-server-b-init: already initialized"
+        fi
+    restart: "no"
+
+  spire-agent-b:
+    build: ./spire/agent-wrapper
+    depends_on:
+      spire-server-b-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./spire/agent-b.conf:/run/spire/config/agent.conf:ro
+      - spire-b-token:/token:ro
+      - spire-b-agent-socket:/run/spire/sockets
+      - spire-b-agent-data:/run/spire/data
+    command:
+      - |
+        TOKEN=$$(cat /token/join_token)
+        exec spire-agent run \
+          -config /run/spire/config/agent.conf \
+          -joinToken "$$TOKEN"
+    networks: [orgb-internal]
+    healthcheck:
+      test: ["CMD", "spire-agent", "healthcheck", "-socketPath", "/run/spire/sockets/agent.sock"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  agent-b:
+    build:
+      context: ..
+      dockerfile: enterprise_sandbox/agent/Dockerfile
+    depends_on:
+      spire-agent-b:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "http://broker:8000"
+      ORG_ID: "orgb"
+      AGENT_NAME: "agent-b"
+      SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
+    volumes:
+      - spire-b-agent-socket:/run/spire/sockets:ro
+    networks: [orgb-internal, public-wan]
+    pid: "service:spire-agent-b"
+    # See agent-a comment — same broker SPIFFE-aware auth gap.
+    restart: "no"
+    # healthcheck:
+    #   test: ["CMD", "test", "-f", "/tmp/ready"]
+    #   interval: 3s
+    #   timeout: 2s
+    #   retries: 20
+    #   start_period: 20s

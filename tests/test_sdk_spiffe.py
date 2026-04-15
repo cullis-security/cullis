@@ -75,7 +75,7 @@ class _FakeBundle:
 class _FakeBundleSet:
     bundle: _FakeBundle
 
-    def get_x509_bundle_for_trust_domain(self, td):
+    def get_bundle_for_trust_domain(self, td):
         return self.bundle
 
 
@@ -150,8 +150,8 @@ def test_fetch_x509_svid_without_extra_raises_importerror():
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if name.startswith("pyspiffe"):
-            raise ImportError("no pyspiffe")
+        if name == "spiffe" or name.startswith("spiffe."):
+            raise ImportError("no spiffe")
         return real_import(name, *args, **kwargs)
 
     with patch("builtins.__import__", side_effect=fake_import):
@@ -161,10 +161,10 @@ def test_fetch_x509_svid_without_extra_raises_importerror():
 
 def test_fetch_x509_svid_without_socket_raises():
     """Missing socket + no env var → clear RuntimeError."""
-    # Need pyspiffe importable for the ImportError check to pass; if not
+    # Need spiffe importable for the ImportError check to pass; if not
     # installed in the dev env, this test is equivalent to the ImportError
     # path above. Skip cleanly when missing.
-    pytest.importorskip("pyspiffe")
+    pytest.importorskip("spiffe")
     import os
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("SPIFFE_ENDPOINT_SOCKET", None)

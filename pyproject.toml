@@ -25,7 +25,7 @@ connector = [
     "PyYAML>=6.0",
 ]
 spiffe = [
-    "pyspiffe>=0.1.2",
+    "spiffe>=0.2.0",
 ]
 
 [project.scripts]

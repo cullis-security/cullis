@@ -10,8 +10,8 @@ Requires the optional ``[spiffe]`` extra::
     pip install cullis-agent-sdk[spiffe]
 
 Design notes:
-- Thin wrapper over ``pyspiffe`` — all heavy lifting (gRPC, rotation streams)
-  is upstream. We only expose what the SDK needs: fetch a single SVID and
+- Thin wrapper over the ``spiffe`` package (py-spiffe) — all heavy lifting
+  (gRPC, rotation streams) is upstream. We only expose what the SDK needs: fetch a single SVID and
   return PEM bundles.
 - The enterprise operator decides the SPIFFE ID → Cullis agent_id mapping.
   See ``parse_spiffe_id()`` for the default convention.
@@ -61,9 +61,7 @@ def fetch_x509_svid(socket_path: str | None = None) -> SpiffeSvid:
             returns no SVID for this workload.
     """
     try:
-        from pyspiffe.workloadapi.default_workload_api_client import (
-            DefaultWorkloadApiClient,
-        )
+        from spiffe import WorkloadApiClient
     except ImportError as e:  # pragma: no cover — tested via monkeypatch
         raise ImportError(_INSTALL_HINT) from e
 
@@ -77,18 +75,25 @@ def fetch_x509_svid(socket_path: str | None = None) -> SpiffeSvid:
     if not endpoint.startswith("unix://"):
         endpoint = f"unix://{endpoint}"
 
-    client = DefaultWorkloadApiClient(spiffe_socket_path=endpoint)
+    # WorkloadApiClient reads SPIFFE_ENDPOINT_SOCKET from env; override it
+    # locally so callers can pass socket_path explicitly.
+    old = os.environ.get("SPIFFE_ENDPOINT_SOCKET")
+    os.environ["SPIFFE_ENDPOINT_SOCKET"] = endpoint
     try:
-        svid = client.fetch_x509_svid()
-        bundle_set = client.fetch_x509_bundles()
+        with WorkloadApiClient() as client:
+            svid = client.fetch_x509_svid()
+            bundle_set = client.fetch_x509_bundles()
     finally:
-        client.close()
+        if old is None:
+            os.environ.pop("SPIFFE_ENDPOINT_SOCKET", None)
+        else:
+            os.environ["SPIFFE_ENDPOINT_SOCKET"] = old
 
     return _to_pem_bundle(svid, bundle_set)
 
 
 def _to_pem_bundle(svid, bundle_set) -> SpiffeSvid:
-    """Convert pyspiffe objects into our PEM-based SpiffeSvid.
+    """Convert py-spiffe objects into our PEM-based SpiffeSvid.
 
     Kept as a separate function so tests can exercise the conversion without
     a real Workload API socket.
@@ -106,7 +111,7 @@ def _to_pem_bundle(svid, bundle_set) -> SpiffeSvid:
 
     spiffe_id = str(svid.spiffe_id)
     trust_domain = svid.spiffe_id.trust_domain
-    bundle = bundle_set.get_x509_bundle_for_trust_domain(trust_domain)
+    bundle = bundle_set.get_bundle_for_trust_domain(trust_domain)
     bundle_pem = "\n".join(
         c.public_bytes(serialization.Encoding.PEM).decode()
         for c in bundle.x509_authorities

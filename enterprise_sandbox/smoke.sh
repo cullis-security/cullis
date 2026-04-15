@@ -209,9 +209,50 @@ else
     fail "B3.10 bob's cookie accepted by proxy-a (HTTP $cross_rc — LEAK)"
 fi
 
-# Upcoming
-skip "B4 SPIRE + SVID agent"         "Blocco 4 not yet implemented"
-skip "B5 full 10-assertion smoke"    "Blocco 5 not yet implemented"
+echo ""
+echo "[smoke] Blocco 4 — SPIRE stack + SPIFFE agent auth"
+
+# B4.1 — SPIRE servers up and healthy
+if docker compose ps spire-server-a --format json | grep -q '"Health":"healthy"' \
+   && docker compose ps spire-server-b --format json | grep -q '"Health":"healthy"'; then
+    pass "B4.1 spire-server-a + spire-server-b healthy"
+else
+    fail "B4.1 spire-server healthy"
+fi
+
+# B4.2 — Registration entries created (one per org).
+# spire-server image is distroless — no shell — but docker exec with the
+# absolute binary path bypasses PATH lookup and works anyway.
+entries_a=$(docker exec enterprise_sandbox-spire-server-a-1 \
+    /opt/spire/bin/spire-server entry show \
+    -socketPath /tmp/spire-server/private/api.sock 2>/dev/null | \
+    grep -c "spiffe://orga.test/agent-a" || true)
+entries_b=$(docker exec enterprise_sandbox-spire-server-b-1 \
+    /opt/spire/bin/spire-server entry show \
+    -socketPath /tmp/spire-server/private/api.sock 2>/dev/null | \
+    grep -c "spiffe://orgb.test/agent-b" || true)
+if [[ "$entries_a" -ge 1 && "$entries_b" -ge 1 ]]; then
+    pass "B4.2 registration entries present (agent-a, agent-b)"
+else
+    fail "B4.2 registration entries (a=$entries_a b=$entries_b)"
+fi
+
+# B4.3 — SPIRE agents healthy (Workload API socket usable)
+if docker compose ps spire-agent-a --format json | grep -q '"Health":"healthy"' \
+   && docker compose ps spire-agent-b --format json | grep -q '"Health":"healthy"'; then
+    pass "B4.3 spire-agent-a + spire-agent-b healthy (Workload API ready)"
+else
+    fail "B4.3 spire-agent healthy"
+fi
+
+# B4.4 + B4.5 — End-to-end SPIFFE auth to broker is BLOCKED until the broker
+# learns to derive agent_id/org_id from a SPIFFE SAN URI when the cert lacks
+# CN/O (SPIRE-issued SVIDs do). Tracked separately — the SPIRE half (the
+# whole point of this Blocco) is verified by B4.1-3 above. Once the broker
+# work lands, agent-a/agent-b containers in compose will become healthy
+# without further sandbox changes.
+skip "B4.4 agent broker auth via SVID"   "blocked: broker needs SPIFFE-aware x509 verifier"
+skip "B4.5 cross-org session over SPIFFE" "blocked: same — see issue tracking SPIFFE-aware broker auth"
 
 echo ""
 echo "[smoke] PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
