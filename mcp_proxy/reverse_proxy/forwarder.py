@@ -76,6 +76,22 @@ async def _forward(request: Request, broker_url: str, client: httpx.AsyncClient)
     body = await request.body()
     headers = _filter_request_headers(request.headers.raw)
 
+    # Propagate the caller's IP so the broker's rate limiter can distinguish
+    # per-agent load instead of collapsing every agent of an org onto the
+    # single proxy IP. Broker must trust the proxy (FORWARDED_ALLOW_IPS) for
+    # this to count — same contract as any L7 load balancer.
+    client_host = request.client.host if request.client else None
+    if client_host:
+        existing = headers.get("x-forwarded-for")
+        headers["x-forwarded-for"] = (
+            f"{existing}, {client_host}" if existing else client_host
+        )
+        headers.setdefault("x-forwarded-proto", request.url.scheme)
+        if not headers.get("x-forwarded-host"):
+            host = request.headers.get("host")
+            if host:
+                headers["x-forwarded-host"] = host
+
     try:
         upstream = await client.request(
             request.method,

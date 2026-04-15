@@ -93,11 +93,11 @@ services:
       KMS_BACKEND: "local"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
-      # Used by DPoP htu validation. Agents on the docker network reach the
-      # broker via "http://broker:8000", so that's what their proofs claim.
-      # OIDC browser flow now lives on the proxies (PR #88) so this URL no
-      # longer needs to match a browser-typed host.
-      BROKER_PUBLIC_URL: "http://broker:8000"
+      # ADR-004 PR B — proxy-only topology. Agents now reach the broker
+      # through proxy-{a,b}, so their DPoP proofs claim htu=http://proxy-X:9100/...
+      # Leaving BROKER_PUBLIC_URL empty makes build_htu fall back to the
+      # request's Host header, which the proxy preserves on forward. That
+      # keeps htu validation in lock-step with whatever proxy the SDK hit.
       DATABASE_URL: "postgresql+asyncpg://atn:atn-sandbox@postgres:5432/agent_trust"
       REDIS_URL: "redis://redis:6379"
       POLICY_BACKEND: "webhook"
@@ -336,7 +336,7 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL: "http://broker:8000"
+      BROKER_URL: "http://proxy-a:9100"
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
       SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
@@ -344,7 +344,10 @@ services:
     volumes:
       - spire-a-agent-socket:/run/spire/sockets:ro
       - bootstrap-state:/state:ro
-    networks: [orga-internal, public-wan]
+    # ADR-004 PR B — proxy-only topology. agent-a reaches the broker
+    # exclusively via proxy-a on orga-internal. public-wan is detached so
+    # B4.8 can assert no direct TCP path to broker:8000 exists.
+    networks: [orga-internal]
     # Share PID namespace with spire-agent-a so the SPIRE unix WorkloadAttestor
     # can see this process via /proc/{pid}/exe and attest the unix:uid:1000
     # selector. Without this, attestation fails with "could not resolve
@@ -372,7 +375,7 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL: "http://broker:8000"
+      BROKER_URL: "http://proxy-a:9100"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
       AGENT_AUTH: "byoca"
@@ -381,7 +384,8 @@ services:
       PEERS_FILE: "/state/peers.json"
     volumes:
       - bootstrap-state:/state:ro
-    networks: [orga-internal, public-wan]
+    # ADR-004 PR B — proxy-only: byoca-a talks to proxy-a, not broker.
+    networks: [orga-internal]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/ready"]
@@ -528,7 +532,7 @@ services:
       broker:
         condition: service_healthy
     environment:
-      BROKER_URL: "http://broker:8000"
+      BROKER_URL: "http://proxy-b:9100"
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
       SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
@@ -536,7 +540,8 @@ services:
     volumes:
       - spire-b-agent-socket:/run/spire/sockets:ro
       - bootstrap-state:/state:ro
-    networks: [orgb-internal, public-wan]
+    # ADR-004 PR B — proxy-only topology. agent-b reaches broker via proxy-b.
+    networks: [orgb-internal]
     pid: "service:spire-agent-b"
     restart: unless-stopped
     healthcheck:
