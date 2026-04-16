@@ -26,6 +26,8 @@ EXPECTED_TABLES = {
     "local_messages",
     "local_policies",
     "local_audit",
+    "local_mcp_resources",
+    "local_agent_resource_bindings",
     "pending_enrollments",
     "cached_federated_agents",
     "cached_policies",
@@ -65,7 +67,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0006_enrollment_api_key_hash",)]
+    assert rows == [("0007_mcp_resources",)]
 
 
 @pytest.mark.asyncio
@@ -125,7 +127,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0006_enrollment_api_key_hash",)]
+    assert version == [("0007_mcp_resources",)]
 
 
 @pytest.mark.asyncio
