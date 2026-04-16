@@ -266,3 +266,70 @@ class LocalAudit(Base):
         Index("idx_local_audit_org", "org_id"),
         Index("idx_local_audit_peer_org", "peer_org_id"),
     )
+
+
+# ── MCP Resources (ADR-007 Phase 1, unused until PR-3 wires routing) ─────────
+
+
+class LocalMCPResource(Base):
+    """Registry of MCP resources mediated by the proxy.
+
+    An MCP resource is an external service (postgres-mcp, github-mcp, ...)
+    that local agents may call through the proxy. The proxy enforces
+    binding + capability + egress-domain allowlists on each call.
+
+    ADR-007 Phase 1 PR #1 deploys schema only — no handler reads from this
+    table yet. PR-3 wires aggregated discovery and mediated forwarding.
+    """
+
+    __tablename__ = "local_mcp_resources"
+
+    resource_id = Column(Text, primary_key=True)
+    org_id = Column(Text, nullable=True)
+    name = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    endpoint_url = Column(Text, nullable=False)
+    auth_type = Column(Text, nullable=False, server_default="none")
+    auth_secret_ref = Column(Text, nullable=True)
+    required_capability = Column(Text, nullable=True)
+    allowed_domains = Column(Text, nullable=False, server_default="[]")
+    enabled = Column(Integer, nullable=False, server_default="1")
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("idx_local_mcp_resources_org_enabled", "org_id", "enabled"),
+        UniqueConstraint(
+            "org_id", "name", name="uq_local_mcp_resources_org_name"
+        ),
+    )
+
+
+class LocalAgentResourceBinding(Base):
+    """Explicit N:N grant: which local agents may call which resources.
+
+    Revocation is soft (``revoked_at`` non-null). Regrant = UPDATE the
+    existing row back to ``revoked_at=NULL`` — the UNIQUE on
+    ``(agent_id, resource_id)`` enforces one logical binding per pair
+    without relying on partial indexes (SQLite/Postgres parity).
+    """
+
+    __tablename__ = "local_agent_resource_bindings"
+
+    binding_id = Column(Text, primary_key=True)
+    agent_id = Column(Text, nullable=False)
+    resource_id = Column(Text, nullable=False)
+    org_id = Column(Text, nullable=True)
+    granted_by = Column(Text, nullable=False)
+    granted_at = Column(Text, nullable=False)
+    revoked_at = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_local_bindings_agent_revoked", "agent_id", "revoked_at"),
+        Index("idx_local_bindings_resource_revoked", "resource_id", "revoked_at"),
+        Index("idx_local_bindings_org", "org_id"),
+        UniqueConstraint(
+            "agent_id", "resource_id",
+            name="uq_local_bindings_agent_resource",
+        ),
+    )
