@@ -120,9 +120,25 @@ class InvokeToolRequest(BaseModel):
 
 
 def _get_bridge(request: Request):
-    """Retrieve the BrokerBridge instance from app state."""
+    """Retrieve the BrokerBridge instance from app state.
+
+    ADR-006 Fase 1: in standalone mode the bridge is deliberately absent
+    and any request that reaches this helper is attempting a cross-org
+    operation the proxy cannot fulfil. Surface a 400 with a clear
+    message instead of the legacy 503 "bridge not initialized" — the
+    distinction matters for SDK callers that want to detect
+    "standalone-only" vs "broker transiently down".
+    """
     bridge = getattr(request.app.state, "broker_bridge", None)
     if bridge is None:
+        if get_settings().standalone:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "cross-org operations disabled in standalone mode — "
+                    "attach the proxy to a broker to enable federation"
+                ),
+            )
         raise HTTPException(
             status_code=503,
             detail="Egress bridge not initialized — broker_url may be unconfigured",

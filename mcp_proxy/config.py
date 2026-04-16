@@ -144,6 +144,16 @@ class ProxySettings(BaseSettings):
             self.standalone = standalone_flag.lower() in (
                 "1", "true", "yes", "on",
             )
+
+        # ADR-006 Fase 1 — standalone mode IS the mini-broker. Without
+        # intra-org routing the egress endpoints fall through to a
+        # non-existent BrokerBridge and 503. Flip the flag on by default
+        # whenever standalone is set and the operator hasn't explicitly
+        # overridden it via PROXY_INTRA_ORG. An explicit
+        # PROXY_INTRA_ORG=0 still wins (useful for intentional "no
+        # traffic" deployments — e.g. schema-only validation in CI).
+        if self.standalone and os.environ.get("PROXY_INTRA_ORG") is None:
+            self.intra_org_routing = True
         return self
 
 
