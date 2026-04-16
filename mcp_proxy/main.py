@@ -487,6 +487,17 @@ app.include_router(audit_router)
 from mcp_proxy.dashboard.router import router as dashboard_router
 app.include_router(dashboard_router)
 
+# ADR-006 Fase 2 / PR #6 — runtime uplink endpoint (`POST /v1/admin/link-broker`)
+# + dashboard form (`/proxy/link-broker`). Hot-swaps the BrokerBridge without
+# restarting the pod, so flipping an installed standalone proxy into
+# federated mode is a 3-click dashboard action instead of a redeploy.
+from mcp_proxy.dashboard.link_broker import (
+    admin_router as link_broker_admin_router,
+    dashboard_router as link_broker_dashboard_router,
+)
+app.include_router(link_broker_dashboard_router)
+app.include_router(link_broker_admin_router)
+
 from mcp_proxy.dashboard.downloads import router as downloads_router
 app.include_router(downloads_router)
 
