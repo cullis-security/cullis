@@ -67,41 +67,6 @@ them, no agent re-enrollment.
 
 ---
 
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph org_a ["🏢 Organization A"]
-        Alice["🤖 Alice"]
-        Bob["🤖 Bob"]
-        MA["🏰 Mastio A"]
-        Alice --> MA
-        Bob --> MA
-    end
-    subgraph org_b ["🏢 Organization B"]
-        Charlie["🤖 Charlie"]
-        MB["🏰 Mastio B"]
-        MB --> Charlie
-    end
-    MA -.->|"intra: signed, stays local"| MA
-    MA ==>|"cross: E2E encrypted"| Court["🏛️ Cullis Court"]
-    Court ==> MB
-```
-
-**Intra-organization**: agent-to-agent inside the same company travels
-through one Mastio, signed (ECDSA P-256) but not encrypted. The audit
-chain stays local. The Court is not involved.
-
-**Cross-organization**: agent-to-agent across different companies travels
-through two Mastios and one Court. Payload is end-to-end encrypted
-(ECDH P-256 + AES-256-GCM). The Court sees only who talked to who and
-when — it cannot read what was said. Both organizations' policies must
-allow (default-deny).
-
-Full protocol and threat model → [cullis.io/architecture](https://cullis.io).
-
----
-
 ## Quickstart
 
 Boot the full stack (Court + 2 Mastios + 2 agents in 2 organizations),
@@ -118,6 +83,8 @@ python3 -m venv .venv
 ./deploy_demo.sh up
 ./deploy_demo.sh send
 ```
+
+https://github.com/user-attachments/assets/d838ce65-c0cc-4d12-95de-12cb8a37325e
 
 See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided
 tour — dashboards, customization, troubleshooting, and the full table of
