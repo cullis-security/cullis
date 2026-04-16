@@ -505,6 +505,11 @@ from mcp_proxy.dashboard.link_broker import (
 app.include_router(link_broker_dashboard_router)
 app.include_router(link_broker_admin_router)
 
+# ADR-006 PR #2b — dashboard CRUD for intra-org policies. The engine
+# landed in #126; this gives operators a UI instead of raw SQL.
+from mcp_proxy.dashboard.policies_local import router as local_policies_router
+app.include_router(local_policies_router)
+
 from mcp_proxy.dashboard.downloads import router as downloads_router
 app.include_router(downloads_router)
 

@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Local Policies{% endblock %}
+{% block header_title %}Intra-org Policies (ADR-006){% endblock %}
+{% block content %}
+<div class="max-w-5xl space-y-6">
+
+    <div class="p-4 bg-surface-900/60 border border-gray-800/60 rounded text-sm text-gray-400">
+        Rules evaluated by the proxy on every intra-org <code>/v1/egress/send</code>.
+        JSON schema matches the broker's message-rule format — a policy authored
+        here behaves identically to one on the broker side.
+    </div>
+
+    <!-- Create form -->
+    <form method="post" action="/proxy/local-policies/create"
+          class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg space-y-4">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <h3 class="text-sm uppercase tracking-[0.2em] text-gray-400">New policy</h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-xs text-gray-500 uppercase tracking-wider mb-2">Name</label>
+                <input type="text" name="name" required placeholder="block-secrets"
+                       class="w-full px-3 py-2 bg-surface-950 border border-gray-700 rounded text-white focus:border-accent-400 focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 uppercase tracking-wider mb-2">Policy type</label>
+                <select name="policy_type"
+                        class="w-full px-3 py-2 bg-surface-950 border border-gray-700 rounded text-white">
+                    <option value="message" selected>message</option>
+                    <option value="session">session</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 uppercase tracking-wider mb-2">
+                    Org scope (leave blank for global)
+                </label>
+                <input type="text" name="org_id" value="{{ default_org_id }}" placeholder="acme"
+                       class="w-full px-3 py-2 bg-surface-950 border border-gray-700 rounded text-white">
+            </div>
+            <div class="flex items-center gap-2 mt-6">
+                <input type="checkbox" name="enabled" id="enabled" value="1" checked
+                       class="w-4 h-4 bg-surface-950 border-gray-700">
+                <label for="enabled" class="text-xs text-gray-400 uppercase tracking-wider">Enabled</label>
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-xs text-gray-500 uppercase tracking-wider mb-2">Rules JSON</label>
+            <textarea name="rules_json" rows="6" required
+                      class="w-full px-3 py-2 bg-surface-950 border border-gray-700 rounded text-white"
+                      style="font-family: 'JetBrains Mono', monospace;"
+                      placeholder='{"effect":"allow","conditions":{"blocked_fields":["admin_override"],"max_payload_size_bytes":65536}}'>{
+  "effect": "allow",
+  "conditions": {
+    "blocked_fields": ["admin_override"],
+    "max_payload_size_bytes": 65536
+  }
+}</textarea>
+        </div>
+
+        <button type="submit"
+                class="px-4 py-2 bg-accent-500/20 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/30 uppercase tracking-wider text-sm font-medium">
+            Create policy
+        </button>
+    </form>
+
+    <!-- List -->
+    <div class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg">
+        <h3 class="text-sm uppercase tracking-[0.2em] text-gray-400 mb-4">
+            Active policies ({{ policies|length }})
+        </h3>
+        {% if not policies %}
+        <p class="text-sm text-gray-500">No local policies yet. Intra-org send is default-allow.</p>
+        {% else %}
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="text-[10px] text-gray-500 uppercase tracking-wider text-left">
+                    <th class="py-2">Name</th>
+                    <th>Type</th>
+                    <th>Org</th>
+                    <th>Rules</th>
+                    <th class="text-center">Enabled</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in policies %}
+                <tr class="border-t border-gray-800/60">
+                    <td class="py-3 text-white">{{ p.name }}</td>
+                    <td class="text-gray-400">{{ p.policy_type or "—" }}</td>
+                    <td class="text-gray-400">{{ p.org_id or "global" }}</td>
+                    <td>
+                        <details>
+                            <summary class="text-accent-400 cursor-pointer text-xs">view</summary>
+                            <pre class="mt-2 p-2 bg-surface-950 text-xs text-gray-300 rounded overflow-auto" style="font-family: 'JetBrains Mono', monospace;">{{ p.rules_json }}</pre>
+                        </details>
+                    </td>
+                    <td class="text-center">
+                        <form method="post" action="/proxy/local-policies/{{ p.policy_id }}/toggle" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="text-xs {% if p.enabled %}text-emerald-400{% else %}text-gray-500{% endif %} hover:underline">
+                                {% if p.enabled %}ON{% else %}OFF{% endif %}
+                            </button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="post" action="/proxy/local-policies/{{ p.policy_id }}/delete" class="inline"
+                              onsubmit="return confirm('Delete policy {{ p.name }}?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="text-xs text-red-400 hover:underline">delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+</div>
+{% endblock %}
