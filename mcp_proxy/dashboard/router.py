@@ -2229,12 +2229,25 @@ async def overview_page(request: Request):
     if isinstance(session, RedirectResponse):
         return session
 
+    from mcp_proxy.config import get_settings as _get_settings
     from mcp_proxy.db import get_config, list_agents
 
     org_id = await get_config("org_id") or ""
     display_name = await get_config("display_name") or ""
     broker_url = await get_config("broker_url") or ""
     org_status = await get_config("org_status") or ""
+
+    # ADR-006 §2.2 — show the deterministic org_id in standalone mode so
+    # the admin can paste it into a broker attach-ca invite without
+    # digging into the DB. In federated mode the uplink is already
+    # bound, so the card is hidden to avoid UI noise.
+    _settings = _get_settings()
+    standalone_mode = bool(_settings.standalone) and not broker_url
+    if standalone_mode and not org_id:
+        # The derivation runs at lifespan time, but an operator who
+        # boots with MCP_PROXY_ORG_ID set will have a non-derived value.
+        # Fall back to settings.org_id so the card always renders.
+        org_id = _settings.org_id
 
     # Federation subscriber live stats, if running
     fed_stats = getattr(request.app.state, "federation_subscriber_stats", None)
@@ -2275,6 +2288,7 @@ async def overview_page(request: Request):
         federated_orgs=federated_orgs,
         fed_stats=fed_stats,
         fed_running=fed_running,
+        standalone_mode=standalone_mode,
     ))
 
 

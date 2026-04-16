@@ -35,6 +35,25 @@
             <a href="/proxy/setup" class="underline hover:text-amber-300">Start the setup wizard &rarr;</a>
         </div>
         {% endif %}
+
+        {% if org_id and standalone_mode %}
+        <div class="mt-4 p-4 bg-surface-950/60 border border-gray-800/60 rounded">
+            <div class="flex items-center justify-between gap-3 mb-2">
+                <p class="text-[10px] text-gray-500 uppercase tracking-[0.2em]">Org ID (share with broker admin)</p>
+                <button type="button"
+                        onclick="navigator.clipboard.writeText('{{ org_id }}'); this.innerText='Copied ✓'; setTimeout(()=>this.innerText='Copy', 1500);"
+                        class="px-2 py-1 text-[10px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/20">
+                    Copy
+                </button>
+            </div>
+            <code class="block text-sm text-white break-all" style="font-family: 'JetBrains Mono', monospace;">{{ org_id }}</code>
+            <p class="mt-2 text-xs text-gray-500">
+                Deterministic — derived from this proxy's Org CA public key.
+                The broker admin pastes this into an <code>attach-ca</code> invite so
+                the uplink pins your identity across restarts (ADR-006 §2.2).
+            </p>
+        </div>
+        {% endif %}
     </div>
 
     <!-- Stats grid -->

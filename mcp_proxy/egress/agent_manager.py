@@ -7,6 +7,7 @@ Each internal agent gets:
   - A private key stored in Vault (or DB fallback)
   - A local API key (sk_local_{name}_{hex}) for authenticating to the proxy
 """
+import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -74,7 +75,12 @@ class AgentManager:
         logger.warning("Org CA not found in proxy_config — agent cert issuance unavailable")
         return False
 
-    async def generate_org_ca(self, *, validity_days: int = 3650) -> None:
+    async def generate_org_ca(
+        self,
+        *,
+        validity_days: int = 3650,
+        derive_org_id: bool = False,
+    ) -> None:
         """Generate a fresh self-signed Org CA and persist it to proxy_config.
 
         Intended for standalone deploys (#115) where there is no broker to
@@ -83,6 +89,14 @@ class AgentManager:
         so a future SPIRE UpstreamAuthority can mint one intermediate
         underneath without re-rooting.
 
+        When ``derive_org_id`` is True, the proxy's ``org_id`` is derived
+        from the CA public key (``sha256(pubkey_DER).hex()[:16]``) and
+        persisted into ``proxy_config.org_id``. This is ADR-006 §2.2:
+        a deterministic identity that survives proxy restarts / redeploys
+        and that the broker's attach-ca flow can pin at invite-creation
+        time. Without it, the proxy would pick a random UUID and any
+        pre-shared ``linked_org_id`` would drift on the next boot.
+
         Safe to call only when no Org CA is already loaded — callers should
         gate on :attr:`ca_loaded` to avoid overwriting an attached CA.
         """
@@ -90,6 +104,16 @@ class AgentManager:
             raise RuntimeError("Org CA already loaded — refusing to overwrite")
 
         ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        if derive_org_id:
+            pubkey_der = ca_key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            derived = hashlib.sha256(pubkey_der).hexdigest()[:16]
+            self._org_id = derived
+            await set_config("org_id", derived)
+            logger.info("Derived deterministic org_id=%s from Org CA public key", derived)
 
         subject = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, f"{self._org_id} CA"),
@@ -151,6 +175,28 @@ class AgentManager:
     @property
     def ca_loaded(self) -> bool:
         return self._org_ca_key is not None and self._org_ca_cert is not None
+
+    @property
+    def org_id(self) -> str:
+        return self._org_id
+
+    def derive_org_id_from_ca(self) -> str | None:
+        """SHA-256(pubkey DER)[:16] of the currently loaded Org CA.
+
+        Returns ``None`` if no CA is loaded. This is the value the admin
+        copies from the proxy dashboard into a broker attach-ca invite
+        (ADR-006 §2.2) — it doesn't read from ``proxy_config.org_id``,
+        it recomputes from the cert, so tampering with the config row
+        wouldn't let an attacker convince the broker the proxy is
+        a different org.
+        """
+        if self._org_ca_cert is None:
+            return None
+        pubkey_der = self._org_ca_cert.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        return hashlib.sha256(pubkey_der).hexdigest()[:16]
 
     # ── Certificate generation ──────────────────────────────────────
 

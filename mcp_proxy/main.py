@@ -117,10 +117,19 @@ async def lifespan(app: FastAPI):
     # no CA has been attached (no attach-ca invite ever consumed) and no
     # broker is configured. Gated on standalone=true so federation deploys
     # keep the attach-ca flow unchanged.
+    #
+    # ADR-006 §2.2 — when the operator hasn't pinned an ``org_id`` via env
+    # or config, derive one deterministically from the CA public key. The
+    # admin then copies this value into the broker's attach-ca invite so
+    # future uplinks pin the same identity across proxy restarts.
     if settings.standalone and not agent_mgr.ca_loaded:
-        await agent_mgr.generate_org_ca()
+        derive = not org_id  # derive only when the operator didn't pick one
+        await agent_mgr.generate_org_ca(derive_org_id=derive)
+        if derive:
+            org_id = agent_mgr.org_id
 
     app.state.agent_manager = agent_mgr
+    app.state.org_id = org_id
 
     if broker_url:
         from mcp_proxy.egress.broker_bridge import BrokerBridge
