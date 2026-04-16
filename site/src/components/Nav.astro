@@ -1,0 +1,135 @@
+---
+const pathname = Astro.url.pathname;
+const isActive = (href: string) => {
+  if (href === '/') return pathname === '/' || pathname === '';
+  return pathname.startsWith(href);
+};
+---
+
+<nav aria-label="Primary">
+  <div class="container">
+    <a href="/" class="brand" aria-label="Cullis home">
+      <img src="/cullis-mark.svg" alt="" width="32" height="32" />
+      <span class="wordmark">Cullis</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="/architecture" class={isActive('/architecture') ? 'is-active' : ''}>Architecture</a></li>
+      <li><a href="/deployment" class={isActive('/deployment') ? 'is-active' : ''}>Deployment</a></li>
+      <li><a href="/components" class={isActive('/components') ? 'is-active' : ''}>Components</a></li>
+      <li><a href="/docs" class={isActive('/docs') ? 'is-active' : ''}>Docs</a></li>
+      <li><a href="/blog" class={isActive('/blog') ? 'is-active' : ''}>Blog</a></li>
+      <li><a href="/download" class={isActive('/download') ? 'is-active' : ''}>Download</a></li>
+      <li><a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="ext">GitHub <span aria-hidden="true">↗</span></a></li>
+    </ul>
+  </div>
+</nav>
+
+<style>
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    padding: 1.15rem 0;
+    background: rgba(5, 5, 8, 0.6);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid transparent;
+    transition: padding 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+                background 0.35s ease,
+                border-color 0.35s ease;
+  }
+
+  nav :global(.container) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2rem;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--text-primary);
+    border: none;
+    text-decoration: none;
+  }
+
+  .brand img {
+    filter: drop-shadow(0 0 12px rgba(0, 229, 199, 0.35));
+    transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .wordmark {
+    font-family: var(--font-brand);
+    font-weight: 600;
+    font-size: 1.3rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    line-height: 1;
+    transition: font-size 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 2rem;
+    list-style: none;
+    align-items: center;
+  }
+
+  .nav-links a {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    border: none;
+    position: relative;
+    padding: 0.3rem 0;
+    transition: color 0.2s ease;
+  }
+
+  .nav-links a:hover,
+  .nav-links a.is-active {
+    color: var(--accent-cyan);
+  }
+
+  .nav-links a::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 1px;
+    background: var(--accent-cyan);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.3s ease;
+  }
+
+  .nav-links a:hover::after,
+  .nav-links a.is-active::after {
+    transform: scaleX(1);
+  }
+
+  @media (max-width: 820px) {
+    .nav-links { display: none; }
+  }
+</style>
+
+<style is:global>
+  nav.scrolled {
+    padding: 0.7rem 0 !important;
+    background: rgba(5, 5, 8, 0.85) !important;
+    backdrop-filter: blur(24px) !important;
+    -webkit-backdrop-filter: blur(24px) !important;
+    border-bottom-color: var(--border-subtle) !important;
+  }
+  nav.scrolled .brand img {
+    height: 26px !important;
+    width: 26px !important;
+  }
+  nav.scrolled .wordmark {
+    font-size: 1.08rem !important;
+  }
+</style>

@@ -1,0 +1,204 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { getCollection } from 'astro:content';
+
+const all = await getCollection('docs');
+const sorted = all.sort((a, b) => a.data.order - b.data.order);
+
+// group by category
+const groups: Record<string, typeof sorted> = {};
+for (const doc of sorted) {
+  if (!groups[doc.data.category]) groups[doc.data.category] = [];
+  groups[doc.data.category].push(doc);
+}
+const categoryOrder = ['Deployment', 'Operations', 'Identity', 'Architecture'];
+const orderedCategories = Object.keys(groups).sort(
+  (a, b) => categoryOrder.indexOf(a) - categoryOrder.indexOf(b)
+);
+---
+
+<Layout title="Docs — Cullis" description="Operational and integration guides for Cullis.">
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-DOCS</div>
+          <div class="folio">§ <em>Documentation</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">Guides</span>
+            {all.length} articles
+          </div>
+          <h1 class="reveal" data-delay="2">
+            Operational <em>docs</em>.
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Hands-on guides for operators deploying Cullis in real environments.
+            Quickstart paths, runbooks for the failures that wake you up,
+            SPIFFE onboarding for teams who already run SPIRE.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section class="docs-grid-section">
+    <div class="container">
+      {orderedCategories.map((cat) => (
+        <div class="cat-block reveal">
+          <h2 class="cat-title">{cat}</h2>
+          <div class="cat-grid">
+            {groups[cat].map((doc) => (
+              <a href={`/docs/${doc.id}`} class="doc-card">
+                <div class="dc-meta">
+                  <span class="dc-cat">{doc.data.category}</span>
+                  {doc.data.updated && <span class="dc-date">upd. {doc.data.updated}</span>}
+                </div>
+                <h3>{doc.data.title}</h3>
+                {doc.data.description && <p>{doc.data.description}</p>}
+                <div class="dc-arrow">Read →</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    margin-bottom: 1.5rem;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 62ch;
+    color: var(--text-secondary);
+  }
+
+  .docs-grid-section {
+    padding: clamp(3rem, 7vw, 6rem) 0;
+  }
+
+  .cat-block {
+    margin-bottom: 4rem;
+  }
+
+  .cat-block:last-child { margin-bottom: 0; }
+
+  .cat-title {
+    font-family: var(--font-display);
+    font-size: 1.85rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 1.75rem;
+    padding-bottom: 0.7rem;
+    border-bottom: 1px solid var(--border-medium);
+  }
+
+  .cat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+  }
+
+  .doc-card {
+    display: flex;
+    flex-direction: column;
+    padding: 1.5rem 1.5rem 1.3rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    text-decoration: none;
+    transition: all 0.3s ease;
+    position: relative;
+  }
+
+  .doc-card:hover {
+    border-color: var(--accent-cyan-dim);
+    transform: translateY(-3px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3), 0 0 30px var(--accent-cyan-glow);
+  }
+
+  .dc-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .dc-cat {
+    color: var(--accent-cyan);
+    padding: 0.25rem 0.6rem;
+    border: 1px solid var(--accent-cyan-dim);
+    border-radius: 2px;
+  }
+
+  .dc-date {
+    color: var(--text-tertiary);
+  }
+
+  .doc-card h3 {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 0.6rem;
+    line-height: 1.25;
+  }
+
+  .doc-card p {
+    font-size: 0.92rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0 0 1rem;
+    flex-grow: 1;
+  }
+
+  .dc-arrow {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-top: 0.5rem;
+  }
+
+  @media (max-width: 900px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .cat-grid { grid-template-columns: 1fr; }
+  }
+</style>

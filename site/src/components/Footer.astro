@@ -1,0 +1,176 @@
+---
+const year = new Date().getFullYear();
+---
+
+<footer>
+  <div class="container">
+    <div class="footer-top">
+      <div class="footer-brand">
+        <img src="/cullis-mark.svg" alt="" width="40" height="40" />
+        <div>
+          <div class="fb-title">Cullis</div>
+          <div class="fb-sub">Agent Trust Fabric · Self-hosted</div>
+        </div>
+      </div>
+      <p class="footer-motto">
+        Cryptographic identity, tamper-evident audit, and federated trust
+        for AI agents that speak across organizations.
+      </p>
+    </div>
+
+    <div class="footer-grid">
+      <div>
+        <h4>Learn</h4>
+        <ul>
+          <li><a href="/architecture">Architecture</a></li>
+          <li><a href="/deployment">Deployment</a></li>
+          <li><a href="/components">Components</a></li>
+          <li><a href="/docs">Operational docs</a></li>
+          <li><a href="/blog">Journal</a></li>
+          <li><a href="/download">Download</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Code</h4>
+        <ul>
+          <li><a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener">Releases</a></li>
+          <li><a href="https://github.com/cullis-security/cullis/issues" target="_blank" rel="noopener">Issues</a></li>
+          <li><a href="https://github.com/cullis-security/cullis/discussions" target="_blank" rel="noopener">Discussions</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Contact</h4>
+        <ul>
+          <li><a href="mailto:hello@cullis.io">hello@cullis.io</a></li>
+          <li><a href="mailto:security@cullis.io">security@cullis.io</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <span>© {year} Cullis Security</span>
+      <span class="mono">FSL-1.1 · Apache-2.0</span>
+    </div>
+  </div>
+</footer>
+
+<style>
+  footer {
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-subtle);
+    padding: 4.5rem 0 2rem;
+    margin-top: 5rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  .footer-top {
+    display: grid;
+    grid-template-columns: 1.1fr 1.4fr;
+    gap: 3rem;
+    padding-bottom: 3rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .footer-brand {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .footer-brand img {
+    filter: drop-shadow(0 0 10px rgba(0, 229, 199, 0.35));
+  }
+
+  .fb-title {
+    font-family: var(--font-brand);
+    font-weight: 600;
+    font-size: 1.2rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    line-height: 1;
+  }
+
+  .fb-sub {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-top: 0.45rem;
+  }
+
+  .footer-motto {
+    font-family: var(--font-body);
+    font-size: 1rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+    max-width: 52ch;
+    margin: 0;
+  }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3rem;
+    padding: 3rem 0;
+  }
+
+  .footer-grid h4 {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.6rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .footer-grid ul { list-style: none; padding: 0; }
+  .footer-grid li { margin-bottom: 0.55rem; }
+
+  .footer-grid a {
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    border: none;
+    position: relative;
+    padding-left: 1rem;
+  }
+
+  .footer-grid a::before {
+    content: '—';
+    position: absolute;
+    left: 0;
+    color: var(--accent-cyan);
+  }
+
+  .footer-grid a:hover { color: var(--accent-cyan); }
+
+  .footer-bottom {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    color: var(--text-tertiary);
+  }
+
+  .footer-bottom .mono {
+    font-family: var(--font-mono);
+    letter-spacing: 0.05em;
+  }
+
+  @media (max-width: 820px) {
+    .footer-top { grid-template-columns: 1fr; }
+    .footer-grid { grid-template-columns: 1fr; gap: 2rem; }
+    .footer-bottom { flex-direction: column; gap: 0.5rem; }
+  }
+</style>

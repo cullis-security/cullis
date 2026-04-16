@@ -1,0 +1,734 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Deployment — Cullis"
+  description="Two deployment shapes — air-gapped standalone and cross-company federated. Same binary, no redeploy, no agent re-enrollment."
+>
+
+  <!-- HEAD -->
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-0003</div>
+          <div class="folio">§ <em>Deployment</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">01</span>
+            Two shapes, one binary
+          </div>
+          <h1 class="reveal" data-delay="2">
+            Start <em>air-gapped</em>.<br />
+            Scale to <em>federated</em>.
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Cullis runs in two deployment shapes. The same Mastio binary starts
+            inside one organization with no external dependency, and later attaches
+            to a Cullis Court to reach agents across partner companies.
+            <strong>No redeploy. No agent re-enrollment.</strong> An admin action
+            switches between the two modes.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- TWO BLUEPRINTS -->
+  <section class="blueprints">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">02</span>
+        The two shapes, compared
+      </div>
+      <h2 class="reveal" data-delay="1">Same binary, <em>two topologies</em>.</h2>
+
+      <div class="bp-grid reveal" data-delay="2">
+        <!-- STANDALONE -->
+        <figure class="bp-card">
+          <header class="bp-head">
+            <div class="bp-label">Shape I</div>
+            <h3>Standalone</h3>
+            <p class="bp-tag"><em>Air-gapped, single organization.</em></p>
+          </header>
+          <div class="bp-frame bp-standalone">
+            <svg viewBox="0 0 400 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Standalone deployment: one organization with a Mastio and three agents, no external connection">
+              <!-- perimeter -->
+              <rect x="20" y="20" width="360" height="280" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="5 5"/>
+              <text x="40" y="14" font-family="DM Mono, monospace" font-size="10" letter-spacing="3" fill="#8a8d9b">ORG · A</text>
+              <text x="200" y="318" text-anchor="middle" font-family="DM Mono, monospace" font-size="9" fill="#6e7180" opacity="0.7">trust domain · fully local</text>
+
+              <!-- agents -->
+              <g transform="translate(100, 80)">
+                <circle r="22" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="-32" text-anchor="middle" font-family="DM Mono, monospace" font-size="9" fill="#8a8d9b">agent</text>
+                <text y="4" text-anchor="middle" font-family="Cormorant Garamond, Instrument Serif, serif" font-style="italic" font-size="13" fill="#e8e9ed">Alice</text>
+              </g>
+              <g transform="translate(200, 60)">
+                <circle r="22" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="-32" text-anchor="middle" font-family="DM Mono, monospace" font-size="9" fill="#8a8d9b">agent</text>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="13" fill="#e8e9ed">Bob</text>
+              </g>
+              <g transform="translate(300, 80)">
+                <circle r="22" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="-32" text-anchor="middle" font-family="DM Mono, monospace" font-size="9" fill="#8a8d9b">agent</text>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="13" fill="#e8e9ed">Carol</text>
+              </g>
+
+              <!-- lines to Mastio -->
+              <g stroke="#8a8d9b" stroke-width="1" fill="none">
+                <line x1="100" y1="102" x2="140" y2="190"/>
+                <line x1="200" y1="82" x2="200" y2="190"/>
+                <line x1="300" y1="102" x2="260" y2="190"/>
+              </g>
+
+              <!-- Mastio -->
+              <g transform="translate(110, 200)">
+                <rect x="0" y="0" width="180" height="60" fill="#13151f" stroke="#00e5c7" stroke-width="1.8"/>
+                <rect x="5" y="5" width="170" height="50" fill="none" stroke="#00e5c7" stroke-width="0.4" opacity="0.5"/>
+                <text x="90" y="26" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="18" fill="#e8e9ed">Mastio</text>
+                <text x="90" y="44" text-anchor="middle" font-family="DM Mono, monospace" font-size="9" fill="#00e5c7">CA · policy · audit · local</text>
+              </g>
+
+              <!-- no-external indicator -->
+              <g transform="translate(320, 280)">
+                <circle r="4" fill="#4ade80"/>
+                <text x="10" y="4" font-family="DM Mono, monospace" font-size="9" fill="#4ade80" letter-spacing="1">AIR-GAPPED</text>
+              </g>
+            </svg>
+          </div>
+          <ul class="bp-specs">
+            <li><span class="key">Who talks</span><span>Agents inside one organization only</span></li>
+            <li><span class="key">Payload</span><span>Signed (ECDSA P-256)</span></li>
+            <li><span class="key">Audit</span><span>Local hash-chain, never leaves the org</span></li>
+            <li><span class="key">External deps</span><span>None</span></li>
+            <li><span class="key">Internet</span><span>Not required</span></li>
+          </ul>
+        </figure>
+
+        <!-- FEDERATED -->
+        <figure class="bp-card federated">
+          <header class="bp-head">
+            <div class="bp-label">Shape II</div>
+            <h3>Federated</h3>
+            <p class="bp-tag"><em>Cross-company trust network.</em></p>
+          </header>
+          <div class="bp-frame">
+            <svg viewBox="0 0 540 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Federated deployment: two organizations joined by a Cullis Court">
+              <!-- Org A -->
+              <rect x="10" y="20" width="220" height="280" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="5 5"/>
+              <text x="26" y="14" font-family="DM Mono, monospace" font-size="10" letter-spacing="3" fill="#8a8d9b">ORG · A</text>
+
+              <!-- Org B -->
+              <rect x="310" y="20" width="220" height="280" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1" stroke-dasharray="5 5"/>
+              <text x="326" y="14" font-family="DM Mono, monospace" font-size="10" letter-spacing="3" fill="#8a8d9b">ORG · B</text>
+
+              <!-- Agent A -->
+              <g transform="translate(70, 80)">
+                <circle r="18" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="12" fill="#e8e9ed">Alice</text>
+              </g>
+              <g transform="translate(170, 80)">
+                <circle r="18" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="12" fill="#e8e9ed">Bob</text>
+              </g>
+
+              <!-- Mastio A -->
+              <g transform="translate(40, 200)">
+                <rect x="0" y="0" width="160" height="60" fill="#13151f" stroke="#00e5c7" stroke-width="1.8"/>
+                <rect x="5" y="5" width="150" height="50" fill="none" stroke="#00e5c7" stroke-width="0.4" opacity="0.5"/>
+                <text x="80" y="26" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="16" fill="#e8e9ed">Mastio A</text>
+                <text x="80" y="44" text-anchor="middle" font-family="DM Mono, monospace" font-size="8.5" fill="#00e5c7">uplinked to Court</text>
+              </g>
+
+              <g stroke="#8a8d9b" stroke-width="1" fill="none">
+                <line x1="70" y1="98" x2="100" y2="200"/>
+                <line x1="170" y1="98" x2="140" y2="200"/>
+              </g>
+
+              <!-- Agent B -->
+              <g transform="translate(370, 80)">
+                <circle r="18" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="12" fill="#e8e9ed">Dana</text>
+              </g>
+              <g transform="translate(470, 80)">
+                <circle r="18" fill="#13151f" stroke="#8a8d9b" stroke-width="1.5"/>
+                <text y="4" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="12" fill="#e8e9ed">Ed</text>
+              </g>
+
+              <!-- Mastio B -->
+              <g transform="translate(340, 200)">
+                <rect x="0" y="0" width="160" height="60" fill="#13151f" stroke="#00e5c7" stroke-width="1.8"/>
+                <rect x="5" y="5" width="150" height="50" fill="none" stroke="#00e5c7" stroke-width="0.4" opacity="0.5"/>
+                <text x="80" y="26" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="16" fill="#e8e9ed">Mastio B</text>
+                <text x="80" y="44" text-anchor="middle" font-family="DM Mono, monospace" font-size="8.5" fill="#00e5c7">uplinked to Court</text>
+              </g>
+
+              <g stroke="#8a8d9b" stroke-width="1" fill="none">
+                <line x1="370" y1="98" x2="400" y2="200"/>
+                <line x1="470" y1="98" x2="440" y2="200"/>
+              </g>
+
+              <!-- Court -->
+              <g transform="translate(230, 220)">
+                <rect x="0" y="0" width="80" height="42" fill="#00e5c7" stroke="#00e5c7" stroke-width="1.2"/>
+                <text x="40" y="19" text-anchor="middle" font-family="Instrument Serif, serif" font-style="italic" font-size="15" fill="#050508">Court</text>
+                <text x="40" y="33" text-anchor="middle" font-family="DM Mono, monospace" font-size="7.5" fill="#050508">ciphertext</text>
+              </g>
+
+              <!-- Arcs -->
+              <g stroke="#00e5c7" stroke-width="1.5" fill="none">
+                <path d="M 200 230 Q 215 236 230 236" stroke-dasharray="5 4"/>
+                <path d="M 310 236 Q 325 236 340 230" stroke-dasharray="5 4"/>
+              </g>
+
+              <text x="270" y="285" text-anchor="middle" font-family="DM Mono, monospace" font-size="8" fill="#00e5c7" letter-spacing="1">ECDH-P256 · AES-256-GCM</text>
+            </svg>
+          </div>
+          <ul class="bp-specs">
+            <li><span class="key">Who talks</span><span>Agents across different companies</span></li>
+            <li><span class="key">Payload</span><span>End-to-end encrypted (ECDH + AES-256-GCM)</span></li>
+            <li><span class="key">Audit</span><span>Local hash-chain + Court routing log</span></li>
+            <li><span class="key">External deps</span><span>Reachable Court endpoint</span></li>
+            <li><span class="key">Internet</span><span>Required for cross-org hops</span></li>
+          </ul>
+        </figure>
+      </div>
+
+      <div class="callout reveal" data-delay="3">
+        <div class="callout-mark">◈</div>
+        <p>
+          The Mastio binary is the same in both shapes. What changes is a single
+          admin action: <code>attach-ca</code>. When executed, the Mastio's CA is
+          registered as a trust root on the Court, and cross-org traffic
+          becomes possible. Until then, nothing leaves the organization — not the
+          messages, not the audit log, not even the agent list.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- ATTACH-CA FLOW -->
+  <section class="flow-section">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">03</span>
+        The upgrade path
+      </div>
+      <h2 class="reveal" data-delay="1">
+        From <em>standalone</em> to <em>federated</em>, in four steps.
+      </h2>
+      <p class="flow-lead reveal" data-delay="2">
+        No new binary. No agent re-enrollment. The upgrade is a cryptographic
+        handshake between your Mastio's CA and the Court operator.
+      </p>
+
+      <ol class="steps">
+        <li class="step reveal" data-delay="1">
+          <div class="step-num">01</div>
+          <div class="step-body">
+            <h3>Court operator issues an invite</h3>
+            <p>A short-lived signed token containing the target org identifier and issuance metadata. Single-use, 24h TTL by default.</p>
+          </div>
+        </li>
+        <li class="step reveal" data-delay="2">
+          <div class="step-num">02</div>
+          <div class="step-body">
+            <h3>Mastio admin presents the invite</h3>
+            <p>The admin runs <code>cullis attach-ca --invite &lt;token&gt;</code> from the Mastio CLI or dashboard. The Mastio exports its Org CA public key and sends it to the Court, signed with the invite.</p>
+          </div>
+        </li>
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">03</div>
+          <div class="step-body">
+            <h3>Court registers the CA as a trust root</h3>
+            <p>The Org CA public key lands in the Court's federation registry alongside the org identifier. Cross-org discovery opens up for agents carrying certificates signed by that CA.</p>
+          </div>
+        </li>
+        <li class="step reveal" data-delay="4">
+          <div class="step-num">04</div>
+          <div class="step-body">
+            <h3>Uplink goes live</h3>
+            <p>The Mastio opens a persistent channel to the Court. Cross-org messages start flowing — end-to-end encrypted between Mastios, routed as ciphertext through the Court. Intra-org traffic is unchanged.</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="callout reveal" data-delay="5">
+        <div class="callout-mark">⌁</div>
+        <p>
+          <strong>To go back to standalone,</strong> an admin runs
+          <code>cullis unlink-broker</code>. The uplink closes, the Court removes
+          the CA registration, and the Mastio reverts to standalone immediately.
+          Active cross-org sessions drain gracefully; new ones are refused.
+          Intra-org operations continue uninterrupted.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- INSTALL PATTERNS -->
+  <section class="install-section">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">04</span>
+        How you run it
+      </div>
+      <h2 class="reveal" data-delay="1">Three <em>installation</em> patterns.</h2>
+
+      <div class="install-grid">
+        <article class="install-card reveal" data-delay="1">
+          <div class="install-head">
+            <div class="install-label">For developers</div>
+            <h3>Docker Compose</h3>
+          </div>
+          <pre><code>git clone https://github.com/cullis-security/cullis
+cd cullis
+./deploy_demo.sh up</code></pre>
+          <p>
+            Boots the full stack — Court, two Mastios, two agents in two
+            organizations — on your laptop in about a minute. Great for
+            evaluation and integration development.
+          </p>
+          <ul class="install-specs">
+            <li><span class="k">Time</span><span>~1 minute</span></li>
+            <li><span class="k">Requires</span><span>Docker + Compose v2</span></li>
+            <li><span class="k">Best for</span><span>local evaluation</span></li>
+          </ul>
+        </article>
+
+        <article class="install-card featured reveal" data-delay="2">
+          <div class="install-head">
+            <div class="install-label">For production</div>
+            <h3>Kubernetes · Helm</h3>
+          </div>
+          <pre><code>helm repo add cullis https://cullis.io/charts
+helm install mastio cullis/mastio \
+  --set org.name=acme \
+  --set ingress.host=mastio.acme.internal</code></pre>
+          <p>
+            Helm chart handles Org CA bootstrap, Vault KV v2 integration,
+            Postgres for audit, OpenTelemetry wiring, and OIDC admin login.
+            Standalone by default; <code>attach-ca</code> post-install.
+          </p>
+          <ul class="install-specs">
+            <li><span class="k">Time</span><span>~10 min first boot</span></li>
+            <li><span class="k">Requires</span><span>K8s 1.28+ · Vault · Postgres</span></li>
+            <li><span class="k">Best for</span><span>production</span></li>
+          </ul>
+        </article>
+
+        <article class="install-card reveal" data-delay="3">
+          <div class="install-head">
+            <div class="install-label">For edge / lightweight</div>
+            <h3>Single binary</h3>
+          </div>
+          <pre><code>curl -L https://cullis.io/get | sh
+cullis-mastio init --standalone
+cullis-mastio start</code></pre>
+          <p>
+            A statically-linked binary, SQLite for audit, filesystem KMS.
+            Zero external dependencies. Ideal for edge deployments, air-gapped
+            datacenters, or regulatory environments where every dependency is
+            a compliance question.
+          </p>
+          <ul class="install-specs">
+            <li><span class="k">Time</span><span>&lt; 30 seconds</span></li>
+            <li><span class="k">Requires</span><span>Linux · nothing else</span></li>
+            <li><span class="k">Best for</span><span>edge, air-gapped</span></li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- CLOSING -->
+  <section class="closing">
+    <div class="container narrow">
+      <div class="closing-rule"></div>
+      <div class="eyebrow">
+        <span class="eyebrow-number">05</span>
+        Continue
+      </div>
+      <h2>Components, <em>in detail</em>.</h2>
+      <p>
+        Read about the three components — the Connector on your laptop, the
+        Mastio that governs your organization, the Court that federates
+        trust across companies.
+      </p>
+      <div class="cta-row">
+        <a href="/components" class="btn btn-primary">Components</a>
+        <a href="/architecture" class="btn btn-ghost">Architecture</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    margin-bottom: 1.5rem;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 62ch;
+    color: var(--text-secondary);
+  }
+
+  .lead strong { color: var(--text-primary); font-weight: 500; }
+
+  /* Blueprints */
+  .blueprints { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .bp-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin-top: 2.5rem;
+  }
+
+  .bp-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    padding: 2rem 1.75rem;
+    margin: 0;
+    transition: border-color 0.3s ease;
+  }
+
+  .bp-card:hover {
+    border-color: var(--border-medium);
+  }
+
+  .bp-card.federated {
+    background: var(--bg-card);
+    border-left: 3px solid var(--accent-cyan);
+  }
+
+  .bp-head { margin-bottom: 1.5rem; }
+
+  .bp-label {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.5rem;
+  }
+
+  .bp-card h3 {
+    font-family: var(--font-display);
+    font-size: 1.9rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 0.4rem;
+    line-height: 1.1;
+  }
+
+  .bp-tag {
+    font-size: 0.95rem;
+    color: var(--text-tertiary);
+    margin: 0;
+  }
+
+  .bp-tag em {
+    font-style: italic;
+    color: var(--text-secondary);
+  }
+
+  .bp-frame {
+    padding: 1rem;
+    background: var(--bg-void);
+    border: 1px solid var(--border-subtle);
+    border-radius: 2px;
+    margin-bottom: 1.5rem;
+  }
+
+  .bp-frame svg {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+
+  .bp-specs {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .bp-specs li {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 1rem;
+    padding: 0.7rem 0;
+    border-bottom: 1px dashed var(--border-subtle);
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+  }
+
+  .bp-specs li:last-child { border-bottom: none; }
+
+  .bp-specs .key {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding-top: 0.2rem;
+  }
+
+  /* Callout */
+  .callout {
+    margin-top: 3rem;
+    padding: 2rem 2rem 2rem 2.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--accent-cyan);
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 1.5rem;
+    align-items: center;
+  }
+
+  .callout-mark {
+    font-family: var(--font-display);
+    font-size: 2.5rem;
+    color: var(--accent-cyan);
+    line-height: 1;
+  }
+
+  .callout p {
+    margin: 0;
+    font-size: 1.02rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    max-width: none;
+  }
+
+  .callout code, .step-body code, .flow-lead code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    padding: 0.1em 0.4em;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    color: var(--accent-cyan);
+  }
+
+  /* Attach-CA flow */
+  .flow-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .flow-lead {
+    font-size: 1.05rem;
+    color: var(--text-tertiary);
+    margin: 0 0 3rem;
+    max-width: 62ch;
+  }
+
+  .steps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--border-medium);
+  }
+
+  .step {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2rem;
+    padding: 2rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    align-items: start;
+  }
+
+  .step:last-child {
+    border-bottom: 1px solid var(--border-medium);
+  }
+
+  .step-num {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 3.5rem;
+    font-weight: 400;
+    color: var(--accent-cyan);
+    line-height: 1;
+    min-width: 80px;
+  }
+
+  .step-body h3 {
+    font-family: var(--font-display);
+    font-size: 1.5rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 0.5rem;
+    line-height: 1.2;
+  }
+
+  .step-body p {
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  /* Install patterns */
+  .install-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .install-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+    margin-top: 3rem;
+  }
+
+  .install-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    padding: 1.75rem 1.5rem;
+    transition: border-color 0.3s ease, transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .install-card:hover {
+    border-color: var(--border-medium);
+    transform: translateY(-3px);
+  }
+
+  .install-card.featured {
+    background: var(--bg-card);
+    border-color: var(--accent-cyan-dim);
+    border-left: 3px solid var(--accent-cyan);
+  }
+
+  .install-head { margin-bottom: 1.25rem; flex-shrink: 0; }
+
+  .install-label {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.4rem;
+  }
+
+  .install-card h3 {
+    font-family: var(--font-display);
+    font-size: 1.55rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0;
+    line-height: 1.15;
+  }
+
+  .install-card pre {
+    margin: 0 0 1.25rem;
+    font-size: 0.75rem;
+    padding: 1rem 1.1rem;
+    line-height: 1.65;
+  }
+
+  .install-card p {
+    font-size: 0.93rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0 0 1.25rem;
+    max-width: none;
+    flex-grow: 1;
+  }
+
+  .install-specs {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .install-specs li {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 0.75rem;
+    padding: 0.55rem 0;
+    border-bottom: 1px dashed var(--border-subtle);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  .install-specs li:last-child { border-bottom: none; }
+
+  .install-specs .k {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  /* Closing */
+  .closing { padding: clamp(4rem, 8vw, 7rem) 0; }
+
+  .closing-rule {
+    width: 40px;
+    height: 2px;
+    background: var(--accent-cyan);
+    margin-bottom: 2rem;
+  }
+
+  .closing h2 { margin-bottom: 1.5rem; }
+  .closing p {
+    font-size: 1.1rem;
+    margin-bottom: 2.5rem;
+    color: var(--text-secondary);
+  }
+
+  .cta-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .bp-grid { grid-template-columns: 1fr; }
+    .step {
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    .step-num { font-size: 2.5rem; }
+    .install-grid { grid-template-columns: 1fr; }
+    .bp-specs li, .install-specs li { grid-template-columns: 1fr; gap: 0.2rem; }
+    .callout { grid-template-columns: 1fr; padding: 1.5rem; }
+  }
+</style>

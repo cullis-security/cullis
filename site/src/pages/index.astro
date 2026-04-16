@@ -1,0 +1,505 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Cullis — Zero-trust identity and audit for AI agents">
+  <!-- HERO -->
+  <section class="hero">
+    <div class="container hero-container">
+      <aside class="hero-marginalia reveal">
+        <div class="scribble">CLLS-0001</div>
+        <div class="folio">v 0.2.0 · <em>preview</em></div>
+        <div class="marginalia">
+          Cryptographic infrastructure for artificial agents — identity,
+          authorization, and tamper-evident audit across organizations
+          that do not trust one another.
+        </div>
+      </aside>
+
+      <div class="hero-main">
+        <div class="eyebrow reveal">
+          <span class="pulse-dot"></span>
+          Agent Trust Fabric
+        </div>
+
+        <h1 class="hero-title reveal" data-delay="1">
+          Zero-trust <em>identity</em><br />
+          &amp; <em>audit</em> for<br />
+          AI agents.
+        </h1>
+
+        <p class="hero-lead reveal" data-delay="2">
+          Start air-gapped inside your organization. Scale to
+          cross-company federation — without redeploy. Per-agent
+          cryptographic identity, tamper-evident hash-chain audit,
+          end-to-end encrypted messaging.
+        </p>
+
+        <div class="hero-actions reveal" data-delay="3">
+          <a href="/architecture" class="btn btn-primary">Read the architecture</a>
+          <a href="/download" class="btn btn-ghost">Download Connector</a>
+        </div>
+
+        <dl class="hero-stats reveal" data-delay="4">
+          <div>
+            <dt>Cryptography</dt>
+            <dd>ECC · <em>P-256</em></dd>
+          </div>
+          <div>
+            <dt>License</dt>
+            <dd>FSL-1.1 / Apache-2.0</dd>
+          </div>
+          <div>
+            <dt>Stage</dt>
+            <dd><em>research preview</em></dd>
+          </div>
+        </dl>
+      </div>
+
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- PREMISE -->
+  <section class="prose-section">
+    <div class="container narrow">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">01</span>
+        The premise
+      </div>
+      <h2 class="reveal" data-delay="1">
+        Three questions — <em>who</em>, <em>what</em>,<br/>
+        and <em>what actually happened</em>.
+      </h2>
+      <p class="reveal dropcap" data-delay="2">
+        Artificial agents act on your behalf. They read, decide, move money,
+        speak to systems owned by other companies. When something goes wrong
+        — and it will — three questions matter.
+        <em>Who was it?</em> Not the user who typed a prompt last week, the
+        specific agent process, with a cryptographic proof.
+        <em>What were they allowed to do?</em> Not by policy written in a PDF,
+        by policy enforced at the boundary before the call landed.
+        <em>What did they actually do?</em> Not what logs you can still find,
+        an append-only chain that cannot be silently rewritten.
+      </p>
+      <p class="reveal" data-delay="3">
+        Cullis answers those three questions with three components that run
+        entirely on your infrastructure: a connector at the edge, an
+        authority inside your organization, and — when you need to reach
+        agents in other companies — a court that routes between trust
+        domains without reading the mail.
+      </p>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- COMPONENTS -->
+  <section class="components-section">
+    <div class="container">
+      <div class="section-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">02</span>
+          Three components
+        </div>
+        <h2 class="reveal" data-delay="1">
+          The <em>fabric</em>, named.
+        </h2>
+        <p class="section-lead reveal" data-delay="2">
+          Three independent, deployable components. A single company
+          runs two; a consortium adds the third.
+        </p>
+      </div>
+
+      <div class="components-grid">
+        <article class="component-card reveal" data-delay="1">
+          <div class="cc-number">01</div>
+          <div class="cc-label">Edge</div>
+          <h3 class="cc-title">Cullis <em>Connector</em></h3>
+          <p class="cc-body">
+            A desktop application that admits any MCP client — Claude
+            Desktop, Cursor, Cline — into the Cullis network. Runs on
+            the end user's laptop.
+          </p>
+          <dl class="cc-spec">
+            <dt>Runs on</dt><dd>macOS · Windows · Linux</dd>
+            <dt>Owned by</dt><dd>the end user</dd>
+            <dt>Does</dt><dd>identity · MCP↔Cullis translation</dd>
+          </dl>
+        </article>
+
+        <article class="component-card reveal" data-delay="2">
+          <div class="cc-number">02</div>
+          <div class="cc-label">Intra-org</div>
+          <h3 class="cc-title">Cullis <em>Mastio</em></h3>
+          <p class="cc-body">
+            The authority that governs agents inside a single
+            organization. Issues certificates, enforces policy, keeps
+            a local hash-chain audit that never leaves the perimeter.
+          </p>
+          <dl class="cc-spec">
+            <dt>Runs on</dt><dd>your infrastructure</dd>
+            <dt>Owned by</dt><dd>your org admin</dd>
+            <dt>Does</dt><dd>CA · policy · audit · reverse-proxy</dd>
+          </dl>
+        </article>
+
+        <article class="component-card reveal" data-delay="3">
+          <div class="cc-number">03</div>
+          <div class="cc-label">Cross-org</div>
+          <h3 class="cc-title">Cullis <em>Court</em></h3>
+          <p class="cc-body">
+            Federates Mastios across different organizations. Routes
+            sealed envelopes between companies — sees who and when,
+            never sees what was said.
+          </p>
+          <dl class="cc-spec">
+            <dt>Runs on</dt><dd>network operator's infrastructure</dd>
+            <dt>Owned by</dt><dd>one company or a consortium</dd>
+            <dt>Does</dt><dd>registry · federation · ciphertext routing</dd>
+          </dl>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- QUICKSTART -->
+  <section class="prose-section">
+    <div class="container narrow">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">03</span>
+        Quickstart
+      </div>
+      <h2 class="reveal" data-delay="1">
+        A minute to <em>federated</em>.
+      </h2>
+      <p class="reveal" data-delay="2">
+        Boot the full stack — Court, two Mastios, two agents across two
+        organizations — route a single cross-org end-to-end encrypted
+        message, tear it all down. About a minute on a laptop.
+      </p>
+      <pre class="reveal" data-delay="3"><code>git clone https://github.com/cullis-security/cullis
+cd cullis
+python3 -m venv .venv
+.venv/bin/pip install httpx cryptography
+./deploy_demo.sh up
+./deploy_demo.sh send</code></pre>
+      <p class="reveal note" data-delay="4">
+        <strong>For single-user install</strong> — download the Cullis
+        Connector from <a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener">Releases</a> and double-click. It will register with a Mastio you point it at and configure
+        your MCP client automatically.
+      </p>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- CLOSING -->
+  <section class="closing">
+    <div class="container narrow">
+      <div class="closing-rule"></div>
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">04</span>
+        Continue
+      </div>
+      <h2 class="reveal" data-delay="1">Architecture, <em>deployment</em>, components.</h2>
+      <p class="reveal" data-delay="2">
+        The rest lives on its own pages. Read about the two routing modes,
+        the deployment shapes, and each component at length.
+      </p>
+      <div class="hero-actions reveal" data-delay="3">
+        <a href="/architecture" class="btn btn-primary">Architecture</a>
+        <a href="/deployment" class="btn btn-ghost">Deployment</a>
+        <a href="/components" class="btn btn-ghost">Components</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .hero {
+    padding-top: clamp(6rem, 12vw, 9rem);
+    padding-bottom: clamp(3rem, 7vw, 5rem);
+  }
+
+  .hero-container {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.7fr) minmax(0, 3fr);
+    gap: clamp(1.5rem, 4vw, 4rem);
+    align-items: start;
+  }
+
+  .hero-marginalia {
+    position: sticky;
+    top: 7rem;
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .hero-main {
+    padding-top: 0.3rem;
+  }
+
+  .hero-title {
+    margin: 0 0 1.8rem 0;
+    font-weight: 400;
+  }
+
+  .hero-lead {
+    font-size: clamp(1.02rem, 1.45vw, 1.18rem);
+    line-height: 1.65;
+    margin: 0 0 2.2rem 0;
+    max-width: 56ch;
+    color: var(--text-secondary);
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 3rem;
+  }
+
+  .hero-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin: 0;
+    padding: 1.5rem 0 0 0;
+    border-top: 1px solid var(--border-subtle);
+    max-width: 560px;
+  }
+
+  .hero-stats div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .hero-stats dt {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .hero-stats dd {
+    font-family: var(--font-display);
+    font-size: 1.25rem;
+    line-height: 1.2;
+    color: var(--text-primary);
+  }
+
+  .hero-stats dd em {
+    color: var(--accent-cyan);
+    font-style: italic;
+  }
+
+  .hero-seal {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    color: var(--accent-cyan);
+    padding-top: 0.5rem;
+  }
+
+  .hero-seal svg {
+    width: 100%;
+    max-width: 230px;
+    height: auto;
+    color: var(--accent-cyan);
+    animation: sealBreath 7s ease-in-out infinite;
+    filter: drop-shadow(0 0 16px rgba(0, 229, 199, 0.18));
+  }
+
+  @keyframes sealBreath {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.015); opacity: 0.92; }
+  }
+
+  .seal-caption {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  /* Prose */
+  .prose-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .prose-section h2 { margin-bottom: 2rem; }
+
+  .prose-section p {
+    font-size: 1.1rem;
+    line-height: 1.8;
+    color: var(--text-secondary);
+    margin-bottom: 1.5em;
+  }
+
+  .prose-section p.note {
+    padding: 1.25rem 1.5rem;
+    border-left: 3px solid var(--accent-cyan);
+    background: var(--bg-card);
+    font-size: 1rem;
+    margin-top: 2.5rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+  }
+
+  .prose-section p.note strong {
+    color: var(--text-primary);
+  }
+
+  /* Components */
+  .components-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .section-head {
+    max-width: 720px;
+    margin-bottom: 4rem;
+  }
+
+  .section-lead {
+    font-size: 1.05rem;
+    color: var(--text-tertiary);
+    margin-top: 1rem;
+  }
+
+  .components-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+  }
+
+  .component-card {
+    padding: 2.2rem 1.75rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    position: relative;
+    transition: transform 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
+  }
+
+  .component-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--border-medium);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 40px var(--accent-cyan-glow);
+  }
+
+  .cc-number {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 3rem;
+    color: var(--accent-cyan);
+    line-height: 1;
+    margin-bottom: 0.5rem;
+    opacity: 0.9;
+  }
+
+  .cc-label {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.75rem;
+  }
+
+  .cc-title {
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 1.25rem 0;
+    line-height: 1.15;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .cc-title em {
+    font-style: italic;
+    color: var(--accent-cyan);
+  }
+
+  .cc-body {
+    font-size: 0.98rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin-bottom: 1.5rem;
+    max-width: none;
+  }
+
+  .cc-spec {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.4rem 1rem;
+    font-size: 0.86rem;
+    padding-top: 1rem;
+    border-top: 1px dashed var(--border-subtle);
+  }
+
+  .cc-spec dt {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    font-weight: 400;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding-top: 0.2rem;
+  }
+
+  .cc-spec dd {
+    font-family: var(--font-body);
+    color: var(--text-secondary);
+    margin: 0;
+    line-height: 1.4;
+  }
+
+  /* Closing */
+  .closing { padding: clamp(4rem, 8vw, 7rem) 0; }
+
+  .closing-rule {
+    width: 40px;
+    height: 2px;
+    background: var(--accent-cyan);
+    margin-bottom: 2rem;
+  }
+
+  .closing h2 { margin-bottom: 1.5rem; }
+  .closing p {
+    font-size: 1.1rem;
+    margin-bottom: 2.5rem;
+    color: var(--text-secondary);
+  }
+
+  @media (max-width: 900px) {
+    .hero-container {
+      grid-template-columns: 1fr;
+      gap: 2rem;
+    }
+    .hero-marginalia {
+      position: static;
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .hero-seal {
+      order: -1;
+      padding-top: 0;
+    }
+    .hero-seal svg { max-width: 150px; }
+    .hero-stats { grid-template-columns: 1fr; }
+    .components-grid { grid-template-columns: 1fr; }
+  }
+</style>

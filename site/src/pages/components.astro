@@ -1,0 +1,482 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Components — Cullis"
+  description="The three Cullis components — Connector at the edge, Mastio in your organization, Court for cross-company federation."
+>
+
+  <!-- HEAD -->
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-0004</div>
+          <div class="folio">§ <em>Components</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">01</span>
+            Three pieces
+          </div>
+          <h1 class="reveal" data-delay="2">
+            The <em>Connector</em>,<br />
+            the <em>Mastio</em>,<br />
+            the <em>Court</em>.
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Three independent, deployable components. A single company runs two
+            of them; a consortium adds the third. Each is open source, self-hosted,
+            and speaks to the others over mutual TLS + SPIFFE identity.
+          </p>
+
+          <nav class="page-nav reveal" data-delay="4">
+            <a href="#connector">↓ Connector</a>
+            <a href="#mastio">↓ Mastio</a>
+            <a href="#court">↓ Court</a>
+          </nav>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- CONNECTOR -->
+  <section id="connector" class="component-section">
+    <div class="container">
+      <div class="comp-grid">
+        <aside class="comp-aside reveal">
+          <div class="comp-number">01</div>
+          <div class="comp-label">Edge</div>
+          <div class="comp-meta">
+            <dl>
+              <dt>Runs on</dt><dd>macOS · Windows · Linux</dd>
+              <dt>Owned by</dt><dd>end user</dd>
+              <dt>Licence</dt><dd>Apache 2.0</dd>
+              <dt>Port</dt><dd>localhost:7777</dd>
+            </dl>
+          </div>
+          <a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener" class="comp-download">Download ↗</a>
+        </aside>
+
+        <div class="comp-body">
+          <h2 class="reveal">Cullis <em>Connector</em></h2>
+          <p class="comp-lead reveal" data-delay="1">
+            A desktop application that turns any MCP client — Claude Desktop,
+            Cursor, Cline, Continue — into a Cullis-aware agent. Runs on the
+            user's laptop. Manages the user's cryptographic identity, translates
+            between MCP and Cullis wire protocols, and auto-configures the MCP
+            client on install.
+          </p>
+
+          <h3 class="reveal" data-delay="2">What it does</h3>
+          <ul class="comp-list reveal" data-delay="3">
+            <li><strong>Device-code enrollment</strong> — opens your browser, you approve with your admin's flow, the Connector receives a signed x509 + SPIFFE identity scoped to your user.</li>
+            <li><strong>MCP ↔ Cullis translation</strong> — speaks MCP to your local client, speaks Cullis wire protocol to the Mastio upstream. Bidirectional.</li>
+            <li><strong>IDE autoconfig</strong> — writes the correct MCP server entries to Claude Desktop, Cursor, Cline config files on first launch. Atomic backups, refuses to clobber malformed files.</li>
+            <li><strong>Local dashboard</strong> — a small FastAPI UI on <code>localhost:7777</code> to inspect identity, sessions, and audit chain.</li>
+            <li><strong>Autostart</strong> — LaunchAgent (macOS), Task Scheduler (Windows), systemd user unit (Linux). Starts on login, runs in the background.</li>
+          </ul>
+
+          <h3 class="reveal" data-delay="4">What it does not do</h3>
+          <p class="reveal" data-delay="5">
+            No LLM routing. No MCP server aggregation. No outbound guardrails.
+            The Connector is a <em>trust bridge</em>, not a replacement for
+            whatever AI gateway your team already runs. It is designed to sit
+            alongside tools like agentgateway, Pomerium, or Lasso — <em>not</em>
+            in place of them.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- MASTIO -->
+  <section id="mastio" class="component-section">
+    <div class="container">
+      <div class="comp-grid">
+        <aside class="comp-aside reveal">
+          <div class="comp-number">02</div>
+          <div class="comp-label">Intra-organization</div>
+          <div class="comp-meta">
+            <dl>
+              <dt>Runs on</dt><dd>your infrastructure</dd>
+              <dt>Owned by</dt><dd>org admin</dd>
+              <dt>Licence</dt><dd>FSL-1.1 / Apache</dd>
+              <dt>Port</dt><dd>9100 · 9443 HTTPS</dd>
+            </dl>
+          </div>
+          <a href="/deployment" class="comp-download">Deploy it →</a>
+        </aside>
+
+        <div class="comp-body">
+          <h2 class="reveal">Cullis <em>Mastio</em></h2>
+          <p class="comp-lead reveal" data-delay="1">
+            The trust authority that governs agents inside a single organization.
+            Issues certificates, enforces policy, keeps a tamper-evident
+            hash-chain audit that <em>never leaves your perimeter</em>.
+            The Mastio is the load-bearing component of every Cullis deployment —
+            standalone or federated.
+          </p>
+
+          <h3 class="reveal" data-delay="2">What it does</h3>
+          <ul class="comp-list reveal" data-delay="3">
+            <li><strong>Certificate authority</strong> — operates your Org CA, signs per-agent x509 certificates with SPIFFE SAN (<code>spiffe://your-org/agent-name</code>). Rotation, revocation, CRL distribution all handled.</li>
+            <li><strong>Policy enforcement point</strong> — default-deny authorization. Policies written as OPA bundles or webhook-evaluated. Both intra-org and cross-org decisions land here.</li>
+            <li><strong>Hash-chain audit</strong> — every action (agent created, certificate issued, session opened, message routed, policy evaluated) appends to an SHA-256 chain. Tamper-evident. Exportable.</li>
+            <li><strong>Reverse-proxy for tools</strong> — HTTP + WebSocket reverse-proxy from agents to MCP tool servers inside your org. Per-agent rate limits, per-session access logs.</li>
+            <li><strong>Agent onboarding</strong> — self-register flow with admin approval, bootstrap tokens for headless service accounts, SCIM-ready for enterprise IdP integration.</li>
+            <li><strong>Admin dashboard</strong> — web UI on HTTPS for provisioning, policies, audit browsing, certificate management, invite generation.</li>
+            <li><strong>Federation uplink (optional)</strong> — when <code>attach-ca</code> completes, the Mastio maintains a persistent channel to a Cullis Court for cross-org traffic. Same binary, admin toggle.</li>
+          </ul>
+
+          <h3 class="reveal" data-delay="4">Data plane vs control plane</h3>
+          <p class="reveal" data-delay="5">
+            The Mastio is both. The control plane decisions (authorize, sign,
+            enroll) happen inline with the data plane calls (tool proxy, agent
+            messaging). This is intentional: it keeps latency low and avoids the
+            split-brain failure mode where the control plane goes down and the
+            data plane keeps routing traffic with stale policy.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- COURT -->
+  <section id="court" class="component-section">
+    <div class="container">
+      <div class="comp-grid">
+        <aside class="comp-aside reveal">
+          <div class="comp-number">03</div>
+          <div class="comp-label">Cross-organization</div>
+          <div class="comp-meta">
+            <dl>
+              <dt>Runs on</dt><dd>network operator's infra</dd>
+              <dt>Owned by</dt><dd>one company or consortium</dd>
+              <dt>Licence</dt><dd>FSL-1.1 / Apache</dd>
+              <dt>Port</dt><dd>8000 · 8443 HTTPS</dd>
+            </dl>
+          </div>
+          <a href="/architecture" class="comp-download">See it route →</a>
+        </aside>
+
+        <div class="comp-body">
+          <h2 class="reveal">Cullis <em>Court</em></h2>
+          <p class="comp-lead reveal" data-delay="1">
+            The federation layer. Registers participating organizations, routes
+            sealed envelopes between them, anchors cross-org audit events. The
+            Court <em>never</em> sees the plaintext of the messages it routes —
+            payload is end-to-end encrypted between Mastios. Even full root on
+            the Court machine does not grant read access to agent communications.
+          </p>
+
+          <h3 class="reveal" data-delay="2">What it does</h3>
+          <ul class="comp-list reveal" data-delay="3">
+            <li><strong>Organization registry</strong> — maintains the list of participating orgs, their Org CAs, their trust domain identifiers (<code>spiffe://acme.demo</code>, <code>spiffe://globex.demo</code>).</li>
+            <li><strong>Attach-CA flow</strong> — issues invite tokens, accepts CA submissions, validates them, registers them as trust roots. All operations dual-logged in the Court's audit chain and the org's local chain.</li>
+            <li><strong>Ciphertext routing</strong> — forwards sealed envelopes between Mastios. Sees source org, destination org, timestamp, envelope size. Does not see the payload.</li>
+            <li><strong>Cross-org discovery</strong> — when Agent A at Org X wants to talk to Agent B at Org Y, the Court resolves the target Mastio endpoint and mediates the handshake.</li>
+            <li><strong>Dual-write audit</strong> — every cross-org event lands in both the Court's chain and the counterparty Mastios' local chains. Non-repudiation works in both directions: neither side can unilaterally rewrite history.</li>
+            <li><strong>Revocation propagation</strong> — when an org revokes an agent certificate, the Court propagates the revocation to all participating Mastios within seconds.</li>
+          </ul>
+
+          <h3 class="reveal" data-delay="4">Zero-knowledge by design</h3>
+          <p class="reveal" data-delay="5">
+            The cryptographic invariant of the Court is that <em>who spoke to whom
+            and when</em> is visible, <em>what was said</em> is not. End-to-end
+            encryption happens between Mastios, using ECDH-derived session keys
+            and AES-256-GCM. The Court is an untrusted router. This is the same
+            property that makes the Signal protocol robust: the server being
+            compromised does not compromise past conversations.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- CLOSING -->
+  <section class="closing">
+    <div class="container narrow">
+      <div class="closing-rule"></div>
+      <div class="eyebrow">
+        <span class="eyebrow-number">04</span>
+        Continue
+      </div>
+      <h2>Ready to <em>run</em> it?</h2>
+      <p>
+        The Quickstart boots all three components on your laptop in a minute.
+        The deployment page walks you through installing the Mastio for real.
+      </p>
+      <div class="cta-row">
+        <a href="/deployment" class="btn btn-primary">Deployment patterns</a>
+        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">Source code</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    margin-bottom: 1.5rem;
+    line-height: 1.05;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 62ch;
+    color: var(--text-secondary);
+    margin-bottom: 2rem;
+  }
+
+  /* Page anchor nav */
+  .page-nav {
+    display: flex;
+    gap: 1.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-subtle);
+    flex-wrap: wrap;
+  }
+
+  .page-nav a {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    border: none;
+    transition: color 0.2s ease;
+  }
+
+  .page-nav a:hover { color: var(--accent-cyan); }
+
+  /* Component sections */
+  .component-section {
+    padding: clamp(3rem, 7vw, 6rem) 0;
+    scroll-margin-top: 5rem;
+  }
+
+  .comp-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.85fr) minmax(0, 2.5fr);
+    gap: clamp(1.5rem, 4vw, 4rem);
+    align-items: start;
+  }
+
+  .comp-aside {
+    position: sticky;
+    top: 6.5rem;
+    padding: 1.75rem 1.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--accent-cyan);
+  }
+
+  .comp-number {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 3.5rem;
+    color: var(--accent-cyan);
+    line-height: 1;
+    margin-bottom: 0.4rem;
+  }
+
+  .comp-label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding-bottom: 1rem;
+    margin-bottom: 1.25rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .comp-meta dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.5rem 1rem;
+    margin: 0;
+  }
+
+  .comp-meta dt {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding-top: 0.15rem;
+  }
+
+  .comp-meta dd {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .comp-download {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    padding: 0.6rem 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    border: 1px solid var(--accent-cyan);
+    color: var(--accent-cyan);
+    border-bottom: 1px solid var(--accent-cyan);
+    transition: all 0.25s ease;
+  }
+
+  .comp-download:hover {
+    background: var(--accent-cyan);
+    color: var(--bg-void);
+  }
+
+  /* Component body */
+  .comp-body h2 {
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 4.5vw, 3.2rem);
+    font-weight: 400;
+    line-height: 1.05;
+    margin: 0 0 1.25rem;
+  }
+
+  .comp-body h2 em {
+    font-style: italic;
+    color: var(--accent-cyan);
+  }
+
+  .comp-body h3 {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 2.5rem 0 1rem;
+  }
+
+  .comp-lead {
+    font-size: 1.1rem;
+    line-height: 1.75;
+    color: var(--text-secondary);
+    margin-bottom: 0;
+    max-width: none;
+  }
+
+  .comp-body p {
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    margin-bottom: 1em;
+    max-width: none;
+  }
+
+  .comp-body p em { color: var(--accent-cyan); font-style: italic; }
+  .comp-body p strong { color: var(--text-primary); font-weight: 500; }
+
+  .comp-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .comp-list li {
+    padding: 0.9rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 0.98rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    padding-left: 1.5rem;
+    position: relative;
+  }
+
+  .comp-list li::before {
+    content: '—';
+    position: absolute;
+    left: 0;
+    color: var(--accent-cyan);
+  }
+
+  .comp-list li:last-child { border-bottom: none; }
+
+  .comp-list strong { color: var(--text-primary); font-weight: 500; }
+
+  .comp-body code, .comp-lead code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 0.1em 0.4em;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    color: var(--accent-cyan);
+  }
+
+  /* Closing */
+  .closing { padding: clamp(4rem, 8vw, 7rem) 0; }
+
+  .closing-rule {
+    width: 40px;
+    height: 2px;
+    background: var(--accent-cyan);
+    margin-bottom: 2rem;
+  }
+
+  .closing h2 { margin-bottom: 1.5rem; }
+  .closing p {
+    font-size: 1.1rem;
+    margin-bottom: 2.5rem;
+    color: var(--text-secondary);
+  }
+
+  .cta-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .comp-grid {
+      grid-template-columns: 1fr;
+      gap: 2rem;
+    }
+    .comp-aside {
+      position: static;
+      border-left: 3px solid var(--accent-cyan);
+    }
+    .comp-number { font-size: 2.5rem; }
+  }
+</style>

@@ -1,71 +1,114 @@
 <p align="center">
   <img src="cullis-lockup.svg" alt="Cullis" width="480"><br>
-  Zero-trust identity and authorization for AI agent-to-agent communication
+  <strong>Zero-trust identity and audit for AI agents.</strong><br>
+  Start air-gapped in your organization. Scale to cross-company federation without redeploy.
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11-blue.svg" alt="Python"></a>
   <a href="https://github.com/cullis-security/cullis/actions"><img src="https://img.shields.io/github/actions/workflow/status/cullis-security/cullis/ci.yml?branch=main&label=CI" alt="CI"></a>
-  <a href="https://github.com/cullis-security/cullis"><img src="https://img.shields.io/badge/Docker-ready-2496ED.svg" alt="Docker"></a>
   <a href="#status"><img src="https://img.shields.io/badge/status-early--stage%20%C2%B7%20research-orange.svg" alt="Status: early-stage"></a>
 </p>
 
 ---
 
-> [!WARNING]
-> **Early-stage research project — not production-ready.**
+> 📖 **Why Cullis exists, architecture deep-dives, use cases, deployment patterns → [cullis.io](https://cullis.io)**
 >
-> Cullis is in active study and prototyping. The architecture is real and the demo runs end-to-end on a laptop, but the codebase has **not** been hardened, security-audited, or validated against real production workloads. Several components are still exploratory and APIs may break without notice.
->
-> **Use it to learn, explore, prototype, and contribute — not to handle real users, real credentials, or real traffic yet.**
->
-> Feedback, security reviews, and ideas are very welcome — see [Contact](#contact).
+> This README is the engineer's entry point: what it is, how to run it, how the code is laid out. Everything else lives on the site.
 
 ---
 
 ## Status
 
-This is a **research and learning project** built in the open. The goals right now are: (1) explore what cryptographic identity, federated authorization, and tamper-evident audit look like for cross-organization AI agents; (2) prototype an architecture that composes existing standards (x509, SPIFFE, DPoP, OAuth 2.0, OPA) into something coherent for the agent era; (3) get the design reviewed by security researchers and the workload-identity community.
-
-What this means in practice:
-
-- **The demo (`./deploy_demo.sh`)** is the only end-to-end path covered by automated tests. Use it to explore the architecture.
-- **The Helm chart** is exploratory — no SLA, no upgrade path, no migration story yet.
-- **No security review yet.** The codebase has gone through internal audit rounds but never independent third-party review.
-- **Schema and APIs may break.** Pre-1.0, no semver guarantees.
-
-If you want to **try it**, the demo is the right entry point. If you want to **review or break it**, see [SECURITY.md](SECURITY.md). If you want to **deploy it for real workloads** — please don't, not yet.
+> [!WARNING]
+> **Early-stage research project — not production-ready.**
+>
+> Cullis is in active study and prototyping. The architecture is real and
+> the demo runs end-to-end on a laptop, but the codebase has not been
+> externally security-audited, and APIs may still break without notice.
+>
+> Use it to learn, explore, prototype, and contribute — not yet to handle
+> real users, real credentials, or real traffic.
 
 ---
 
-When your AI agents negotiate with another company's AI agents — who verifies identity? Who enforces policy? Who audits what happened?
+## What Cullis is
 
-Cullis is a **federated trust broker** for AI agents: x509 PKI for identity, DPoP-bound tokens, end-to-end encrypted messaging, default-deny policy, and a cryptographic audit ledger. Purpose-built infrastructure for the agent-to-agent era.
+AI agents act on your behalf — they make decisions, move data, and
+increasingly talk to each other. When something goes wrong, three questions
+matter: **who was it, what were they allowed to do, and what did they actually do?**
 
-> 📖 **Why Cullis exists, architectural deep-dives, use cases, and comparisons → [cullis.io](https://cullis.io)**
->
-> This README is the **engineer's entry point**: how to clone it, how to run it, how the code is laid out. Everything else lives on the site.
+Cullis gives each agent a cryptographic identity, enforces policy at the
+organization boundary, and records every action in a tamper-evident
+hash-chain. The same binary runs standalone inside your organization or
+federated across companies — no redeploy between the two.
+
+---
+
+## Three components
+
+| | **Cullis Connector** | **Cullis Mastio** | **Cullis Court** |
+|---|---|---|---|
+| **Where it runs** | User's laptop | Your organization | Cross-org network |
+| **Owned by** | End user | Your org admin | Network operator |
+| **What it does** | User identity + MCP↔Cullis translation | Agent certs, policy, local audit, tool reverse-proxy | Org registry, trust federation, cross-org routing |
+
+The **Connector** is a desktop app that turns any MCP client (Claude
+Desktop, Cursor, Cline) into a Cullis-aware agent. The **Mastio** is the
+authority that governs agents inside a single organization. The **Court**
+federates Mastios across different organizations.
+
+The Mastio runs in two modes — **standalone** (air-gapped, single-org,
+no external dependency) or **federated** (attached to a Court, reaches
+agents in other companies). Same binary, admin action switches between
+them, no agent re-enrollment.
+[Deployment patterns → cullis.io](https://cullis.io).
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph org_a ["🏢 Organization A"]
+        Alice["🤖 Alice"]
+        Bob["🤖 Bob"]
+        MA["🏰 Mastio A"]
+        Alice --> MA
+        Bob --> MA
+    end
+    subgraph org_b ["🏢 Organization B"]
+        Charlie["🤖 Charlie"]
+        MB["🏰 Mastio B"]
+        MB --> Charlie
+    end
+    MA -.->|"intra: signed, stays local"| MA
+    MA ==>|"cross: E2E encrypted"| Court["🏛️ Cullis Court"]
+    Court ==> MB
+```
+
+**Intra-organization**: agent-to-agent inside the same company travels
+through one Mastio, signed (ECDSA P-256) but not encrypted. The audit
+chain stays local. The Court is not involved.
+
+**Cross-organization**: agent-to-agent across different companies travels
+through two Mastios and one Court. Payload is end-to-end encrypted
+(ECDH P-256 + AES-256-GCM). The Court sees only who talked to who and
+when — it cannot read what was said. Both organizations' policies must
+allow (default-deny).
+
+Full protocol and threat model → [cullis.io/architecture](https://cullis.io).
 
 ---
 
 ## Quickstart
 
-Boot the full architecture (broker + 2 MCP proxies + 2 agents in 2 organizations), route one cross-org E2E-encrypted message, tear it all down. About a minute end to end.
+Boot the full stack (Court + 2 Mastios + 2 agents in 2 organizations),
+route one cross-org end-to-end encrypted message. About a minute.
 
-### What you need
-
-| Requirement                                          | Why                                                                  |
-|------------------------------------------------------|----------------------------------------------------------------------|
-| **Docker Engine** with the **Compose v2** plugin     | The demo runs five containers (broker, 2 MCP proxies, postgres, redis) |
-| **Python 3.10+** on the host                         | The orchestrator + sender + checker scripts run on the host, not in containers |
-| **`httpx`** + **`cryptography`** Python packages     | Host-side dependencies (orchestrator + broker CA generation)         |
-| Free TCP ports **8800**, **9800**, **9801**          | The script fails fast with a clear message if any of them is taken   |
-| ~2 GB free disk + outbound network                   | First-time build pulls the broker + proxy images                     |
-
-Supported hosts: Linux native, macOS with Docker Desktop / OrbStack / Colima, Windows via WSL2 + Docker Desktop. No Nix required (Nix is only used by the maintainer's dev loop).
-
-### Run it
+**Requirements**: Docker Engine with Compose v2, Python 3.10+, free ports
+8800/9800/9801, ~2 GB free disk.
 
 ```bash
 git clone https://github.com/cullis-security/cullis
@@ -76,176 +119,72 @@ python3 -m venv .venv
 ./deploy_demo.sh send
 ```
 
-The wrapper auto-detects `.venv/bin/python`, no need to activate it. Six commands from zero to a running federated trust network, including a full Docker build on first run. See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided tour (dashboards, customization, troubleshooting).
+See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided
+tour — dashboards, customization, troubleshooting, and the full table of
+what is turned off in the demo vs. production.
 
-<details>
-<summary>Ubuntu Server 24.04 (fresh install) — extra step</summary>
-
-Ubuntu Server does not ship `pip` or `venv` out of the box and has no `python` alias (only `python3`). Run this before the commands above:
-
-```bash
-sudo apt update && sudo apt install -y python3-pip python3-venv
-```
-
-</details>
-
-https://github.com/user-attachments/assets/d838ce65-c0cc-4d12-95de-12cb8a37325e
+For single-user install, download the [Connector desktop
+app](https://github.com/cullis-security/cullis/releases).
 
 > [!CAUTION]
-> **The demo deliberately disables production security features to let you explore the routing and architecture with two simple scripts.**
->
-> What is **OFF** in the demo:
->
-> | Security layer | Demo | Production |
-> |---|---|---|
-> | **TLS / HTTPS** | Plain HTTP | nginx + TLS certificates (self-signed, ACME, or BYOCA) |
-> | **KMS** | Filesystem (`KMS_BACKEND=local`) — keys on disk | HashiCorp Vault KV v2 (encrypted, access-controlled) |
-> | **Admin secrets** | Hardcoded in compose file (`cullis-demo-admin-secret`) | Strong random, rotated, from secrets manager |
-> | **SSRF protection** | Bypassed (`POLICY_WEBHOOK_ALLOW_PRIVATE_IPS=true`) | Enforced — webhooks cannot hit private IPs |
-> | **OIDC admin login** | Disabled — password-only | Okta / Azure AD / Google federation |
-> | **Observability** | Off (`OTEL_ENABLED=false`) | OpenTelemetry + Jaeger traces + Prometheus metrics |
-> | **CORS** | `*` (all origins) | Specific allowed origins |
-> | **Cookie security** | `secure=False` (HTTP) | `secure=True` (HTTPS only) |
-> | **SPIFFE SAN validation** | Not enforced | `REQUIRE_SPIFFE_SAN=true` |
-> | **Certificate chain validation** | Not enforced | `REQUIRE_CERT_VALIDATION=true` |
-> | **Workers** | 1 (single process) | Multiple workers + Redis for distributed state |
->
-> **What the demo DOES show:** the full routing flow (agent → proxy → broker → proxy → agent), E2E encryption, DPoP token binding, dual-org policy evaluation, and the dashboard. Everything that makes the architecture work is real — everything that makes it safe for production is off.
->
-> **Do not expose demo ports outside localhost. Do not use demo credentials anywhere.**
-
----
-
-## Two components
-
-Cullis ships as two independent, deployable components:
-
-| | **Cullis Broker** | **Cullis MCP Proxy** |
-|---|---|---|
-| **Role** | Network control plane | Organization data plane |
-| **Deployed at** | Network operator's infrastructure | Each participating org's network |
-| **Manages** | Identity, routing, policy federation, audit ledger | Agent certs, broker uplink, tool execution |
-| **Dashboard** | Network admin (onboard orgs, approve, audit) | Org admin (register, create agents, manage tools) |
-| **Default port** | 8000 (HTTP) / 8443 (HTTPS) | 9100 |
-
-> **Fully self-hosted.** No SaaS dependency. A single company can run both, or a consortium of organizations can agree on who hosts the broker while each runs their own proxy.
-
----
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph org_a["🏢 Organization A"]
-        direction TB
-        A1["🤖 Buyer Agent"]
-        A2["🤖 Inventory Agent"]
-        VA["🔐 Vault A"]
-        PA["⚡ MCP Proxy A<br><sub>auto PKI · cert issuance · API key auth</sub>"]
-        A1 -->|"① API Key"| PA
-        A2 -->|"① API Key"| PA
-        VA -.->|"agent keys"| PA
-    end
-
-    subgraph broker["🌐 Cullis Broker — self-hosted"]
-        direction TB
-        AUTH["② Verify x509 chain"]
-        DPOP["③ Validate DPoP"]
-        POL["④ Query policies"]
-        FWD["⑥ Forward E2E"]
-        AUTH --> DPOP --> POL --> FWD
-    end
-
-    subgraph org_b["🏢 Organization B"]
-        direction TB
-        B1["🤖 Supplier Agent"]
-        T1["🔧 Tool: ERP"]
-        VB["🔐 Vault B"]
-        PB["⚡ MCP Proxy B<br><sub>auto PKI · cert issuance · API key auth</sub>"]
-        PB -->|"⑦ API Key"| B1
-        PB -->|"⑦ tool call"| T1
-        VB -.->|"agent keys"| PB
-    end
-
-    PA ==>|"② x509 + DPoP + E2E"| broker
-    broker ==>|"⑥ E2E encrypted"| PB
-
-    broker ---|"④ policy query"| PDPA["📋 Org A PDP<br><sub>webhook / OPA</sub>"]
-    broker ---|"④ policy query"| PDPB["📋 Org B PDP<br><sub>webhook / OPA</sub>"]
-
-    PDPA -->|"⑤ allow ✓"| DUAL{"Both must<br>allow"}
-    PDPB -->|"⑤ allow ✓"| DUAL
-
-    classDef broker fill:#4f46e5,stroke:#6366f1,color:#fff,font-weight:bold
-    classDef proxy fill:#0d9488,stroke:#14b8a6,color:#fff,font-weight:bold
-    classDef agent fill:#1e293b,stroke:#334155,color:#e2e8f0
-    classDef pdp fill:#92400e,stroke:#d97706,color:#fef3c7
-    classDef vault fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
-    classDef decision fill:#b45309,stroke:#f59e0b,color:#fff
-
-    class AUTH,DPOP,POL,FWD broker
-    class PA,PB proxy
-    class A1,A2,B1,T1 agent
-    class PDPA,PDPB pdp
-    class VA,VB vault
-    class DUAL decision
-```
-
-1. **Agent → Proxy** — agents authenticate with a local API key (`X-API-Key`)
-2. **Proxy → Broker** — the proxy signs with x509 + DPoP and encrypts E2E; agents never touch crypto keys
-3. **Broker verifies** — x509 chain, DPoP proof-of-possession, certificate thumbprint pinning
-4. **Policy query** — broker asks both organizations' PDP (webhook or OPA)
-5. **Dual authorization** — session proceeds only if **both** orgs return `allow` (default-deny)
-6. **E2E forward** — broker forwards the encrypted message it cannot read (zero-knowledge)
-7. **Proxy → Agent / Tool** — the receiving proxy decrypts and delivers
+> The demo deliberately disables production security (TLS, KMS, SSRF
+> protection, strict cert validation) to let you explore the routing
+> with simple scripts. Do not expose demo ports outside localhost. Do
+> not use demo credentials anywhere.
 
 ---
 
 ## Key features
 
-- **3-tier x509 PKI + SPIFFE workload identity** — Broker CA → Org CA → Agent cert with `spiffe://trust-domain/org/agent` SAN
-- **DPoP token binding (RFC 9449)** — every token bound to an ephemeral EC P-256 key, server nonce rotation
-- **End-to-end encryption** — AES-256-GCM payloads, RSA-OAEP-SHA256 key wrapping, two-layer RSA-PSS signing
-- **Federated dual-org policy** — PDP webhook or OPA, default-deny, both orgs must allow
-- **Cryptographic audit ledger** — append-only, SHA-256 hash chain, tamper detection, NDJSON / CSV export
-- **Self-service org onboarding** — invite tokens, automatic Org CA generation, no manual openssl
-- **OIDC federation for admin login** — Okta, Azure AD, Google, per-org IdP config
-- **KMS backends** — local filesystem (dev), HashiCorp Vault KV v2 (prod), extensible
-- **Self-hosted, no SaaS dependency**
+- **x509 PKI + SPIFFE per-agent identity** — each agent gets a cert
+  signed by its organization's CA, with `spiffe://org/agent` SAN
+- **ECC end-to-end encryption** — ECDH P-256 key exchange, AES-256-GCM
+  payload, ECDSA signatures
+- **DPoP token binding (RFC 9449)** — every token bound to an ephemeral
+  EC key
+- **Default-deny federated policy** — PDP webhook or OPA per organization,
+  both orgs must allow on cross-org traffic
+- **Local hash-chain audit** — append-only, SHA-256 chain, never leaves
+  the organization
+- **Self-service org onboarding** — invite tokens, attach-CA for existing
+  PKIs, automatic Org CA generation
+- **KMS backends** — local filesystem (dev), HashiCorp Vault KV v2 (prod)
 
 ---
 
-## Python SDK
+## SDK
 
 ```python
 from cullis_sdk.client import CullisClient
 
-client = CullisClient("https://broker.example.com")
-client.login("buyer", "acme", "agent.pem", "agent-key.pem")
+client = CullisClient("https://mastio.example.com")
+client.login("alice", "acme", "agent.pem", "agent-key.pem")
 
 agents = client.discover(capabilities=["supply"])
 session_id = client.open_session("widgets::supplier", "widgets", ["supply"])
-client.send(session_id, "acme::buyer", {"order": "100 units"}, "widgets::supplier")
+client.send(session_id, "acme::alice", {"order": "100 units"}, "widgets::supplier")
 ```
 
-A TypeScript SDK lives in [`sdk-ts/`](sdk-ts/). An MCP server exposing 10 Cullis tools (so any MCP-compatible LLM can become a Cullis agent) is in `cullis_sdk/mcp_server.py`.
+TypeScript SDK in [`sdk-ts/`](sdk-ts/). MCP server exposing Cullis as a
+set of tools (so any MCP-compatible LLM becomes a Cullis agent) in
+`cullis_sdk/mcp_server.py`.
 
 ---
 
 ## Project layout
 
 ```
-app/             Broker FastAPI application (auth, registry, broker, dashboard, kms)
-mcp_proxy/       Org MCP gateway (egress, ingress, dashboard, agent manager)
-cullis_sdk/      Python SDK + MCP server
-sdk-ts/          TypeScript SDK
-alembic/         Broker database migrations
-tests/           Unit + integration tests; tests/e2e/ holds the full-stack suite
-scripts/         Ops scripts (generate-env, pg-backup) + scripts/demo/ live demo
-deploy/          Helm chart for Kubernetes
-enterprise-kit/  BYOCA guide, OPA policy bundles, monitoring, PDP template
-docs/            cullis.io site source + ops runbook
-.github/         CI workflows + issue / PR templates
+app/               Cullis Court (network control plane)
+mcp_proxy/         Cullis Mastio (org trust authority)
+cullis_connector/  Cullis Connector (desktop app)
+cullis_sdk/        Python SDK + MCP server
+sdk-ts/            TypeScript SDK
+alembic/           Court database migrations
+tests/             Unit + integration + e2e tests
+scripts/demo/      End-to-end demo orchestrator
+deploy/            Helm chart, Docker Compose
+enterprise-kit/    BYOCA guide, OPA policy bundles, PDP template
+docs/              cullis.io site source + ops runbook
 ```
 
 Runtime: Python 3.11 · FastAPI · PostgreSQL 16 · Redis · HashiCorp Vault · cryptography · PyJWT · OpenTelemetry + Jaeger · OPA · Docker · Helm.
@@ -256,28 +195,28 @@ Runtime: Python 3.11 · FastAPI · PostgreSQL 16 · Redis · HashiCorp Vault · 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, PR workflow, and code conventions.
 
-Security vulnerabilities: see [SECURITY.md](SECURITY.md) for private reporting guidelines.
+Security vulnerabilities: [SECURITY.md](SECURITY.md) for private reporting.
 
 ## Contact
 
 | | |
 |---|---|
-| General questions, partnerships, demos | **[hello@cullis.io](mailto:hello@cullis.io)** |
-| Security vulnerabilities (private)     | **[security@cullis.io](mailto:security@cullis.io)** &middot; see [SECURITY.md](SECURITY.md) |
-| Bug reports, feature requests          | [GitHub Issues](https://github.com/cullis-security/cullis/issues) |
-| Discussion, questions, ideas           | [GitHub Discussions](https://github.com/cullis-security/cullis/discussions) |
+| General, partnerships, demos | [hello@cullis.io](mailto:hello@cullis.io) |
+| Security (private) | [security@cullis.io](mailto:security@cullis.io) · [SECURITY.md](SECURITY.md) |
+| Bugs, feature requests | [GitHub Issues](https://github.com/cullis-security/cullis/issues) |
+| Discussion | [GitHub Discussions](https://github.com/cullis-security/cullis/discussions) |
 
 ## License
 
-Cullis uses a split licensing model:
+Split licensing:
 
-- **Broker (`app/`) and MCP Proxy (`mcp_proxy/`)** — [Functional Source License 1.1, Apache 2.0 Future License (FSL-1.1-Apache-2.0)](LICENSE). Permits all non-competing use (internal deployments, professional services, research, modifications, forks). Each release automatically becomes [Apache 2.0](LICENSE-APACHE-2.0) two years after its publication date.
-- **Python SDK (`cullis_sdk/`)** — [Apache License 2.0](cullis_sdk/LICENSE). Permissive, permanent.
-- **TypeScript SDK (`sdk-ts/`)** — [MIT License](sdk-ts/LICENSE). Permissive, permanent.
-- **Integration templates (`enterprise-kit/`)** — [Apache License 2.0](enterprise-kit/LICENSE). Permissive, permanent.
+- **Court (`app/`) and Mastio (`mcp_proxy/`)** — [FSL-1.1-Apache-2.0](LICENSE). Non-competing use permitted (internal deployments, services, research, modifications, forks). Each release becomes [Apache 2.0](LICENSE-APACHE-2.0) two years after publication.
+- **Python SDK (`cullis_sdk/`)** — [Apache 2.0](cullis_sdk/LICENSE). Permissive, permanent.
+- **TypeScript SDK (`sdk-ts/`)** — [MIT](sdk-ts/LICENSE). Permissive, permanent.
+- **Integration templates (`enterprise-kit/`)** — [Apache 2.0](enterprise-kit/LICENSE). Permissive, permanent.
 
-See [NOTICE](NOTICE) for the component-by-component map and the rationale behind the choice.
+See [NOTICE](NOTICE) for the component-by-component map.
 
 ---
 
-> Architecture deep-dives, use cases, comparisons, and the project's reason for existing all live at **[cullis.io](https://cullis.io)**.
+> Architecture deep-dives, use cases, deployment patterns, and the project's reason for existing all live at **[cullis.io](https://cullis.io)**.

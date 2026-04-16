@@ -1,0 +1,586 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+const RELEASE = 'connector-v0.2.0-rc5';
+const BASE = `https://github.com/cullis-security/cullis/releases/download/${RELEASE}`;
+
+const platforms = [
+  {
+    label: 'macOS',
+    tag: 'Apple Silicon · arm64',
+    installer: `${BASE}/cullis-connector-macos.zip`,
+    binary:    `${BASE}/cullis-connector-macos-arm64`,
+    note: 'Unzip, double-click install.command, follow the wizard.',
+  },
+  {
+    label: 'Windows',
+    tag: 'x86_64',
+    installer: `${BASE}/cullis-connector-windows.zip`,
+    binary:    `${BASE}/cullis-connector-windows-x86_64.exe`,
+    note: 'Unzip, double-click install.bat. Windows SmartScreen may prompt once.',
+  },
+  {
+    label: 'Linux',
+    tag: 'x86_64',
+    installer: `${BASE}/cullis-connector-linux.zip`,
+    binary:    `${BASE}/cullis-connector-linux-x86_64`,
+    note: 'Unzip, run ./install.sh. Creates a systemd user unit.',
+  },
+];
+---
+
+<Layout title="Download — Cullis Connector" description="Download the Cullis Connector desktop app for macOS, Windows, or Linux. Also available as a Python package.">
+
+  <!-- HEAD -->
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-DL</div>
+          <div class="folio">§ <em>Download</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">Latest</span>
+            <code class="v-badge">{RELEASE}</code>
+          </div>
+          <h1 class="reveal" data-delay="2">
+            Get the <em>Connector</em>.
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Desktop app that turns any MCP client — Claude Desktop, Cursor,
+            Cline — into a Cullis-aware agent. One-click install on macOS,
+            Windows, Linux. Runs a small local dashboard on
+            <code>localhost:7777</code>.
+          </p>
+          <p class="prerelease-note reveal" data-delay="4">
+            <strong>Pre-release.</strong> The Connector is published under
+            release-candidate tags while Cullis is in research preview. API and
+            wire protocol may still change before 1.0.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- PLATFORMS -->
+  <section class="platforms-section">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">01</span>
+        Desktop install
+      </div>
+      <h2 class="reveal" data-delay="1">One binary, <em>three platforms</em>.</h2>
+
+      <div class="platforms-grid">
+        {platforms.map((p, i) => (
+          <article class="platform-card reveal" data-delay={(i + 1).toString()}>
+            <header class="pc-head">
+              <h3>{p.label}</h3>
+              <div class="pc-tag">{p.tag}</div>
+            </header>
+
+            <a href={p.installer} class="pc-primary" download>
+              Download installer <span class="pc-arrow">↓</span>
+              <span class="pc-size">zip</span>
+            </a>
+
+            <p class="pc-note">{p.note}</p>
+
+            <div class="pc-alt">
+              <span class="pc-alt-label">or standalone binary</span>
+              <a href={p.binary} download>{p.binary.split('/').pop()}</a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- DEVELOPER PACKAGES -->
+  <section class="dev-section">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">02</span>
+        Developer packages
+      </div>
+      <h2 class="reveal" data-delay="1">For <em>scripts</em> and SDK embedders.</h2>
+
+      <div class="dev-grid">
+        <article class="dev-card reveal" data-delay="1">
+          <div class="dev-head">
+            <div class="dev-label">Python</div>
+            <h3>Connector as a library</h3>
+          </div>
+          <pre><code>pip install cullis-connector</code></pre>
+          <p>Wheel and source tarball published on every release. Use it to embed the Connector in a Python process, write integration tests, or build your own CLI on top.</p>
+          <div class="dev-links">
+            <a href={`${BASE}/cullis_connector-0.1.0-py3-none-any.whl`} download>wheel</a>
+            <span class="sep">·</span>
+            <a href={`${BASE}/cullis_connector-0.1.0.tar.gz`} download>sdist</a>
+          </div>
+        </article>
+
+        <article class="dev-card reveal" data-delay="2">
+          <div class="dev-head">
+            <div class="dev-label">Python SDK</div>
+            <h3>Talk to a Mastio</h3>
+          </div>
+          <pre><code>pip install cullis-sdk</code></pre>
+          <p>Official Python client for agents. Handles x509 authentication, DPoP binding, session management, discovery. <a href="/docs">Read the SDK docs →</a></p>
+          <div class="dev-links">
+            <a href="https://pypi.org/project/cullis-sdk/" target="_blank" rel="noopener">PyPI</a>
+            <span class="sep">·</span>
+            <a href="https://github.com/cullis-security/cullis/tree/main/cullis_sdk" target="_blank" rel="noopener">Source</a>
+          </div>
+        </article>
+
+        <article class="dev-card reveal" data-delay="3">
+          <div class="dev-head">
+            <div class="dev-label">TypeScript SDK</div>
+            <h3>Talk from Node / browser</h3>
+          </div>
+          <pre><code>npm install @cullis/sdk</code></pre>
+          <p>TypeScript client with the same semantics as the Python SDK. Interop-tested against the Python implementation on every CI run.</p>
+          <div class="dev-links">
+            <a href="https://www.npmjs.com/package/@cullis/sdk" target="_blank" rel="noopener">npm</a>
+            <span class="sep">·</span>
+            <a href="https://github.com/cullis-security/cullis/tree/main/sdk-ts" target="_blank" rel="noopener">Source</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- SERVER -->
+  <section class="server-section">
+    <div class="container narrow">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">03</span>
+        Run the Mastio or Court
+      </div>
+      <h2 class="reveal" data-delay="1">Server-side <em>deployments</em>.</h2>
+      <p class="reveal" data-delay="2">
+        The Connector talks to a Mastio; the Mastio federates to a Court.
+        If you need to run either of the two server-side components yourself,
+        the deployment page walks you through Docker Compose, Helm, and
+        single-binary installs.
+      </p>
+      <div class="server-row reveal" data-delay="3">
+        <a href="/deployment" class="btn btn-primary">Deployment patterns →</a>
+        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">Source on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- ROADMAP / COMING SOON -->
+  <section class="coming">
+    <div class="container narrow">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">04</span>
+        On the roadmap
+      </div>
+      <h2 class="reveal" data-delay="1">Coming to more registries.</h2>
+      <ul class="coming-list reveal" data-delay="2">
+        <li><span class="cl-key">Homebrew</span><span class="cl-val"><code>brew install cullis-connector</code> — tap in preparation</span></li>
+        <li><span class="cl-key">MCP registries</span><span class="cl-val">ToolHive · Smithery · Cline Marketplace · Anthropic registry (when submissions open)</span></li>
+        <li><span class="cl-key">VS Code</span><span class="cl-val">Extension scaffolded, not yet published</span></li>
+        <li><span class="cl-key">Code signing</span><span class="cl-val">Apple Developer ID · Windows EV cert — after first design partner requests it</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- CLOSING -->
+  <section class="closing">
+    <div class="container narrow">
+      <div class="closing-rule"></div>
+      <h2>Downloaded it. Now what?</h2>
+      <p>
+        The Connector is the edge piece. To use it, you need a Mastio running
+        somewhere (your org's server, or a local demo instance). The
+        Quickstart boots the whole stack on your laptop in a minute.
+      </p>
+      <div class="server-row">
+        <a href="/docs" class="btn btn-primary">Read the docs</a>
+        <a href="/architecture" class="btn btn-ghost">See the architecture</a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .v-badge {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.15em 0.5em;
+    background: rgba(0,229,199,0.1);
+    border: 1px solid var(--accent-cyan-dim);
+    color: var(--accent-cyan);
+    border-radius: 2px;
+    letter-spacing: 0.05em;
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    margin-bottom: 1.5rem;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 62ch;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+  }
+
+  .lead code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.1em 0.35em;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    color: var(--accent-cyan);
+  }
+
+  .prerelease-note {
+    padding: 0.9rem 1.1rem;
+    background: rgba(240,165,0,0.06);
+    border-left: 3px solid var(--accent-amber);
+    font-size: 0.92rem;
+    color: var(--text-secondary);
+    max-width: 62ch;
+  }
+
+  .prerelease-note strong {
+    color: var(--accent-amber);
+    font-weight: 500;
+  }
+
+  /* Platforms */
+  .platforms-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .platforms-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin-top: 3rem;
+  }
+
+  .platform-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-left: 3px solid var(--accent-cyan);
+    padding: 2rem 1.75rem;
+    transition: all 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .platform-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 40px var(--accent-cyan-glow);
+  }
+
+  .pc-head {
+    margin-bottom: 1.5rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .platform-card h3 {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 0.3rem;
+    line-height: 1;
+  }
+
+  .pc-tag {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .pc-primary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.2rem;
+    background: var(--accent-cyan);
+    color: var(--bg-void);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-decoration: none;
+    border: none;
+    margin-bottom: 1rem;
+    transition: all 0.25s ease;
+    position: relative;
+  }
+
+  .pc-primary:hover {
+    background: transparent;
+    color: var(--accent-cyan);
+    outline: 1px solid var(--accent-cyan);
+    box-shadow: 0 0 30px var(--accent-cyan-dim);
+  }
+
+  .pc-arrow {
+    font-size: 1.1rem;
+    margin-left: auto;
+    margin-right: 0.5rem;
+  }
+
+  .pc-size {
+    font-size: 0.7rem;
+    opacity: 0.7;
+  }
+
+  .pc-note {
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    margin: 0 0 1.5rem;
+    max-width: none;
+    flex-grow: 1;
+  }
+
+  .pc-alt {
+    padding-top: 1rem;
+    border-top: 1px dashed var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .pc-alt-label {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .pc-alt a {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid transparent;
+    word-break: break-all;
+  }
+
+  .pc-alt a:hover {
+    color: var(--accent-cyan);
+    border-bottom-color: var(--accent-cyan-dim);
+  }
+
+  /* Developer packages */
+  .dev-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .dev-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+    margin-top: 3rem;
+  }
+
+  .dev-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    padding: 1.75rem 1.5rem;
+    transition: all 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .dev-card:hover {
+    border-color: var(--border-medium);
+    transform: translateY(-3px);
+  }
+
+  .dev-head {
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .dev-label {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-bottom: 0.4rem;
+  }
+
+  .dev-card h3 {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0;
+    line-height: 1.2;
+  }
+
+  .dev-card pre {
+    margin: 0 0 1rem;
+    font-size: 0.82rem;
+    padding: 0.9rem 1.1rem;
+  }
+
+  .dev-card p {
+    font-size: 0.92rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0 0 1rem;
+    max-width: none;
+    flex-grow: 1;
+  }
+
+  .dev-card p a {
+    color: var(--accent-cyan);
+    border-bottom: 1px solid var(--accent-cyan-dim);
+  }
+
+  .dev-links {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+    padding-top: 0.75rem;
+    border-top: 1px dashed var(--border-subtle);
+  }
+
+  .dev-links a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+
+  .dev-links a:hover {
+    color: var(--accent-cyan);
+    border-bottom-color: var(--accent-cyan-dim);
+  }
+
+  .dev-links .sep {
+    opacity: 0.4;
+    margin: 0 0.4rem;
+  }
+
+  /* Server */
+  .server-section { padding: clamp(3rem, 7vw, 6rem) 0; }
+  .server-section h2 { margin-bottom: 1.5rem; }
+  .server-section p {
+    font-size: 1.1rem;
+    margin-bottom: 2.5rem;
+    color: var(--text-secondary);
+  }
+  .server-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+  /* Coming soon */
+  .coming { padding: clamp(3rem, 7vw, 6rem) 0; }
+
+  .coming-list {
+    list-style: none;
+    padding: 0;
+    margin: 2rem 0 0;
+    border-top: 1px solid var(--border-medium);
+  }
+
+  .coming-list li {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    align-items: baseline;
+  }
+
+  .coming-list li:last-child { border-bottom: 1px solid var(--border-medium); }
+
+  .cl-key {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+  }
+
+  .cl-val {
+    font-family: var(--font-body);
+    color: var(--text-secondary);
+    font-size: 0.98rem;
+    line-height: 1.5;
+  }
+
+  .cl-val code {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    padding: 0.1em 0.4em;
+    background: rgba(255,255,255,0.05);
+    border-radius: 2px;
+    color: var(--accent-cyan);
+  }
+
+  /* Closing */
+  .closing { padding: clamp(4rem, 8vw, 7rem) 0; }
+
+  .closing-rule {
+    width: 40px;
+    height: 2px;
+    background: var(--accent-cyan);
+    margin-bottom: 2rem;
+  }
+
+  .closing h2 { margin-bottom: 1.5rem; }
+  .closing p {
+    font-size: 1.1rem;
+    margin-bottom: 2.5rem;
+    color: var(--text-secondary);
+  }
+
+  @media (max-width: 900px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .platforms-grid, .dev-grid { grid-template-columns: 1fr; }
+    .coming-list li { grid-template-columns: 1fr; gap: 0.3rem; }
+  }
+</style>

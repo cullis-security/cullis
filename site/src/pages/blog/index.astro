@@ -1,0 +1,205 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { getCollection } from 'astro:content';
+
+const all = await getCollection('blog', ({ data }) => !data.draft);
+const sorted = all.sort((a, b) => new Date(b.data.date).getTime() - new Date(a.data.date).getTime());
+
+function fmt(d: string) {
+  return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+---
+
+<Layout title="Blog — Cullis" description="Posts and updates from the Cullis team.">
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-BLOG</div>
+          <div class="folio">§ <em>Journal</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">Posts</span>
+            {sorted.length} {sorted.length === 1 ? 'entry' : 'entries'}
+          </div>
+          <h1 class="reveal" data-delay="2">
+            Journal.
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Notes from building Cullis — architecture decisions, security
+            posture, infrastructure trade-offs, and the occasional
+            incident retrospective.
+          </p>
+          <div class="rss-link reveal" data-delay="4">
+            <a href="/rss.xml">RSS →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <section class="list-section">
+    <div class="container narrow">
+      {sorted.length === 0 && (
+        <p class="empty">No posts yet.</p>
+      )}
+      {sorted.map((post) => (
+        <a href={`/blog/${post.id}`} class="post-card reveal">
+          <div class="pc-meta">
+            <span class="pc-date">{fmt(post.data.date)}</span>
+            <span class="pc-sep">·</span>
+            <span class="pc-author">{post.data.author}</span>
+          </div>
+          <h2>{post.data.title}</h2>
+          {post.data.description && <p>{post.data.description}</p>}
+          <div class="pc-read">Read article →</div>
+        </a>
+      ))}
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    margin-bottom: 1.5rem;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 62ch;
+    color: var(--text-secondary);
+    margin-bottom: 1.5rem;
+  }
+
+  .rss-link a {
+    display: inline-block;
+    padding: 0.5rem 0.9rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    border: 1px solid var(--accent-cyan-dim);
+    border-radius: 2px;
+    transition: all 0.2s ease;
+  }
+
+  .rss-link a:hover {
+    background: var(--accent-cyan-dim);
+    border-color: var(--accent-cyan);
+  }
+
+  .list-section {
+    padding: clamp(3rem, 7vw, 6rem) 0;
+  }
+
+  .empty {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--text-tertiary);
+    text-align: center;
+  }
+
+  .post-card {
+    display: block;
+    padding: 2.25rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    text-decoration: none;
+    border-left: none;
+    transition: all 0.3s ease;
+    position: relative;
+  }
+
+  .post-card:hover {
+    padding-left: 1rem;
+  }
+
+  .post-card:hover h2 {
+    color: var(--accent-cyan);
+  }
+
+  .pc-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.75rem;
+  }
+
+  .pc-date { color: var(--accent-cyan); }
+  .pc-sep { opacity: 0.4; }
+
+  .post-card h2 {
+    font-family: var(--font-display);
+    font-size: clamp(1.7rem, 3.5vw, 2.4rem);
+    font-weight: 400;
+    color: var(--text-primary);
+    margin: 0 0 0.6rem;
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+    transition: color 0.3s ease;
+  }
+
+  .post-card p {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 1.1rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem;
+    max-width: 68ch;
+  }
+
+  .pc-read {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-top: 0.5rem;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition: all 0.3s ease;
+  }
+
+  .post-card:hover .pc-read {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  @media (max-width: 900px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      padding-right: 0;
+      padding-bottom: 1rem;
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+  }
+</style>
