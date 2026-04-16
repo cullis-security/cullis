@@ -183,9 +183,14 @@ jobs:
           # releases/latest/download/<this-name> and GitHub handles the
           # redirect, so admins sharing the link never have to update it
           # after a new tag.
-          ZIP_NAME="cullis-connector-${{ matrix.platform }}.zip"
-          ( cd "${STAGING}" && zip -r "../${ZIP_NAME}" . )
-          ls -lah "dist/${ZIP_NAME}"
+          #
+          # We zip via Python's shutil.make_archive instead of the `zip`
+          # CLI because windows-latest runners don't ship `zip` by default
+          # (only 7z and Compress-Archive), and Python is already on PATH
+          # here from the setup-python step.
+          ZIP_BASE="dist/cullis-connector-${{ matrix.platform }}"
+          python -c "import shutil; shutil.make_archive('${ZIP_BASE}', 'zip', '${STAGING}')"
+          ls -lah "${ZIP_BASE}.zip"
 
       - uses: actions/upload-artifact@v4
         with:
