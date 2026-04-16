@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="cullis-lockup.svg" alt="Cullis" width="480"><br>
-  <strong>Zero-trust identity and audit for AI agents.</strong><br>
+  <img src="cullis-mark.svg" alt="Cullis" width="120"><br><br>
+  <strong>Cullis — Zero-trust identity and audit for AI agents.</strong><br>
   Start air-gapped in your organization. Scale to cross-company federation without redeploy.
 </p>
 
