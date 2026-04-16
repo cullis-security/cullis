@@ -190,6 +190,8 @@ async def forward_oneshot(
             detail="Recipient agent not found or inactive",
         )
 
+    await rate_limiter.check(body.recipient_agent_id, "broker.oneshot_inbound")
+
     if recipient.agent_id == current_agent.agent_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -399,6 +401,7 @@ async def forward_oneshot(
             "reply_to_correlation_id": body.reply_to_correlation_id,
             "recipient_agent_id": recipient.agent_id,
             "nonce": body.nonce,
+            "mode": body.mode,
         },
     )
 
