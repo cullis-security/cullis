@@ -21,6 +21,7 @@ from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
 from mcp_proxy.egress.routing import decide_route
 from mcp_proxy.local import message_queue as local_queue
+from mcp_proxy.local.audit import append_local_audit
 from mcp_proxy.local.models import SessionCloseReason
 from mcp_proxy.local.persistence import save_session as save_local_session
 from mcp_proxy.local.session import (
@@ -29,6 +30,7 @@ from mcp_proxy.local.session import (
     LocalSessionStore,
 )
 from mcp_proxy.models import InternalAgent
+from mcp_proxy.policy.local_eval import evaluate_local_message
 
 logger = logging.getLogger("mcp_proxy.egress.router")
 
@@ -226,6 +228,17 @@ async def open_session(
                 request_id=request_id,
                 duration_ms=duration_ms,
             )
+            await append_local_audit(
+                event_type="session_opened",
+                agent_id=agent.agent_id,
+                session_id=session.session_id,
+                org_id=get_settings().org_id,
+                details={
+                    "target_agent_id": body.target_agent_id,
+                    "target_org_id": body.target_org_id,
+                    "capabilities": body.capabilities,
+                },
+            )
             return OpenSessionResponse(session_id=session.session_id, status="opened")
         except LocalAgentSessionCapExceeded as exc:
             await log_audit(
@@ -325,6 +338,12 @@ async def accept_session(
                     status="success",
                     detail=f"session={session_id}",
                 )
+                await append_local_audit(
+                    event_type="session_accepted",
+                    agent_id=agent.agent_id,
+                    session_id=session_id,
+                    org_id=get_settings().org_id,
+                )
                 return {"status": "accepted", "session_id": session_id}
 
     bridge = _get_bridge(request)
@@ -373,6 +392,13 @@ async def close_session(
                     action="egress_session_close_local",
                     status="success",
                     detail=f"session={session_id}",
+                )
+                await append_local_audit(
+                    event_type="session_closed",
+                    agent_id=agent.agent_id,
+                    session_id=session_id,
+                    org_id=get_settings().org_id,
+                    details={"reason": "normal"},
                 )
                 return {"status": "closed", "session_id": session_id}
 
@@ -426,6 +452,44 @@ async def send_message(
             recipient = local_session.target_agent_id
         else:
             recipient = local_session.initiator_agent_id
+
+        # ADR-006 Fase 1 — intra-org policy evaluation. Rules live in
+        # local_policies and match the broker JSON schema
+        # (max_payload_size_bytes, required_fields, blocked_fields, deny).
+        # Envelope mode stores content as opaque ciphertext, so field-level
+        # rules only bite on mtls-only payloads; size-on-wire still applies.
+        settings = get_settings()
+        verdict = await evaluate_local_message(
+            org_id=settings.org_id, payload=body.payload,
+        )
+        if not verdict.allowed:
+            await append_local_audit(
+                event_type="message_denied",
+                result="denied",
+                agent_id=agent.agent_id,
+                session_id=body.session_id,
+                org_id=settings.org_id,
+                details={
+                    "reason": verdict.reason,
+                    "policy_id": verdict.policy_id,
+                    "recipient": recipient,
+                },
+            )
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="egress_send_local_denied",
+                status="denied",
+                detail=f"policy={verdict.policy_id} reason={verdict.reason}",
+                request_id=request_id,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "policy_denied",
+                    "reason": verdict.reason,
+                    "policy_id": verdict.policy_id,
+                },
+            )
 
         # ADR-001 §10 — mtls-only path: sender signs plaintext, proxy verifies
         # the signature before enqueueing. The stored blob carries mode +
@@ -533,6 +597,19 @@ async def send_message(
             ),
             request_id=request_id,
             duration_ms=duration_ms,
+        )
+        await append_local_audit(
+            event_type="message_sent",
+            agent_id=agent.agent_id,
+            session_id=body.session_id,
+            org_id=get_settings().org_id,
+            details={
+                "recipient": recipient,
+                "msg_id": msg_id,
+                "mode": body.mode,
+                "duplicate": not inserted,
+                "delivered_via": "ws" if pushed else "queue",
+            },
         )
         return {
             "status": "sent",
@@ -694,6 +771,13 @@ async def ack_message(
         action="egress_ack_local",
         status="success",
         detail=f"session={session_id} msg_id={msg_id}",
+    )
+    await append_local_audit(
+        event_type="message_delivered",
+        agent_id=agent.agent_id,
+        session_id=session_id,
+        org_id=get_settings().org_id,
+        details={"msg_id": msg_id},
     )
     return {"status": "acked", "msg_id": msg_id}
 
