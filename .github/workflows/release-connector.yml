@@ -74,7 +74,11 @@ jobs:
         run: python -m pip install --upgrade pip build
 
       - name: Build wheel + sdist
-        run: python -m build --outdir dist/ packaging/pypi
+        # Uses the staging helper so README_PKG.md, LICENSE, NOTICE, and
+        # the connector source tree are copied into packaging/pypi/ before
+        # hatchling runs — the raw `python -m build packaging/pypi/`
+        # invocation skips staging and fails on the missing README_PKG.md.
+        run: bash packaging/pypi/build.sh
 
       - name: Smoke test wheel
         run: |

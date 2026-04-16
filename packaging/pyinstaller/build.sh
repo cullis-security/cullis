@@ -64,9 +64,12 @@ echo "==> Building ${BIN_NAME} on ${PLATFORM}/${ARCH}"
 # surprising contributors who already manage their own.
 python -m pip install --upgrade pip pyinstaller >&2
 python -m pip install --upgrade \
-    "mcp>=1.0" "httpx>=0.24.0" "cryptography>=41.0.0" "PyYAML>=6.0" \
+    "mcp[cli]>=1.0" "httpx>=0.24.0" "cryptography>=41.0.0" "PyYAML>=6.0" \
     "bcrypt>=4.0" \
     "fastapi>=0.110" "uvicorn[standard]>=0.27" "jinja2>=3.1" "python-multipart>=0.0.9" >&2
+# mcp[cli] pulls in typer — required by `--collect-submodules mcp` below
+# because mcp.cli raises ImportError at module-load time when typer is
+# absent, which aborts PyInstaller's submodule scan.
 
 STRIP_FLAG=""
 if [[ "${PLATFORM}" == "linux" ]]; then

@@ -58,9 +58,16 @@ dependencies = [
     "httpx>=0.24.0",
     "cryptography>=41.0.0",
     "PyYAML>=6.0",
+    "bcrypt>=4.0",
 ]
 
 [project.optional-dependencies]
+dashboard = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",
@@ -86,6 +93,13 @@ cullis-connector = "cullis_connector.cli:main"
 include = [
     "cullis_connector/**/*.py",
     "cullis_connector/**/*.md",
+    # Dashboard runtime assets — Jinja2Templates + StaticFiles both read
+    # these off disk relative to cullis_connector/__file__, so the wheel
+    # must ship them or the dashboard subcommand ImportError's on launch.
+    "cullis_connector/templates/*.html",
+    "cullis_connector/static/*.css",
+    "cullis_connector/static/*.js",
+    "cullis_connector/static/*.svg",
     "cullis_connector/py.typed",
     "LICENSE",
     "LICENSE-APACHE-2.0",
