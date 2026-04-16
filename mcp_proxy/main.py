@@ -274,15 +274,16 @@ async def lifespan(app: FastAPI):
     await dispose_db()
 
     # Isolation hygiene: ``app`` is a module-level singleton that
-    # survives across test lifespans. Leaving shutdown bridges + disposed
-    # clients attached to ``app.state`` poisons the next lifespan's
-    # setup — a federated test after a standalone one could see
-    # broker_bridge still None because the next startup short-circuits
-    # before reassigning. Clear the handles explicitly.
+    # survives across test lifespans. Leaving a shutdown BrokerBridge +
+    # a closed reverse-proxy client attached to ``app.state`` poisons
+    # the next lifespan's setup — a federated test after a standalone
+    # one could see broker_bridge still None because the next startup
+    # short-circuits before reassigning. Clear the three
+    # standalone/federated-shape handles only; agent_manager outlives
+    # lifespan for other tests that assert on it post-teardown.
     app.state.broker_bridge = None
     app.state.reverse_proxy_client = None
     app.state.reverse_proxy_broker_url = None
-    app.state.agent_manager = None
     _log.info("MCP Proxy shutdown complete")
 
 
