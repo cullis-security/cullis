@@ -163,6 +163,23 @@ async def lifespan(app: FastAPI):
         _log.warning("Failed to restore local sessions from DB: %s", exc)
     app.state.local_session_store = local_store
 
+    # ADR-007 Phase 1 PR #2 — load MCP resources from local_mcp_resources
+    # into the tool registry. Discovery and forwarding land in PR #3;
+    # here we only populate the registry so subsequent PRs can rely on
+    # the data being present at startup. Failures degrade soft — the
+    # proxy still serves builtin tools if the DB read blows up.
+    from mcp_proxy.tools.registry import tool_registry
+    from mcp_proxy.tools.resource_loader import load_resources_into_registry
+    try:
+        loaded = await load_resources_into_registry(tool_registry)
+        _log.info("MCP resource registry populated (count=%d)", loaded)
+    except Exception as exc:
+        _log.warning(
+            "Failed to load MCP resources from DB — continuing with "
+            "builtin tools only: %s",
+            exc,
+        )
+
     # Phase 3b — local WS manager. Phase 3c will plug this into message
     # delivery (push-vs-queue decision). Today the endpoint accepts
     # connections so SDKs can start depending on it behind the same

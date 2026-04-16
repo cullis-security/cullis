@@ -29,6 +29,16 @@ class ToolDefinition:
     allowed_domains: list[str]
     handler: Callable[[ToolContext], Awaitable[Any]]
     parameters_schema: dict | None = None
+    # ADR-007 Phase 1 — MCP resource metadata. Populated when the entry
+    # was loaded from ``local_mcp_resources`` instead of the builtin YAML.
+    # PR-3 reads these to forward calls; builtins keep both as None.
+    resource_id: str | None = None
+    endpoint_url: str | None = None
+
+    @property
+    def is_mcp_resource(self) -> bool:
+        """True when this definition backs an external MCP resource."""
+        return self.resource_id is not None
 
 
 class ToolRegistry:
@@ -78,6 +88,29 @@ class ToolRegistry:
             return fn
 
         return decorator
+
+    def register_definition(self, tool_def: ToolDefinition) -> None:
+        """Register a pre-built ToolDefinition.
+
+        Used by the DB resource loader (ADR-007) which constructs the
+        definition from a ``local_mcp_resources`` row. Unlike the
+        ``@register`` decorator (which wraps a handler function), this
+        path accepts the full object so callers can attach a placeholder
+        handler until PR-3 wires real forwarding.
+
+        Last-writer-wins with a warning — same semantics as ``register``.
+        """
+        if tool_def.name in self._tools:
+            _log.warning(
+                "Tool '%s' registered twice — overwriting", tool_def.name
+            )
+        self._tools[tool_def.name] = tool_def
+        _log.info(
+            "Registered tool '%s' (capability=%s, resource_id=%s)",
+            tool_def.name,
+            tool_def.required_capability,
+            tool_def.resource_id,
+        )
 
     # ------------------------------------------------------------------
     # Lookup
