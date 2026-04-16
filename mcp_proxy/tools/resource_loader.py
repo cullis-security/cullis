@@ -1,10 +1,7 @@
 """
 MCP resource loader — populate the tool registry from ``local_mcp_resources``.
 
-ADR-007 Phase 1 PR #2. Reads enabled rows out of the DB at startup and
-registers each one as a ``ToolDefinition`` with ``resource_id`` and
-``endpoint_url`` set. The handler is a placeholder that raises
-``NotImplementedError`` — real forwarding lands in PR-3.
+ADR-007 Phase 1 PR #2 (schema + placeholder) + PR #3 (real forwarder).
 
 Conflict policy: if a name collides with an already-registered tool
 (typically a builtin loaded from tools.yaml), the DB entry is SKIPPED
@@ -14,28 +11,39 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from sqlalchemy import text
 
 from mcp_proxy.db import get_db
-from mcp_proxy.tools.context import ToolContext
+from mcp_proxy.tools.mcp_resource_forwarder import forward_to_mcp_resource
 from mcp_proxy.tools.registry import ToolDefinition, ToolRegistry
 
 _log = logging.getLogger("mcp_proxy.tools.resource_loader")
 
 
-async def _unwired_handler(ctx: ToolContext) -> Any:
-    """Placeholder handler for DB-loaded resources.
+async def _noop_placeholder(ctx):
+    """Unreachable placeholder — real handler is attached via closure below.
 
-    PR-2 registers the definition so discovery and metadata lookups
-    work. PR-3 replaces this with a forwarder that proxies the call
-    to ``tool_def.endpoint_url`` honouring binding and capability
-    checks.
+    Exists only because :class:`ToolDefinition` requires a non-null
+    ``handler`` at construction and we bind the closure-ified forwarder
+    immediately after. If this function ever runs, the binding step
+    was skipped — log loudly.
     """
-    raise NotImplementedError(
-        "MCP resource forwarding not wired yet — landing in ADR-007 Phase 1 PR #3"
+    raise RuntimeError(
+        "resource_loader bug: forwarder closure not bound for this ToolDefinition"
     )
+
+
+def _make_handler(tool_def: ToolDefinition):
+    """Bind the forwarder to its ToolDefinition via closure.
+
+    The executor invokes ``tool_def.handler(ctx)`` with a single
+    positional ``ctx``; the forwarder needs the definition too for
+    endpoint_url / auth metadata, so we pre-bind here.
+    """
+    async def _h(ctx):
+        return await forward_to_mcp_resource(ctx, tool_def=tool_def)
+    return _h
 
 
 def _parse_allowed_domains(raw: str | None) -> list[str]:
@@ -80,8 +88,8 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
             text(
                 """
                 SELECT resource_id, org_id, name, description,
-                       endpoint_url, required_capability,
-                       allowed_domains, enabled
+                       endpoint_url, auth_type, auth_secret_ref,
+                       required_capability, allowed_domains, enabled
                   FROM local_mcp_resources
                  WHERE enabled = 1
                 """
@@ -109,11 +117,18 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
             description=row["description"] or "",
             required_capability=row["required_capability"] or "",
             allowed_domains=_parse_allowed_domains(row["allowed_domains"]),
-            handler=_unwired_handler,
+            handler=_noop_placeholder,  # replaced below; must be a callable
             parameters_schema=None,
             resource_id=row["resource_id"],
             endpoint_url=row["endpoint_url"],
         )
+        # Stash auth config as private attrs (avoids widening the public
+        # dataclass schema for backend-specific metadata the forwarder
+        # alone consumes).
+        tool_def._auth_type = row["auth_type"]
+        tool_def._auth_secret_ref = row["auth_secret_ref"]
+        # Bind the real handler with the def in its closure.
+        tool_def.handler = _make_handler(tool_def)
         registry.register_definition(tool_def)
         loaded += 1
 

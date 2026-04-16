@@ -131,6 +131,13 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
 
+    # ADR-007 Phase 1 PR #3 — SecretProvider is consumed by the MCP
+    # resource forwarder (env:// / vault:// refs). Same instance used by
+    # /v1/ingress/execute via the executor, now also exposed on state so
+    # the aggregator can pass it down to ToolContext.
+    from mcp_proxy.tools.secrets import get_secret_provider
+    app.state.secret_provider = get_secret_provider(settings)
+
     if broker_url:
         from mcp_proxy.egress.broker_bridge import BrokerBridge
         bridge = BrokerBridge(
@@ -495,6 +502,10 @@ app.include_router(build_websocket_reverse_proxy_router())
 
 from mcp_proxy.ingress.router import router as ingress_router
 app.include_router(ingress_router)
+
+# ADR-007 Phase 1 PR #3 — aggregated MCP endpoint (/v1/mcp JSON-RPC 2.0).
+from mcp_proxy.ingress.mcp_aggregator import router as mcp_aggregator_router
+app.include_router(mcp_aggregator_router)
 
 from mcp_proxy.egress.router import router as egress_router
 app.include_router(egress_router)

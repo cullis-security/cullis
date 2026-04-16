@@ -231,8 +231,12 @@ async def test_load_resources_overwrites_previous_mcp_resource(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_load_resources_handler_is_placeholder(tmp_path):
-    """The DB loader uses a placeholder that raises NotImplementedError."""
+async def test_load_resources_handler_is_bound_forwarder(tmp_path):
+    """PR #3: handler is the MCP forwarder bound to this ToolDefinition.
+
+    Asserts the closure structure rather than invoking the handler
+    (which would try to talk to ``endpoint_url`` over the network).
+    """
     url = f"sqlite+aiosqlite:///{tmp_path / 'handler.db'}"
     await init_db(url)
     try:
@@ -244,8 +248,13 @@ async def test_load_resources_handler_is_placeholder(tmp_path):
 
     tool_def = registry.get("not-wired")
     assert tool_def is not None
-    with pytest.raises(NotImplementedError, match="PR #3"):
-        await tool_def.handler(None)
+    # Auth config stashed by the loader
+    assert tool_def._auth_type == "none"
+    assert tool_def._auth_secret_ref is None
+    # Handler is callable and bound — not the import-time placeholder
+    assert callable(tool_def.handler)
+    from mcp_proxy.tools.resource_loader import _noop_placeholder
+    assert tool_def.handler is not _noop_placeholder
 
 
 @pytest.mark.asyncio

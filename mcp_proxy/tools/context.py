@@ -23,3 +23,7 @@ class ToolContext:
     secrets: dict[str, str]
     http_client: httpx.AsyncClient
     request_id: str
+    # ADR-007 Phase 1 PR #3 — forwarder handler needs SecretProvider to
+    # resolve ``auth_secret_ref`` (env://... or vault://...). Optional so
+    # builtin handlers don't have to care.
+    secret_provider: Any | None = None

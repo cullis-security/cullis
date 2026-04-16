@@ -34,16 +34,11 @@ async def run(
 ) -> ToolExecuteResponse:
     """Execute a tool on behalf of an authenticated agent.
 
-    Steps:
-      1. Lookup tool in registry         -> 404 if not found
-      2. Check capability in agent.scope  -> 403 if missing
-      3. Fetch secrets via SecretProvider
-      4. Build ToolContext with WhitelistedTransport
-      5. Call handler(ctx) with timeout
-      6. Catch exceptions -> error response
-      7. Log audit entry
-      8. Return ToolExecuteResponse
+    The ``db`` parameter is retained for API compatibility but no longer
+    used — ``log_audit`` opens its own connection via ``get_db()`` since
+    the SQLAlchemy async refactor (#36).
     """
+    del db  # kept in signature for backwards compatibility
     t0 = time.monotonic()
     tool_name = request.tool
     request_id = request.request_id
@@ -53,7 +48,6 @@ async def run(
     if tool_def is None:
         duration_ms = _elapsed_ms(t0)
         await log_audit(
-            db,
             agent_id=agent.agent_id,
             action="tool_execute",
             tool_name=tool_name,
@@ -80,7 +74,6 @@ async def run(
             tool_name,
         )
         await log_audit(
-            db,
             agent_id=agent.agent_id,
             action="tool_execute",
             tool_name=tool_name,
@@ -115,6 +108,7 @@ async def run(
             secrets=secrets,
             http_client=http_client,
             request_id=request_id,
+            secret_provider=secret_provider,
         )
 
         # 5. Execute handler with timeout
@@ -133,7 +127,6 @@ async def run(
                 request_id,
             )
             await log_audit(
-                db,
                 agent_id=agent.agent_id,
                 action="tool_execute",
                 tool_name=tool_name,
@@ -158,7 +151,6 @@ async def run(
                 request_id,
             )
             await log_audit(
-                db,
                 agent_id=agent.agent_id,
                 action="tool_execute",
                 tool_name=tool_name,
@@ -184,7 +176,6 @@ async def run(
                 request_id,
             )
             await log_audit(
-                db,
                 agent_id=agent.agent_id,
                 action="tool_execute",
                 tool_name=tool_name,
@@ -209,7 +200,6 @@ async def run(
                 request_id,
             )
             await log_audit(
-                db,
                 agent_id=agent.agent_id,
                 action="tool_execute",
                 tool_name=tool_name,

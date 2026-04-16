@@ -125,10 +125,19 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def has_capability(self, tool_name: str, agent_capabilities: list[str]) -> bool:
-        """Check whether the agent has the capability required by the tool."""
+        """Check whether the agent has the capability required by the tool.
+
+        Tools with an empty ``required_capability`` (``""``) are treated
+        as having no capability gate — any authenticated agent passes.
+        This matches MCP-resource semantics from ADR-007 where the
+        binding table is the primary authz; capability stays optional
+        metadata for discovery filtering.
+        """
         tool = self._tools.get(tool_name)
         if tool is None:
             return False
+        if not tool.required_capability:
+            return True
         return tool.required_capability in agent_capabilities
 
     # ------------------------------------------------------------------
