@@ -103,7 +103,6 @@ export class BrokerClient {
 
   private token: string | null = null;
   private signingKeyPem: string | null = null;
-  private label = "agent";
 
   // DPoP ephemeral key pair
   private dpopPrivateKey: KeyObject | null = null;
@@ -138,8 +137,6 @@ export class BrokerClient {
     certPath: string,
     keyPath: string,
   ): Promise<void> {
-    this.label = agentId;
-
     const keyPem = await readFile(keyPath, "utf-8");
     const certPem = await readFile(certPath, "utf-8");
     this.signingKeyPem = keyPem;
