@@ -25,6 +25,7 @@ from app.registry.org_store import (
     get_org_by_id,
     get_org_by_trust_domain,
     register_org,
+    set_org_sealed,
     update_org_ca_cert,
     update_org_mastio_pubkey,
     update_org_secret,
@@ -445,11 +446,16 @@ async def attach_ca(
     # ADR-009 Phase 1 — pin the mastio counter-sig pubkey if supplied.
     if body.mastio_pubkey is not None:
         await update_org_mastio_pubkey(db, org_id, body.mastio_pubkey)
+    # Audit F-B-2 — seal the org. The proxy now owns this tenant's
+    # identity plane; dashboard mutations from the broker admin require
+    # a per-org re-auth gate from this point on.
+    await set_org_sealed(db, org_id, True)
     await log_event(db, "onboarding.ca_attached", "ok",
                     org_id=org_id,
                     details={"invite_id": invite.id, "secret_rotated": True,
                              "webhook_updated": body.webhook_url is not None,
-                             "mastio_pubkey_pinned": body.mastio_pubkey is not None})
+                             "mastio_pubkey_pinned": body.mastio_pubkey is not None,
+                             "sealed": True})
 
     return AttachCAResponse(
         org_id=org_id,

@@ -18,7 +18,7 @@ by any code path. The helpers that used to read/write it were removed.
 import json
 import bcrypt
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, select
+from sqlalchemy import Boolean, Column, DateTime, String, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
@@ -49,6 +49,13 @@ class OrganizationRecord(Base):
     # incomplete — Court refuses /v1/auth/token for this org". Orgs always
     # enforce ``X-Cullis-Mastio-Signature`` once this is set.
     mastio_pubkey = Column(Text, nullable=True)
+    # Audit F-B-2 — "tenant-sealed" flag. True means the org was onboarded
+    # via the attach-ca flow (or manually sealed by the admin), and
+    # dashboard mutations require a short-lived per-org re-auth gate on
+    # top of the admin session. False = legacy behavior (plain admin
+    # session allows every mutation). See app/dashboard/router.py for
+    # the enforcement and unseal flow.
+    sealed = Column(Boolean, nullable=False, default=False, server_default="0")
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())
@@ -153,6 +160,27 @@ async def update_org_secret(
     if record is None:
         return None
     record.secret_hash = bcrypt.hashpw(new_secret.encode(), bcrypt.gensalt()).decode()
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def set_org_sealed(
+    db: AsyncSession,
+    org_id: str,
+    sealed: bool,
+) -> OrganizationRecord | None:
+    """Flip the F-B-2 tenant-sealed flag on an org.
+
+    Called at attach-ca consume time (``sealed=True``) and from the
+    admin dashboard when the operator explicitly seals/unseals an org.
+    The sealed state gates dashboard mutations behind a per-org re-auth
+    challenge; see ``app/dashboard/router.py`` for the enforcement.
+    """
+    record = await get_org_by_id(db, org_id)
+    if record is None:
+        return None
+    record.sealed = bool(sealed)
     await db.commit()
     await db.refresh(record)
     return record
