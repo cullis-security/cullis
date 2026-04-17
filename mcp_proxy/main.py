@@ -128,6 +128,16 @@ async def lifespan(app: FastAPI):
         if derive:
             org_id = agent_mgr.org_id
 
+    # ADR-009 Phase 1 — derive/persist the Mastio CA + leaf so the proxy can
+    # counter-sign Court requests. Only possible once the Org CA is loaded;
+    # attached-CA deploys that haven't consumed the invite yet will pick this
+    # up on the next boot after attach.
+    if agent_mgr.ca_loaded:
+        try:
+            await agent_mgr.ensure_mastio_identity()
+        except Exception as exc:  # defensive — never block lifespan on this
+            _log.warning("Mastio identity bootstrap failed: %s", exc)
+
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
 

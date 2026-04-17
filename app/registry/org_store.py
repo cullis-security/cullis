@@ -44,6 +44,11 @@ class OrganizationRecord(Base):
     # SPIFFE trust domain of the org, for SVID-only auth (no CN/O in cert).
     # Nullable so legacy orgs keep working via CN/O-based agent certs.
     trust_domain = Column(String(256), nullable=True, unique=True, index=True)
+    # ADR-009 Phase 1 — mastio/proxy ES256 public key (PEM). When set, the
+    # Court enforces an ``X-Cullis-Mastio-Signature`` counter-signature on
+    # auth requests for this org. NULL keeps legacy (agent-direct) behavior
+    # until Phase 3 makes it mandatory.
+    mastio_pubkey = Column(Text, nullable=True)
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())
@@ -76,6 +81,7 @@ async def register_org(
     webhook_url: str | None = None,
     status: str = "active",
     trust_domain: str | None = None,
+    mastio_pubkey: str | None = None,
 ) -> OrganizationRecord:
     record = OrganizationRecord(
         org_id=org_id,
@@ -85,6 +91,7 @@ async def register_org(
         webhook_url=webhook_url,
         status=status,
         trust_domain=trust_domain,
+        mastio_pubkey=mastio_pubkey,
     )
     db.add(record)
     await db.commit()
@@ -146,6 +153,21 @@ async def update_org_secret(
     if record is None:
         return None
     record.secret_hash = bcrypt.hashpw(new_secret.encode(), bcrypt.gensalt()).decode()
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def update_org_mastio_pubkey(
+    db: AsyncSession,
+    org_id: str,
+    mastio_pubkey: str | None,
+) -> OrganizationRecord | None:
+    """Pin or clear the mastio ES256 counter-signature public key (ADR-009)."""
+    record = await get_org_by_id(db, org_id)
+    if record is None:
+        return None
+    record.mastio_pubkey = mastio_pubkey
     await db.commit()
     await db.refresh(record)
     return record

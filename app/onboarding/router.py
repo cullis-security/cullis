@@ -26,6 +26,7 @@ from app.registry.org_store import (
     get_org_by_trust_domain,
     register_org,
     update_org_ca_cert,
+    update_org_mastio_pubkey,
     update_org_secret,
     update_org_trust_domain,
     update_org_webhook,
@@ -46,6 +47,33 @@ def _require_admin(x_admin_secret: str = Header(...)) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invalid admin secret")
 
 
+def _validate_mastio_pubkey(pem: str | None) -> None:
+    """Ensure a submitted mastio pubkey is a parseable EC P-256 public key.
+
+    Accepts None (legacy orgs skip this entirely). ES256 — the only
+    algorithm the Court uses to verify counter-signatures in Phase 1 —
+    requires a P-256 key, so enforce the curve at pin time to fail fast.
+    """
+    if pem is None:
+        return
+    from cryptography.hazmat.primitives import serialization as _ser
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    try:
+        key = _ser.load_pem_public_key(pem.encode())
+    except Exception:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="mastio_pubkey: invalid PEM",
+        )
+    if not isinstance(key, _ec.EllipticCurvePublicKey) or not isinstance(
+        key.curve, _ec.SECP256R1,
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="mastio_pubkey: must be an EC P-256 public key (ES256)",
+        )
+
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class JoinRequest(BaseModel):
@@ -61,6 +89,11 @@ class JoinRequest(BaseModel):
         None, max_length=256,
         pattern=r"^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$",
     )
+    # ADR-009 Phase 1 — mastio (proxy) ES256 public key in PEM format.
+    # When set, the Court pins it and will require a matching counter-
+    # signature header on subsequent auth requests. NULL keeps legacy
+    # agent-direct behavior for this org until Phase 3.
+    mastio_pubkey: str | None = Field(None, max_length=1024)
 
 
 class JoinResponse(BaseModel):
@@ -152,6 +185,8 @@ async def join_network(
                 detail=f"trust_domain '{body.trust_domain}' already claimed by another org",
             )
 
+    _validate_mastio_pubkey(body.mastio_pubkey)
+
     org = await register_org(
         db,
         org_id=body.org_id,
@@ -160,6 +195,7 @@ async def join_network(
         metadata={"contact_email": body.contact_email},
         webhook_url=body.webhook_url,
         trust_domain=body.trust_domain,
+        mastio_pubkey=body.mastio_pubkey,
     )
     # Validate CA certificate before storing
     try:
@@ -231,6 +267,9 @@ class AttachCARequest(BaseModel):
         None, max_length=256,
         pattern=r"^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$",
     )
+    # ADR-009 Phase 1 — optional mastio (proxy) ES256 public key pinned at
+    # attach time. Same semantics as JoinRequest: NULL keeps legacy mode.
+    mastio_pubkey: str | None = Field(None, max_length=1024)
 
 
 class AttachCAResponse(BaseModel):
@@ -392,6 +431,8 @@ async def attach_ca(
                 )
             await update_org_trust_domain(db, org_id, body.trust_domain)
 
+    _validate_mastio_pubkey(body.mastio_pubkey)
+
     await update_org_ca_cert(db, org_id, body.ca_certificate)
     # The proxy now owns the org — rotate secret_hash to the proxy-chosen value.
     # The placeholder secret set by the broker admin at creation is discarded.
@@ -401,10 +442,14 @@ async def attach_ca(
     # configured (or keep None = default-deny).
     if body.webhook_url is not None:
         await update_org_webhook(db, org_id, body.webhook_url)
+    # ADR-009 Phase 1 — pin the mastio counter-sig pubkey if supplied.
+    if body.mastio_pubkey is not None:
+        await update_org_mastio_pubkey(db, org_id, body.mastio_pubkey)
     await log_event(db, "onboarding.ca_attached", "ok",
                     org_id=org_id,
                     details={"invite_id": invite.id, "secret_rotated": True,
-                             "webhook_updated": body.webhook_url is not None})
+                             "webhook_updated": body.webhook_url is not None,
+                             "mastio_pubkey_pinned": body.mastio_pubkey is not None})
 
     return AttachCAResponse(
         org_id=org_id,
