@@ -48,7 +48,7 @@ async def _provision_internal_agent(agent_id: str = "sender-bot") -> str:
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str | None = "DUMMY-CERT") -> None:
-    """Insert a local_agents row so intra-org resolve can find a cert."""
+    """Insert an internal_agents row so intra-org resolve can find a cert."""
     from datetime import datetime, timezone
     from sqlalchemy import text
     from mcp_proxy.db import get_db
@@ -56,19 +56,18 @@ async def _provision_local_target(agent_id: str, cert_pem: str | None = "DUMMY-C
     async with get_db() as conn:
         await conn.execute(
             text(
-                "INSERT INTO local_agents "
+                "INSERT INTO internal_agents "
                 "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
-                " scope, created_at, is_active) "
+                " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :scope, :created_at, :is_active)"
+                " :api_key_hash, :created_at, :is_active)"
             ),
             {
                 "agent_id": agent_id,
                 "display_name": agent_id,
                 "capabilities": "[]",
                 "cert_pem": cert_pem,
-                "api_key_hash": None,
-                "scope": "local",
+                "api_key_hash": "$2b$12$placeholder",
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },

@@ -835,7 +835,7 @@ async def resolve_recipient(
             async with get_db() as conn:
                 result = await conn.execute(
                     text(
-                        "SELECT cert_pem, is_active FROM local_agents "
+                        "SELECT cert_pem, is_active FROM internal_agents "
                         "WHERE agent_id = :agent_id"
                     ),
                     {"agent_id": target_agent},

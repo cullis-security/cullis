@@ -61,7 +61,7 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
         cert_pem=cert_pem,
     )
 
-    # Provision target peer-bot as a local_agents row so resolve finds its cert.
+    # Provision target peer-bot as an internal_agents row so resolve finds its cert.
     from datetime import datetime, timezone
     from sqlalchemy import text
     from mcp_proxy.db import get_db
@@ -69,19 +69,18 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     async with get_db() as conn:
         await conn.execute(
             text(
-                "INSERT INTO local_agents "
+                "INSERT INTO internal_agents "
                 "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
-                " scope, created_at, is_active) "
+                " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :scope, :created_at, :is_active)"
+                " :api_key_hash, :created_at, :is_active)"
             ),
             {
                 "agent_id": "peer-bot",
                 "display_name": "peer-bot",
                 "capabilities": "[]",
                 "cert_pem": cert_pem,
-                "api_key_hash": None,
-                "scope": "local",
+                "api_key_hash": "$2b$12$placeholder",
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },

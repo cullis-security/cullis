@@ -175,16 +175,13 @@ async def _list_bindings_by_resource() -> dict[str, list[dict]]:
 
 
 async def _list_bindable_agents() -> list[dict]:
-    """UNION of internal_agents + local_agents active, for the binding dropdown."""
+    """Active agents available for the MCP binding dropdown."""
     async with get_db() as conn:
         rows = (await conn.execute(
             text(
                 """
                 SELECT agent_id, display_name, 'internal' AS source
                   FROM internal_agents WHERE is_active = 1
-                UNION ALL
-                SELECT agent_id, display_name, 'local' AS source
-                  FROM local_agents WHERE is_active = 1
                  ORDER BY agent_id
                 """
             )

@@ -8,8 +8,10 @@ no accidental cross-imports.
 Tables grouped in two families:
   - Legacy (Phase 0): internal_agents, audit_log, proxy_config. Already
     populated on live deployments.
-  - Local-* (Phase 1 ADR-001): local_agents, local_sessions, local_messages,
+  - Local-* (Phase 1 ADR-001): local_sessions, local_messages,
     local_policies, local_audit. Created empty here; wiring lands Phase 4.
+    ``local_agents`` was dropped in ADR-010 Phase 6b — ``internal_agents``
+    is now the sole Mastio-authoritative registry.
 
 Column types picked to render identically on SQLite and PostgreSQL. Integer
 primary keys use plain Integer + primary_key=True — SQLAlchemy picks SERIAL
@@ -121,32 +123,6 @@ class PendingEnrollment(Base):
 # Minimal forward-compatible columns. Each table exists so that Phase 4 work
 # can assume the schema is already deployed, without requiring another
 # migration round-trip on live proxies.
-
-
-class LocalAgent(Base):
-    """Agents with scope=local. Owned by the proxy, broker never sees them.
-
-    Schema aligned with broker ``registry.agents`` (ADR-006 Fase 0) so a row
-    can be exported / promoted to federated visibility without field mapping.
-    """
-    __tablename__ = "local_agents"
-
-    agent_id = Column(Text, primary_key=True)
-    org_id = Column(Text, nullable=True)
-    display_name = Column(Text, nullable=False)
-    capabilities = Column(Text, nullable=False, server_default="[]")  # JSON array
-    cert_pem = Column(Text, nullable=True)
-    cert_thumbprint = Column(Text, nullable=True)
-    api_key_hash = Column(Text, nullable=True)
-    scope = Column(Text, nullable=False, server_default="local")  # reserved: "local" | "federated-cache"
-    metadata_json = Column(Text, nullable=False, server_default="{}")
-    created_at = Column(Text, nullable=False)
-    is_active = Column(Integer, nullable=False, server_default="1")
-
-    __table_args__ = (
-        Index("idx_local_agents_org", "org_id"),
-        Index("idx_local_agents_thumbprint", "cert_thumbprint"),
-    )
 
 
 class LocalSession(Base):

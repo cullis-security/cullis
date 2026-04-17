@@ -21,7 +21,6 @@ EXPECTED_TABLES = {
     "internal_agents",
     "audit_log",
     "proxy_config",
-    "local_agents",
     "local_sessions",
     "local_messages",
     "local_policies",
@@ -67,7 +66,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0011_last_pushed_revision",)]
+    assert rows == [("0012_drop_local_agents",)]
 
 
 @pytest.mark.asyncio
@@ -127,7 +126,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0011_last_pushed_revision",)]
+    assert version == [("0012_drop_local_agents",)]
 
 
 @pytest.mark.asyncio
@@ -204,9 +203,9 @@ async def test_schema_parity_with_broker_columns_present(tmp_path):
 
     path = str(db_file)
 
-    agents_cols = _column_names_sqlite(path, "local_agents")
-    assert {"org_id", "cert_thumbprint", "metadata_json"}.issubset(agents_cols)
-
+    # ADR-010 Phase 6b dropped ``local_agents``; the remaining local_*
+    # tables still need the ADR-006 schema-parity columns they gained in
+    # migration 0005.
     sessions_cols = _column_names_sqlite(path, "local_sessions")
     assert {
         "target_agent_id",

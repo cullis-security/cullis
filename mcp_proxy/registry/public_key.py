@@ -4,13 +4,13 @@
 certificate PEM for an agent. This endpoint used to be forwarded to the
 broker via the reverse-proxy catch-all for ``/v1/registry/*``; in
 standalone mode the broker isn't there, and even in federated mode the
-proxy already holds the local agents' certs in ``local_agents.cert_pem``
+proxy already holds its own agents' certs in ``internal_agents.cert_pem``
 — so answering locally is faster and keeps the mini-broker mode
 fully autonomous.
 
 Lookup order:
-  1. ``local_agents`` — the proxy is authoritative for its own enrolled
-     agents. Hit here → return PEM + scope=local.
+  1. ``internal_agents`` — the Mastio is authoritative for its own
+     enrolled agents (ADR-010). Hit here → return PEM + scope=local.
   2. Forward to broker when the agent is not local AND the proxy is
      federated. Standalone mode returns 404 outright.
 
@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from mcp_proxy.config import get_settings
-from mcp_proxy.db import get_db
+from mcp_proxy.db import cert_thumbprint_from_pem, get_db
 
 _log = logging.getLogger("mcp_proxy.registry.public_key")
 
@@ -59,7 +59,7 @@ async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
         row = (await conn.execute(
             text(
                 """
-                SELECT cert_pem, cert_thumbprint FROM local_agents
+                SELECT cert_pem FROM internal_agents
                  WHERE agent_id = :aid AND is_active = 1
                 """
             ),
@@ -69,7 +69,7 @@ async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
         return PublicKeyResponse(
             agent_id=agent_id,
             public_key_pem=row[0],
-            cert_thumbprint=row[1],
+            cert_thumbprint=cert_thumbprint_from_pem(row[0]),
             scope="local",
         )
 

@@ -13,8 +13,6 @@ modes at runtime, via /v1/admin/link-broker and /v1/admin/unlink-broker.
 """
 from __future__ import annotations
 
-import json
-
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Response
@@ -73,11 +71,10 @@ def _patch_httpx_client(handler):
 
 
 async def _provision_agent(agent_id: str) -> str:
-    """Mint an API key and seed the agent into both internal_agents
-    (auth) and local_agents (discovery) — same contract the smoke uses."""
+    """Mint an API key and seed the agent into ``internal_agents`` — the
+    sole Mastio-authoritative registry after ADR-010 Phase 6b."""
     from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent, get_db
-    from datetime import datetime, timezone
+    from mcp_proxy.db import create_agent
 
     raw = generate_api_key(agent_id)
     api_hash = hash_api_key(raw)
@@ -87,22 +84,6 @@ async def _provision_agent(agent_id: str) -> str:
         capabilities=["cap.read", "cap.write"],
         api_key_hash=api_hash,
     )
-    async with get_db() as conn:
-        await conn.execute(text("""
-            INSERT INTO local_agents (
-                agent_id, org_id, display_name, capabilities, cert_pem,
-                cert_thumbprint, api_key_hash, scope, metadata_json,
-                created_at, is_active
-            ) VALUES (
-                :aid, :org, :aid, :caps, NULL, NULL, :hash, 'local', '{}',
-                :ts, 1
-            )
-        """), {
-            "aid": agent_id, "org": "acme",
-            "caps": json.dumps(["cap.read", "cap.write"]),
-            "hash": api_hash,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
     return raw
 
 

@@ -2,9 +2,9 @@
 
 Before this PR the /v1/agents/search and /v1/registry/agents/*/public-key
 calls were forwarded to the broker. Now the proxy answers from its own
-tables (local_agents + cached_federated_agents), with broker fallback
-for public-key lookups only when the agent is unknown locally AND the
-proxy is running federated.
+tables (internal_agents + cached_federated_agents after ADR-010 Phase 6b),
+with broker fallback for public-key lookups only when the agent is
+unknown locally AND the proxy is running federated.
 """
 from __future__ import annotations
 
@@ -50,7 +50,10 @@ async def _provision_agent(agent_id: str, **extra) -> str:
     await create_agent(
         agent_id=agent_id,
         display_name=extra.get("display_name", agent_id),
-        capabilities=extra.get("capabilities", ["cap.read"]),
+        # ADR-010 Phase 6b: caller-bot now surfaces in discovery results
+        # (single ``internal_agents`` registry). Default to an empty
+        # capability set so capability-filtered searches exclude it.
+        capabilities=extra.get("capabilities", []),
         api_key_hash=hash_api_key(raw),
     )
     return raw
@@ -62,31 +65,30 @@ async def _insert_local_agent(
     display_name: str = "",
     capabilities: list[str] | None = None,
     cert_pem: str | None = None,
-    cert_thumbprint: str | None = None,
-    org_id: str = "acme",
     active: int = 1,
+    **_ignored,  # accepts legacy ``cert_thumbprint``/``org_id`` call-sites
 ) -> None:
+    """Seed a row into ``internal_agents`` — the sole Mastio registry
+    after ADR-010 Phase 6b. Discovery + public-key lookups now read from
+    here; any ``cert_thumbprint`` is computed on-the-fly from ``cert_pem``."""
     async with get_db() as conn:
         await conn.execute(
             text(
                 """
-                INSERT INTO local_agents (
-                    agent_id, org_id, display_name, capabilities, cert_pem,
-                    cert_thumbprint, api_key_hash, scope, metadata_json,
-                    created_at, is_active
+                INSERT INTO internal_agents (
+                    agent_id, display_name, capabilities, cert_pem,
+                    api_key_hash, created_at, is_active
                 ) VALUES (
-                    :aid, :org, :dn, :caps, :cert, :tp, NULL, 'local', '{}',
-                    '2026-04-16T00:00:00Z', :active
+                    :aid, :dn, :caps, :cert,
+                    '$2b$12$placeholder', '2026-04-16T00:00:00Z', :active
                 )
                 """
             ),
             {
                 "aid": agent_id,
-                "org": org_id,
                 "dn": display_name or agent_id,
                 "caps": json.dumps(capabilities or []),
                 "cert": cert_pem,
-                "tp": cert_thumbprint,
                 "active": active,
             },
         )
@@ -140,9 +142,10 @@ async def test_search_returns_local_agents_only_in_standalone(standalone_proxy):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     ids = sorted(a["agent_id"] for a in body["agents"])
-    # create_agent also inserts into internal_agents, but the search
-    # endpoint reads from local_agents — so the caller we provisioned
-    # via create_agent is not in the result set.
+    # ADR-010 Phase 6b: discovery now reads the single ``internal_agents``
+    # table. ``caller-bot`` (provisioned via ``create_agent``) surfaces in
+    # the result set alongside the explicitly-inserted test rows.
+    assert "caller-bot" in ids
     assert "alice-bot" in ids
     assert "bob-bot" in ids
     for entry in body["agents"]:
@@ -244,11 +247,8 @@ async def test_search_requires_api_key(standalone_proxy):
 @pytest.mark.asyncio
 async def test_public_key_served_from_local_agents(standalone_proxy):
     _, client = standalone_proxy
-    await _insert_local_agent(
-        "alice-bot",
-        cert_pem="-----BEGIN CERTIFICATE-----\nSTUB\n-----END CERTIFICATE-----\n",
-        cert_thumbprint="a" * 64,
-    )
+    cert_pem = "-----BEGIN CERTIFICATE-----\nU1RVQg==\n-----END CERTIFICATE-----\n"
+    await _insert_local_agent("alice-bot", cert_pem=cert_pem)
 
     resp = await client.get("/v1/registry/agents/alice-bot/public-key")
     assert resp.status_code == 200, resp.text
@@ -256,7 +256,11 @@ async def test_public_key_served_from_local_agents(standalone_proxy):
     assert body["agent_id"] == "alice-bot"
     assert body["scope"] == "local"
     assert "BEGIN CERTIFICATE" in body["public_key_pem"]
-    assert body["cert_thumbprint"] == "a" * 64
+    # ADR-010 Phase 6b: thumbprint is computed on-the-fly from the PEM
+    # (``internal_agents`` doesn't persist a thumbprint column).
+    import hashlib
+    expected = hashlib.sha256(b"STUB").hexdigest()
+    assert body["cert_thumbprint"] == expected
 
 
 @pytest.mark.asyncio

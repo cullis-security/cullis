@@ -7,7 +7,7 @@ proxy already owns the canonical view of local agents + cached federated
 agents, so it can answer without touching the broker.
 
 Search semantics:
-  - ``scope=local`` returns only local_agents rows (always available).
+  - ``scope=local`` returns only ``internal_agents`` rows (always available).
   - ``scope=federated`` returns only cached_federated_agents rows.
   - No scope filter returns the union. On ``agent_id`` collision between
     the two tables, the local row wins — standalone trumps cached
@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from mcp_proxy.auth.api_key import get_agent_from_api_key
-from mcp_proxy.db import get_db
+from mcp_proxy.db import cert_thumbprint_from_pem, get_db
 from mcp_proxy.models import InternalAgent
 
 _log = logging.getLogger("mcp_proxy.agents.router")
@@ -89,9 +89,9 @@ async def _search_local(
         rows = await conn.execute(
             text(
                 """
-                SELECT agent_id, display_name, org_id, capabilities,
-                       cert_thumbprint, is_active
-                  FROM local_agents
+                SELECT agent_id, display_name, capabilities,
+                       cert_pem, is_active
+                  FROM internal_agents
                  WHERE :active_only = 0 OR is_active = 1
                 """
             ),
@@ -103,14 +103,20 @@ async def _search_local(
             haystack = f"{row['agent_id']} {row['display_name'] or ''}"
             if not _matches_filters(caps_list, caps, haystack, q):
                 continue
+            # ADR-010 Phase 6b: ``internal_agents`` doesn't persist org_id
+            # or a thumbprint column — derive both on the fly so the
+            # response shape matches what the dropped ``local_agents``
+            # table used to serve.
+            agent_id = row["agent_id"]
+            org_id = agent_id.split("::", 1)[0] if "::" in agent_id else None
             out.append(AgentSummary(
-                agent_id=row["agent_id"],
+                agent_id=agent_id,
                 display_name=row["display_name"],
-                org_id=row["org_id"],
+                org_id=org_id,
                 capabilities=caps_list,
                 scope="local",
                 active=bool(row["is_active"]),
-                cert_thumbprint=row["cert_thumbprint"],
+                cert_thumbprint=cert_thumbprint_from_pem(row["cert_pem"]),
             ))
         return out
 

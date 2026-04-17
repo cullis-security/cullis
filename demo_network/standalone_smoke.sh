@@ -38,43 +38,22 @@ seed_agent() {
     local agent_id="$1"
 
     # generate_api_key returns "sk_local_<agent>_<32hex>" — the only
-    # format get_agent_from_api_key accepts. We mint the key + seed
-    # BOTH tables in one python call so the raw key never hits the
-    # shell's argv:
-    #   - internal_agents:  auth surface (X-API-Key verifies here)
-    #   - local_agents:     discovery surface (/v1/agents/search reads here)
+    # format get_agent_from_api_key accepts. ADR-010 Phase 6b: the
+    # Mastio's sole agent registry is ``internal_agents`` — auth
+    # (X-API-Key) and discovery (/v1/agents/search) both read from it.
     $COMPOSE exec -T proxy python -c "
-import asyncio, json, os
-from datetime import datetime, timezone
-from sqlalchemy import text
+import asyncio, os
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-from mcp_proxy.db import create_agent, get_db, init_db
+from mcp_proxy.db import create_agent, init_db
 async def main():
     raw = generate_api_key('$agent_id')
     await init_db(os.environ['MCP_PROXY_DATABASE_URL'])
-    api_hash = hash_api_key(raw)
     await create_agent(
         agent_id='$agent_id',
         display_name='$agent_id',
         capabilities=['cap.read','cap.write'],
-        api_key_hash=api_hash,
+        api_key_hash=hash_api_key(raw),
     )
-    async with get_db() as conn:
-        await conn.execute(text(\"\"\"
-            INSERT INTO local_agents (
-                agent_id, org_id, display_name, capabilities, cert_pem,
-                cert_thumbprint, api_key_hash, scope, metadata_json,
-                created_at, is_active
-            ) VALUES (
-                :aid, 'acme', :aid, :caps, NULL, NULL, :hash, 'local', '{}',
-                :ts, 1
-            )
-        \"\"\"), {
-            'aid': '$agent_id',
-            'caps': json.dumps(['cap.read','cap.write']),
-            'hash': api_hash,
-            'ts': datetime.now(timezone.utc).isoformat(),
-        })
     print(raw, end='')
 asyncio.run(main())
 "

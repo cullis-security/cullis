@@ -65,30 +65,22 @@ async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, st
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str) -> None:
-    """Mirror the agent into local_agents so resolve can find its cert."""
-    from datetime import datetime, timezone
+    """Ensure the agent carries a cert_pem so intra-org resolve can find one.
+
+    Under ADR-010 Phase 6b the Mastio's sole agent registry is
+    ``internal_agents``; if the row already exists (provisioned via the
+    admin path) we patch its cert, otherwise we insert it outright.
+    """
     from sqlalchemy import text
     from mcp_proxy.db import get_db
 
     async with get_db() as conn:
         await conn.execute(
             text(
-                "INSERT INTO local_agents "
-                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
-                " scope, created_at, is_active) "
-                "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :scope, :created_at, :is_active)"
+                "UPDATE internal_agents SET cert_pem = :cert_pem "
+                "WHERE agent_id = :agent_id"
             ),
-            {
-                "agent_id": agent_id,
-                "display_name": agent_id,
-                "capabilities": "[]",
-                "cert_pem": cert_pem,
-                "api_key_hash": None,
-                "scope": "local",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "is_active": 1,
-            },
+            {"agent_id": agent_id, "cert_pem": cert_pem},
         )
 
 

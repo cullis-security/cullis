@@ -381,6 +381,26 @@ async def set_config(key: str, value: str) -> None:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def cert_thumbprint_from_pem(pem: str | None) -> str | None:
+    """SHA-256 hex of a cert's DER encoding.
+
+    ADR-010 Phase 6b — ``internal_agents`` does not persist a thumbprint
+    column, so callers that need one (``/public-key``, discovery search)
+    derive it on-the-fly from ``cert_pem``.
+    """
+    if not pem:
+        return None
+    import base64
+    import hashlib
+    import re as _re
+
+    try:
+        der = base64.b64decode(_re.sub(r"-----.*?-----|\s", "", pem))
+    except (ValueError, TypeError):
+        return None
+    return hashlib.sha256(der).hexdigest()
+
+
 def _agent_row_to_dict(row: RowMapping) -> dict:
     """Convert a RowMapping to a plain dict with parsed capabilities."""
     out = {

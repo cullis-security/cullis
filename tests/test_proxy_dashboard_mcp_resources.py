@@ -95,16 +95,17 @@ async def _resource_id(name: str) -> str:
 
 
 async def _seed_local_agent(agent_id: str, display: str = "Agent") -> None:
+    """Seed an agent row into ``internal_agents`` (post-ADR-010 Phase 6b)."""
     from mcp_proxy.db import get_db
     async with get_db() as conn:
         await conn.execute(
             text(
                 """
-                INSERT INTO local_agents (
-                    agent_id, display_name, capabilities, scope,
+                INSERT INTO internal_agents (
+                    agent_id, display_name, capabilities, api_key_hash,
                     created_at, is_active
                 ) VALUES (
-                    :aid, :disp, '[]', 'local',
+                    :aid, :disp, '[]', '$2b$12$placeholder',
                     '2026-04-16T10:00:00Z', 1
                 )
                 """
