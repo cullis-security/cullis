@@ -65,6 +65,54 @@ async def test_create_agent_emits_key_and_cert(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+async def test_create_accepts_pre_generated_cert(tmp_path, monkeypatch):
+    """ADR-010 Phase 4 — bootstrap-style path: caller provides an already-
+    minted cert+key (signed by the same Org CA), Mastio stores them
+    verbatim instead of minting new ones."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "aa-preout")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            mgr = app.state.agent_manager
+            # Mint externally, then re-submit via API.
+            cert_pem, key_pem = mgr._generate_agent_cert("ext-alice")
+            h = await _headers()
+            r = await cli.post(
+                "/v1/admin/agents", headers=h,
+                json={
+                    "agent_name": "ext-alice",
+                    "cert_pem": cert_pem,
+                    "private_key_pem": key_pem,
+                    "federated": True,
+                },
+            )
+            assert r.status_code == 201, r.text
+            # The returned cert_pem must be the exact bytes we submitted —
+            # proving the Mastio didn't re-mint.
+            assert r.json()["cert_pem"] == cert_pem
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_create_rejects_half_pre_generated_material(tmp_path, monkeypatch):
+    app = await _spin_proxy(tmp_path, monkeypatch, "aa-half")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _headers()
+            r = await cli.post(
+                "/v1/admin/agents", headers=h,
+                json={
+                    "agent_name": "half-bob",
+                    "cert_pem": "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n",
+                },
+            )
+            assert r.status_code == 400
+            assert "provided together" in r.text
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
 async def test_create_with_federated_flag(tmp_path, monkeypatch):
     app = await _spin_proxy(tmp_path, monkeypatch, "aa-fed")
     transport = ASGITransport(app=app)

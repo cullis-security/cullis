@@ -488,57 +488,22 @@ def _provision_agent(client: httpx.Client, agent_def: dict,
     _ok(f"agent_id={BOLD}{agent_id}{RESET}  SPIFFE={CYAN}{spiffe}{RESET}")
     _ok(f"cert serial={GRAY}{_serial_hex(cert)}{RESET}  thumbprint={CYAN}{_thumbprint(cert)}{RESET}  key={PKI_KEY_TYPE.upper()}")
 
-    # 2. Register agent
-    r = client.post(
-        f"{BROKER_URL}/v1/registry/agents",
-        json={
-            "agent_id": agent_id,
-            "org_id": org_id,
-            "display_name": f"{od['display_name']} {agent_name}",
-            "capabilities": caps,
-            "description": f"enterprise sandbox {agent_name}",
-        },
-        headers=headers,
+    # ADR-010 Phase 4 — registry ownership inverted.
+    #
+    # Before: bootstrap POSTed ``/v1/registry/agents`` + binding on the
+    # Court directly, using ``org_secret`` for auth. That path bypassed
+    # the Mastio and left it blind to its own agents.
+    #
+    # After: bootstrap only mints the cert/key pair and parks them in
+    # ``/state/{org}/agents/{name}/`` (so the agent containers can mount
+    # them). The post-proxy-boot companion (``bootstrap_mastio.py``)
+    # reads the dir, calls ``/v1/admin/agents`` on the Mastio with
+    # ``federated=true``, and the Phase 3 publisher loop propagates
+    # the row to the Court on its next tick.
+    _info(f"cert persisted → /state/{org_id}/agents/{agent_name}/")
+    _info(
+        f"federation push deferred to bootstrap_mastio.py + publisher loop"
     )
-    if r.status_code not in (200, 201, 409):
-        _fail(f"register agent {agent_id}: {r.status_code} {r.text}")
-        raise SystemExit(1)
-    _log_http("POST", "/v1/registry/agents", r)
-
-    # 3. Create binding
-    r = client.post(
-        f"{BROKER_URL}/v1/registry/bindings",
-        json={"org_id": org_id, "agent_id": agent_id, "scope": caps},
-        headers=headers,
-    )
-    if r.status_code == 201:
-        binding_id = r.json()["id"]
-    elif r.status_code == 409:
-        r2 = client.get(
-            f"{BROKER_URL}/v1/registry/bindings",
-            params={"org_id": org_id},
-            headers=headers,
-        )
-        r2.raise_for_status()
-        binding_id = next(b["id"] for b in r2.json() if b.get("agent_id") == agent_id)
-    else:
-        _fail(f"binding create {agent_id}: {r.status_code} {r.text}")
-        raise SystemExit(1)
-    _log_http("POST", "/v1/registry/bindings", r)
-
-    # 4. Approve binding
-    r = client.post(
-        f"{BROKER_URL}/v1/registry/bindings/{binding_id}/approve",
-        headers=headers,
-    )
-    if r.status_code != 200:
-        _fail(f"binding approve {agent_id}: {r.status_code} {r.text}")
-        raise SystemExit(1)
-    _ok(f"binding {GRAY}{binding_id}{RESET}  scope={caps}")
-
-    # Extra persist for byoca-bot
-    if agent_def.get("persist_extra"):
-        _ok(f"persisted cert+key → {agent_dir}/")
 
     return {
         "agent_id": agent_id,

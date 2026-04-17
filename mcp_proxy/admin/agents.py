@@ -71,6 +71,14 @@ class AgentCreateRequest(BaseModel):
     display_name: str = Field("", max_length=256)
     capabilities: list[str] = Field(default_factory=list)
     federated: bool = False
+    # Optional pre-generated cert+key pair, used by the sandbox bootstrap
+    # that owns the same Org CA and wants to share the private key with
+    # an out-of-Mastio agent container via a volume mount. When both are
+    # provided the Mastio skips its own ``_generate_agent_cert`` call
+    # and stores the inbound material as-is (Org CA chain is still the
+    # trust anchor; re-emitting would invalidate the volume-shared key).
+    cert_pem: str | None = None
+    private_key_pem: str | None = None
 
 
 class AgentCreateResponse(BaseModel):
@@ -145,8 +153,20 @@ async def create_agent(
     agent_name = body.agent_name
     agent_id = f"{mgr.org_id}::{agent_name}"
 
-    # Mint cert + key via the same path the Connector enrollment uses.
-    cert_pem, key_pem = mgr._generate_agent_cert(agent_name)
+    # If both cert_pem + private_key_pem arrived in the body, trust the
+    # caller (e.g. the sandbox bootstrap that owns the same Org CA and
+    # has already shared the private key with an agent container over a
+    # volume mount). Otherwise mint a fresh pair via the Org CA.
+    if body.cert_pem and body.private_key_pem:
+        cert_pem = body.cert_pem
+        key_pem = body.private_key_pem
+    elif body.cert_pem or body.private_key_pem:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="cert_pem and private_key_pem must be provided together",
+        )
+    else:
+        cert_pem, key_pem = mgr._generate_agent_cert(agent_name)
 
     # Persist the private key. Store in Vault if configured, otherwise
     # fall back to proxy_config (same pattern as AgentManager.create_agent).

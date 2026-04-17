@@ -1,19 +1,23 @@
-"""ADR-009 Phase 2 — pin each proxy's mastio_pubkey on the Court.
+"""Post-proxy-boot wiring: mastio_pubkey pin + agent seeding.
 
 Runs **after** the proxies have booted and generated their Mastio CA +
-leaf identity (lifespan hook in ``mcp_proxy/main.py``). The main
-bootstrap container ran before the proxies, so it couldn't know the
-mastio pubkey yet — this is a second-phase one-shot that closes that
-loop, enabling the Court's counter-signature enforcement on every
-subsequent ``/v1/auth/token`` call.
+leaf identity (lifespan hook in ``mcp_proxy/main.py``).
 
-Flow per proxy:
-  1. poll ``GET /v1/admin/mastio-pubkey`` on the proxy (with X-Admin-Secret)
-     until it returns a non-null PEM (first boot may still be finalizing)
-  2. ``PATCH /v1/admin/orgs/{org_id}/mastio-pubkey`` on the Court with
-     the PEM — pin it under the admin secret.
+Two responsibilities:
 
-Idempotent: re-running the container just re-PATCHes the same pubkey.
+1. **ADR-009 mastio pubkey pinning** (original job):
+   - poll ``GET /v1/admin/mastio-pubkey`` on each proxy until populated
+   - ``PATCH /v1/admin/orgs/{org_id}/mastio-pubkey`` on the Court
+
+2. **ADR-010 Phase 4 — Mastio-authoritative agent registry seeding**:
+   - for every agent the outer bootstrap minted a cert/key for under
+     ``/state/{org}/agents/{name}/``, ``POST /v1/admin/agents`` on the
+     owning Mastio with the pre-generated material and ``federated=true``
+   - the Phase 3 publisher loop picks the row up from
+     ``internal_agents`` and pushes it to the Court (no more direct
+     ``/v1/registry/agents`` call from bootstrap)
+
+Idempotent: the Mastio returns 409 on duplicates; we silently continue.
 """
 from __future__ import annotations
 
@@ -127,9 +131,58 @@ def _pin_on_court(
         raise SystemExit(1)
 
 
+def _seed_agents_on_mastio(
+    client: httpx.Client, proxy_url: str, admin_secret: str, org_id: str,
+) -> None:
+    """ADR-010 Phase 4 — register each /state/{org}/agents/* on the Mastio.
+
+    The outer bootstrap already generated agent cert/key pairs and wrote
+    them under ``/state/{org}/agents/{name}/agent.pem,agent-key.pem``.
+    We forward them to the Mastio's ``POST /v1/admin/agents`` with
+    ``federated=true``; the publisher loop then pushes to the Court.
+    """
+    import pathlib
+    agents_dir = pathlib.Path("/state") / org_id / "agents"
+    if not agents_dir.exists():
+        _info(f"{org_id}: no agents directory — skipping seed")
+        return
+
+    for entry in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
+        name = entry.name
+        cert_path = entry / "agent.pem"
+        key_path = entry / "agent-key.pem"
+        if not cert_path.exists() or not key_path.exists():
+            _warn(f"{org_id}::{name}: missing agent.pem/agent-key.pem — skipping")
+            continue
+        cert_pem = cert_path.read_text()
+        key_pem = key_path.read_text()
+        r = client.post(
+            f"{proxy_url}/v1/admin/agents",
+            headers={"X-Admin-Secret": admin_secret},
+            json={
+                "agent_name": name,
+                "display_name": name,
+                "capabilities": [],  # assigned later by admin via PATCH
+                "federated": True,
+                "cert_pem": cert_pem,
+                "private_key_pem": key_pem,
+            },
+            timeout=10.0,
+        )
+        if r.status_code == 201:
+            _ok(f"{org_id}::{name}: seeded on Mastio (federated=True)")
+        elif r.status_code == 409:
+            _info(f"{org_id}::{name}: already on Mastio — skipping")
+        else:
+            _fail(
+                f"{org_id}::{name}: seed failed "
+                f"HTTP {r.status_code} {r.text[:200]}"
+            )
+
+
 def main() -> int:
     print(
-        f"\n{BOLD}{CYAN}═══ ADR-009 Phase 2 — pin mastio_pubkey on Court "
+        f"\n{BOLD}{CYAN}═══ Post-proxy-boot — mastio_pubkey + agent seeding "
         f"{'═' * 10}{RESET}\n",
         flush=True,
     )
@@ -147,8 +200,17 @@ def main() -> int:
             _pin_on_court(client, org_id, pem)
             _ok(f"{org_id}: mastio_pubkey pinned — counter-sig enforcement active")
 
-    print(f"\n{BOLD}{GREEN}✓ ADR-009 mastio identities pinned on Court{RESET}\n",
-          flush=True)
+            _info(f"seeding agents on Mastio {BOLD}{org_id}{RESET}")
+            _seed_agents_on_mastio(
+                client, cfg["proxy_url"], cfg["admin_secret"], org_id,
+            )
+
+    print(
+        f"\n{BOLD}{GREEN}"
+        f"✓ mastio identities pinned + agents seeded "
+        f"(publisher will propagate to Court){RESET}\n",
+        flush=True,
+    )
     return 0
 
 
