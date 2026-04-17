@@ -1032,18 +1032,15 @@ class CullisClient:
         timeout: float = 30.0,
         poll_interval: float = 1.0,
         ttl_seconds: int = 300,
-        allow_unverified: bool = False,
     ) -> dict:
         """Request-response convenience: send a one-shot, block until a
         reply tagged with the same ``correlation_id`` is in the caller's
         inbox, or ``TimeoutError`` after ``timeout`` seconds.
 
         Audit F-A-1 fix: ``decrypt_oneshot`` always verifies the sender's
-        signature, so ``sender_verified`` is ``True`` on success. The
-        ``allow_unverified=True`` kwarg is reserved for future transport
-        modes where the SDK cannot see the sender's public key (none
-        today); callers should not pass it. If a non-verifying row ever
-        slips through this method raises ``ValueError``.
+        signature, so ``sender_verified`` is always ``True`` on success.
+        If a non-verifying row ever slips through this method raises
+        ``ValueError``.
 
         Returns ``{"correlation_id", "msg_id", "reply_to", "reply",
         "sender", "mode", "sender_verified"}``.
@@ -1062,13 +1059,11 @@ class CullisClient:
                 if envelope.get("reply_to") != corr:
                     continue
                 decoded = self.decrypt_oneshot(row)
-                if not decoded["sender_verified"] and not allow_unverified:
+                if not decoded["sender_verified"]:
                     raise ValueError(
                         "Reply for correlation_id "
                         f"{corr} could not be verified — refusing to "
-                        "return unauthenticated plaintext. Pass "
-                        "allow_unverified=True only if you fully "
-                        "understand the threat model."
+                        "return unauthenticated plaintext."
                     )
                 return {
                     "correlation_id": row["correlation_id"],
