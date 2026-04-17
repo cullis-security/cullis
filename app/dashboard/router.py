@@ -133,9 +133,14 @@ async def login_submit(request: Request, db: AsyncSession = Depends(get_db)):
 @router.post("/logout")
 async def logout(request: Request):
     session = get_session(request)
-    if session.logged_in:
-        if not await verify_csrf(request, session):
-            raise HTTPException(status_code=403, detail="Invalid CSRF token")
+    # Audit F-B-9: enforce CSRF for every request that carries a valid
+    # session cookie, not only ``logged_in`` ones. ``csrf_token`` is
+    # empty on ``_NO_SESSION`` (missing / invalid / expired cookie) so
+    # a logout without a cookie still gets the friendly 303; but any
+    # cookie the server issued must come back accompanied by the form
+    # CSRF token it is bound to.
+    if session.csrf_token and not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
     response = RedirectResponse(url="/dashboard/login", status_code=303)
     clear_session(response)
     return response

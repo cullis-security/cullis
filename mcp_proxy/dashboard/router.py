@@ -281,8 +281,15 @@ async def login_submit(request: Request):
 @router.post("/logout")
 async def logout(request: Request):
     session = get_session(request)
-    if session and session.logged_in:
-        await verify_csrf(request, session)
+    # Audit F-B-9: raise on CSRF failure instead of calling
+    # ``verify_csrf`` purely for side effects. Previously a cross-site
+    # POST without the form token logged the victim out anyway — a
+    # force-logout via any attacker-controlled page the victim loaded
+    # while holding a valid Mastio admin session. Enforce on any
+    # non-empty ``csrf_token`` (valid cookie) and keep the bare
+    # no-cookie path idempotent with a friendly 303.
+    if session.csrf_token and not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
     response = RedirectResponse(url="/proxy/login", status_code=303)
     clear_session(response)
     return response
