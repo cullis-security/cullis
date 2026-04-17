@@ -26,6 +26,15 @@ DONE_FLAG    = STATE / "bootstrap.done"
 PKI_KEY_TYPE = os.environ.get("PKI_KEY_TYPE", "ec").strip().lower()
 TRUST_DOMAIN_SUFFIX = os.environ.get("TRUST_DOMAIN_SUFFIX", ".test")
 
+# PDP webhook — the Court calls this per cross-org session request.
+# The sandbox proxies expose /pdp/policy on their internal port 9100.
+# Without a URL set, the Court defaults to "deny" (fail-safe), so cross-
+# org session opens 403 at the broker.
+_PDP_WEBHOOKS = {
+    "orga": os.environ.get("ORGA_PDP_WEBHOOK", "http://proxy-a:9100/pdp/policy"),
+    "orgb": os.environ.get("ORGB_PDP_WEBHOOK", "http://proxy-b:9100/pdp/policy"),
+}
+
 # ADR-009 sandbox — scope=up leaves org A (Acme Corp) **unregistered on the
 # Court**: Mastio A is still booted standalone (CA generated locally, volume
 # seeded) so the user can walk through the guided onboarding. scope=full
@@ -267,6 +276,7 @@ def _onboard_via_join(client: httpx.Client, org_id: str, display_name: str,
         "contact_email": f"admin@{org_id}.test",
         "invite_token": token,
         "trust_domain": _trust_domain(org_id),
+        "webhook_url": _PDP_WEBHOOKS.get(org_id),
     })
     if r.status_code == 409:
         _warn(f"{org_id} already registered — skipping join")
@@ -317,6 +327,7 @@ def _onboard_via_attach(client: httpx.Client, org_id: str, display_name: str,
         "invite_token": token,
         "secret": org_secret,
         "trust_domain": _trust_domain(org_id),
+        "webhook_url": _PDP_WEBHOOKS.get(org_id),
     })
     if r.status_code not in (200, 201, 202):
         _fail(f"attach failed: {r.status_code} {r.text}")

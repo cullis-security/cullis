@@ -115,36 +115,21 @@ def main() -> int:
         return 1
     _ok(f"session_id={session_id}")
 
-    _step(3, "Send an end-to-end encrypted message")
-    nonce = uuid.uuid4().hex[:16]
-    payload = {
-        "nonce": nonce,
-        "hello": "cross-org message from the sandbox scenario driver",
-        "sender": sender,
-        "sent_at": time.time(),
-    }
-    _info(f"payload nonce = {nonce}")
-    try:
-        msg_id = client.send(
-            session_id=session_id,
-            sender_agent_id=sender,
-            payload=payload,
-            recipient_agent_id=target,
-        )
-    except Exception as exc:
-        _fail(f"send failed: {exc!r}")
-        return 1
-    _ok(f"message enqueued — msg_id={msg_id}")
-
-    _step(4, "Verify on the recipient side")
+    _step(3, "Cross-org handshake verified")
     _info(
-        f"grep the recipient's log — "
-        f"`demo.sh logs {target.split('::', 1)[1]} | grep {nonce}`"
+        "session_id is server-issued — the Court ran the full gate: "
+        "DPoP + ADR-009 counter-sig + both-org PDP allow + policy rule "
+        "+ capability binding. Any missing piece would have rejected it."
     )
-    _info("the recipient agent's polling loop will decrypt + surface it")
+    _info(
+        "Sending an encrypted message over this session exercises the "
+        "public-key lookup + E2E wrap; that path ships in a follow-up "
+        "(peer pubkey federated fetch needs an extra binding)."
+    )
 
     print(
-        f"\n{BOLD}{GREEN}✓ cross-org session + envelope exercised end-to-end{RESET}",
+        f"\n{BOLD}{GREEN}✓ cross-org session handshake succeeded "
+        f"({sender} → {target}){RESET}",
         flush=True,
     )
     return 0
