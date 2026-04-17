@@ -133,6 +133,7 @@
                 <tr class="border-b border-gray-800/60">
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agent ID</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Display Name</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider" title="OS / hostname / version captured at device-code enrollment">Device</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Capabilities</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Certificate</th>
@@ -149,6 +150,21 @@
                     </td>
                     <td class="px-5 py-4">
                         <a href="/proxy/agents/{{ agent.agent_id }}" class="text-sm text-white hover:text-accent-400 transition-colors">{{ agent.display_name }}</a>
+                    </td>
+                    <td class="px-5 py-4">
+                        {% set dev = agent.device_info | parse_device %}
+                        {% if dev %}
+                        <div class="text-xs text-gray-400 leading-tight">
+                            {% if dev.os %}
+                            <div>{{ dev.os }}{% if dev.version %} <span class="text-gray-600">· {{ dev.version }}</span>{% endif %}</div>
+                            {% endif %}
+                            {% if dev.hostname %}
+                            <div class="text-[10px] text-gray-600 font-mono truncate max-w-[160px]" title="{{ dev.hostname }}">{{ dev.hostname }}</div>
+                            {% endif %}
+                        </div>
+                        {% else %}
+                        <span class="text-[10px] text-gray-700">—</span>
+                        {% endif %}
                     </td>
                     <td class="px-5 py-4">
                         <div class="flex flex-wrap gap-1">
@@ -215,7 +231,7 @@
                 {% endfor %}
                 {% if not agents %}
                 <tr>
-                    <td colspan="8" class="px-5 py-16 text-center">
+                    <td colspan="9" class="px-5 py-16 text-center">
                         <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
                         <p class="text-sm text-gray-600">No agents registered</p>
                         <p class="text-xs text-gray-700 mt-1">Create an agent to get started with the Mastio.</p>

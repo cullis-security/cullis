@@ -50,6 +50,37 @@ _log = logging.getLogger("mcp_proxy.dashboard")
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
+
+def _parse_device_info(raw):
+    """Best-effort parse of ``internal_agents.device_info`` (migration 0013)
+    — Connectors send a mix of conventions across versions, so we normalize
+    a handful of aliases and fall back to ``None`` on anything malformed so
+    the template short-circuits to a dash."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    def _pick(*keys):
+        for k in keys:
+            v = data.get(k)
+            if v:
+                return str(v)
+        return None
+
+    return {
+        "os": _pick("os", "platform", "system"),
+        "hostname": _pick("hostname", "host", "node"),
+        "version": _pick("version", "connector_version", "client_version"),
+    }
+
+
+templates.env.filters["parse_device"] = _parse_device_info
+
 router = APIRouter(prefix="/proxy", tags=["dashboard"])
 
 

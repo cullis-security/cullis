@@ -256,8 +256,8 @@ async def approve(
             text(
                 """INSERT INTO internal_agents
                    (agent_id, display_name, capabilities, api_key_hash,
-                    cert_pem, created_at, is_active)
-                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1)"""
+                    cert_pem, created_at, is_active, device_info)
+                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1, :device)"""
             ),
             {
                 "aid": agent_id,
@@ -266,6 +266,10 @@ async def approve(
                 "hash": api_key_hash,
                 "cert": cert_pem,
                 "created": now,
+                # Free-form JSON carried from the Connector at start_enrollment
+                # and kept through approval. We store it verbatim — the
+                # dashboard parses it via a Jinja filter for display.
+                "device": record.get("device_info"),
             },
         )
         await conn.execute(
