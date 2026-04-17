@@ -17,6 +17,14 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11"]
+    # Audit F-B-5: Settings() now refuses the insecure default
+    # ADMIN_SECRET at construction time. Alembic imports app.db.database
+    # (which calls get_settings() at module load) without going through
+    # the pytest conftest.py that seeds a test secret, so set it
+    # job-wide so every step that constructs Settings has a non-default
+    # value available.
+    env:
+      ADMIN_SECRET: "ci-non-default-admin-secret-for-ci-runs"
 
     steps:
       - uses: actions/checkout@v4
