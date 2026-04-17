@@ -268,6 +268,85 @@ class CullisClient:
             raise RuntimeError("Not enrolled — use from_enrollment() or set proxy credentials")
         return {"X-API-Key": self._proxy_api_key, "Content-Type": "application/json"}
 
+    @classmethod
+    def from_connector(
+        cls,
+        config_dir: str | Path | None = None,
+        *,
+        timeout: float = 10.0,
+    ) -> CullisClient:
+        """Build a client from an enrolled Connector Desktop identity on disk.
+
+        Reads ``~/.cullis/identity/`` (or a custom ``config_dir``) and
+        returns a client pre-configured with the Mastio URL, agent_id,
+        and API key. Call :meth:`login_via_proxy` afterwards to obtain a
+        broker access token.
+
+        Layout expected (written by the Connector at enrollment time):
+
+            <config_dir>/identity/agent.crt       ← agent cert (PEM)
+            <config_dir>/identity/agent.key       ← agent key (PEM)
+            <config_dir>/identity/metadata.json   ← agent_id, site_url, ...
+            <config_dir>/identity/api_key         ← API key plaintext
+
+        Raises ``FileNotFoundError`` if the identity hasn't been enrolled
+        yet (user should open the Connector dashboard first).
+        """
+        import json as _json
+        if config_dir is None:
+            config_dir = Path.home() / ".cullis"
+        else:
+            config_dir = Path(config_dir)
+
+        identity_dir = config_dir / "identity"
+        metadata_path = identity_dir / "metadata.json"
+        api_key_path = identity_dir / "api_key"
+
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"Connector identity not found at {identity_dir}. "
+                "Open the Connector dashboard and complete enrollment first."
+            )
+        if not api_key_path.exists():
+            raise FileNotFoundError(
+                f"Connector api_key missing at {api_key_path}. "
+                "Re-run enrollment through the Connector dashboard."
+            )
+
+        metadata = _json.loads(metadata_path.read_text())
+        agent_id = metadata.get("agent_id")
+        site_url = metadata.get("site_url")
+        if not agent_id or not site_url:
+            raise RuntimeError(
+                f"metadata.json at {metadata_path} is missing agent_id or site_url"
+            )
+
+        api_key = api_key_path.read_text().strip()
+        org_id = agent_id.split("::", 1)[0] if "::" in agent_id else ""
+
+        # verify_tls is not explicitly stored by the Connector — default to
+        # True for https sites, False for http (developer / sandbox).
+        verify_tls = site_url.startswith("https://")
+
+        instance = cls.__new__(cls)
+        instance.base = site_url.rstrip("/")
+        instance._verify_tls = verify_tls
+        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance.token = None
+        instance._label = agent_id
+        instance._signing_key_pem = None
+        instance._pubkey_cache = {}
+        instance._client_seq = {}
+        instance._dpop_privkey = None
+        instance._dpop_pubkey_jwk = None
+        instance._dpop_nonce = None
+        instance._proxy_api_key = api_key
+        instance._proxy_agent_id = agent_id
+        instance._proxy_org_id = org_id
+
+        log("sdk", f"Loaded Connector identity {agent_id} from {identity_dir}")
+        return instance
+
     # ── SPIFFE Workload API bootstrap ───────────────────────────────
 
     @classmethod
