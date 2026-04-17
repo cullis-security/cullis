@@ -6,11 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import TokenRequest, TokenResponse, TokenPayload
 from app.auth.jwt import create_access_token, get_current_agent
+from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_countersig
 from app.auth.x509_verifier import verify_client_assertion
 from app.auth.dpop import verify_dpop_proof, build_htu
 from app.config import get_settings
 from app.db.database import get_db
 from app.db.audit import log_event
+from app.registry.org_store import get_org_by_id
 from app.registry.store import (
     get_agent_by_id, update_agent_cert, refresh_agent_cert_svid,
     invalidate_agent_tokens,
@@ -28,6 +30,7 @@ async def issue_token(
     request: Request,
     body: TokenRequest,
     dpop: str = Header(alias="DPoP"),
+    mastio_signature: str | None = Header(default=None, alias=COUNTERSIG_HEADER),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -57,6 +60,27 @@ async def issue_token(
         )
         span.set_attribute("agent.id", agent_id)
         span.set_attribute("org.id", org_id)
+
+        # ── ADR-009 Phase 1 — mastio counter-signature ───────────────────────
+        # If the org has pinned a mastio public key at onboarding, every
+        # login for that org must carry an ES256 signature over the raw
+        # client_assertion. NULL column = legacy mode (skipped).
+        org_record = await get_org_by_id(db, org_id)
+        if org_record is not None and org_record.mastio_pubkey:
+            try:
+                verify_mastio_countersig(
+                    client_assertion=body.client_assertion,
+                    signature_b64=mastio_signature,
+                    mastio_pubkey_pem=org_record.mastio_pubkey,
+                )
+            except HTTPException:
+                AUTH_DENY_COUNTER.add(1, {"reason": "mastio_countersig"})
+                await log_event(
+                    db, "auth.token_request", "denied",
+                    agent_id=agent_id, org_id=org_id,
+                    details={"reason": "mastio_countersig_missing_or_invalid"},
+                )
+                raise
 
         # ── Agent checks ─────────────────────────────────────────────────────
         agent = await get_agent_by_id(db, agent_id)

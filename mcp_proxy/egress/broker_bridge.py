@@ -50,10 +50,22 @@ class BrokerBridge:
         """Create and authenticate a new CullisClient for an agent."""
         cert_pem, key_pem = await self._agent_manager.get_agent_credentials(agent_id)
 
+        # ADR-009 Phase 1 — attest the login through the mastio identity.
+        # Only wired when the mastio identity is loaded; without it we let
+        # the login proceed unsigned (legacy orgs that haven't pinned a
+        # mastio_pubkey yet, or first-boot before ensure_mastio_identity()).
+        countersign_fn = None
+        if self._agent_manager.mastio_loaded:
+            mgr = self._agent_manager
+            countersign_fn = lambda assertion: mgr.countersign(assertion.encode())
+
         client = CullisClient(self._broker_url, verify_tls=self._verify_tls)
         # login_from_pem is synchronous in the SDK — run in thread to avoid blocking
         await asyncio.to_thread(
-            client.login_from_pem, agent_id, self._org_id, cert_pem, key_pem,
+            lambda: client.login_from_pem(
+                agent_id, self._org_id, cert_pem, key_pem,
+                countersign_fn=countersign_fn,
+            ),
         )
         logger.info("Authenticated CullisClient for agent: %s", agent_id)
         return client

@@ -24,6 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from typing import Callable, Optional
+
 import httpx
 
 from cullis_sdk.auth import generate_dpop_keypair, build_dpop_proof, build_client_assertion
@@ -269,19 +271,32 @@ class CullisClient:
 
     # ── Broker authentication ──────────────────────────────────────
 
-    def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str) -> None:
+    def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str,
+              *,
+              countersign_fn: Optional[Callable[[str], str]] = None) -> None:
         """Authenticate via x509 + DPoP, reading cert and key from file paths."""
         cert_pem = Path(cert_path).read_text()
         key_pem = Path(key_path).read_text()
-        self.login_from_pem(agent_id, org_id, cert_pem, key_pem)
+        self.login_from_pem(
+            agent_id, org_id, cert_pem, key_pem,
+            countersign_fn=countersign_fn,
+        )
 
     def login_from_pem(self, agent_id: str, org_id: str,
-                       cert_pem: str, key_pem: str) -> None:
+                       cert_pem: str, key_pem: str,
+                       *,
+                       countersign_fn: Optional[Callable[[str], str]] = None) -> None:
         """
         Authenticate via x509 + DPoP using PEM strings directly.
 
         Use this when loading credentials from a secret manager (Vault,
         AWS KMS, Azure Key Vault, etc.) instead of files on disk.
+
+        ADR-009 Phase 1 — ``countersign_fn`` is an optional callback invoked
+        with the raw client_assertion string; it must return a base64url
+        ES256 signature (no padding). The SDK forwards it as
+        ``X-Cullis-Mastio-Signature``. The mastio proxy is the typical
+        caller that wires this.
         """
         self._label = agent_id
         try:
@@ -292,11 +307,15 @@ class CullisClient:
             self._dpop_privkey, self._dpop_pubkey_jwk = generate_dpop_keypair()
             token_url = f"{self.base}/v1/auth/token"
 
+            extra_headers: dict[str, str] = {}
+            if countersign_fn is not None:
+                extra_headers["X-Cullis-Mastio-Signature"] = countersign_fn(assertion)
+
             dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
             resp = self._http.post(
                 token_url,
                 json={"client_assertion": assertion},
-                headers={"DPoP": dpop_proof},
+                headers={"DPoP": dpop_proof, **extra_headers},
             )
 
             if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
@@ -305,7 +324,7 @@ class CullisClient:
                 resp = self._http.post(
                     token_url,
                     json={"client_assertion": assertion},
-                    headers={"DPoP": dpop_proof},
+                    headers={"DPoP": dpop_proof, **extra_headers},
                 )
 
             resp.raise_for_status()

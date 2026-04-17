@@ -608,6 +608,27 @@ class AgentManager:
             serialization.PublicFormat.SubjectPublicKeyInfo,
         ).decode()
 
+    def countersign(self, data: bytes) -> str:
+        """ES256 counter-signature over ``data``, base64url no-pad.
+
+        Used by ``BrokerBridge`` to attest every ``/v1/auth/token`` call as
+        proxied through this mastio. The signature goes into the
+        ``X-Cullis-Mastio-Signature`` header; the Court verifies it against
+        the PEM pinned at onboarding in ``organizations.mastio_pubkey``.
+
+        Raises ``RuntimeError`` if :meth:`ensure_mastio_identity` has not run.
+        """
+        import base64
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec as _ec
+
+        if not self.mastio_loaded:
+            raise RuntimeError(
+                "Mastio identity not loaded — call ensure_mastio_identity() first",
+            )
+        sig = self._mastio_leaf_key.sign(data, _ec.ECDSA(hashes.SHA256()))
+        return base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+
     # ── Credential retrieval ────────────────────────────────────────
 
     async def get_agent_credentials(self, agent_id: str) -> tuple[str, str]:
