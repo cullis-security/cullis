@@ -9,7 +9,7 @@ from starlette.testclient import TestClient
 
 from app.main import app
 from tests.cert_factory import make_assertion, get_org_ca_pem, DPoPHelper
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent_sync
 
 
 # Starlette's sync TestClient uses "http://testserver" as the base URL, not "http://test".
@@ -28,10 +28,12 @@ def _setup_agent(client: TestClient, org_id: str, agent_id: str, dpop: DPoPHelpe
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["order.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    seed_court_agent_sync(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['order.read'],
+    )
     resp = client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},

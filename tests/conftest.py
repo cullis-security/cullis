@@ -237,3 +237,69 @@ def dpop():
 async def db_session() -> AsyncSession:
     async with TestSessionLocal() as session:
         yield session
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Test setup helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def seed_court_agent(
+    agent_id: str,
+    org_id: str,
+    *,
+    display_name: str | None = None,
+    capabilities: list[str] | None = None,
+    metadata: dict | None = None,
+    description: str = "",
+) -> None:
+    """Direct-DB replacement for the legacy ``POST /v1/registry/agents``.
+
+    ADR-010 Phase 6a-3 — tests used the old org_secret-auth POST as setup
+    for downstream flows (auth, policy, mTLS, etc.). The endpoint is
+    being deleted in Phase 6a-4 because it bypassed the Mastio, so tests
+    bypass it themselves via the store layer. Same observable side
+    effect (AgentRecord row + federation event) with fewer moving parts.
+
+    Callers must already have created the owning org (``POST
+    /v1/registry/orgs``) — this helper does not validate that, because
+    neither does ``register_agent()``.
+    """
+    from app.registry.store import register_agent
+
+    async with TestSessionLocal() as session:
+        await register_agent(
+            session,
+            agent_id=agent_id,
+            org_id=org_id,
+            display_name=display_name or agent_id,
+            capabilities=capabilities or [],
+            metadata=metadata or {},
+            description=description,
+        )
+
+
+def seed_court_agent_sync(
+    agent_id: str,
+    org_id: str,
+    *,
+    display_name: str | None = None,
+    capabilities: list[str] | None = None,
+    metadata: dict | None = None,
+    description: str = "",
+) -> None:
+    """Sync wrapper around ``seed_court_agent`` for the handful of tests
+    built on starlette's ``TestClient`` (``test_ws.py``, ``test_m3_*``)
+    where awaiting from inside the ``with TestClient(app):`` block isn't
+    convenient."""
+    import asyncio
+
+    asyncio.run(
+        seed_court_agent(
+            agent_id=agent_id,
+            org_id=org_id,
+            display_name=display_name,
+            capabilities=capabilities,
+            metadata=metadata,
+            description=description,
+        ),
+    )

@@ -15,7 +15,7 @@ from app.spiffe import (
     validate_spiffe_id,
 )
 from tests.cert_factory import make_agent_cert, make_assertion, get_org_ca_pem
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test mapping bidirezionale
@@ -155,12 +155,12 @@ async def _register_agent_with_spiffe(
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id,
-        "org_id": org_id,
-        "display_name": f"Test Agent {agent_id}",
-        "capabilities": ["test.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=f'Test Agent {agent_id}',
+        capabilities=['test.read'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
@@ -276,12 +276,12 @@ async def test_autenticazione_fallisce_con_san_sbagliato(client: AsyncClient, dp
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id,
-        "org_id": org_id,
-        "display_name": f"Test Agent {agent_id}",
-        "capabilities": ["test.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=f'Test Agent {agent_id}',
+        capabilities=['test.read'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},

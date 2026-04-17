@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import AsyncClient
 
 from tests.cert_factory import make_assertion, get_org_ca_pem
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.mastio_strict]
 
@@ -66,12 +66,12 @@ async def _register_agent_with_mastio(
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id,
-        "org_id": org_id,
-        "display_name": f"Test Agent {agent_id}",
-        "capabilities": ["test.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=f'Test Agent {agent_id}',
+        capabilities=['test.read'],
+    )
 
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},

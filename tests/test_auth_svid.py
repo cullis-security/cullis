@@ -16,7 +16,7 @@ from tests.cert_factory import (
     make_assertion,
     make_svid_assertion,
 )
-from tests.conftest import ADMIN_HEADERS, TestSessionLocal
+from tests.conftest import ADMIN_HEADERS, TestSessionLocal, seed_court_agent
 from app.registry.org_store import update_org_trust_domain
 
 pytestmark = pytest.mark.asyncio
@@ -44,10 +44,12 @@ async def _register_agent(
     if trust_domain is not None:
         async with TestSessionLocal() as db:
             await update_org_trust_domain(db, org_id, trust_domain)
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["test.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['test.read'],
+    )
     resp = await client.post(
         "/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read"]},
