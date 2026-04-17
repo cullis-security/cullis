@@ -101,6 +101,11 @@ class PendingEnrollment(Base):
     requester_email = Column(Text, nullable=False)
     reason = Column(Text, nullable=True)
     device_info = Column(Text, nullable=True)  # free-form JSON from SDK
+    # F-B-11 Phase 3b (#181) — RFC 7638 thumbprint of the DPoP JWK
+    # the Connector submitted at start_enrollment. Carried forward
+    # to ``internal_agents.dpop_jkt`` on approval. NULL when the
+    # SDK did not publish a JWK (legacy / pre-Phase-3c clients).
+    dpop_jkt = Column(Text, nullable=True)
     status = Column(
         Text, nullable=False, server_default="pending"
     )  # pending | approved | rejected | expired

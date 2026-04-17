@@ -49,6 +49,21 @@ class EnrollmentStartRequest(BaseModel):
             " generate its own key during approval (legacy behaviour)."
         ),
     )
+    dpop_jwk: dict | None = Field(
+        None,
+        description=(
+            "Public JWK of the DPoP keypair the Connector generated locally."
+            " Must be a PUBLIC key (no ``d`` field); kty ``EC`` (P-256) or"
+            " ``RSA``. The server computes the RFC 7638 thumbprint and stores"
+            " it on the pending row; on approve it becomes"
+            " internal_agents.dpop_jkt and the egress dep (#199 + #204)"
+            " enforces proofs signed by this specific keypair."
+            " Optional for backward compat with pre-Phase-3c SDKs — omitting"
+            " leaves dpop_jkt NULL and the agent stays on the mode=optional"
+            " grace path until the operator populates it via the admin"
+            " endpoint (#206) or re-enrolls (audit F-B-11 Phase 3b)."
+        ),
+    )
 
 
 class EnrollmentStartResponse(BaseModel):
