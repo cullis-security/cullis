@@ -36,6 +36,7 @@ pytestmark = pytest.mark.asyncio
 from tests.cert_factory import (
     get_org_ca_pem,
 )
+from tests.conftest import seed_court_agent
 
 
 async def _setup_agent(client: AsyncClient, dpop, agent_id: str, org_id: str) -> str:
@@ -49,10 +50,12 @@ async def _setup_agent(client: AsyncClient, dpop, agent_id: str, org_id: str) ->
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["test.read", "test.write"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['test.read', 'test.write'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["test.read", "test.write"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},

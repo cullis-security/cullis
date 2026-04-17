@@ -26,7 +26,7 @@ from tests.cert_factory import (
     get_org_ca_pem, sign_message, make_agent_cert,
     get_agent_pubkey_pem, make_encrypted_envelope,
 )
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 from cryptography.hazmat.primitives import serialization
 
 pytestmark = pytest.mark.asyncio
@@ -44,10 +44,12 @@ async def _setup(client: AsyncClient, agent_id: str, org_id: str, dpop) -> str:
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["order.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['order.read'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": secret},

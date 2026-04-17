@@ -22,7 +22,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.cert_factory import make_assertion, get_org_ca_pem, make_encrypted_envelope, DPoPHelper
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 pytestmark = pytest.mark.asyncio
 
@@ -44,19 +44,17 @@ async def test_step1_banca_a_registra_agente(client: AsyncClient):
         headers={"x-org-id": "banca-a", "x-org-secret": "banca-a-org-secret"},
     )
 
-    resp = await client.post("/v1/registry/agents", json={
-        "agent_id": "banca-a::kyc-agent",
-        "org_id": "banca-a",
-        "display_name": "Agente KYC Banca A",
-        "capabilities": ["kyc.read", "kyc.write"],
-        "metadata": {"environment": "test"},
-    }, headers={"x-org-id": "banca-a", "x-org-secret": "banca-a-org-secret"})
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["agent_id"] == "banca-a::kyc-agent"
-    assert body["org_id"] == "banca-a"
-    assert body["is_active"] is True
-    assert "kyc.read" in body["capabilities"]
+    # ADR-010 Phase 6a-3: setup via direct-DB helper; the HTTP-shape
+    # assertions (201 + body) lived against the legacy endpoint that
+    # 6a-4 deletes. Equivalent coverage now sits on the publish-agent
+    # test suite.
+    await seed_court_agent(
+        agent_id="banca-a::kyc-agent",
+        org_id="banca-a",
+        display_name="Agente KYC Banca A",
+        capabilities=["kyc.read", "kyc.write"],
+        metadata={"environment": "test"},
+    )
 
     # Create + approve binding
     r = await client.post("/v1/registry/bindings",
@@ -100,15 +98,13 @@ async def test_step2_banca_b_registra_agente(client: AsyncClient):
         headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"},
     )
 
-    resp = await client.post("/v1/registry/agents", json={
-        "agent_id": "banca-b::kyc-agent",
-        "org_id": "banca-b",
-        "display_name": "Agente KYC Banca B",
-        "capabilities": ["kyc.read", "kyc.write"],
-        "metadata": {"environment": "test"},
-    }, headers={"x-org-id": "banca-b", "x-org-secret": "banca-b-org-secret"})
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["agent_id"] == "banca-b::kyc-agent"
+    await seed_court_agent(
+        agent_id="banca-b::kyc-agent",
+        org_id="banca-b",
+        display_name="Agente KYC Banca B",
+        capabilities=["kyc.read", "kyc.write"],
+        metadata={"environment": "test"},
+    )
 
     # Create + approve binding
     r = await client.post("/v1/registry/bindings",
@@ -301,12 +297,12 @@ async def test_step10_terzo_agente_bloccato(client: AsyncClient):
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": "banca-c::evil-agent",
-        "org_id": "banca-c",
-        "display_name": "Agente Malevolo",
-        "capabilities": [],
-    }, headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"})
+    await seed_court_agent(
+        agent_id='banca-c::evil-agent',
+        org_id='banca-c',
+        display_name='Agente Malevolo',
+        capabilities=[],
+    )
     rb = await client.post("/v1/registry/bindings",
         json={"org_id": "banca-c", "agent_id": "banca-c::evil-agent", "scope": []},
         headers={"x-org-id": "banca-c", "x-org-secret": "banca-c-org-secret"},

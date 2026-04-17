@@ -17,7 +17,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.cert_factory import get_org_ca_pem
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,10 +33,12 @@ async def _setup(client: AsyncClient, org_id: str, agent_id: str,
         json={"ca_certificate": get_org_ca_pem(org_id)},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": capabilities,
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=capabilities,
+    )
     resp = await client.post(
         "/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": capabilities},
@@ -136,10 +138,12 @@ async def test_public_key_same_org(client: AsyncClient, dpop):
         client, "fr-pk-a", "fr-pk-a::caller", ["cap.read"], dpop,
     )
     # Second agent in the same org, never logs in → cert_pem NULL.
-    await client.post("/v1/registry/agents", json={
-        "agent_id": "fr-pk-a::peer", "org_id": "fr-pk-a",
-        "display_name": "peer", "capabilities": ["cap.read"],
-    }, headers={"x-org-id": "fr-pk-a", "x-org-secret": "fr-pk-a-secret"})
+    await seed_court_agent(
+        agent_id='fr-pk-a::peer',
+        org_id='fr-pk-a',
+        display_name='peer',
+        capabilities=['cap.read'],
+    )
 
     resp = await client.get(
         "/v1/federation/agents/fr-pk-a::peer/public-key",
@@ -166,10 +170,12 @@ async def test_public_key_cross_org_requires_binding(client: AsyncClient, dpop):
         json={"ca_certificate": get_org_ca_pem("fr-pk-no-bind")},
         headers={"x-org-id": "fr-pk-no-bind", "x-org-secret": "fr-pk-no-bind-secret"},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": "fr-pk-no-bind::agent", "org_id": "fr-pk-no-bind",
-        "display_name": "no-bind-agent", "capabilities": ["cap.read"],
-    }, headers={"x-org-id": "fr-pk-no-bind", "x-org-secret": "fr-pk-no-bind-secret"})
+    await seed_court_agent(
+        agent_id='fr-pk-no-bind::agent',
+        org_id='fr-pk-no-bind',
+        display_name='no-bind-agent',
+        capabilities=['cap.read'],
+    )
 
     resp = await client.get(
         "/v1/federation/agents/fr-pk-no-bind::agent/public-key",

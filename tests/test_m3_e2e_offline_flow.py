@@ -30,7 +30,7 @@ from app.main import app
 from tests.cert_factory import (
     DPoPHelper, get_org_ca_pem, make_assertion, make_encrypted_envelope,
 )
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent_sync
 
 
 _TESTSERVER = "http://testserver"
@@ -46,10 +46,12 @@ def _register_login(client: TestClient, org_id: str, agent_id: str, dpop: DPoPHe
         json={"ca_certificate": get_org_ca_pem(org_id)},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["kyc.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    seed_court_agent_sync(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['kyc.read'],
+    )
     r = client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["kyc.read"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},

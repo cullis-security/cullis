@@ -13,7 +13,7 @@ import pytest
 from httpx import AsyncClient
 
 from tests.cert_factory import make_assertion, get_org_ca_pem
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,12 +33,12 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str, dpop) ->
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
 
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id,
-        "org_id": org_id,
-        "display_name": f"Test {agent_id}",
-        "capabilities": ["test.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=f'Test {agent_id}',
+        capabilities=['test.read'],
+    )
 
     resp = await client.post(
         "/v1/registry/bindings",

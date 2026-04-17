@@ -23,7 +23,7 @@ from app.broker.db_models import SessionRecord, SessionMessageRecord  # noqa
 from app.broker.session import session_store
 from app.broker.persistence import restore_sessions
 from tests.cert_factory import get_org_ca_pem, sign_message, DPoPHelper
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 POSTGRES_URL = "postgresql+asyncpg://agent:trustme@localhost:5432/agent_trust"
 
@@ -98,10 +98,12 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["order.read", "order.write"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['order.read', 'order.write'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read", "order.write"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},

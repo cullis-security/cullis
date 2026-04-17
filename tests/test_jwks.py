@@ -4,7 +4,7 @@ Tests for the JWKS endpoint and kid in JWT header.
 import pytest
 import jwt as jose_jwt
 
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 
 @pytest.mark.asyncio
@@ -66,10 +66,12 @@ async def test_kid_in_jwt_matches_jwks(client, dpop):
     ca_pem = get_org_ca_pem(org_id)
     await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem}, headers=hdrs)
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": "A", "capabilities": ["test.read"],
-    }, headers=hdrs)
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name='A',
+        capabilities=['test.read'],
+    )
     resp = await client.post("/v1/registry/bindings", json={
         "org_id": org_id, "agent_id": agent_id, "scope": ["test.read"],
     }, headers=hdrs)

@@ -17,6 +17,7 @@ from tests.cert_factory import make_assertion, get_org_ca_pem
 pytestmark = pytest.mark.asyncio
 
 from app.config import get_settings
+from tests.conftest import seed_court_agent
 ADMIN_SECRET = get_settings().admin_secret
 
 
@@ -52,10 +53,12 @@ async def test_join_creates_pending_org(client: AsyncClient):
 
 async def test_pending_org_cannot_login(client: AsyncClient, dpop):
     await _join(client, "join-blocked")
-    await client.post("/v1/registry/agents", json={
-        "agent_id": "join-blocked::agent", "org_id": "join-blocked",
-        "display_name": "test", "capabilities": [],
-    }, headers={"x-org-id": "join-blocked", "x-org-secret": "join-blocked-secret"})
+    await seed_court_agent(
+        agent_id='join-blocked::agent',
+        org_id='join-blocked',
+        display_name='test',
+        capabilities=[],
+    )
     assertion = make_assertion("join-blocked::agent", "join-blocked")
     resp = await client.post(
         "/v1/auth/token",
@@ -95,10 +98,12 @@ async def test_approve_allows_login(client: AsyncClient, dpop):
     assert resp.json()["status"] == "active"
 
     # Register agent after org is active
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["order.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['order.read'],
+    )
 
     # Ora il binding e il login devono funzionare
     resp = await client.post("/v1/registry/bindings",

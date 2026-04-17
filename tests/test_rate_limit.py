@@ -9,7 +9,7 @@ from httpx import AsyncClient
 
 from app.rate_limit.limiter import rate_limiter
 from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message
-from tests.conftest import ADMIN_HEADERS
+from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,10 +37,12 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str, secret: 
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": secret},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": agent_id, "org_id": org_id,
-        "display_name": agent_id, "capabilities": ["order.read"],
-    }, headers={"x-org-id": org_id, "x-org-secret": secret})
+    await seed_court_agent(
+        agent_id=agent_id,
+        org_id=org_id,
+        display_name=agent_id,
+        capabilities=['order.read'],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read"]},
         headers={"x-org-id": org_id, "x-org-secret": secret},
@@ -74,10 +76,12 @@ async def test_auth_token_rate_limit(client: AsyncClient, dpop):
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": "rl-token-org", "x-org-secret": "s"},
     )
-    await client.post("/v1/registry/agents", json={
-        "agent_id": "rl-token-org::agent", "org_id": "rl-token-org",
-        "display_name": "x", "capabilities": [],
-    }, headers={"x-org-id": "rl-token-org", "x-org-secret": "s"})
+    await seed_court_agent(
+        agent_id='rl-token-org::agent',
+        org_id='rl-token-org',
+        display_name='x',
+        capabilities=[],
+    )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": "rl-token-org", "agent_id": "rl-token-org::agent", "scope": []},
         headers={"x-org-id": "rl-token-org", "x-org-secret": "s"},
