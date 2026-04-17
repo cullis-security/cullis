@@ -17,14 +17,24 @@ No row is ever modified or deleted (threat model: non-repudiation, SOC2).
 import asyncio
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, DateTime, Integer, LargeBinary, String, Text, UniqueConstraint,
     and_, select,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
+
+_log = logging.getLogger("app.db.audit")
+
+# Max attempts to reinsert after a UNIQUE(org_id, chain_seq) collision.
+# A collision happens only when two processes (e.g. uvicorn workers)
+# race on the same org's chain. Bounded to avoid spinning under a
+# persistent fault; production rarely exceeds 1 retry.
+_MAX_CHAIN_RETRIES = 5
 
 # Sentinel org used for audit events that have no natural tenant
 # (system-level events, bootstrap, etc.). Isolates their chain from
@@ -50,6 +60,14 @@ async def _get_org_lock(org_id: str) -> asyncio.Lock:
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    # Enforces per-org chain_seq uniqueness at the DB layer so multi-
+    # worker deployments can't silently fork a chain. Paired with the
+    # retry-on-IntegrityError loop in `_append_row` / `log_event` —
+    # the process-local `_org_locks` still short-circuits the happy
+    # path within a single worker. See audit F-D-8.
+    __table_args__ = (
+        UniqueConstraint("org_id", "chain_seq", name="uq_audit_log_org_chain_seq"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
@@ -217,24 +235,54 @@ async def log_event(
 
     For cross-org events that should appear on both orgs' chains, use
     `log_event_cross_org` instead.
+
+    Multi-worker safety (audit F-D-8): the per-org ``asyncio.Lock`` is
+    process-local. Under multiple uvicorn/gunicorn workers, two
+    concurrent appends for the same org can compute the same
+    ``chain_seq``. The DB-level ``UNIQUE(org_id, chain_seq)`` rejects
+    the loser with ``IntegrityError``; we roll back, re-read the head
+    and retry with the next seq. Bounded by ``_MAX_CHAIN_RETRIES``.
     """
     details_json = json.dumps(details) if details else None
     chain_org = org_id or SYSTEM_ORG
     lock = await _get_org_lock(chain_org)
 
     async with lock:
-        entry = await _append_row(
-            db,
-            org_id=chain_org,
-            event_type=event_type,
-            result=result,
-            agent_id=agent_id,
-            session_id=session_id,
-            details_json=details_json,
-            peer_org_id=None,
-            peer_row_hash=None,
-        )
-        await db.commit()
+        last_exc: IntegrityError | None = None
+        entry: AuditLog | None = None
+        for attempt in range(_MAX_CHAIN_RETRIES):
+            try:
+                entry = await _append_row(
+                    db,
+                    org_id=chain_org,
+                    event_type=event_type,
+                    result=result,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    details_json=details_json,
+                    peer_org_id=None,
+                    peer_row_hash=None,
+                )
+                await db.commit()
+                break
+            except IntegrityError as exc:
+                # Another worker beat us to this chain_seq. Roll back
+                # the failed insert, re-read the head, and try again.
+                last_exc = exc
+                await db.rollback()
+                _log.warning(
+                    "audit_log chain_seq collision on org=%s attempt=%d/%d",
+                    chain_org, attempt + 1, _MAX_CHAIN_RETRIES,
+                )
+                continue
+        else:
+            # Loop exhausted retries without success.
+            raise RuntimeError(
+                f"audit_log chain_seq collision persisted for org={chain_org!r} "
+                f"after {_MAX_CHAIN_RETRIES} retries"
+            ) from last_exc
+
+        assert entry is not None  # narrowing for type-checkers
         await db.refresh(entry)
 
     # Notify connected dashboard clients via SSE
@@ -279,39 +327,67 @@ async def log_event_cross_org(
     lock_second = await _get_org_lock(second)
 
     async with lock_first, lock_second:
-        row_first = await _append_row(
-            db,
-            org_id=first,
-            event_type=event_type,
-            result=result,
-            agent_id=agent_id,
-            session_id=session_id,
-            details_json=details_json,
-            peer_org_id=second,
-            peer_row_hash=None,  # filled in after row_second is hashed
-        )
-        row_second = await _append_row(
-            db,
-            org_id=second,
-            event_type=event_type,
-            result=result,
-            agent_id=agent_id,
-            session_id=session_id,
-            details_json=details_json,
-            peer_org_id=first,
-            peer_row_hash=row_first.entry_hash,
-        )
-        # Back-fill peer_row_hash on the first row now that the second
-        # row's hash exists. This closes the cross-reference ring.
-        # The entry_hash of row_first was computed with peer_row_hash=None,
-        # so we must recompute after setting the link — otherwise the
-        # stored entry_hash would mismatch on verify. To preserve
-        # immutability of entry_hash post-commit, we include peer_row_hash
-        # in the hash computation only via peer_org_id (not the hash
-        # itself); the peer_row_hash column is thus informational/reference
-        # data, not part of the signed content.
-        row_first.peer_row_hash = row_second.entry_hash
-        await db.commit()
+        # Multi-worker safety (audit F-D-8): if another worker commits
+        # a conflicting chain_seq for either org between our read and
+        # commit, UNIQUE(org_id, chain_seq) raises IntegrityError on
+        # either row. Roll back both appends and retry the pair
+        # atomically — we can't back-fill peer_row_hash otherwise.
+        last_exc: IntegrityError | None = None
+        row_first: AuditLog | None = None
+        row_second: AuditLog | None = None
+        for attempt in range(_MAX_CHAIN_RETRIES):
+            try:
+                row_first = await _append_row(
+                    db,
+                    org_id=first,
+                    event_type=event_type,
+                    result=result,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    details_json=details_json,
+                    peer_org_id=second,
+                    peer_row_hash=None,  # filled in after row_second is hashed
+                )
+                row_second = await _append_row(
+                    db,
+                    org_id=second,
+                    event_type=event_type,
+                    result=result,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    details_json=details_json,
+                    peer_org_id=first,
+                    peer_row_hash=row_first.entry_hash,
+                )
+                # Back-fill peer_row_hash on the first row now that the
+                # second row's hash exists. This closes the
+                # cross-reference ring. The entry_hash of row_first was
+                # computed with peer_row_hash=None, so we must recompute
+                # after setting the link — otherwise the stored
+                # entry_hash would mismatch on verify. To preserve
+                # immutability of entry_hash post-commit, we include
+                # peer_row_hash in the hash computation only via
+                # peer_org_id (not the hash itself); the peer_row_hash
+                # column is thus informational/reference data, not part
+                # of the signed content.
+                row_first.peer_row_hash = row_second.entry_hash
+                await db.commit()
+                break
+            except IntegrityError as exc:
+                last_exc = exc
+                await db.rollback()
+                _log.warning(
+                    "audit_log cross-org collision on orgs=(%s,%s) attempt=%d/%d",
+                    first, second, attempt + 1, _MAX_CHAIN_RETRIES,
+                )
+                continue
+        else:
+            raise RuntimeError(
+                f"audit_log cross-org chain_seq collision persisted for "
+                f"orgs={first!r},{second!r} after {_MAX_CHAIN_RETRIES} retries"
+            ) from last_exc
+
+        assert row_first is not None and row_second is not None
         await db.refresh(row_first)
         await db.refresh(row_second)
 
