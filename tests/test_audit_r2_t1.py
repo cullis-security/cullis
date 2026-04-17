@@ -269,3 +269,18 @@ async def test_logout_post_with_valid_csrf_succeeds(client: AsyncClient):
     )
     assert resp.status_code == 303
     assert "/dashboard/login" in resp.headers.get("location", "")
+
+
+async def test_logout_post_without_cookie_is_idempotent(client: AsyncClient):
+    """Audit F-B-9: a bare POST /dashboard/logout with no session
+    cookie at all must NOT be treated as a CSRF failure — there is
+    nothing to log out. Return the friendly 303 so browsers that hit
+    the endpoint after their cookie has expired land on /login
+    without an error page."""
+    resp = await client.post(
+        "/dashboard/logout",
+        data={},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "/dashboard/login" in resp.headers.get("location", "")
