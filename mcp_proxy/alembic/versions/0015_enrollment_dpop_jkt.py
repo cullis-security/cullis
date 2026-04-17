@@ -1,7 +1,7 @@
 """F-B-11 Phase 3b — ``pending_enrollments.dpop_jkt`` carries the
 agent's DPoP JWK thumbprint from start-of-enrollment to approval.
 
-Revision ID: 0015_pending_enrollments_dpop_jkt
+Revision ID: 0015_enrollment_dpop_jkt
 Revises: 0014_internal_agents_dpop_jkt
 Create Date: 2026-04-18 00:00:00.000000
 
@@ -29,7 +29,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0015_pending_enrollments_dpop_jkt"
+revision: str = "0015_enrollment_dpop_jkt"
 down_revision: Union[str, Sequence[str], None] = "0014_internal_agents_dpop_jkt"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
