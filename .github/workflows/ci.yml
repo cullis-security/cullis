@@ -17,6 +17,20 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11"]
+    # Audit F-B-5: Settings() now refuses the insecure default
+    # ADMIN_SECRET at construction time. Alembic imports app.db.database
+    # (which calls get_settings() at module load) without going through
+    # the pytest conftest.py that seeds a test secret, so set it
+    # job-wide so every step that constructs Settings has a non-default
+    # value available.
+    #
+    # The value MUST match the ``ADMIN_HEADERS`` literal hard-coded in
+    # ``tests/conftest.py`` — the conftest uses ``os.environ.setdefault``
+    # so a CI-supplied value wins, and ``ADMIN_HEADERS`` is a plain
+    # string. Mismatch → every admin-authed test 403s against
+    # ``/v1/admin/*`` and so on.
+    env:
+      ADMIN_SECRET: "test-secret-not-default"
 
     steps:
       - uses: actions/checkout@v4

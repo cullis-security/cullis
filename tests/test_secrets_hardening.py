@@ -253,3 +253,59 @@ def test_proxy_validate_config_dev_without_redis_no_warning(monkeypatch):
     proxy_validate_config(settings)
     messages = " ".join(warnings)
     assert "F-B-12" not in messages
+
+
+# ── F-B-5: reject ADMIN_SECRET default at Settings construction ────
+#
+# Previously the rejection lived only in validate_config, so a caller
+# that built ``Settings()`` without running validate_config (subprocess
+# tests, scripts, custom entrypoints) got happy settings carrying the
+# well-known insecure default — which ``_require_admin`` then accepted
+# via ``hmac.compare_digest``. Moving the refusal to a model_validator
+# makes every ``Settings()`` instance fail fast.
+
+def test_settings_rejects_insecure_default_admin_secret(monkeypatch):
+    """The default literal ``change-me-in-production`` must not be
+    accepted — ``Settings()`` raises at construction time, before
+    any lifespan hook (``validate_config``) is ever invoked."""
+    from app.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("ADMIN_SECRET", _INSECURE_DEFAULT_SECRET)
+    with pytest.raises(ValidationError) as excinfo:
+        Settings()
+    # Error message names the env var so operators know how to fix it.
+    assert "ADMIN_SECRET" in str(excinfo.value)
+    assert "F-B-5" in str(excinfo.value)
+
+
+def test_settings_rejects_default_even_when_kwarg_forced():
+    """Explicit kwarg override must also raise — not just .env reads.
+    Guards against a test harness that passes the default through
+    unintentionally."""
+    from app.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(admin_secret=_INSECURE_DEFAULT_SECRET)
+
+
+def test_settings_accepts_any_non_default_admin_secret():
+    """Sanity: any string other than the sentinel is fine."""
+    settings = Settings(admin_secret="some-other-admin-secret-value")
+    assert settings.admin_secret == "some-other-admin-secret-value"
+
+
+def test_settings_rejects_default_regardless_of_environment(monkeypatch):
+    """The refusal is environment-independent. Dev mode does not unlock
+    the default — tests that genuinely need it must supply a
+    non-default value (the conftest autouses
+    ``ADMIN_SECRET=test-secret-not-default``)."""
+    from app.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("ADMIN_SECRET", _INSECURE_DEFAULT_SECRET)
+    for env in ("development", "production"):
+        monkeypatch.setenv("ENVIRONMENT", env)
+        with pytest.raises(ValidationError):
+            Settings()

@@ -1,8 +1,15 @@
 import logging
 import pathlib
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+
+# Defined before the ``Settings`` class so the model validator below
+# can reference it without a forward-reference trick.
+_INSECURE_DEFAULT_SECRET = "change-me-in-production"
+_INSECURE_VAULT_TOKEN = "dev-root-token"
 
 
 class Settings(BaseSettings):
@@ -117,9 +124,35 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
 
+    @model_validator(mode="after")
+    def _reject_insecure_default_admin_secret(self):
+        """Audit F-B-5: refuse to construct ``Settings`` with the default
+        ``ADMIN_SECRET`` at all — in dev or prod.
 
-_INSECURE_DEFAULT_SECRET = "change-me-in-production"
-_INSECURE_VAULT_TOKEN = "dev-root-token"
+        Previously the rejection lived only in ``validate_config``, which
+        is called at ``app.main`` lifespan. Subprocess callers (scripts,
+        test harnesses, custom entrypoints) that built ``Settings()``
+        without running ``validate_config`` got happy settings, served
+        ``/registry/orgs/*`` admin endpoints, and accepted the well-known
+        default string as a credential. The header path is
+        ``hmac.compare_digest(x_admin_secret, settings.admin_secret)`` —
+        trivial to forge once you know the secret is still the default.
+
+        Moving the refusal to construction-time is the authoritative
+        gate. ``validate_config`` keeps the same check as
+        defense-in-depth for code paths that mutate the field
+        post-construction.
+        """
+        if self.admin_secret == _INSECURE_DEFAULT_SECRET:
+            raise ValueError(
+                "ADMIN_SECRET is the insecure default "
+                f"'{_INSECURE_DEFAULT_SECRET}' — set ADMIN_SECRET in your "
+                ".env or environment before starting the broker "
+                "(audit F-B-5)."
+            )
+        return self
+
+
 _startup_logger = logging.getLogger("agent_trust.startup")
 
 
