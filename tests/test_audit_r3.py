@@ -37,7 +37,7 @@ async def test_get_agent_cross_org_blocked(client: AsyncClient, db_session: Asyn
                               exp=9999999999, iat=0, jti="test-jti-1", cnf={"jkt": "fake"})
     app.dependency_overrides[get_current_agent] = lambda: fake_agent
     try:
-        resp = await client.get("/v1/registry/agents/org-other::secret-agent")
+        resp = await client.get("/v1/federation/agents/org-other::secret-agent")
         assert resp.status_code == 403
         assert "binding" in resp.json()["detail"].lower()
     finally:
@@ -60,7 +60,7 @@ async def test_get_agent_same_org_allowed(client: AsyncClient, db_session: Async
                               exp=9999999999, iat=0, jti="test-jti-2", cnf={"jkt": "fake"})
     app.dependency_overrides[get_current_agent] = lambda: fake_agent
     try:
-        resp = await client.get("/v1/registry/agents/org-same::agent-b")
+        resp = await client.get("/v1/federation/agents/org-same::agent-b")
         assert resp.status_code == 200
     finally:
         app.dependency_overrides.pop(get_current_agent, None)

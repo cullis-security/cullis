@@ -1,16 +1,14 @@
 """Proxy-native public-key lookup (ADR-006 Fase 1 / PR #3).
 
-``GET /v1/registry/agents/{agent_id}/public-key`` returns the
-certificate PEM for an agent. This endpoint used to be forwarded to the
-broker via the reverse-proxy catch-all for ``/v1/registry/*``; in
-standalone mode the broker isn't there, and even in federated mode the
-proxy already holds its own agents' certs in ``internal_agents.cert_pem``
-— so answering locally is faster and keeps the mini-broker mode
-fully autonomous.
+``GET /v1/federation/agents/{agent_id}/public-key`` returns the
+certificate PEM for an agent. The proxy answers locally when it knows the
+agent (``internal_agents`` — Mastio is authoritative per ADR-010) and
+otherwise forwards to the Court's equivalent endpoint for federated
+lookups.
 
 Lookup order:
   1. ``internal_agents`` — the Mastio is authoritative for its own
-     enrolled agents (ADR-010). Hit here → return PEM + scope=local.
+     enrolled agents. Hit here → return PEM + scope=local.
   2. Forward to broker when the agent is not local AND the proxy is
      federated. Standalone mode returns 404 outright.
 
@@ -18,6 +16,10 @@ The ``cached_federated_agents`` table carries ``thumbprint`` but not the
 full PEM (by design — the cache is meant to be small and invalidatable).
 So "federated" responses go through the broker's live endpoint; there is
 no stale cert to serve from a cache.
+
+ADR-010 Phase 6a-4 dropped the legacy ``/v1/registry/agents/*`` mirror
+of this endpoint together with the Court's equivalent. Only the
+``/v1/federation/`` prefix remains.
 """
 from __future__ import annotations
 
@@ -34,7 +36,6 @@ from mcp_proxy.db import cert_thumbprint_from_pem, get_db
 
 _log = logging.getLogger("mcp_proxy.registry.public_key")
 
-router = APIRouter(prefix="/v1/registry/agents", tags=["registry"])
 federation_router = APIRouter(prefix="/v1/federation/agents", tags=["federation"])
 
 
@@ -47,7 +48,6 @@ class PublicKeyResponse(BaseModel):
     scope: Literal["local", "federated"]
 
 
-@router.get("/{agent_id}/public-key", response_model=PublicKeyResponse)
 @federation_router.get("/{agent_id}/public-key", response_model=PublicKeyResponse)
 async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
     """Return the agent's cert PEM.
@@ -93,9 +93,8 @@ async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
             detail="broker uplink not configured — cannot resolve federated agent",
         )
 
-    # ADR-010 Phase 6a: Court serves this endpoint under /v1/federation/.
-    # The legacy /v1/registry/ path still resolves until Phase 6a-4 deletes
-    # it, so older proxies keep working through that window.
+    # ADR-010 Phase 6a — Court serves this endpoint under /v1/federation/;
+    # the legacy /v1/registry/ mirror has been hard-deleted in Phase 6a-4.
     target = f"{broker_url.rstrip('/')}/v1/federation/agents/{agent_id}/public-key"
     # Broker enforces org isolation + binding auth on this endpoint, so we
     # must propagate the caller's Authorization / DPoP headers. Hop-by-hop

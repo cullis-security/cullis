@@ -129,23 +129,23 @@ The SPIFFE ID's path last segment becomes the Cullis agent name. For the entry a
 
 ---
 
-## Step 3 — register the agent on the broker
+## Step 3 — register the agent on the Mastio
 
-Before an agent can log in, it must exist in Cullis's registry with an approved binding. This is the same API as classic BYOCA — SPIFFE just changes how auth works, not how agents are declared:
+Before an agent can log in, it must exist in Cullis's registry with an approved binding. ADR-010 made the Mastio (proxy) authoritative for its own agents: you register the agent via the proxy's admin API with ``federated=true``, and the federation publisher propagates it to the Court so cross-org bindings can be approved.
 
 ```bash
-# Create the agent record
-curl -X POST https://broker/v1/registry/agents \
-  -H "x-org-id: acme" -H "x-org-secret: $ORG_SECRET" \
+# Create the agent record on your Mastio (federated=true exposes it to the Court)
+curl -X POST https://proxy/v1/admin/agents \
+  -H "x-admin-secret: $PROXY_ADMIN_SECRET" \
   -H "content-type: application/json" \
   -d '{
-    "agent_id": "acme::sales-agent",
-    "org_id":   "acme",
+    "agent_name":   "sales-agent",
     "display_name": "Sales agent",
-    "capabilities": ["quote.read", "quote.write"]
+    "capabilities": ["quote.read", "quote.write"],
+    "federated":    true
   }'
 
-# Create + approve the binding
+# After a few seconds, create + approve the binding on the Court
 curl -X POST https://broker/v1/registry/bindings \
   -H "x-org-id: acme" -H "x-org-secret: $ORG_SECRET" \
   -H "content-type: application/json" \

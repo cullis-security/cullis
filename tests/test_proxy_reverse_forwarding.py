@@ -60,9 +60,16 @@ async def proxy_forwarding(tmp_path, monkeypatch):
 
 
 async def _register_agent_on_broker(agent_id: str, org_id: str) -> None:
-    """Provision org + CA + agent + approved binding directly on the broker app."""
-    # Use a short-lived AsyncClient straight to the broker so we don't pollute
-    # the proxy forwarding path during setup.
+    """Provision org + CA + agent + approved binding directly on the broker app.
+
+    ADR-010 Phase 6a-4 — ``POST /v1/registry/agents`` is gone. We seed
+    the agent row via the direct-DB helper ``seed_court_agent`` (same
+    pattern as all the other 6a-3 test migrations) and keep the HTTP
+    path only for org + CA + binding, which still flow through public
+    endpoints.
+    """
+    from tests.conftest import seed_court_agent
+
     async with AsyncClient(
         transport=ASGITransport(app=broker_app), base_url="http://test",
     ) as broker:
@@ -77,13 +84,9 @@ async def _register_agent_on_broker(agent_id: str, org_id: str) -> None:
             json={"ca_certificate": get_org_ca_pem(org_id)},
             headers={"x-org-id": org_id, "x-org-secret": org_secret},
         )
-        await broker.post(
-            "/v1/registry/agents",
-            json={
-                "agent_id": agent_id, "org_id": org_id,
-                "display_name": agent_id, "capabilities": ["test.read"],
-            },
-            headers={"x-org-id": org_id, "x-org-secret": org_secret},
+        await seed_court_agent(
+            agent_id=agent_id, org_id=org_id,
+            display_name=agent_id, capabilities=["test.read"],
         )
         resp = await broker.post(
             "/v1/registry/bindings",
@@ -161,9 +164,9 @@ async def test_reverse_proxy_tags_role_header(proxy_forwarding):
     """Any reverse-proxied response must carry x-cullis-role=proxy."""
     _, client = proxy_forwarding
 
-    # /v1/registry/agents/search without DPoP returns 401 from the broker; we
+    # /v1/federation/agents/search without DPoP returns 401 from the broker; we
     # only need to verify the proxy tagged the response and forwarded the path.
-    resp = await client.get("/v1/registry/agents/search?pattern=*")
+    resp = await client.get("/v1/federation/agents/search?pattern=*")
     assert resp.status_code in (401, 422), resp.text
     assert resp.headers.get("x-cullis-role") == "proxy"
 

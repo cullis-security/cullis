@@ -3,8 +3,9 @@
 Mastio is authoritative for its own org's agents and publishes the ones it
 decides to federate via ``POST /v1/federation/publish-agent``. The Court
 keeps the pushed records as a cache for cross-org routing and public-key
-lookup; it no longer accepts direct writes from callers wielding only
-``org_secret`` (legacy ``POST /v1/registry/agents`` — see Phase 6 cleanup).
+lookup; the legacy ``POST /v1/registry/agents`` + org_secret write path
+was removed in Phase 6a-4 so this counter-signed endpoint is the sole
+write channel.
 
 Auth: ADR-009 counter-signature over the raw request body. The Court
 verifies the signature against ``organizations.mastio_pubkey`` pinned

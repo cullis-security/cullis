@@ -319,8 +319,8 @@ async def test_registry_espone_agent_uri(client: AsyncClient, dpop):
     token = await dpop.get_token(client, agent_id, org_id, trust_domain="cullis.local")
 
     resp = await client.get(
-        "/v1/registry/agents",
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        "/v1/federation/agents",
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp.status_code == 200
     agents = resp.json()["agents"]

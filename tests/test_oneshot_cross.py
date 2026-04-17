@@ -52,14 +52,13 @@ async def _register_and_login(
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post(
-        "/v1/registry/agents",
-        json={
-            "agent_id": agent_id, "org_id": org_id,
-            "display_name": agent_id,
-            "capabilities": ["oneshot.message"],
-        },
-        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    # ADR-010 Phase 6a-4 — direct-DB seed replaces the removed
+    # ``POST /v1/registry/agents`` setup hop.
+    from tests.conftest import seed_court_agent
+
+    await seed_court_agent(
+        agent_id=agent_id, org_id=org_id,
+        display_name=agent_id, capabilities=["oneshot.message"],
     )
     resp = await client.post(
         "/v1/registry/bindings",
@@ -443,13 +442,13 @@ async def _register_and_login_with_caps(
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
     )
-    await client.post(
-        "/v1/registry/agents",
-        json={
-            "agent_id": agent_id, "org_id": org_id,
-            "display_name": agent_id, "capabilities": caps,
-        },
-        headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    # ADR-010 Phase 6a-4 — direct-DB seed replaces the legacy
+    # ``POST /v1/registry/agents`` setup hop.
+    from tests.conftest import seed_court_agent
+
+    await seed_court_agent(
+        agent_id=agent_id, org_id=org_id,
+        display_name=agent_id, capabilities=caps,
     )
     resp = await client.post(
         "/v1/registry/bindings",

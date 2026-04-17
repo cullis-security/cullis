@@ -462,10 +462,19 @@ async def test_different_cert_rejected(client: AsyncClient, dpop):
 
 
 async def test_rotate_then_new_cert_accepted(client: AsyncClient, dpop):
-    """After rotation via API, the new certificate should be accepted."""
+    """After rotation, the new certificate should be accepted.
+
+    ADR-010 Phase 6a-4 removed the ``POST /v1/registry/agents/{id}/rotate-cert``
+    HTTP endpoint — cert rotation is now an internal operation invoked by
+    Mastio publish/re-publish flows, not an org_secret-auth HTTP hop. The
+    behavioural assertion stays: ``rotate_agent_cert()`` in the store flips
+    the thumbprint and subsequent logins with the new cert succeed.
+    """
+    from app.registry.store import rotate_agent_cert
+    from tests.conftest import TestSessionLocal
+
     agent_id = "pin-org-d::agent-pin4"
     org_id = "pin-org-d"
-    org_secret = org_id + "-secret"
     await _register_agent(client, agent_id, org_id)
 
     # First login — pins cert
@@ -475,14 +484,9 @@ async def test_rotate_then_new_cert_accepted(client: AsyncClient, dpop):
     # Generate alternate cert
     _, alt_cert_pem = make_assertion_alternate(agent_id, org_id)
 
-    # Rotate via API
-    resp = await client.post(
-        f"/v1/registry/agents/{agent_id}/rotate-cert",
-        json={"new_certificate": alt_cert_pem},
-        headers={"x-org-id": org_id, "x-org-secret": org_secret},
-    )
-    assert resp.status_code == 200
-    new_thumbprint = resp.json()["thumbprint"]
+    # Rotate via the store layer directly.
+    async with TestSessionLocal() as session:
+        new_thumbprint = await rotate_agent_cert(session, agent_id, alt_cert_pem)
     assert len(new_thumbprint) == 64
 
     # Login with the alternate cert should now succeed
@@ -508,24 +512,27 @@ async def test_rotate_then_new_cert_accepted(client: AsyncClient, dpop):
 
 
 async def test_old_cert_rejected_after_rotation(client: AsyncClient, dpop):
-    """After rotation, the original certificate should be rejected."""
+    """After rotation, the original certificate should be rejected.
+
+    ADR-010 Phase 6a-4 — see ``test_rotate_then_new_cert_accepted`` for
+    the endpoint-deletion rationale. This test invokes the store helper
+    directly; the broker-side thumbprint pin behaviour is unchanged.
+    """
+    from app.registry.store import rotate_agent_cert
+    from tests.conftest import TestSessionLocal
+
     agent_id = "pin-org-e::agent-pin5"
     org_id = "pin-org-e"
-    org_secret = org_id + "-secret"
     await _register_agent(client, agent_id, org_id)
 
     # First login — pins original cert
     token = await dpop.get_token(client, agent_id, org_id)
     assert token
 
-    # Rotate to alternate cert
+    # Rotate to alternate cert via store layer.
     _, alt_cert_pem = make_assertion_alternate(agent_id, org_id)
-    resp = await client.post(
-        f"/v1/registry/agents/{agent_id}/rotate-cert",
-        json={"new_certificate": alt_cert_pem},
-        headers={"x-org-id": org_id, "x-org-secret": org_secret},
-    )
-    assert resp.status_code == 200
+    async with TestSessionLocal() as session:
+        await rotate_agent_cert(session, agent_id, alt_cert_pem)
 
     # Try to login with the ORIGINAL cert — should fail
     from tests.cert_factory import DPoPHelper

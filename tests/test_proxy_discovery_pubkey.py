@@ -1,6 +1,6 @@
 """ADR-006 Fase 1 / PR #3 — proxy serves agent discovery + public-key itself.
 
-Before this PR the /v1/agents/search and /v1/registry/agents/*/public-key
+Before this PR the /v1/agents/search and /v1/federation/agents/*/public-key
 calls were forwarded to the broker. Now the proxy answers from its own
 tables (internal_agents + cached_federated_agents after ADR-010 Phase 6b),
 with broker fallback for public-key lookups only when the agent is
@@ -242,7 +242,7 @@ async def test_search_requires_api_key(standalone_proxy):
     assert resp.status_code == 401
 
 
-# ── /v1/registry/agents/{id}/public-key ─────────────────────────────
+# ── /v1/federation/agents/{id}/public-key ─────────────────────────────
 
 @pytest.mark.asyncio
 async def test_public_key_served_from_local_agents(standalone_proxy):
@@ -250,7 +250,7 @@ async def test_public_key_served_from_local_agents(standalone_proxy):
     cert_pem = "-----BEGIN CERTIFICATE-----\nU1RVQg==\n-----END CERTIFICATE-----\n"
     await _insert_local_agent("alice-bot", cert_pem=cert_pem)
 
-    resp = await client.get("/v1/registry/agents/alice-bot/public-key")
+    resp = await client.get("/v1/federation/agents/alice-bot/public-key")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["agent_id"] == "alice-bot"
@@ -267,7 +267,7 @@ async def test_public_key_served_from_local_agents(standalone_proxy):
 async def test_public_key_404_in_standalone_when_not_local(standalone_proxy):
     """Standalone has no broker to forward to — unknown agent → 404."""
     _, client = standalone_proxy
-    resp = await client.get("/v1/registry/agents/missing-bot/public-key")
+    resp = await client.get("/v1/federation/agents/missing-bot/public-key")
     assert resp.status_code == 404
 
 
@@ -281,7 +281,7 @@ async def test_public_key_skips_inactive_local_rows(standalone_proxy):
         cert_pem="-----BEGIN CERTIFICATE-----\nOLD\n-----END CERTIFICATE-----\n",
         active=0,
     )
-    resp = await client.get("/v1/registry/agents/retired-bot/public-key")
+    resp = await client.get("/v1/federation/agents/retired-bot/public-key")
     assert resp.status_code == 404
 
 
@@ -297,7 +297,7 @@ async def test_public_key_endpoint_wins_over_reverse_proxy(standalone_proxy):
         "ordering-check",
         cert_pem="-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
     )
-    resp = await client.get("/v1/registry/agents/ordering-check/public-key")
+    resp = await client.get("/v1/federation/agents/ordering-check/public-key")
     # 200 = proxy-native route wins. 503 = reverse-proxy caught it first
     # (would be a regression).
     assert resp.status_code == 200, resp.text

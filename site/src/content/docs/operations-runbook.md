@@ -198,7 +198,7 @@ BROKER="https://broker.example.com"
 ORG="compromised-org"
 
 # 1. List X's agents
-curl -s -H "x-admin-secret: $ADMIN" "$BROKER/v1/registry/agents?org_id=$ORG" | jq
+curl -s -H "x-admin-secret: $ADMIN" "$BROKER/v1/federation/agents?org_id=$ORG" | jq
 
 # 2. Revoke each agent's cert (serial_hex from the listing)
 for serial in $(curl ... | jq -r '.[].cert_thumbprint'); do

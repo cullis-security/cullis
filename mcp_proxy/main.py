@@ -567,20 +567,18 @@ from mcp_proxy.admin.agents import router as admin_agents_router
 app.include_router(admin_agents_router)
 
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
-# Must precede the reverse-proxy catch-all: /v1/registry/agents/{id}/public-key
-# would otherwise fall into the `/v1/registry/*` forward prefix and never
-# reach the local handler. /v1/agents/* is not forwarded, but we keep the
-# ordering uniform for clarity.
+# Must precede the reverse-proxy catch-all: /v1/federation/agents/{id}/
+# public-key would otherwise fall into the `/v1/federation/*` forward
+# prefix (when added) and never reach the local handler. /v1/agents/*
+# is not forwarded, but we keep the ordering uniform for clarity.
 from mcp_proxy.agents.router import router as agents_router
 app.include_router(agents_router)
 from mcp_proxy.registry.public_key import (
     federation_router as federation_public_key_router,
-    router as registry_public_key_router,
 )
-app.include_router(registry_public_key_router)
-# ADR-010 Phase 6a-2 — same handler exposed under /v1/federation/ so
-# SDKs migrating to the new prefix hit the proxy-native (local-first)
-# lookup rather than falling through to the reverse-proxy catch-all.
+# ADR-010 Phase 6a-2/4 — proxy-native (local-first) public-key lookup
+# under /v1/federation/. The former /v1/registry/ mirror was dropped
+# alongside the Court's legacy registry endpoints.
 app.include_router(federation_public_key_router)
 
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,

@@ -7,7 +7,7 @@ Covers:
   #24 — EC curve whitelist in x509 verifier
   #31 — Input validation on onboarding JoinRequest
   #32 — Input validation on registry AgentRegisterRequest
-  #34 — Pending orgs cannot register agents
+  #34 — Pending orgs cannot register agents (endpoint removed in ADR-010 6a-4)
   #36 — Revocation cleanup 30-min buffer
   #44 — get_client_ip helper
 """
@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
-from httpx import AsyncClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -266,38 +265,14 @@ class TestAgentRegisterRequestValidation:
 # ──────────────────────────────────────────────────────────────────────────
 # #34 — Pending orgs cannot register agents
 # ──────────────────────────────────────────────────────────────────────────
-
-class TestPendingOrgBlocked:
-    """#34 — POST /registry/agents must reject orgs with status != 'active'."""
-
-    async def test_pending_org_rejected(self, client: AsyncClient, db_session):
-        """A pending org should get 403 when trying to register an agent."""
-        org_id = "pending-org-34"
-        org_secret = "secret-34"
-
-        from tests.cert_factory import get_org_ca_pem
-        from app.registry.org_store import set_org_status
-        ca_pem = get_org_ca_pem(org_id)
-
-        # Create org (defaults to active) then set to pending
-        await client.post("/v1/registry/orgs", json={
-            "org_id": org_id, "display_name": org_id, "secret": org_secret,
-        })
-        await client.post(
-            f"/v1/registry/orgs/{org_id}/certificate",
-            json={"ca_certificate": ca_pem},
-            headers={"x-org-id": org_id, "x-org-secret": org_secret},
-        )
-        await set_org_status(db_session, org_id, "pending")
-
-        # Try to register an agent — should fail
-        resp = await client.post("/v1/registry/agents", json={
-            "agent_id": f"{org_id}::test-agent",
-            "org_id": org_id,
-            "display_name": "Test Agent",
-        }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
-
-        assert resp.status_code == 403
+#
+# ADR-010 Phase 6a-4 hard-deleted ``POST /v1/registry/agents``, so the
+# "pending org rejected" assertion that used to live here is now moot
+# on the Court side — only the Mastio writes agents, and its admin API
+# is gated by ``X-Admin-Secret`` rather than org status. The test class
+# has been removed with the endpoint. Org-status enforcement for the
+# remaining Court write surface (bindings, attach-ca) is covered by
+# ``tests/test_registry_org.py`` and ``tests/test_onboarding.py``.
 
 
 # ──────────────────────────────────────────────────────────────────────────

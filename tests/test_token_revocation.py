@@ -61,9 +61,9 @@ async def test_self_revoke_rejects_old_token(client: AsyncClient, dpop):
 
     # Token works before revocation
     resp = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": "tok-rev-a"},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp.status_code == 200
 
@@ -73,9 +73,9 @@ async def test_self_revoke_rejects_old_token(client: AsyncClient, dpop):
 
     # Same token is now rejected
     resp2 = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": "tok-rev-a"},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp2.status_code == 401
     assert "revoked" in resp2.json()["detail"].lower()
@@ -110,9 +110,9 @@ async def test_new_token_accepted_after_self_revoke(client: AsyncClient, dpop):
 
     # New token is accepted
     resp = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": "tok-rev-b"},
-        headers=dpop.headers("GET", "/v1/registry/agents", new_token),
+        headers=dpop.headers("GET", "/v1/federation/agents", new_token),
     )
     assert resp.status_code == 200
 
@@ -123,9 +123,9 @@ async def test_admin_revoke_invalidates_agent_tokens(client: AsyncClient, dpop):
 
     # Token works before admin revoke
     resp = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": "tok-rev-c"},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp.status_code == 200
 
@@ -138,9 +138,9 @@ async def test_admin_revoke_invalidates_agent_tokens(client: AsyncClient, dpop):
 
     # Token now rejected
     resp2 = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": "tok-rev-c"},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp2.status_code == 401
     assert "revoked" in resp2.json()["detail"].lower()
@@ -233,9 +233,9 @@ async def test_binding_revocation_invalidates_tokens(client: AsyncClient, dpop):
 
     # Token works
     resp = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": org_id},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp.status_code == 200
 
@@ -258,9 +258,9 @@ async def test_binding_revocation_invalidates_tokens(client: AsyncClient, dpop):
 
     # Token is now rejected because binding revocation triggers token invalidation
     resp2 = await client.get(
-        "/v1/registry/agents",
+        "/v1/federation/agents",
         params={"org_id": org_id},
-        headers=dpop.headers("GET", "/v1/registry/agents", token),
+        headers=dpop.headers("GET", "/v1/federation/agents", token),
     )
     assert resp2.status_code == 401
     assert "revoked" in resp2.json()["detail"].lower()

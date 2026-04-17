@@ -41,7 +41,6 @@ from app.broker.notifications import Notification as _Notification  # noqa — r
 from app.broker.persistence import restore_sessions
 from app.broker.session import session_store
 from app.auth.router import router as auth_router
-from app.registry.router import router as registry_router
 from app.registry.org_router import router as org_router
 from app.registry.binding_router import router as binding_router
 from app.broker.router import router as broker_router
@@ -345,7 +344,6 @@ async def security_headers(request: Request, call_next):
 # ── API v1 ────────────────────────────────────────────────────────────────────
 v1 = APIRouter(prefix="/v1")
 v1.include_router(auth_router)
-v1.include_router(registry_router)
 v1.include_router(org_router)
 v1.include_router(binding_router)
 v1.include_router(broker_router)
@@ -377,8 +375,8 @@ from app.federation.publish import router as federation_router
 app.include_router(federation_router)
 
 # ADR-010 Phase 6a-1 — read-side federation API (cross-org discovery +
-# public-key lookup). Mirrors the legacy /v1/registry/agents GETs so
-# consumers can migrate by URL swap; Phase 6a-4 deletes the originals.
+# public-key lookup). The legacy /v1/registry/agents GET mirror was
+# dropped in Phase 6a-4; these endpoints are now the only read path.
 from app.federation.read import router as federation_read_router
 app.include_router(federation_read_router)
 

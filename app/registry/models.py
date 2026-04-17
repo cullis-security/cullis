@@ -46,12 +46,3 @@ class AgentListResponse(BaseModel):
 class AgentPublicKeyResponse(BaseModel):
     agent_id: str
     public_key_pem: str
-
-
-class RotateCertRequest(BaseModel):
-    new_certificate: str = Field(..., description="New agent certificate in PEM format")
-
-
-class RotateCertResponse(BaseModel):
-    agent_id: str
-    thumbprint: str = Field(..., description="SHA-256 thumbprint of the new certificate")

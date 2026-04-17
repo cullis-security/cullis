@@ -30,6 +30,11 @@ FORWARDED_PREFIXES: tuple[str, ...] = (
     "/v1/broker",
     "/v1/auth",
     "/v1/registry",
+    # ADR-010 Phase 6a-4 — Court's cross-org agent read API lives under
+    # /v1/federation/. The proxy serves the public-key sub-path locally
+    # (mcp_proxy/registry/public_key.py) and forwards the rest so SDK
+    # discover() / search / get-by-id calls transit the proxy cleanly.
+    "/v1/federation",
 )
 
 _HOP_BY_HOP = frozenset(

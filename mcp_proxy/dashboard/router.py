@@ -1065,57 +1065,13 @@ async def agents_create(request: Request):
         detail=f"display_name={display_name}, capabilities={capabilities}, mode={creation_mode}",
     )
 
-    # Register agent with broker and create binding (best-effort)
-    broker_url = await get_config("broker_url")
-    org_id_cfg = await get_config("org_id")
-    org_secret = await get_config("org_secret")
-
-    if broker_url and org_id_cfg and org_secret:
-        headers = {"X-Org-Id": org_id_cfg, "X-Org-Secret": org_secret}
-        try:
-            from mcp_proxy.config import broker_tls_verify
-            async with httpx.AsyncClient(
-                verify=broker_tls_verify(get_settings()), timeout=10.0,
-            ) as http:
-                # 1. Register agent
-                await http.post(f"{broker_url}/v1/registry/agents", json={
-                    "agent_id": agent_id,
-                    "org_id": org_id_cfg,
-                    "display_name": display_name,
-                    "capabilities": capabilities,
-                }, headers=headers)
-
-                # 2. Create binding
-                resp = await http.post(f"{broker_url}/v1/registry/bindings", json={
-                    "org_id": org_id_cfg,
-                    "agent_id": agent_id,
-                    "scope": capabilities,
-                }, headers=headers)
-
-                # 3. Auto-approve binding
-                if resp.status_code == 201:
-                    binding_data = resp.json()
-                    binding_id = binding_data.get("id")
-                    if binding_id:
-                        await http.post(
-                            f"{broker_url}/v1/registry/bindings/{binding_id}/approve",
-                            headers=headers,
-                        )
-
-                await log_audit(
-                    agent_id=agent_id,
-                    action="agent.broker_bind",
-                    status="success",
-                    detail=f"broker={broker_url}",
-                )
-        except Exception as exc:
-            _log.warning("Broker binding for %s failed: %s", agent_id, exc)
-            await log_audit(
-                agent_id=agent_id,
-                action="agent.broker_bind",
-                status="error",
-                detail=f"broker={broker_url}, error={exc}",
-            )
+    # ADR-010 Phase 6a-4 — the dashboard used to follow agent creation with
+    # ``POST /v1/registry/agents`` + ``POST /v1/registry/bindings`` + auto-
+    # approve via the legacy org_secret auth. That path is gone. Cross-org
+    # exposure is now opt-in: the operator flips the federate toggle on
+    # this agent row and manages bindings separately. Both happen through
+    # the standard Mastio admin surface (see PATCH /v1/admin/agents/{id}/
+    # federated and /v1/registry/bindings endpoints from the dashboard).
 
     agents = await list_agents()
     org_status = await get_config("org_status") or ""
@@ -1359,7 +1315,7 @@ async def agent_delete(request: Request, agent_id: str):
 
     from sqlalchemy import text
 
-    from mcp_proxy.db import get_agent, get_config, get_db, log_audit
+    from mcp_proxy.db import get_agent, get_db, log_audit
 
     agent = await get_agent(agent_id)
     if agent is None:
@@ -1377,22 +1333,10 @@ async def agent_delete(request: Request, agent_id: str):
             {"key": f"agent_key:{agent_id}"},
         )
 
-    # Best-effort: unregister from broker
-    broker_url = await get_config("broker_url")
-    org_id = await get_config("org_id")
-    org_secret = await get_config("org_secret")
-    if broker_url and org_id and org_secret:
-        try:
-            from mcp_proxy.config import get_settings as _s, broker_tls_verify
-            async with httpx.AsyncClient(
-                verify=broker_tls_verify(_s()), timeout=5.0,
-            ) as http:
-                await http.delete(
-                    f"{broker_url}/v1/registry/agents/{agent_id}",
-                    headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
-                )
-        except Exception:
-            pass
+    # ADR-010 Phase 6a-4 — the ``DELETE /v1/registry/agents/{id}`` hop is
+    # gone. ``db_deactivate_agent`` bumps ``federation_revision`` for
+    # federated rows, and the publisher carries the revocation to the
+    # Court via ``/v1/federation/publish-agent`` on its next tick.
 
     await log_audit(
         agent_id=agent_id,

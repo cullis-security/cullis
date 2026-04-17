@@ -54,9 +54,9 @@ async def test_search_by_agent_id(client: AsyncClient, dpop):
     await _setup(client, "ed-sup1", "ed-sup1::agent",
                  ["order.read", "order.write"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"agent_id": "ed-sup1::agent"},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -71,9 +71,9 @@ async def test_search_by_spiffe_uri(client: AsyncClient, dpop):
     await _setup(client, "ed-sup2", "ed-sup2::agent",
                  ["supply.negotiate"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"agent_uri": "spiffe://cullis.local/ed-sup2/agent"},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -90,9 +90,9 @@ async def test_search_by_org_id(client: AsyncClient, dpop):
     await _setup(client, "ed-org3b", "ed-org3b::beta",
                  ["cap.b"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"org_id": "ed-org3"},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -109,9 +109,9 @@ async def test_search_by_pattern(client: AsyncClient, dpop):
     await _setup(client, "ed-pat", "ed-pat::support",
                  ["support.ticket"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"pattern": "ed-pat::*"},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -128,9 +128,9 @@ async def test_search_combined_capability_and_org(client: AsyncClient, dpop):
     await _setup(client, "ed-comb", "ed-comb::no-cap",
                  ["support.ticket"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"org_id": "ed-comb", "capability": ["supply.negotiate"]},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -143,8 +143,8 @@ async def test_search_requires_at_least_one_param(client: AsyncClient, dpop):
     token = await _setup(client, "ed-buyer6", "ed-buyer6::agent",
                          ["order.read"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+    resp = await client.get("/v1/federation/agents/search",
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 422
 
@@ -155,17 +155,17 @@ async def test_search_include_own_org(client: AsyncClient, dpop):
                          ["order.read"], dpop)
 
     # Without flag — own org excluded
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read"]},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
     assert "ed-own::agent" not in agent_ids
 
     # With flag — own org included
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read"], "include_own_org": "true"},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
     assert "ed-own::agent" in agent_ids

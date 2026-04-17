@@ -50,9 +50,9 @@ async def test_discovery_finds_other_org_agents(client: AsyncClient, dpop):
     await _setup(client, "disc-supplier", "disc-supplier::agent",
                  ["order.read", "order.write"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read", "order.write"]},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token_buyer),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token_buyer),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -66,9 +66,9 @@ async def test_discovery_excludes_own_org(client: AsyncClient, dpop):
                          ["order.read"], dpop)
     await _setup(client, "disc-other", "disc-other::agent", ["order.read"], dpop)
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read"]},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -83,9 +83,9 @@ async def test_discovery_partial_capability_no_match(client: AsyncClient, dpop):
     await _setup(client, "disc-partial-sup", "disc-partial-sup::agent",
                  ["order.read"], dpop)  # does not have order.write
 
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read", "order.write"]},
-        headers=dpop.headers("GET", "/v1/registry/agents/search", token_buyer),
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token_buyer),
     )
     assert resp.status_code == 200
     agent_ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -94,7 +94,7 @@ async def test_discovery_partial_capability_no_match(client: AsyncClient, dpop):
 
 async def test_discovery_requires_auth(client: AsyncClient):
     """Senza token → 401."""
-    resp = await client.get("/v1/registry/agents/search",
+    resp = await client.get("/v1/federation/agents/search",
         params={"capability": ["order.read"]},
     )
     assert resp.status_code in (401, 403)

@@ -673,21 +673,12 @@ class CullisClient:
             ) from e
 
     # ── Registry ────────────────────────────────────────────────────
-
-    def register(self, agent_id: str, org_id: str, display_name: str,
-                 capabilities: list[str]) -> bool:
-        """Register an agent in the network. Returns False if already exists."""
-        body: dict = {
-            "agent_id": agent_id,
-            "org_id": org_id,
-            "display_name": display_name,
-            "capabilities": capabilities,
-        }
-        resp = self._http.post(f"{self.base}/v1/registry/agents", json=body)
-        if resp.status_code == 409:
-            return False
-        resp.raise_for_status()
-        return True
+    #
+    # ADR-010 Phase 6a-4 — agent registration is no longer an SDK concern.
+    # The Mastio admin API (``POST /v1/admin/agents`` on the proxy) is the
+    # sole write path; the federation publisher propagates to the Court.
+    # The former ``register()`` wrapper around the Court's
+    # ``POST /v1/registry/agents`` has been removed.
 
     def discover(
         self,

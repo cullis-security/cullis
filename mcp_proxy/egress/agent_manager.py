@@ -8,7 +8,6 @@ Each internal agent gets:
   - A local API key (sk_local_{name}_{hex}) for authenticating to the proxy
 """
 import hashlib
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +22,7 @@ from cryptography.x509 import (
 from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-from mcp_proxy.config import broker_tls_verify, get_settings, vault_tls_verify
+from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,
@@ -370,11 +369,13 @@ class AgentManager:
             cert_pem=cert_pem,
         )
 
-        # 5. Register with broker (best-effort)
-        await self._register_with_broker(agent_id, display_name, capabilities)
-
-        # 6. Login to broker to pin cert thumbprint + register public key
-        await self._login_to_broker(agent_id, cert_pem, key_pem)
+        # ADR-010 Phase 6a-4 — broker registration used to happen here via
+        # the legacy ``POST /v1/registry/agents`` (with org_secret). That
+        # endpoint is gone; the Mastio is authoritative for its own org
+        # and the federation publisher carries federated=true rows to the
+        # Court asynchronously. Per D1 the flag is opt-in — the dashboard
+        # and ``/v1/admin/agents`` set it explicitly when the operator
+        # wants the agent exposed cross-org.
 
         agent_info = {
             "agent_id": agent_id,
@@ -417,34 +418,18 @@ class AgentManager:
         return new_key
 
     async def deactivate_agent(self, agent_id: str) -> None:
-        """Deactivate agent. Revokes broker registration (best-effort)."""
+        """Deactivate agent.
+
+        ADR-010 Phase 6a-4 — the HTTP ``DELETE /v1/registry/agents/{id}``
+        to the Court has been removed. The federation publisher picks up
+        the ``is_active=0`` flip (bumps ``federation_revision``) and
+        pushes a revocation to the Court via ADR-009 counter-signed
+        ``/v1/federation/publish-agent``. Un-federated agents never
+        appeared on the Court, so there's nothing to unregister.
+        """
         found = await db_deactivate_agent(agent_id)
         if not found:
             raise ValueError(f"Agent not found: {agent_id}")
-
-        # Try to unregister from broker (best-effort, don't fail if broker down)
-        settings = get_settings()
-        if settings.broker_url:
-            try:
-                async with httpx.AsyncClient(
-                    verify=broker_tls_verify(settings), timeout=5.0,
-                ) as http:
-                    resp = await http.delete(
-                        f"{settings.broker_url}/v1/registry/agents/{agent_id}",
-                        headers={
-                            "X-Org-Id": self._org_id,
-                            "X-Org-Secret": settings.org_secret,
-                        },
-                    )
-                    if resp.is_success:
-                        logger.info("Agent unregistered from broker: %s", agent_id)
-                    else:
-                        logger.warning(
-                            "Broker unregister returned %d for %s", resp.status_code, agent_id,
-                        )
-            except Exception as exc:
-                logger.warning("Could not unregister %s from broker: %s", agent_id, exc)
-
         logger.info("Agent deactivated: %s", agent_id)
 
     # ── Mastio identity (ADR-009 Phase 1) ───────────────────────────
@@ -705,108 +690,9 @@ class AgentManager:
             data = resp.json()
             return data["data"]["data"]["key_pem"]
 
-    # ── Broker registration (best-effort) ───────────────────────────
-
-    async def _login_to_broker(self, agent_id: str, cert_pem: str, key_pem: str) -> None:
-        """Login to broker to pin certificate thumbprint and register public key.
-
-        The broker saves the agent's public key on first login (from the x5c
-        header in the client_assertion JWT). This makes the agent discoverable
-        and allows other agents to encrypt messages to it.
-        Non-fatal on failure.
-        """
-        settings = get_settings()
-        broker_url = settings.broker_url
-        if not broker_url:
-            # Try from DB config
-            broker_url = await get_config("broker_url") or ""
-        if not broker_url:
-            return
-
-        try:
-            import asyncio
-            from cullis_sdk.client import CullisClient
-
-            _verify = settings.broker_verify_tls
-
-            def _do_login():
-                client = CullisClient(broker_url, verify_tls=_verify)
-                client.login_from_pem(agent_id, self._org_id, cert_pem, key_pem)
-                client.close()
-
-            await asyncio.to_thread(_do_login)
-            logger.info("Agent %s logged into broker — cert pinned", agent_id)
-        except Exception as exc:
-            logger.warning("Broker login for %s failed (cert not pinned): %s", agent_id, exc)
-
-    async def _get_broker_url(self) -> str:
-        """Get broker URL from settings or DB config."""
-        settings = get_settings()
-        url = settings.broker_url
-        if not url:
-            url = await get_config("broker_url") or ""
-        return url
-
-    async def _get_org_secret(self) -> str:
-        """Get org secret from DB config."""
-        return await get_config("org_secret") or ""
-
-    async def _register_with_broker(
-        self, agent_id: str, display_name: str, capabilities: list[str],
-    ) -> None:
-        """Register agent in broker registry. Non-fatal on failure."""
-        broker_url = await self._get_broker_url()
-        if not broker_url:
-            logger.info("No broker_url configured — skipping broker registration")
-            return
-
-        org_secret = await self._get_org_secret()
-        headers = {"X-Org-Id": self._org_id, "X-Org-Secret": org_secret}
-
-        try:
-            async with httpx.AsyncClient(
-                verify=broker_tls_verify(get_settings()), timeout=5.0,
-            ) as http:
-                resp = await http.post(
-                    f"{broker_url}/v1/registry/agents",
-                    headers=headers,
-                    json={
-                        "agent_id": agent_id,
-                        "org_id": self._org_id,
-                        "display_name": display_name,
-                        "capabilities": capabilities,
-                    },
-                )
-                if resp.status_code == 409:
-                    logger.info("Agent %s already registered in broker", agent_id)
-                elif resp.is_success:
-                    logger.info("Agent %s registered in broker", agent_id)
-                else:
-                    logger.warning(
-                        "Broker registration for %s returned %d: %s",
-                        agent_id, resp.status_code, resp.text,
-                    )
-
-                # Create binding + auto-approve
-                resp2 = await http.post(
-                    f"{broker_url}/v1/registry/bindings",
-                    headers=headers,
-                    json={
-                        "org_id": self._org_id,
-                        "agent_id": agent_id,
-                        "scope": capabilities,
-                    },
-                )
-                if resp2.status_code == 201:
-                    binding_id = resp2.json().get("id")
-                    if binding_id:
-                        await http.post(
-                            f"{broker_url}/v1/registry/bindings/{binding_id}/approve",
-                            headers=headers,
-                        )
-                        logger.info("Binding %s created and approved for %s", binding_id, agent_id)
-                elif resp2.status_code == 409:
-                    logger.info("Binding already exists for %s", agent_id)
-
-        except Exception as exc:
-            logger.warning("Broker unreachable for registration of %s: %s", agent_id, exc)
+    # ADR-010 Phase 6a-4 — ``_login_to_broker``, ``_register_with_broker``,
+    # ``_get_broker_url`` and ``_get_org_secret`` lived here to mirror agent
+    # state onto the Court via the legacy ``POST /v1/registry/agents`` +
+    # org_secret-auth ``POST /v1/registry/bindings`` pair. That whole path
+    # is gone — cross-org exposure flows through the Mastio admin API and
+    # the federation publisher instead.

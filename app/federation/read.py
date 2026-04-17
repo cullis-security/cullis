@@ -5,11 +5,10 @@ Mastio-signed pushes, this module serves the **read** side of the
 federation surface — other Mastios query the Court here to discover
 cross-org agents and fetch their certs for E2E setup.
 
-Endpoints mirror the legacy ``/v1/registry/agents`` GETs bit-for-bit
-(same auth, same org-isolation, same response shape) so consumers can
-migrate by swapping the URL prefix. Once every caller lives under
-``/v1/federation/agents``, Phase 6a-4 deletes the old ``/v1/registry/``
-routes and the legacy POST write paths with them.
+The shape (auth, org-isolation, response schema) was inherited from the
+legacy ``/v1/registry/agents`` GETs that Phase 6a-4 deleted. These
+endpoints are now the sole Court-side read path for federated agent
+data.
 """
 from __future__ import annotations
 
@@ -56,8 +55,8 @@ async def list_federated_agents(
     current_agent: TokenPayload = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    """List registered agents. Same org-isolation as the legacy
-    ``/v1/registry/agents`` GET: an agent sees only its own org."""
+    """List registered agents. An agent sees only its own org unless
+    ``org_id`` matches its own — cross-org listing is refused."""
     filter_org = current_agent.org if org_id is None else org_id
     if filter_org != current_agent.org:
         raise HTTPException(

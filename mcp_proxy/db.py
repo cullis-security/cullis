@@ -337,10 +337,24 @@ async def list_agents() -> list[dict]:
 
 
 async def deactivate_agent(agent_id: str) -> bool:
-    """Soft-delete an agent by setting is_active = 0. Returns True if found."""
+    """Soft-delete an agent by setting ``is_active=0``.
+
+    Bumps ``federation_revision`` too so the publisher (ADR-010 Phase 3)
+    carries the deactivation to the Court on its next tick — a federated
+    agent must be marked revoked there as well, not just on the Mastio.
+
+    Returns True if the row existed (and was active).
+    """
     async with get_db() as conn:
         result = await conn.execute(
-            text("UPDATE internal_agents SET is_active = 0 WHERE agent_id = :agent_id"),
+            text(
+                """
+                UPDATE internal_agents
+                   SET is_active = 0,
+                       federation_revision = federation_revision + 1
+                 WHERE agent_id = :agent_id AND is_active = 1
+                """
+            ),
             {"agent_id": agent_id},
         )
         return result.rowcount > 0

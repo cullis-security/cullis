@@ -167,7 +167,7 @@ async def search_agents(
 
     Returns an intentionally compact summary (no cert PEM). For the
     full certificate material, callers hit
-    ``GET /v1/registry/agents/{agent_id}/public-key``.
+    ``GET /v1/federation/agents/{agent_id}/public-key``.
     """
     local_rows: list[AgentSummary] = []
     federated_rows: list[AgentSummary] = []

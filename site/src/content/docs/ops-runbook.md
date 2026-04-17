@@ -227,13 +227,17 @@ The broker CA key signs all JWT access tokens. Rotation requires:
 4. Old tokens remain valid until expiry (30 min default)
 
 ### Agent certificate rotation
-```bash
-# Via API (the agent or its org calls this)
-POST /v1/registry/agents/{agent_id}/rotate-cert
-Authorization: DPoP <token>
+Cert rotation now flows through the Mastio admin API plus a federation
+re-publish to the Court. The former org_secret-auth endpoint
+``POST /v1/registry/agents/{id}/rotate-cert`` was removed in ADR-010
+Phase 6a-4.
 
+```bash
 # Via dashboard
-# Navigate to Agents → click "Rotate Cert" on the agent row
+# Navigate to Agents → click "Rotate Cert" on the agent row. The
+# Mastio re-issues the cert under the same Org CA and bumps the
+# federation revision; the publisher carries the new thumbprint to
+# the Court on the next tick.
 ```
 
 ### Dashboard signing key
