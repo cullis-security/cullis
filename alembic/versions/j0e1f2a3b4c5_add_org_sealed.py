@@ -1,7 +1,7 @@
 """add org.sealed flag — audit F-B-2 guardrail
 
-Revision ID: i9d0e1f2a3b4
-Revises: h8c9d0e1f2a3
+Revision ID: j0e1f2a3b4c5
+Revises: i9d0e1f2a3b4
 Create Date: 2026-04-17 12:00:00.000000
 
 Introduces a nullable-boolean ``sealed`` column on ``organizations``.
@@ -37,8 +37,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 'i9d0e1f2a3b4'
-down_revision: Union[str, Sequence[str], None] = 'h8c9d0e1f2a3'
+revision: str = 'j0e1f2a3b4c5'
+down_revision: Union[str, Sequence[str], None] = 'i9d0e1f2a3b4'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
