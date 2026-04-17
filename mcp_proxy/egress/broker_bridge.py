@@ -313,11 +313,15 @@ class BrokerBridge:
         signature: str,
         ttl_seconds: int = 300,
         capabilities: list[str] | None = None,
+        mode: str = "mtls-only",
+        v: int = 2,
     ) -> dict:
         """Forward a sessionless one-shot through the broker.
 
         Returns the broker's response body — ``{msg_id, duplicate}``.
         Uses the same auth-error retry pattern as session operations.
+        Propagates ``mode`` and ``v`` so envelope-mode cipher_blobs and
+        the v2 envelope signature reach the broker intact.
         """
         kw = dict(
             recipient_agent_id=recipient_agent_id,
@@ -329,6 +333,8 @@ class BrokerBridge:
             signature=signature,
             ttl_seconds=ttl_seconds,
             capabilities=capabilities or [],
+            mode=mode,
+            v=v,
         )
         client = await self.get_client(agent_id)
         try:

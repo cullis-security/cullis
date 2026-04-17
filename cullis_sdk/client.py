@@ -29,7 +29,13 @@ from typing import Callable, Optional
 import httpx
 
 from cullis_sdk.auth import generate_dpop_keypair, build_dpop_proof, build_client_assertion
-from cullis_sdk.crypto.message_signer import sign_message, verify_signature
+from cullis_sdk.crypto.message_signer import (
+    ONESHOT_ENVELOPE_PROTO_VERSION,
+    sign_message,
+    sign_oneshot_envelope,
+    verify_oneshot_envelope_signature,
+    verify_signature,
+)
 from cullis_sdk.crypto.e2e import encrypt_for_agent, decrypt_from_agent
 from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult
 from cullis_sdk._logging import log, RED
@@ -820,8 +826,9 @@ class CullisClient:
         if transport == "envelope":
             # ADR-008 Phase 1 PR #3 — cross-org: encrypt with recipient pubkey.
             # The broker sees only the cipher_blob and verifies the outer
-            # signature. The recipient decrypts and verifies the inner
-            # signature for non-repudiation.
+            # envelope signature (audit F-A-3: full envelope, not just
+            # payload). The recipient decrypts and verifies the inner
+            # signature for non-repudiation on plaintext.
             recipient_pubkey = decision.get("target_cert_pem")
             if not recipient_pubkey:
                 raise RuntimeError(
@@ -833,18 +840,22 @@ class CullisClient:
                 f"oneshot:{corr_id}", sender_agent_id, client_seq=0,
             )
             wire_payload: dict[str, Any] = cipher_blob
-            wire_signature = sign_message(
-                self._signing_key_pem,
-                f"oneshot:{corr_id}",
-                sender_agent_id,
-                nonce,
-                timestamp,
-                cipher_blob,
-                client_seq=0,
-            )
         else:
             wire_payload = payload
-            wire_signature = inner_signature
+
+        # v2 outer envelope signature — covers mode, reply_to, correlation_id,
+        # timestamp, nonce and wire payload. Broker and recipient both verify
+        # over this exact canonical form (see audit F-A-1 / F-A-3).
+        wire_signature = sign_oneshot_envelope(
+            self._signing_key_pem,
+            correlation_id=corr_id,
+            sender_agent_id=sender_agent_id,
+            nonce=nonce,
+            timestamp=timestamp,
+            mode=transport,
+            reply_to=reply_to,
+            payload=wire_payload,
+        )
 
         body: dict[str, Any] = {
             "recipient_id": target_agent_id,
@@ -857,6 +868,7 @@ class CullisClient:
             "timestamp": timestamp,
             "ttl_seconds": ttl_seconds,
             "capabilities": capabilities or [],
+            "v": ONESHOT_ENVELOPE_PROTO_VERSION,
         }
         resp = self._http.post(
             f"{self.base}/v1/egress/message/send",
@@ -899,32 +911,92 @@ class CullisClient:
         return resp.json().get("messages", [])
 
     def decrypt_oneshot(self, inbox_row: dict) -> dict:
-        """Decrypt a one-shot envelope row returned by :meth:`receive_oneshot`.
+        """Decrypt and authenticate a one-shot envelope row returned by
+        :meth:`receive_oneshot`.
 
-        For ``mtls-only`` rows the payload is already plaintext —
-        returned as-is with ``sender_verified=False`` (the mTLS transport
-        already guaranteed sender identity at proxy-to-proxy level).
+        Audit F-A-1 / F-A-3 fix: the envelope signature now covers the
+        full envelope (mode, reply_to, correlation_id, nonce, timestamp,
+        payload), not just ``payload``. Verification is unconditional —
+        both ``mtls-only`` and ``envelope`` modes require a valid sender
+        signature over the v2 canonical form. ``mtls-only`` describes
+        key-wrap, not auth scope, so an unsigned envelope is always
+        rejected.
 
-        For ``envelope`` rows: AES-GCM decrypt with the caller's private
-        key, then verify the inner signature against the sender's cert
-        from the broker registry. Raises ``ValueError`` on decrypt or
-        signature failure.
+        Rejects v1 (pre-fix) envelopes with a clear error: envelopes and
+        recipients must upgrade together since the broker and proxy store
+        the wire envelope verbatim.
 
-        Returns ``{"payload": <plaintext_dict>, "sender_verified": bool,
+        For ``envelope`` rows: also AES-GCM decrypt with the caller's
+        private key and verify the inner signature against the sender's
+        cert from the broker registry. Raises ``ValueError`` on any
+        cryptographic failure.
+
+        Returns ``{"payload": <plaintext_dict>, "sender_verified": True,
         "mode": "mtls-only" | "envelope"}``.
         """
         import json as _json
         from cullis_sdk.crypto.e2e import verify_inner_signature
 
         envelope = _json.loads(inbox_row["payload_ciphertext"])
-        mode = envelope.get("mode", "mtls-only")
+
+        # Protocol version gate — v1 envelopes are hard-rejected. The
+        # product ships broker+SDK in lockstep; there's no mixed fleet.
+        v = envelope.get("v")
+        if v != ONESHOT_ENVELOPE_PROTO_VERSION:
+            raise ValueError(
+                f"Unsupported one-shot envelope version {v!r}; "
+                f"expected v={ONESHOT_ENVELOPE_PROTO_VERSION}. "
+                "Upgrade the sender's SDK/proxy."
+            )
+
+        # Required envelope identity fields. ``mode`` is NEVER defaulted —
+        # a missing mode is an authentication failure (see audit F-A-1).
+        if "mode" not in envelope:
+            raise ValueError("One-shot envelope missing 'mode' — rejected")
+        mode = envelope["mode"]
+        if mode not in ("mtls-only", "envelope"):
+            raise ValueError(f"One-shot envelope has unknown mode {mode!r}")
+        for required in ("signature", "nonce", "timestamp", "payload"):
+            if envelope.get(required) in (None, ""):
+                raise ValueError(
+                    f"One-shot envelope missing required field {required!r}"
+                )
+
         sender = inbox_row["sender_agent_id"]
         corr = inbox_row["correlation_id"]
 
+        # Cross-check: the envelope-embedded correlation_id must match the
+        # row's. If they disagree, some store rewrote one of them and we
+        # cannot trust either side.
+        env_corr = envelope.get("correlation_id")
+        if env_corr and env_corr != corr:
+            raise ValueError(
+                "One-shot envelope correlation_id does not match inbox row"
+            )
+
+        # Verify the v2 outer envelope signature against the sender's cert.
+        sender_cert_pem = self.get_agent_public_key(sender)
+        ok = verify_oneshot_envelope_signature(
+            sender_cert_pem,
+            envelope["signature"],
+            correlation_id=corr,
+            sender_agent_id=sender,
+            nonce=envelope["nonce"],
+            timestamp=envelope["timestamp"],
+            mode=mode,
+            reply_to=envelope.get("reply_to"),
+            payload=envelope["payload"],
+        )
+        if not ok:
+            raise ValueError(
+                "One-shot envelope signature verification failed — "
+                "envelope may have been tampered with post-send"
+            )
+
         if mode == "mtls-only":
             return {
-                "payload": envelope.get("payload", {}),
-                "sender_verified": False,
+                "payload": envelope["payload"],
+                "sender_verified": True,
                 "mode": mode,
             }
 
@@ -940,7 +1012,6 @@ class CullisClient:
             f"oneshot:{corr}", sender, client_seq=0,
         )
 
-        sender_cert_pem = self.get_agent_public_key(sender)
         verify_inner_signature(
             sender_cert_pem, inner_sig,
             f"oneshot:{corr}", sender,
@@ -966,10 +1037,13 @@ class CullisClient:
         reply tagged with the same ``correlation_id`` is in the caller's
         inbox, or ``TimeoutError`` after ``timeout`` seconds.
 
+        Audit F-A-1 fix: ``decrypt_oneshot`` always verifies the sender's
+        signature, so ``sender_verified`` is always ``True`` on success.
+        If a non-verifying row ever slips through this method raises
+        ``ValueError``.
+
         Returns ``{"correlation_id", "msg_id", "reply_to", "reply",
-        "sender", "mode", "sender_verified"}``. ``reply`` is the
-        decrypted + signature-verified plaintext for envelope mode, or
-        the passthrough payload for mtls-only.
+        "sender", "mode", "sender_verified"}``.
         """
         import json as _json
 
@@ -985,6 +1059,12 @@ class CullisClient:
                 if envelope.get("reply_to") != corr:
                     continue
                 decoded = self.decrypt_oneshot(row)
+                if not decoded["sender_verified"]:
+                    raise ValueError(
+                        "Reply for correlation_id "
+                        f"{corr} could not be verified — refusing to "
+                        "return unauthenticated plaintext."
+                    )
                 return {
                     "correlation_id": row["correlation_id"],
                     "msg_id": row["msg_id"],
@@ -1013,13 +1093,16 @@ class CullisClient:
         signature: str,
         ttl_seconds: int = 300,
         capabilities: list[str] | None = None,
+        mode: str = "mtls-only",
+        v: int = ONESHOT_ENVELOPE_PROTO_VERSION,
     ) -> dict:
         """Forward a one-shot envelope to the broker's cross-org queue.
 
         Used by the sender proxy's ``BrokerBridge`` after it has already
-        verified the local policy. The proxy signs the canonical payload
-        with ``session_id='oneshot:<correlation_id>'`` on the sender's
-        key before calling this; the broker re-verifies and persists.
+        verified the local policy. The sending agent signs the v2
+        canonical envelope form on its own key before calling this; the
+        broker re-verifies and persists. ``mode`` is propagated verbatim
+        so envelope-mode cipher_blobs ride through unchanged.
         """
         body = {
             "recipient_agent_id": recipient_agent_id,
@@ -1029,9 +1112,10 @@ class CullisClient:
             "signature": signature,
             "nonce": nonce,
             "timestamp": timestamp,
-            "mode": "mtls-only",
+            "mode": mode,
             "ttl_seconds": ttl_seconds,
             "capabilities": capabilities or [],
+            "v": v,
         }
         resp = self._authed_request(
             "POST", "/v1/broker/oneshot/forward", json=body,

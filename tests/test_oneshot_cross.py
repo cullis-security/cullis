@@ -20,7 +20,10 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.message_signer import (
+    ONESHOT_ENVELOPE_PROTO_VERSION,
+    sign_oneshot_envelope,
+)
 from tests.cert_factory import DPoPHelper, get_agent_key_pem, get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS, TestSessionLocal
 
@@ -91,14 +94,15 @@ def _build_forward_body(
     nonce = str(uuid.uuid4())
     ts = int(time.time()) if timestamp is None else timestamp
     key_pem = get_agent_key_pem(sender_agent_id, sender_org_id)
-    sig = sign_message(
+    sig = sign_oneshot_envelope(
         key_pem,
-        f"oneshot:{corr}",
-        sender_agent_id,
-        nonce,
-        ts,
-        payload,
-        client_seq=0,
+        correlation_id=corr,
+        sender_agent_id=sender_agent_id,
+        nonce=nonce,
+        timestamp=ts,
+        mode="mtls-only",
+        reply_to=reply_to,
+        payload=payload,
     )
     if tamper_signature:
         sig = sig[:-4] + ("AAAA" if not sig.endswith("AAAA") else "BBBB")
@@ -113,6 +117,7 @@ def _build_forward_body(
         "mode": "mtls-only",
         "ttl_seconds": 300,
         "capabilities": capabilities or [],
+        "v": ONESHOT_ENVELOPE_PROTO_VERSION,
     }
     return body, corr, nonce
 

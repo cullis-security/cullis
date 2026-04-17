@@ -28,7 +28,11 @@ from cullis_sdk.crypto.e2e import (
     encrypt_for_agent,
     verify_inner_signature,
 )
-from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.message_signer import (
+    ONESHOT_ENVELOPE_PROTO_VERSION,
+    sign_message,
+    sign_oneshot_envelope,
+)
 from tests.cert_factory import (
     DPoPHelper,
     get_agent_key_pem,
@@ -54,8 +58,13 @@ def _make_cipher_blob(
     payload: dict,
     nonce: str,
     timestamp: int,
+    reply_to: str | None = None,
 ) -> tuple[dict, str, str]:
-    """Return (cipher_blob, inner_signature, outer_signature)."""
+    """Return (cipher_blob, inner_signature, outer_envelope_signature).
+
+    Outer signature is v2: covers full envelope (mode=envelope, reply_to,
+    correlation_id, nonce, timestamp, cipher_blob).
+    """
     inner_sig = sign_message(
         sender_key_pem,
         f"oneshot:{correlation_id}",
@@ -69,14 +78,15 @@ def _make_cipher_blob(
         recipient_pubkey_pem, payload, inner_sig,
         f"oneshot:{correlation_id}", sender_agent_id, client_seq=0,
     )
-    outer_sig = sign_message(
+    outer_sig = sign_oneshot_envelope(
         sender_key_pem,
-        f"oneshot:{correlation_id}",
-        sender_agent_id,
-        nonce,
-        timestamp,
-        cipher_blob,
-        client_seq=0,
+        correlation_id=correlation_id,
+        sender_agent_id=sender_agent_id,
+        nonce=nonce,
+        timestamp=timestamp,
+        mode="envelope",
+        reply_to=reply_to,
+        payload=cipher_blob,
     )
     return cipher_blob, inner_sig, outer_sig
 
@@ -120,6 +130,7 @@ async def test_broker_accepts_envelope_mode(client: AsyncClient):
         "timestamp": ts,
         "mode": "envelope",
         "ttl_seconds": 300,
+        "v": ONESHOT_ENVELOPE_PROTO_VERSION,
     }
     r = await client.post(
         "/v1/broker/oneshot/forward", json=body,
@@ -180,6 +191,7 @@ async def test_broker_rejects_tampered_outer_signature_envelope(
         "timestamp": ts,
         "mode": "envelope",
         "ttl_seconds": 300,
+        "v": ONESHOT_ENVELOPE_PROTO_VERSION,
     }
     r = await client.post(
         "/v1/broker/oneshot/forward", json=body,
@@ -218,6 +230,7 @@ async def test_sdk_decrypt_oneshot_envelope_roundtrip(client: AsyncClient):
     )
 
     envelope_json = json.dumps({
+        "v": ONESHOT_ENVELOPE_PROTO_VERSION,
         "mode": "envelope",
         "payload": cipher_blob,
         "signature": _outer,
@@ -406,11 +419,18 @@ def test_send_oneshot_and_wait_returns_reply():
             alice_pubkey, reply_plain, inner,
             f"oneshot:{reply_corr}", "envt7::bob", client_seq=0,
         )
-        outer = sign_message(
-            bob_priv, f"oneshot:{reply_corr}", "envt7::bob",
-            reply_nonce, reply_ts, cipher, client_seq=0,
+        outer = sign_oneshot_envelope(
+            bob_priv,
+            correlation_id=reply_corr,
+            sender_agent_id="envt7::bob",
+            nonce=reply_nonce,
+            timestamp=reply_ts,
+            mode="envelope",
+            reply_to=request_corr,
+            payload=cipher,
         )
         env = {
+            "v": ONESHOT_ENVELOPE_PROTO_VERSION,
             "mode": "envelope",
             "payload": cipher,
             "signature": outer,

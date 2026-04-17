@@ -43,6 +43,14 @@ router = APIRouter(prefix="/v1/egress", tags=["egress-oneshot"])
 
 # ── Request / response schemas ──────────────────────────────────────
 
+# Audit F-A-3: v2 envelopes cover mode+reply_to+correlation_id+nonce+ts
+# in the outer signature. The proxy is on the inside of the trust
+# boundary and does not verify the sender signature itself, but it
+# propagates ``v`` and the enlarged envelope verbatim so the recipient
+# SDK can hard-reject legacy shapes.
+_ONESHOT_ENVELOPE_PROTO_VERSION = 2
+
+
 class SendOneShotRequest(BaseModel):
     """Body of ``POST /v1/egress/message/send``."""
 
@@ -91,6 +99,11 @@ class SendOneShotRequest(BaseModel):
         le=3600,
         description="Recipient offline TTL. 5 min default, max 1h.",
     )
+    v: int = Field(
+        _ONESHOT_ENVELOPE_PROTO_VERSION,
+        description="One-shot envelope protocol version. v2 signs the full "
+                    "envelope (audit F-A-1/F-A-3); v1 is hard-rejected.",
+    )
 
 
 class SendOneShotResponse(BaseModel):
@@ -126,9 +139,12 @@ def _iso(dt: datetime) -> str:
 def _serialize_envelope(body: SendOneShotRequest) -> str:
     """Pack the envelope exactly the same shape the session ``/send`` path
     uses, so the recipient's verification path stays agnostic.
+
+    Audit F-A-3: include ``v`` so the recipient can hard-reject v1.
     """
     import json
     envelope = {
+        "v": body.v,
         "mode": body.mode,
         "payload": body.payload,
         "signature": body.signature,
@@ -233,6 +249,8 @@ async def send_oneshot(
                 signature=body.signature or "",
                 ttl_seconds=body.ttl_seconds,
                 capabilities=body.capabilities,
+                mode=body.mode,
+                v=body.v,
             )
         except HTTPException:
             raise

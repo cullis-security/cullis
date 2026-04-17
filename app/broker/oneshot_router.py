@@ -35,7 +35,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import get_current_agent
-from app.auth.message_signer import verify_message_signature
+from app.auth.message_signer import (
+    ONESHOT_ENVELOPE_PROTO_VERSION,
+    verify_oneshot_envelope_signature,
+)
 from app.auth.models import TokenPayload
 from app.broker.db_models import BrokerOneShotMessageRecord
 from app.broker.ws_manager import ws_manager
@@ -97,6 +100,11 @@ class ForwardOneShotRequest(BaseModel):
         300, ge=10, le=3600,
         description="Broker-side TTL for offline recipients.",
     )
+    v: int = Field(
+        ONESHOT_ENVELOPE_PROTO_VERSION,
+        description="One-shot envelope protocol version. Audit F-A-1/F-A-3: "
+                    "v2 signature covers full envelope; v1 is hard-rejected.",
+    )
 
 
 class ForwardOneShotResponse(BaseModel):
@@ -132,8 +140,12 @@ def _iso(dt: datetime) -> str:
 def _build_envelope_json(body: ForwardOneShotRequest) -> str:
     """Serialize the envelope exactly the shape the proxy's one-shot
     router expects when it lazy-mirrors into ``local_messages``.
+
+    Audit F-A-3: ``v`` is stored alongside the rest so recipient SDKs
+    can hard-reject v1 envelopes.
     """
     envelope = {
+        "v": body.v,
         "mode": body.mode,
         "payload": body.payload,
         "signature": body.signature,
@@ -319,22 +331,46 @@ async def forward_oneshot(
             detail="Timestamp outside freshness window — possible replay",
         )
 
-    # ── Verify signature ──────────────────────────────────────────────
+    # ── Protocol version gate ─────────────────────────────────────────
+    # Audit F-A-3: v1 senders used a payload-only signature that left
+    # ``mode``, ``reply_to``, ``correlation_id``, ``nonce``, ``timestamp``
+    # unauthenticated in the stored form. v2 covers the full envelope;
+    # reject anything else.
+    if body.v != ONESHOT_ENVELOPE_PROTO_VERSION:
+        await log_event(
+            db, "broker.oneshot_denied", "denied",
+            agent_id=current_agent.agent_id, org_id=current_agent.org,
+            details={
+                "correlation_id": body.correlation_id,
+                "reason": "unsupported_envelope_version",
+                "v": body.v,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unsupported one-shot envelope version {body.v}; "
+                f"expected v={ONESHOT_ENVELOPE_PROTO_VERSION}"
+            ),
+        )
+
+    # ── Verify envelope signature ─────────────────────────────────────
     sender_rec = await get_agent_by_id(db, current_agent.agent_id)
     if sender_rec is None or not sender_rec.cert_pem:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Sender certificate not available — log in before sending",
         )
-    verify_message_signature(
+    verify_oneshot_envelope_signature(
         sender_rec.cert_pem,
         body.signature,
-        f"oneshot:{body.correlation_id}",
-        current_agent.agent_id,
-        body.nonce,
-        body.timestamp,
-        body.payload,
-        client_seq=0,
+        correlation_id=body.correlation_id,
+        sender_agent_id=current_agent.agent_id,
+        nonce=body.nonce,
+        timestamp=body.timestamp,
+        mode=body.mode,
+        reply_to=body.reply_to_correlation_id,
+        payload=body.payload,
     )
 
     # ── Dedup + insert ────────────────────────────────────────────────

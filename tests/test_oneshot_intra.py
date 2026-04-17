@@ -17,7 +17,11 @@ from cryptography.hazmat.primitives import serialization
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
-from cullis_sdk.crypto.message_signer import sign_message
+from cullis_sdk.crypto.message_signer import (
+    ONESHOT_ENVELOPE_PROTO_VERSION,
+    sign_message,
+    sign_oneshot_envelope,
+)
 from tests.cert_factory import make_agent_cert
 
 
@@ -105,14 +109,15 @@ def _build_send_body(
     corr_id = correlation_id or str(uuid.uuid4())
     nonce = str(uuid.uuid4())
     ts = int(time.time())
-    sig = sign_message(
+    sig = sign_oneshot_envelope(
         sender_priv,
-        f"oneshot:{corr_id}",
-        sender_agent_id,
-        nonce,
-        ts,
-        payload,
-        client_seq=0,
+        correlation_id=corr_id,
+        sender_agent_id=sender_agent_id,
+        nonce=nonce,
+        timestamp=ts,
+        mode="mtls-only",
+        reply_to=reply_to,
+        payload=payload,
     )
     body = {
         "recipient_id": recipient_id,
@@ -124,6 +129,7 @@ def _build_send_body(
         "nonce": nonce,
         "timestamp": ts,
         "ttl_seconds": ttl_seconds,
+        "v": ONESHOT_ENVELOPE_PROTO_VERSION,
     }
     return body, corr_id
 
