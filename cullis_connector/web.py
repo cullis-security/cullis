@@ -90,10 +90,23 @@ class _Pending:
 
 _pending: _Pending | None = None
 
+# ── MCP registration session state (ADR-009 sandbox) ─────────────────────
+#
+# Admin secret required to call the Mastio /v1/admin/mcp-resources API.
+# Kept in process memory only — never persisted. The user re-enters it on
+# each Connector restart. Prevents shoulder-surfing post-quit.
+
+_mastio_admin_secret: str | None = None
+
 
 def _clear_pending() -> None:
     global _pending
     _pending = None
+
+
+def _set_admin_secret(secret: str | None) -> None:
+    global _mastio_admin_secret
+    _mastio_admin_secret = secret or None
 
 
 # ── App factory ──────────────────────────────────────────────────────────
@@ -422,6 +435,169 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             },
             status_code=400,
         )
+
+    # ── MCP resource registration (ADR-009 sandbox) ──────────────────────
+
+    def _mastio_client() -> httpx.Client:
+        identity = load_identity(config.config_dir)
+        base = identity.metadata.site_url.rstrip("/")
+        return httpx.Client(
+            base_url=base, verify=config.verify_tls, timeout=10.0,
+        )
+
+    def _mcp_admin_headers() -> dict[str, str]:
+        if not _mastio_admin_secret:
+            raise RuntimeError("admin secret not set")
+        return {"X-Admin-Secret": _mastio_admin_secret}
+
+    @app.get("/mcp", response_class=HTMLResponse)
+    def mcp_get(request: Request, error: str | None = None) -> Response:
+        """MCP resource registration screen (Connector-side admin UI).
+
+        Gated on identity existing — this is a post-enrollment admin flow.
+        If no admin secret is in session, render a prompt form first.
+        """
+        if not has_identity(config.config_dir):
+            return RedirectResponse("/setup", status_code=303)
+
+        identity = load_identity(config.config_dir)
+        meta = identity.metadata
+        site_host = _host_of(meta.site_url)
+
+        resources: list[dict[str, Any]] = []
+        resources_error: str | None = None
+        if _mastio_admin_secret:
+            try:
+                with _mastio_client() as c:
+                    r = c.get(
+                        "/v1/admin/mcp-resources",
+                        headers=_mcp_admin_headers(),
+                    )
+                    if r.status_code == 403:
+                        resources_error = "admin secret rejected (403)"
+                    else:
+                        r.raise_for_status()
+                        resources = r.json()
+            except Exception as exc:
+                resources_error = f"failed to fetch: {exc}"
+
+        return templates.TemplateResponse(
+            request,
+            "mcp.html",
+            {
+                "connector_status": "online",
+                "connector_status_label": "Online",
+                "agent_id": meta.agent_id or "(unassigned)",
+                "site_host": site_host,
+                "admin_secret_set": _mastio_admin_secret is not None,
+                "resources": resources,
+                "resources_error": resources_error,
+                "error": error,
+            },
+        )
+
+    @app.post("/mcp/admin-secret")
+    def mcp_set_admin_secret(admin_secret: str = Form(...)) -> Response:
+        _set_admin_secret(admin_secret.strip())
+        return RedirectResponse("/mcp", status_code=303)
+
+    @app.post("/mcp/admin-secret/clear")
+    def mcp_clear_admin_secret() -> Response:
+        _set_admin_secret(None)
+        return RedirectResponse("/mcp", status_code=303)
+
+    @app.post("/mcp/register")
+    def mcp_register(
+        name: str = Form(...),
+        endpoint_url: str = Form(...),
+        description: str = Form(""),
+        required_capability: str = Form(""),
+    ) -> Response:
+        if not _mastio_admin_secret:
+            return RedirectResponse(
+                "/mcp?error=" + "admin+secret+not+set", status_code=303,
+            )
+        identity = load_identity(config.config_dir)
+        body: dict[str, Any] = {
+            "name": name.strip(),
+            "endpoint_url": endpoint_url.strip(),
+            "auth_type": "none",
+            "enabled": True,
+        }
+        if description.strip():
+            body["description"] = description.strip()
+        if required_capability.strip():
+            body["required_capability"] = required_capability.strip()
+        # The Mastio scopes resources per-org; pull it from the enrolled
+        # agent_id prefix (``org::agent``).
+        agent_id = identity.metadata.agent_id or ""
+        if "::" in agent_id:
+            body["org_id"] = agent_id.split("::", 1)[0]
+
+        try:
+            with _mastio_client() as c:
+                r = c.post(
+                    "/v1/admin/mcp-resources",
+                    headers=_mcp_admin_headers(),
+                    json=body,
+                )
+                if r.status_code == 403:
+                    return RedirectResponse(
+                        "/mcp?error=admin+secret+rejected", status_code=303,
+                    )
+                if r.status_code == 409:
+                    return RedirectResponse(
+                        "/mcp?error=name+already+exists", status_code=303,
+                    )
+                if not r.is_success:
+                    return RedirectResponse(
+                        "/mcp?error=" + f"registration+failed+({r.status_code})",
+                        status_code=303,
+                    )
+        except Exception as exc:
+            _log.warning("mcp_register failed: %s", exc)
+            return RedirectResponse("/mcp?error=network+error", status_code=303)
+
+        return RedirectResponse("/mcp", status_code=303)
+
+    @app.post("/mcp/{resource_id}/delete")
+    def mcp_delete(resource_id: str) -> Response:
+        if not _mastio_admin_secret:
+            return RedirectResponse("/mcp", status_code=303)
+        try:
+            with _mastio_client() as c:
+                c.delete(
+                    f"/v1/admin/mcp-resources/{resource_id}",
+                    headers=_mcp_admin_headers(),
+                )
+        except Exception as exc:
+            _log.warning("mcp_delete failed: %s", exc)
+        return RedirectResponse("/mcp", status_code=303)
+
+    @app.post("/mcp/{resource_id}/bind-self")
+    def mcp_bind_self(resource_id: str) -> Response:
+        """Bind the currently-enrolled agent to this resource."""
+        if not _mastio_admin_secret:
+            return RedirectResponse("/mcp", status_code=303)
+        identity = load_identity(config.config_dir)
+        agent_id = identity.metadata.agent_id
+        if not agent_id:
+            return RedirectResponse(
+                "/mcp?error=agent_id+unknown", status_code=303,
+            )
+        try:
+            with _mastio_client() as c:
+                r = c.post(
+                    "/v1/admin/mcp-resources/bindings",
+                    headers=_mcp_admin_headers(),
+                    json={"agent_id": agent_id, "resource_id": resource_id},
+                )
+                if r.status_code == 409:
+                    # idempotent from the UX standpoint
+                    pass
+        except Exception as exc:
+            _log.warning("mcp_bind_self failed: %s", exc)
+        return RedirectResponse("/mcp", status_code=303)
 
     return app
 

@@ -492,6 +492,10 @@ app.include_router(sign_assertion_router)
 from mcp_proxy.admin.info import router as admin_info_router
 app.include_router(admin_info_router)
 
+# ADR-009 sandbox — Connector JSON API for MCP resources + bindings.
+from mcp_proxy.admin.mcp_resources import router as admin_mcp_resources_router
+app.include_router(admin_mcp_resources_router)
+
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
 # Must precede the reverse-proxy catch-all: /v1/registry/agents/{id}/public-key
 # would otherwise fall into the `/v1/registry/*` forward prefix and never

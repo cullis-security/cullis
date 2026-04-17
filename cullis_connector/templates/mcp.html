@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}MCP Resources{% endblock %}
+{% block content %}
+
+<section class="panel">
+    <div class="panel-eyebrow">MCP Resources</div>
+    <h1 class="panel-title">Register an MCP server</h1>
+    <p style="color: var(--text-muted); margin: 8px 0 18px;">
+        These resources are registered on the Mastio at
+        <strong>{{ site_host }}</strong> for agent
+        <strong>{{ agent_id }}</strong>. Admin secret stays in memory only
+        and is cleared on Connector restart.
+    </p>
+
+    {% if error %}
+    <div class="error-banner">⚠ {{ error.replace('+', ' ') }}</div>
+    {% endif %}
+
+    {% if not admin_secret_set %}
+    <form method="post" action="/mcp/admin-secret" class="form">
+        <label for="admin_secret" class="form-label">Mastio admin secret</label>
+        <input type="password" id="admin_secret" name="admin_secret" required
+               placeholder="e.g. demo-proxy-admin-a" autocomplete="off">
+        <p class="form-hint">Required to call the Mastio admin API. Not persisted.</p>
+        <button type="submit" class="btn primary">Unlock admin mode</button>
+    </form>
+
+    {% else %}
+
+    <div class="admin-status">
+        <span class="status-dot online"></span>
+        <span>Admin mode unlocked</span>
+        <form method="post" action="/mcp/admin-secret/clear" style="display:inline;margin-left:12px;">
+            <button type="submit" class="btn ghost small">Lock</button>
+        </form>
+    </div>
+
+    <form method="post" action="/mcp/register" class="form">
+        <label for="name" class="form-label">Resource name</label>
+        <input type="text" id="name" name="name" required
+               pattern="[A-Za-z0-9._-]+" placeholder="e.g. catalog">
+
+        <label for="endpoint_url" class="form-label">Endpoint URL</label>
+        <input type="url" id="endpoint_url" name="endpoint_url" required
+               placeholder="http://mcp-catalog:9300/">
+
+        <label for="description" class="form-label">Description (optional)</label>
+        <input type="text" id="description" name="description"
+               placeholder="Product catalog MCP">
+
+        <label for="required_capability" class="form-label">Required capability (optional)</label>
+        <input type="text" id="required_capability" name="required_capability"
+               placeholder="catalog.read">
+
+        <button type="submit" class="btn primary">Register</button>
+    </form>
+
+    {% if resources_error %}
+    <div class="error-banner">⚠ {{ resources_error }}</div>
+    {% endif %}
+
+    {% if resources %}
+    <h2 class="panel-subtitle">Registered resources</h2>
+    <table class="mcp-list">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Endpoint</th>
+                <th>Org</th>
+                <th>Enabled</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in resources %}
+            <tr>
+                <td><strong>{{ r.name }}</strong>{% if r.description %}<br><span style="color:var(--text-muted);font-size:0.85em">{{ r.description }}</span>{% endif %}</td>
+                <td><code>{{ r.endpoint_url }}</code></td>
+                <td>{{ r.org_id or "—" }}</td>
+                <td>{{ "✓" if r.enabled else "—" }}</td>
+                <td style="white-space:nowrap;">
+                    <form method="post" action="/mcp/{{ r.resource_id }}/bind-self" style="display:inline;">
+                        <button type="submit" class="btn ghost small" title="Bind this Connector's agent">Bind me</button>
+                    </form>
+                    <form method="post" action="/mcp/{{ r.resource_id }}/delete" style="display:inline;">
+                        <button type="submit" class="btn danger small"
+                                onclick="return confirm('Delete {{ r.name }}?')">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--text-muted);margin-top:16px;">No resources registered yet.</p>
+    {% endif %}
+
+    {% endif %}
+</section>
+
+<p style="text-align:center;margin-top:16px;">
+    <a href="/connected" style="color:var(--text-muted);">← Back to identity</a>
+</p>
+
+{% endblock %}
