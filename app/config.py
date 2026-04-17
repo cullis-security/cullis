@@ -150,6 +150,35 @@ def validate_config(settings: "Settings") -> None:
                 "ADMIN_SECRET is still the insecure default in production.")
             raise SystemExit(1)
 
+        # Audit F-E-03 — KMS_BACKEND=local reads the CA private key straight
+        # from the container filesystem. No audit trail, no rotation story,
+        # and a ConfigMap/Secret mount compromise leaks the CA key. Only
+        # 'vault' is supported in production per CLAUDE.md KMS section.
+        if settings.kms_backend.lower() != "vault":
+            _startup_logger.critical(
+                "KMS_BACKEND=%r is not supported in production. "
+                "Set KMS_BACKEND=vault (HashiCorp Vault KV v2) and configure "
+                "VAULT_ADDR + VAULT_TOKEN. 'local' keeps the CA private key "
+                "on the filesystem with no audit trail — dev/test only.",
+                settings.kms_backend,
+            )
+            raise SystemExit(1)
+
+        # Audit F-E-04 — DPoP replay protection requires a shared JTI store
+        # across workers. An empty REDIS_URL in production silently falls
+        # back to per-process memory: replay windows survive crashes and
+        # multi-worker deploys (Helm / uvicorn --workers N>1) can't share
+        # JTIs at all.
+        if not settings.redis_url:
+            _startup_logger.critical(
+                "REDIS_URL is empty in production. A shared Redis is "
+                "required for DPoP replay protection across workers "
+                "(RFC 9449) — in-memory fallback is single-worker only. "
+                "Set REDIS_URL to the redis:// or rediss:// URL of your "
+                "shared Redis instance.",
+            )
+            raise SystemExit(1)
+
     # ── Fatal checks (all environments) ─────────────────────────────────────
     if not is_production and settings.admin_secret == _INSECURE_DEFAULT_SECRET:
         _startup_logger.critical(
@@ -194,7 +223,12 @@ def validate_config(settings: "Settings") -> None:
                 "DASHBOARD_SIGNING_KEY not set — auto-generating per-process key. "
                 "Dashboard sessions will not persist across restarts.")
 
-    _startup_logger.info("Startup validation passed (environment=%s).", settings.environment)
+    _startup_logger.info(
+        "Startup validation passed (environment=%s, kms_backend=%s, redis=%s).",
+        settings.environment,
+        settings.kms_backend,
+        "configured" if settings.redis_url else "in-memory",
+    )
 
 
 _policy_override: bool | None = None  # None = use Settings value

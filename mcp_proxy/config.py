@@ -220,6 +220,22 @@ def validate_config(settings: ProxySettings) -> None:
             )
             raise SystemExit(1)
 
+        # Audit F-E-03 (proxy analogue) — secret_backend=env keeps connector
+        # and agent private keys in the proxy process environment or in the
+        # local sqlite, with no audit trail on reads and no rotation story.
+        # Only 'vault' is supported in production. Mirrors the broker's
+        # KMS_BACKEND=vault requirement.
+        if settings.secret_backend.lower() != "vault":
+            _log.critical(
+                "MCP_PROXY_SECRET_BACKEND=%r is not supported in production. "
+                "Set MCP_PROXY_SECRET_BACKEND=vault and configure "
+                "MCP_PROXY_VAULT_ADDR + MCP_PROXY_VAULT_TOKEN. 'env' keeps "
+                "agent private keys at rest in the process environment — "
+                "dev/test only.",
+                settings.secret_backend,
+            )
+            raise SystemExit(1)
+
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:
         _log.warning(
@@ -237,7 +253,13 @@ def validate_config(settings: ProxySettings) -> None:
             "External JWT validation will not work until configured."
         )
 
-    _log.info("Startup validation passed (environment=%s).", settings.environment)
+    _log.info(
+        "Startup validation passed (environment=%s, secret_backend=%s, "
+        "standalone=%s).",
+        settings.environment,
+        settings.secret_backend,
+        settings.standalone,
+    )
 
 
 @lru_cache
