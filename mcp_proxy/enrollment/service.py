@@ -122,6 +122,40 @@ async def list_pending(conn: AsyncConnection) -> list[dict[str, Any]]:
 # ── Writes ───────────────────────────────────────────────────────────────
 
 
+def _validate_and_compute_dpop_jkt(dpop_jwk: dict | None) -> str | None:
+    """Audit F-B-11 Phase 3b — validate a client-submitted public JWK and
+    return its RFC 7638 thumbprint.
+
+    Refuses private key material (``d``), unsupported kty, malformed
+    coordinates. Returns None when the caller supplied nothing — backwards
+    compat with pre-Phase-3c SDKs.
+    """
+    if dpop_jwk is None:
+        return None
+    if not isinstance(dpop_jwk, dict) or not dpop_jwk:
+        raise EnrollmentError(
+            "dpop_jwk must be a non-empty object", http_status=400,
+        )
+    if "d" in dpop_jwk:
+        raise EnrollmentError(
+            "dpop_jwk must be the public JWK — private material ('d') rejected",
+            http_status=400,
+        )
+    kty = dpop_jwk.get("kty")
+    if kty not in ("EC", "RSA"):
+        raise EnrollmentError(
+            f"dpop_jwk kty {kty!r} unsupported — expected 'EC' (P-256) or 'RSA'",
+            http_status=400,
+        )
+    try:
+        from mcp_proxy.auth.dpop import compute_jkt
+        return compute_jkt(dpop_jwk)
+    except (ValueError, KeyError) as exc:
+        raise EnrollmentError(
+            f"dpop_jwk is malformed: {exc}", http_status=400,
+        ) from exc
+
+
 async def start_enrollment(
     conn: AsyncConnection,
     *,
@@ -131,6 +165,7 @@ async def start_enrollment(
     reason: str | None,
     device_info: str | None,
     api_key_hash: str | None = None,
+    dpop_jwk: dict | None = None,
 ) -> StartedEnrollment:
     """Create a new pending enrollment.
 
@@ -143,7 +178,18 @@ async def start_enrollment(
     approve() so the connector can authenticate to /v1/egress/* from day
     one. Legacy connectors that don't send this still work — the server
     generates its own key in approve() for backward compatibility.
+
+    ``dpop_jwk`` (F-B-11 Phase 3b) is the optional public JWK of the
+    Connector's DPoP keypair. When supplied the server computes its RFC
+    7638 thumbprint and persists it on the pending row; ``approve`` then
+    copies it to ``internal_agents.dpop_jkt`` so the egress dep can
+    enforce proof binding from the first request. Omitting it leaves the
+    agent on the mode=optional grace path until the admin endpoint
+    (#206) populates it manually or a re-enrollment with a DPoP-aware
+    SDK supplies one.
     """
+    dpop_jkt = _validate_and_compute_dpop_jkt(dpop_jwk)
+
     fingerprint = _pubkey_fingerprint(pubkey_pem)
     session_id = secrets.token_urlsafe(24)
     now = _now()
@@ -154,11 +200,11 @@ async def start_enrollment(
             """INSERT INTO pending_enrollments (
                 session_id, pubkey_pem, pubkey_fingerprint,
                 requester_name, requester_email, reason, device_info,
-                status, created_at, expires_at, api_key_hash
+                status, created_at, expires_at, api_key_hash, dpop_jkt
             ) VALUES (
                 :sid, :pk, :fp,
                 :name, :email, :reason, :device,
-                'pending', :created, :expires, :keyhash
+                'pending', :created, :expires, :keyhash, :dpop_jkt
             )"""
         ),
         {
@@ -172,6 +218,7 @@ async def start_enrollment(
             "created": _iso(now),
             "expires": _iso(expires_at),
             "keyhash": api_key_hash,
+            "dpop_jkt": dpop_jkt,
         },
     )
     return StartedEnrollment(session_id=session_id, expires_at=expires_at)
@@ -256,8 +303,9 @@ async def approve(
             text(
                 """INSERT INTO internal_agents
                    (agent_id, display_name, capabilities, api_key_hash,
-                    cert_pem, created_at, is_active, device_info)
-                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1, :device)"""
+                    cert_pem, created_at, is_active, device_info, dpop_jkt)
+                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1,
+                           :device, :dpop_jkt)"""
             ),
             {
                 "aid": agent_id,
@@ -270,6 +318,11 @@ async def approve(
                 # and kept through approval. We store it verbatim — the
                 # dashboard parses it via a Jinja filter for display.
                 "device": record.get("device_info"),
+                # F-B-11 Phase 3b (#181) — JWK thumbprint the SDK pinned
+                # at start_enrollment. NULL for pre-Phase-3c clients; the
+                # egress dep's grace path accepts them until operators
+                # flip to required mode (Phase 6).
+                "dpop_jkt": record.get("dpop_jkt"),
             },
         )
         await conn.execute(
