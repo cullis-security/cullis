@@ -497,6 +497,41 @@ async def approve_org(
             "message": f"Organization '{org_id}' approved."}
 
 
+class MastioPubkeyPatch(BaseModel):
+    mastio_pubkey: str | None = Field(None, max_length=1024)
+
+
+@admin_router.patch("/orgs/{org_id}/mastio-pubkey",
+                    dependencies=[Depends(_require_admin)])
+async def patch_org_mastio_pubkey(
+    org_id: str,
+    body: MastioPubkeyPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    """ADR-009 Phase 2 — pin or clear the mastio ES256 counter-signature
+    pubkey for an existing org. Enables the counter-sig enforcement flow
+    post-proxy-boot (when the proxy generates its mastio identity after
+    the broker onboarding has already completed).
+
+    Body ``{mastio_pubkey: null}`` clears the column → reverts to legacy.
+    """
+    org = await get_org_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+    _validate_mastio_pubkey(body.mastio_pubkey)
+    await update_org_mastio_pubkey(db, org_id, body.mastio_pubkey)
+    await log_event(
+        db, "admin.mastio_pubkey_patched", "ok",
+        org_id=org_id,
+        details={"cleared": body.mastio_pubkey is None},
+    )
+    return {
+        "org_id": org_id,
+        "mastio_pubkey_set": body.mastio_pubkey is not None,
+    }
+
+
 @admin_router.post("/orgs/{org_id}/reject",
                    dependencies=[Depends(_require_admin)])
 async def reject_org(

@@ -593,3 +593,25 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # ── ADR-009 Phase 2 — pin mastio_pubkey on Court post-proxy-boot ──────────
+
+  bootstrap-mastio:
+    build: ./bootstrap
+    depends_on:
+      broker:
+        condition: service_healthy
+      proxy-a:
+        condition: service_healthy
+      proxy-b:
+        condition: service_healthy
+    command: ["python", "/app/bootstrap_mastio.py"]
+    environment:
+      BROKER_URL:            "http://broker:8000"
+      ADMIN_SECRET:          "sandbox-admin-secret-change-me"
+      PROXY_A_URL:           "http://proxy-a:9100"
+      PROXY_A_ADMIN_SECRET:  "sandbox-proxy-admin-a"
+      PROXY_B_URL:           "http://proxy-b:9200"
+      PROXY_B_ADMIN_SECRET:  "sandbox-proxy-admin-b"
+    networks: [public-wan]
+    restart: "no"
