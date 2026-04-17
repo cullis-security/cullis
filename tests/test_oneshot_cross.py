@@ -22,7 +22,6 @@ from sqlalchemy import select
 
 from cullis_sdk.crypto.message_signer import (
     ONESHOT_ENVELOPE_PROTO_VERSION,
-    sign_message,
     sign_oneshot_envelope,
 )
 from tests.cert_factory import DPoPHelper, get_agent_key_pem, get_org_ca_pem
