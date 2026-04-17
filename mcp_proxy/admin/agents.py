@@ -205,7 +205,11 @@ async def create_agent(
                     "hash": api_key_hash,
                     "cert": cert_pem,
                     "now": ts,
-                    "federated": 1 if body.federated else 0,
+                    # Bind a Python bool so SQLAlchemy + asyncpg write a
+                    # real BOOLEAN on Postgres (integer binds raise
+                    # "column is of type boolean but expression is of type
+                    # integer"). SQLite accepts the bool as 0/1.
+                    "federated": bool(body.federated),
                 },
             )
     except IntegrityError as exc:
@@ -292,7 +296,7 @@ async def patch_federated(agent_id: str, body: FederatedPatch) -> AgentOut:
                  WHERE agent_id = :aid
                 """
             ),
-            {"fed": 1 if body.federated else 0, "aid": agent_id},
+            {"fed": bool(body.federated), "aid": agent_id},
         )
 
         updated = (await conn.execute(

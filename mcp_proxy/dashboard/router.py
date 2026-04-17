@@ -1312,7 +1312,7 @@ async def agent_toggle_federate(request: Request, agent_id: str):
                  WHERE agent_id = :aid
                 """
             ),
-            {"fed": 1 if new_flag else 0, "aid": agent_id},
+            {"fed": bool(new_flag), "aid": agent_id},
         )
 
     await log_audit(

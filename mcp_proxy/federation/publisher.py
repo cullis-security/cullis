@@ -70,7 +70,13 @@ STATS_INTERVAL_S = _env_float("MCP_PROXY_FEDERATION_STATS_INTERVAL_S", 300.0)
 
 
 async def _fetch_pending(conn) -> list[dict]:
-    """Rows that need a push on this tick."""
+    """Rows that need a push on this tick.
+
+    ``federated`` is a BOOLEAN column (migration 0010). Postgres rejects
+    ``federated = 1`` with ``operator does not exist: boolean = integer``,
+    so the predicate is a bare column reference — valid on both SQLite
+    (truthy integer) and Postgres (native bool) without casts.
+    """
     result = await conn.execute(
         text(
             """
@@ -78,7 +84,7 @@ async def _fetch_pending(conn) -> list[dict]:
                    is_active, federated, federation_revision,
                    last_pushed_revision
               FROM internal_agents
-             WHERE (federated = 1 OR federated_at IS NOT NULL)
+             WHERE (federated OR federated_at IS NOT NULL)
                AND federation_revision > last_pushed_revision
             """
         ),
@@ -98,7 +104,11 @@ async def _mark_pushed(conn, agent_id: str, revision: int) -> None:
         ),
         {
             "rev": revision,
-            "now": datetime.now(timezone.utc).isoformat(),
+            # ``federated_at`` is DateTime(timezone=True) — asyncpg rejects
+            # ISO strings with "expected a datetime.date or datetime.datetime
+            # instance". SQLAlchemy + asyncpg accept a datetime directly on
+            # both SQLite and Postgres.
+            "now": datetime.now(timezone.utc),
             "aid": agent_id,
         },
     )
