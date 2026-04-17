@@ -273,7 +273,7 @@ async def lifespan(app: FastAPI):
     # is loaded (pubkey pinned at the Court so counter-sig verification
     # succeeds). Standalone proxies skip entirely.
     if broker_url and getattr(agent_mgr, "mastio_loaded", False):
-        from mcp_proxy.federation.publisher import run_publisher
+        from mcp_proxy.federation.publisher import run_publisher, run_stats_publisher
         pub_stop = asyncio.Event()
         pub_task = asyncio.create_task(
             run_publisher(app.state, stop_event=pub_stop),
@@ -282,6 +282,18 @@ async def lifespan(app: FastAPI):
         app.state.federation_publisher_stop = pub_stop
         app.state.federation_publisher_task = pub_task
         _log.info("federation publisher started (org=%s)", org_id)
+
+        # Aggregate-stats publisher — fleet-size counters for the Court
+        # dashboard. Separate task so a slow stats push never delays the
+        # per-agent revision loop above.
+        stats_stop = asyncio.Event()
+        stats_task = asyncio.create_task(
+            run_stats_publisher(app.state, stop_event=stats_stop),
+            name="federation_stats_publisher",
+        )
+        app.state.federation_stats_stop = stats_stop
+        app.state.federation_stats_task = stats_task
+        _log.info("federation stats publisher started (org=%s)", org_id)
 
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
@@ -316,6 +328,20 @@ async def lifespan(app: FastAPI):
             sub_task.cancel()
             try:
                 await sub_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    stats_stop = getattr(app.state, "federation_stats_stop", None)
+    stats_task = getattr(app.state, "federation_stats_task", None)
+    if stats_stop is not None:
+        stats_stop.set()
+    if stats_task is not None:
+        try:
+            await asyncio.wait_for(stats_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            stats_task.cancel()
+            try:
+                await stats_task
             except (asyncio.CancelledError, Exception):
                 pass
 

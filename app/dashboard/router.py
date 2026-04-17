@@ -696,6 +696,19 @@ async def orgs_list(request: Request, db: AsyncSession = Depends(get_db)):
     org_list = []
     for org in orgs:
         sealed = bool(getattr(org, "sealed", False))
+        # Mastio-pushed fleet stats land in metadata_json["stats"] via
+        # POST /v1/federation/publish-stats (ADR-010 Phase 3 companion).
+        # Orgs that haven't pushed yet (or predate the publisher) render
+        # as dashes — never blank — so the operator can spot missing
+        # telemetry without mistaking it for a zero-agent fleet.
+        mastio_stats = None
+        try:
+            meta = org.extra  # parses metadata_json
+            raw_stats = meta.get("stats") if isinstance(meta, dict) else None
+            if isinstance(raw_stats, dict):
+                mastio_stats = raw_stats
+        except (ValueError, TypeError):
+            pass
         org_list.append({
             "org_id": org.org_id,
             "display_name": org.display_name,
@@ -703,6 +716,7 @@ async def orgs_list(request: Request, db: AsyncSession = Depends(get_db)):
             "webhook_url": org.webhook_url,
             "ca_certificate": org.ca_certificate,
             "agent_count": agent_counts.get(org.org_id, 0),
+            "mastio_stats": mastio_stats,
             "sealed": sealed,
             "reauth_active": (
                 sealed and active_session.has_reauth_scope(org.org_id)

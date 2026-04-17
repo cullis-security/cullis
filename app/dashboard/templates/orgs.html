@@ -178,6 +178,7 @@
                         </a>
                     </th>
                     <th class="px-5 py-2.5 text-right mono text-[10px] font-medium text-white/40 uppercase tracking-wider">Agents</th>
+                    <th class="px-5 py-2.5 text-left mono text-[10px] font-medium text-white/40 uppercase tracking-wider" title="Pushed by the Mastio every few minutes. Dashes mean the Mastio hasn't reported yet.">Mastio Stats</th>
                     <th class="px-5 py-2.5 text-left mono text-[10px] font-medium text-white/40 uppercase tracking-wider">PDP Webhook</th>
                     <th class="px-5 py-2.5 text-left mono text-[10px] font-medium text-white/40 uppercase tracking-wider">CA</th>
                     <th class="px-5 py-2.5 text-right mono text-[10px] font-medium text-white/40 uppercase tracking-wider">Actions</th>
@@ -211,6 +212,26 @@
                         </div>
                     </td>
                     <td class="px-5 py-3 text-right mono text-[13px] text-white/80 tnum">{{ org.agent_count }}</td>
+                    <td class="px-5 py-3">
+                        {% if org.mastio_stats %}
+                        <div class="flex items-baseline gap-2">
+                            <span class="mono text-[13px] text-white/85 tnum">{{ org.mastio_stats.agent_active_count }}</span>
+                            <span class="mono text-[11px] text-white/40 tnum">/ {{ org.mastio_stats.agent_total_count }}</span>
+                            <span class="mono text-[10px] uppercase tracking-wider text-white/35">active</span>
+                        </div>
+                        <div class="flex items-baseline gap-2 mt-0.5">
+                            <span class="mono text-[13px] text-[#00e5c7]/85 tnum">{{ org.mastio_stats.backend_count }}</span>
+                            <span class="mono text-[10px] uppercase tracking-wider text-white/35">backends</span>
+                        </div>
+                        {% if org.mastio_stats.updated_at %}
+                        <div class="mono text-[9px] text-white/25 mt-0.5" title="Last snapshot pushed by the Mastio">
+                            {{ org.mastio_stats.updated_at[:19] }}
+                        </div>
+                        {% endif %}
+                        {% else %}
+                        <span class="mono text-[10px] text-white/25">— awaiting Mastio</span>
+                        {% endif %}
+                    </td>
                     <td class="px-5 py-3">
                         {% if org.webhook_url %}
                         <span class="mono text-[11px] text-white/65 truncate block max-w-[200px]" title="{{ org.webhook_url }}">{{ org.webhook_url }}</span>

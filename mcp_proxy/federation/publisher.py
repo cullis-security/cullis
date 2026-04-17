@@ -42,6 +42,11 @@ _log = logging.getLogger("mcp_proxy.federation.publisher")
 POLL_INTERVAL_S = 30.0
 HTTP_TIMEOUT_S = 10.0
 
+# Aggregate-stats push is less time-critical than per-agent revisions
+# (the Court dashboard tolerates a few minutes of staleness), so the
+# stats loop runs an order of magnitude slower than the agent loop.
+STATS_INTERVAL_S = 300.0
+
 
 async def _fetch_pending(conn) -> list[dict]:
     """Rows that need a push on this tick."""
@@ -177,3 +182,98 @@ async def run_publisher(app_state, *, stop_event: asyncio.Event) -> None:
                 continue
     finally:
         _log.info("federation publisher stopped")
+
+
+# ── Aggregate stats publisher ───────────────────────────────────────────────
+#
+# Fire-and-forget snapshot: count active/total internal agents and enabled
+# backends, POST to POST /v1/federation/publish-stats. No idempotency state
+# — every tick overwrites the Court-side snapshot. Standalone proxies skip.
+
+
+async def _collect_stats(conn, *, org_id: str) -> dict:
+    """Read the three counters off the Mastio DB."""
+    agent_rows = (await conn.execute(
+        text(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active "
+            "FROM internal_agents"
+        ),
+    )).mappings().first()
+    backend_row = (await conn.execute(
+        text(
+            "SELECT COUNT(*) AS total "
+            "FROM local_mcp_resources WHERE enabled = 1"
+        ),
+    )).mappings().first()
+    return {
+        "org_id": org_id,
+        "agent_active_count": int((agent_rows or {}).get("active") or 0),
+        "agent_total_count": int((agent_rows or {}).get("total") or 0),
+        "backend_count": int((backend_row or {}).get("total") or 0),
+    }
+
+
+async def _publish_stats_once(app_state) -> bool:
+    """One stats push. Returns True on 2xx, False otherwise."""
+    broker_url = getattr(app_state, "reverse_proxy_broker_url", None)
+    mgr = getattr(app_state, "agent_manager", None)
+    http = getattr(app_state, "reverse_proxy_client", None)
+    org_id = getattr(app_state, "org_id", None) or ""
+
+    if not broker_url or mgr is None or http is None or not org_id:
+        return False
+    if not getattr(mgr, "mastio_loaded", False):
+        return False
+
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        payload = await _collect_stats(conn, org_id=org_id)
+
+    body = json.dumps(payload).encode()
+    signature = mgr.countersign(body)
+    url = f"{broker_url.rstrip('/')}/v1/federation/publish-stats"
+    try:
+        resp = await http.post(
+            url,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Cullis-Mastio-Signature": signature,
+            },
+            timeout=HTTP_TIMEOUT_S,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        _log.warning("federation stats: Court unreachable (%s) — will retry", exc)
+        return False
+
+    if resp.is_success:
+        _log.info(
+            "federation stats OK org=%s active=%d total=%d backends=%d",
+            payload["org_id"], payload["agent_active_count"],
+            payload["agent_total_count"], payload["backend_count"],
+        )
+        return True
+    _log.warning(
+        "federation stats → HTTP %d: %s",
+        resp.status_code, resp.text[:200],
+    )
+    return False
+
+
+async def run_stats_publisher(app_state, *, stop_event: asyncio.Event) -> None:
+    """Stats loop — independent of the agent publisher so a slow stats
+    push doesn't delay agent revisions. Exits when ``stop_event`` is set."""
+    _log.info("federation stats publisher started (poll=%.1fs)", STATS_INTERVAL_S)
+    try:
+        while not stop_event.is_set():
+            try:
+                await _publish_stats_once(app_state)
+            except Exception as exc:
+                _log.exception("federation stats tick failed: %s", exc)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=STATS_INTERVAL_S)
+            except asyncio.TimeoutError:
+                continue
+    finally:
+        _log.info("federation stats publisher stopped")

@@ -18,7 +18,7 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from mcp_proxy.federation.publisher import _tick
+from mcp_proxy.federation.publisher import _collect_stats, _publish_stats_once, _tick
 
 
 pytestmark = pytest.mark.asyncio
@@ -233,6 +233,155 @@ async def test_standalone_is_noop(tmp_path, monkeypatch):
         state = _AppState(_NoMgr(), "", cli)
         acked = await _tick(state)
     assert acked == 0
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+# ── stats publisher ────────────────────────────────────────────────────
+
+
+async def _seed_backend(enabled: int, name: str = "b1") -> None:
+    """Insert a ``local_mcp_resources`` row used by _collect_stats."""
+    from mcp_proxy.db import get_db
+    from sqlalchemy import text
+    import uuid
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO local_mcp_resources (
+                    resource_id, org_id, name, endpoint_url,
+                    auth_type, allowed_domains, enabled,
+                    created_at, updated_at
+                ) VALUES (
+                    :rid, :org, :name, 'http://svc:8080',
+                    'none', '[]', :enabled,
+                    '2026-04-17T00:00:00+00:00', '2026-04-17T00:00:00+00:00'
+                )
+                """
+            ),
+            {
+                "rid": str(uuid.uuid4()), "org": "orga",
+                "name": name, "enabled": enabled,
+            },
+        )
+
+
+class _AppStateStats(_AppState):
+    def __init__(self, mgr, broker_url, client, org_id):
+        super().__init__(mgr, broker_url, client)
+        self.org_id = org_id
+
+
+async def test_collect_stats_counts_agents_and_enabled_backends(
+    tmp_path, monkeypatch,
+):
+    await _seed_agents(tmp_path, monkeypatch, [
+        {"agent_id": "orga::a1", "is_active": True},
+        {"agent_id": "orga::a2", "is_active": True},
+        {"agent_id": "orga::a3", "is_active": False},
+    ])
+    await _seed_backend(enabled=1, name="postgres")
+    await _seed_backend(enabled=1, name="github")
+    await _seed_backend(enabled=0, name="disabled")
+
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        stats = await _collect_stats(conn, org_id="orga")
+
+    assert stats == {
+        "org_id": "orga",
+        "agent_active_count": 2,
+        "agent_total_count": 3,
+        "backend_count": 2,  # disabled row excluded
+    }
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_publish_stats_once_sends_signed_payload(tmp_path, monkeypatch):
+    await _seed_agents(tmp_path, monkeypatch, [
+        {"agent_id": "orga::a1", "is_active": True},
+    ])
+    await _seed_backend(enabled=1)
+
+    captured: dict = {}
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["sig"] = req.headers.get("x-cullis-mastio-signature")
+        captured["body"] = json.loads(req.content)
+        return httpx.Response(200, json={
+            "org_id": "orga", "stored_at": "2026-04-17T12:00:00+00:00",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as cli:
+        state = _AppStateStats(_FakeMgr(), "http://broker", cli, "orga")
+        ok = await _publish_stats_once(state)
+
+    assert ok is True
+    assert captured["url"] == "http://broker/v1/federation/publish-stats"
+    assert captured["sig"]  # non-empty counter-sig header
+    assert captured["body"] == {
+        "org_id": "orga",
+        "agent_active_count": 1,
+        "agent_total_count": 1,
+        "backend_count": 1,
+    }
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_publish_stats_once_skips_when_standalone(tmp_path, monkeypatch):
+    await _seed_agents(tmp_path, monkeypatch, [
+        {"agent_id": "orga::a1", "is_active": True},
+    ])
+
+    class _NoMgr:
+        mastio_loaded = False
+
+    async with httpx.AsyncClient() as cli:
+        state = _AppStateStats(_NoMgr(), "", cli, "orga")
+        assert await _publish_stats_once(state) is False
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_publish_stats_once_returns_false_on_5xx(tmp_path, monkeypatch):
+    await _seed_agents(tmp_path, monkeypatch, [
+        {"agent_id": "orga::a1", "is_active": True},
+    ])
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="overloaded")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as cli:
+        state = _AppStateStats(_FakeMgr(), "http://broker", cli, "orga")
+        ok = await _publish_stats_once(state)
+    assert ok is False
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_publish_stats_once_survives_connection_error(
+    tmp_path, monkeypatch,
+):
+    await _seed_agents(tmp_path, monkeypatch, [
+        {"agent_id": "orga::a1", "is_active": True},
+    ])
+
+    def _handler(req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("broker down")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as cli:
+        state = _AppStateStats(_FakeMgr(), "http://broker", cli, "orga")
+        ok = await _publish_stats_once(state)
+    assert ok is False
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()

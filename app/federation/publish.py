@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -254,3 +255,112 @@ async def publish_agent(
         status="updated",
         cert_thumbprint=thumbprint,
     )
+
+
+# ── /publish-stats ──────────────────────────────────────────────────────────
+#
+# Fire-and-forget aggregate stats so the Court dashboard can show per-org
+# fleet size without knowing individual agents. Separate from /publish-agent
+# because it has no idempotency tracking (no per-row revision) and is pushed
+# on a looser cadence (minutes, not seconds). Re-uses the same counter-sig
+# auth pattern so Mastio identity is still pinned.
+
+
+class PublishStatsRequest(BaseModel):
+    org_id: str = Field(..., pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$")
+    agent_active_count: int = Field(..., ge=0)
+    agent_total_count: int = Field(..., ge=0)
+    backend_count: int = Field(..., ge=0)
+
+
+class PublishStatsResponse(BaseModel):
+    org_id: str
+    stored_at: str
+
+
+@router.post(
+    "/publish-stats",
+    response_model=PublishStatsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def publish_stats(
+    request: Request,
+    body: PublishStatsRequest,
+    mastio_signature: str | None = Header(
+        default=None, alias=COUNTERSIG_HEADER,
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> PublishStatsResponse:
+    """Mastio pushes aggregate counters for its org to the Court.
+
+    Stored under ``organizations.metadata_json["stats"]`` — no schema
+    migration, the metadata column is already JSON. Overwrites the prior
+    snapshot on every push (stats are point-in-time, not append-only).
+
+    Auth mirrors publish-agent: counter-signature against the pinned
+    ``mastio_pubkey``. Unknown orgs return 404; orgs without a pinned
+    pubkey return 403 so an operator who forgot onboarding step 2 gets
+    a clear message instead of a silent no-op.
+    """
+    org = await get_org_by_id(db, body.org_id)
+    if org is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="organization not found",
+        )
+    if not org.mastio_pubkey:
+        await log_event(
+            db, "federation.stats_rejected", "denied",
+            org_id=body.org_id,
+            details={"reason": "mastio_pubkey_not_pinned"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="organization has no pinned mastio_pubkey",
+        )
+
+    raw = await request.body()
+    try:
+        verify_mastio_countersig(
+            client_assertion=raw.decode(),
+            signature_b64=mastio_signature,
+            mastio_pubkey_pem=org.mastio_pubkey,
+        )
+    except HTTPException:
+        await log_event(
+            db, "federation.stats_rejected", "denied",
+            org_id=body.org_id,
+            details={"reason": "countersig_invalid"},
+        )
+        raise
+
+    stored_at = datetime.now(timezone.utc).isoformat()
+    # Read–modify–write on metadata_json. OrganizationRecord.extra is a
+    # computed property, so we parse the text, set the "stats" sub-key,
+    # then serialize back. Invalid JSON in an existing row is recovered to
+    # an empty dict rather than failing the push.
+    try:
+        meta = json.loads(org.metadata_json or "{}")
+        if not isinstance(meta, dict):
+            meta = {}
+    except (TypeError, ValueError):
+        meta = {}
+    meta["stats"] = {
+        "agent_active_count": body.agent_active_count,
+        "agent_total_count": body.agent_total_count,
+        "backend_count": body.backend_count,
+        "updated_at": stored_at,
+    }
+    org.metadata_json = json.dumps(meta)
+    await db.commit()
+
+    await log_event(
+        db, "federation.stats_published", "ok",
+        org_id=body.org_id,
+        details={
+            "agent_active": body.agent_active_count,
+            "agent_total": body.agent_total_count,
+            "backends": body.backend_count,
+        },
+    )
+    return PublishStatsResponse(org_id=body.org_id, stored_at=stored_at)
