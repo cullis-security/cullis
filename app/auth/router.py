@@ -193,13 +193,15 @@ async def revoke_agent_tokens(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Invalid organization credentials")
 
+    # Audit F-B-8: collapse "no such agent" and "agent belongs to a
+    # different org" into a single 404 with the same detail body.
+    # Previously a caller holding one valid org_secret could enumerate
+    # agents in *other* orgs by observing 404 vs 403. The caller must
+    # only learn about their own org's agents.
     agent = await get_agent_by_id(db, agent_id)
-    if not agent:
+    if not agent or agent.org_id != org.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Agent not found")
-    if agent.org_id != org.org_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="Agent does not belong to your organization")
 
     await invalidate_agent_tokens(db, agent_id)
     await log_event(

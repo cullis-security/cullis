@@ -158,7 +158,11 @@ async def test_admin_revoke_wrong_secret(client: AsyncClient, dpop):
 
 
 async def test_admin_revoke_cross_org_rejected(client: AsyncClient, dpop):
-    """Org F cannot revoke tokens for an agent belonging to org E."""
+    """Org F cannot revoke tokens for an agent belonging to org E.
+
+    Audit F-B-8: response collapses to 404 (same as missing agent) so
+    org F cannot enumerate org E's agents by observing 404 vs 403.
+    """
     await _setup_agent(client, "tok-rev-e::agent-1", "tok-rev-e", dpop)
     await _setup_agent(client, "tok-rev-f::agent-1", "tok-rev-f", dpop)
 
@@ -166,7 +170,54 @@ async def test_admin_revoke_cross_org_rejected(client: AsyncClient, dpop):
         "/v1/auth/revoke-agent/tok-rev-e::agent-1",
         headers={"x-org-id": "tok-rev-f", "x-org-secret": "tok-rev-f-secret"},
     )
-    assert rev.status_code == 403
+    assert rev.status_code == 404
+
+
+async def test_admin_revoke_missing_vs_cross_org_indistinguishable(
+    client: AsyncClient, dpop,
+):
+    """Audit F-B-8: the 404 response for 'agent does not exist in any
+    org' and 'agent exists but in a different org' must be byte-
+    identical — status code and detail body alike. Otherwise an
+    attacker with any org_secret can enumerate agents across the whole
+    broker fleet.
+
+    Distinct org_ids (``fb8-x``/``fb8-y``) avoid colliding with
+    sibling tests in this file that reuse ``tok-rev-*`` org names.
+    """
+    # org X registered + has an agent, org Y registered without agents.
+    await _setup_agent(client, "fb8-x::agent-1", "fb8-x", dpop)
+
+    import bcrypt
+    import json
+    from app.registry.org_store import OrganizationRecord
+    from tests.conftest import TestSessionLocal
+
+    async with TestSessionLocal() as session:
+        session.add(OrganizationRecord(
+            org_id="fb8-y",
+            display_name="fb8-y",
+            secret_hash=bcrypt.hashpw(
+                b"fb8-y-secret", bcrypt.gensalt(rounds=4),
+            ).decode(),
+            metadata_json=json.dumps({}),
+            status="active",
+        ))
+        await session.commit()
+
+    # Case 1: agent does not exist anywhere.
+    missing = await client.post(
+        "/v1/auth/revoke-agent/fb8-y::never-registered",
+        headers={"x-org-id": "fb8-y", "x-org-secret": "fb8-y-secret"},
+    )
+    # Case 2: agent exists but in a different org (fb8-x).
+    cross_org = await client.post(
+        "/v1/auth/revoke-agent/fb8-x::agent-1",
+        headers={"x-org-id": "fb8-y", "x-org-secret": "fb8-y-secret"},
+    )
+
+    assert missing.status_code == cross_org.status_code == 404
+    assert missing.json() == cross_org.json()
 
 
 async def test_binding_revocation_invalidates_tokens(client: AsyncClient, dpop):
