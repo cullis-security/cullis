@@ -23,7 +23,7 @@ from cryptography.x509 import (
 from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-from mcp_proxy.config import get_settings
+from mcp_proxy.config import broker_tls_verify, get_settings, vault_tls_verify
 from mcp_proxy.db import (
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,
@@ -426,7 +426,9 @@ class AgentManager:
         settings = get_settings()
         if settings.broker_url:
             try:
-                async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+                async with httpx.AsyncClient(
+                    verify=broker_tls_verify(settings), timeout=5.0,
+                ) as http:
                     resp = await http.delete(
                         f"{settings.broker_url}/v1/registry/agents/{agent_id}",
                         headers={
@@ -673,7 +675,9 @@ class AgentManager:
         path = f"{settings.vault_secret_prefix}/agents/{agent_id}"
         url = f"{settings.vault_addr}/v1/{path}"
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        async with httpx.AsyncClient(
+            verify=vault_tls_verify(settings), timeout=5.0,
+        ) as http:
             resp = await http.post(
                 url,
                 json={"data": {"key_pem": key_pem}},
@@ -690,7 +694,9 @@ class AgentManager:
         path = f"{settings.vault_secret_prefix}/agents/{agent_id}"
         url = f"{settings.vault_addr}/v1/{path}"
 
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        async with httpx.AsyncClient(
+            verify=vault_tls_verify(settings), timeout=5.0,
+        ) as http:
             resp = await http.get(
                 url,
                 headers={"X-Vault-Token": settings.vault_token},
@@ -721,8 +727,10 @@ class AgentManager:
             import asyncio
             from cullis_sdk.client import CullisClient
 
+            _verify = settings.broker_verify_tls
+
             def _do_login():
-                client = CullisClient(broker_url, verify_tls=False)
+                client = CullisClient(broker_url, verify_tls=_verify)
                 client.login_from_pem(agent_id, self._org_id, cert_pem, key_pem)
                 client.close()
 
@@ -756,7 +764,9 @@ class AgentManager:
         headers = {"X-Org-Id": self._org_id, "X-Org-Secret": org_secret}
 
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+            async with httpx.AsyncClient(
+                verify=broker_tls_verify(get_settings()), timeout=5.0,
+            ) as http:
                 resp = await http.post(
                     f"{broker_url}/v1/registry/agents",
                     headers=headers,

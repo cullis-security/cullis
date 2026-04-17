@@ -107,8 +107,11 @@ def generate_org_ca(org_id: str) -> tuple[str, str]:
 async def _test_vault_connectivity(vault_addr: str, vault_token: str) -> tuple[bool, str]:
     """Test Vault connectivity. Returns (success, message)."""
     import httpx
+    from mcp_proxy.config import get_settings, vault_tls_verify
     try:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            verify=vault_tls_verify(get_settings()), timeout=5.0,
+        ) as client:
             resp = await client.get(
                 f"{vault_addr.rstrip('/')}/v1/sys/health",
                 headers={"X-Vault-Token": vault_token},
@@ -126,9 +129,12 @@ async def _test_vault_connectivity(vault_addr: str, vault_token: str) -> tuple[b
 async def _store_ca_key_in_vault(vault_addr: str, vault_token: str, org_id: str, key_pem: str) -> None:
     """Store Org CA private key in Vault."""
     import httpx
+    from mcp_proxy.config import get_settings, vault_tls_verify
     path = f"secret/data/mcp-proxy/{org_id}/org-ca"
     url = f"{vault_addr.rstrip('/')}/v1/{path}"
-    async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+    async with httpx.AsyncClient(
+        verify=vault_tls_verify(get_settings()), timeout=5.0,
+    ) as client:
         resp = await client.post(
             url,
             json={"data": {"key_pem": key_pem}},
@@ -358,7 +364,10 @@ async def org_status(request: Request):
         )
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+        from mcp_proxy.config import get_settings, broker_tls_verify
+        async with httpx.AsyncClient(
+            verify=broker_tls_verify(get_settings()), timeout=5.0,
+        ) as http:
             resp = await http.get(
                 f"{broker_url}/v1/registry/orgs/me",
                 headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -490,7 +499,10 @@ async def setup_submit(request: Request):
     inspect_err: str | None = None
     if broker_url and invite_token:
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10.0) as http:
+            from mcp_proxy.config import broker_tls_verify
+            async with httpx.AsyncClient(
+                verify=broker_tls_verify(_get_settings()), timeout=10.0,
+            ) as http:
                 r = await http.post(
                     f"{broker_url}/v1/onboarding/invite/inspect",
                     json={"invite_token": invite_token},
@@ -673,7 +685,10 @@ async def setup_submit(request: Request):
 
     error_msg: str | None = None
     try:
-        async with httpx.AsyncClient(verify=False, timeout=10.0) as http:
+        from mcp_proxy.config import get_settings as _s, broker_tls_verify
+        async with httpx.AsyncClient(
+            verify=broker_tls_verify(_s()), timeout=10.0,
+        ) as http:
             if invite_type == "attach-ca":
                 # Existing org on broker (pre-registered by admin), we just
                 # attach the CA and claim the org by rotating its secret.
@@ -832,7 +847,10 @@ async def _refresh_org_status_from_broker() -> str:
         return cached
 
     try:
-        async with httpx.AsyncClient(verify=False, timeout=3.0) as http:
+        from mcp_proxy.config import get_settings as _s, broker_tls_verify
+        async with httpx.AsyncClient(
+            verify=broker_tls_verify(_s()), timeout=3.0,
+        ) as http:
             resp = await http.get(
                 f"{broker_url}/v1/registry/orgs/me",
                 headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -1017,7 +1035,10 @@ async def agents_create(request: Request):
     if broker_url and org_id_cfg and org_secret:
         headers = {"X-Org-Id": org_id_cfg, "X-Org-Secret": org_secret}
         try:
-            async with httpx.AsyncClient(verify=False, timeout=10.0) as http:
+            from mcp_proxy.config import broker_tls_verify
+            async with httpx.AsyncClient(
+                verify=broker_tls_verify(get_settings()), timeout=10.0,
+            ) as http:
                 # 1. Register agent
                 await http.post(f"{broker_url}/v1/registry/agents", json={
                     "agent_id": agent_id,
@@ -1281,7 +1302,10 @@ async def agent_delete(request: Request, agent_id: str):
     org_secret = await get_config("org_secret")
     if broker_url and org_id and org_secret:
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as http:
+            from mcp_proxy.config import get_settings as _s, broker_tls_verify
+            async with httpx.AsyncClient(
+                verify=broker_tls_verify(_s()), timeout=5.0,
+            ) as http:
                 await http.delete(
                     f"{broker_url}/v1/registry/agents/{agent_id}",
                     headers={"X-Org-Id": org_id, "X-Org-Secret": org_secret},
@@ -1801,8 +1825,11 @@ async def vault_page(request: Request):
     vault_key_count = 0
     if vault_addr and vault_token:
         import httpx
+        from mcp_proxy.config import get_settings as _s, vault_tls_verify
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                verify=vault_tls_verify(_s()), timeout=5.0,
+            ) as client:
                 resp = await client.get(
                     f"{vault_addr.rstrip('/')}/v1/sys/health",
                     headers={"X-Vault-Token": vault_token},
@@ -1943,6 +1970,9 @@ async def vault_migrate_keys(request: Request):
         raise HTTPException(status_code=502, detail=f"Vault unreachable: {msg}")
 
     import httpx
+    from mcp_proxy.config import get_settings as _s, vault_tls_verify
+
+    _vault_verify = vault_tls_verify(_s())
 
     # Find all agent keys stored in proxy_config (agent_key:* pattern)
     from sqlalchemy import text
@@ -1960,7 +1990,7 @@ async def vault_migrate_keys(request: Request):
         path = f"secret/data/mcp-proxy/agents/{agent_id}"
         url = f"{vault_addr.rstrip('/')}/v1/{path}"
         try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+            async with httpx.AsyncClient(verify=_vault_verify, timeout=5.0) as client:
                 resp = await client.post(
                     url,
                     json={"data": {"key_pem": key_pem}},

@@ -31,6 +31,12 @@ class ProxySettings(BaseSettings):
     vault_addr: str = ""
     vault_token: str = ""
     vault_secret_prefix: str = "secret/data/mcp-proxy/tools"
+    # Verify Vault TLS cert (disable only for dev / self-signed sandbox).
+    # When ``vault_ca_cert_path`` is set, it takes precedence: httpx will use
+    # the file as the CA bundle and ignore ``vault_verify_tls``. Mirrors the
+    # broker-side pattern in ``app/kms/vault.py``.
+    vault_verify_tls: bool = True
+    vault_ca_cert_path: str = ""
 
     # Tools
     tools_config_path: str = "tools.yaml"
@@ -193,6 +199,27 @@ def validate_config(settings: ProxySettings) -> None:
                 )
                 raise SystemExit(1)
 
+            if not settings.broker_verify_tls:
+                _log.critical(
+                    "MCP_PROXY_BROKER_VERIFY_TLS is false in production. "
+                    "Re-enable TLS verification for the broker uplink "
+                    "(audit F-E-01)."
+                )
+                raise SystemExit(1)
+
+        # Vault TLS verification is enforced whenever a Vault backend is
+        # configured in production, regardless of standalone mode (the
+        # standalone proxy may still use Vault to hold agent private keys).
+        if settings.secret_backend == "vault" and not settings.vault_verify_tls:
+            _log.critical(
+                "MCP_PROXY_VAULT_VERIFY_TLS is false in production with "
+                "secret_backend=vault. Re-enable TLS verification for Vault "
+                "(audit F-E-02). Pin a private CA via "
+                "MCP_PROXY_VAULT_CA_CERT_PATH instead if you need to trust a "
+                "self-signed Vault cert."
+            )
+            raise SystemExit(1)
+
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:
         _log.warning(
@@ -217,3 +244,27 @@ def validate_config(settings: ProxySettings) -> None:
 def get_settings() -> ProxySettings:
     """Return cached ProxySettings singleton."""
     return ProxySettings()
+
+
+def broker_tls_verify(settings: ProxySettings) -> bool | str:
+    """Return the ``verify=`` value to use for broker-directed httpx calls.
+
+    Mirrors the broker-side pattern in ``app/kms/vault.py``: a CA path wins
+    over the boolean flag, otherwise the flag decides. Callers should pass
+    the result straight into ``httpx.AsyncClient(verify=...)``.
+    """
+    # Proxy has no dedicated broker CA path today; expose the hook anyway
+    # so upgrades can pin a private CA without touching every call site.
+    ca_path = getattr(settings, "broker_ca_cert_path", "") or ""
+    return ca_path if ca_path else settings.broker_verify_tls
+
+
+def vault_tls_verify(settings: ProxySettings) -> bool | str:
+    """Return the ``verify=`` value to use for Vault-directed httpx calls.
+
+    If ``vault_ca_cert_path`` is set, httpx uses that file as the CA bundle;
+    otherwise the boolean ``vault_verify_tls`` flag decides. Never returns
+    ``False`` silently — operators who need to ignore TLS must set the flag
+    explicitly (and production rejects that in :func:`validate_config`).
+    """
+    return settings.vault_ca_cert_path or settings.vault_verify_tls
