@@ -46,6 +46,9 @@ class InternalAgent(Base):
     cert_pem = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False)
     is_active = Column(Integer, nullable=False, server_default="1")
+    # Free-form JSON carried from pending_enrollments.device_info on approval
+    # (OS, hostname, Connector version). Null for agents created via CLI.
+    device_info = Column(Text, nullable=True)
 
 
 class AuditLogEntry(Base):
