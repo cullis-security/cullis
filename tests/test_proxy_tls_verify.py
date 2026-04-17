@@ -69,9 +69,26 @@ def test_validate_config_allows_prod_with_verify_enabled():
 
 def test_validate_config_ignores_vault_flag_when_backend_is_env():
     """If secret_backend=env we never talk to Vault, so the vault flag is
-    advisory and must not block production startup."""
-    settings = _prod_settings(secret_backend="env", vault_verify_tls=False)
+    advisory — in development the configuration must boot. In production
+    the env backend itself is refused by audit F-E-03 (keeps private keys
+    at rest in the process environment), which is covered by
+    ``test_validate_config_refuses_env_backend_in_prod`` below."""
+    settings = ProxySettings(
+        environment="development",
+        secret_backend="env",
+        vault_verify_tls=False,
+    )
+    # Must not raise: dev-mode opt-out path.
     validate_config(settings)
+
+
+def test_validate_config_refuses_env_backend_in_prod():
+    """Audit F-E-03: ``env`` stores agent private keys at rest in the
+    process environment — production must reject it and point the
+    operator at Vault."""
+    settings = _prod_settings(secret_backend="env", vault_verify_tls=True)
+    with pytest.raises(SystemExit):
+        validate_config(settings)
 
 
 def test_validate_config_dev_tolerates_disabled_verify():
