@@ -180,10 +180,77 @@ async def _seed_mcp_resources(db_url: str, org_id: str) -> None:
         await engine.dispose()
 
 
+async def _seed_internal_agents(db_url: str, org_id: str) -> None:
+    """Populate ``internal_agents`` so the Mastio dashboard shows the
+    SPIRE/BYOCA workloads that live in this org.
+
+    Production agents hit the Mastio via the Connector enrollment flow,
+    which writes an ``api_key_hash`` row here. Sandbox SPIRE/BYOCA
+    agents bypass the Connector — they authenticate to the Court
+    directly through the reverse-proxy with their own cert — so their
+    ``internal_agents`` row stays empty and the Mastio dashboard looks
+    broken. Seed them from ``/state/{org}/{agent_name}.pem`` (persisted
+    by bootstrap phase 4) so the dashboard matches the reality of
+    who lives on this org.
+    """
+    state = pathlib.Path(os.environ.get("STATE_DIR", "/state"))
+    agents_dir = state / org_id / "agents"
+    if not agents_dir.exists():
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    engine = create_async_engine(db_url)
+    try:
+        # Bootstrap writes ``{org}/agents/{agent}/agent.pem`` per phase 4.
+        for agent_subdir in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
+            cert_path = agent_subdir / "agent.pem"
+            if not cert_path.exists():
+                continue
+            agent_name = agent_subdir.name
+            agent_id = f"{org_id}::{agent_name}"
+            cert_pem = cert_path.read_text()
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO internal_agents (
+                            agent_id, display_name, capabilities,
+                            api_key_hash, cert_pem, created_at, is_active
+                        ) VALUES (
+                            :aid, :name, :caps, :hash, :cert, :now, 1
+                        )
+                        ON CONFLICT (agent_id) DO UPDATE SET
+                            cert_pem   = EXCLUDED.cert_pem,
+                            is_active  = 1
+                        """
+                    ),
+                    {
+                        "aid": agent_id,
+                        "name": agent_name,
+                        "caps": json.dumps([]),
+                        # Unreachable bcrypt hash — these agents don't use
+                        # API keys (they auth via cert through the
+                        # reverse-proxy). Column is NOT NULL so we still
+                        # store a placeholder that no plaintext can match.
+                        "hash": "$2b$12$sandbox.placeholder.no.api.key.enrolled."
+                                "aaaaaaaaaaaaaaaaaaaaaaa",
+                        "cert": cert_pem,
+                        "now": now,
+                    },
+                )
+            print(
+                f"proxy-init: seeded internal_agents row for {agent_id}",
+                flush=True,
+            )
+    finally:
+        await engine.dispose()
+
+
 async def _async_main(db_url: str, org_id: str) -> int:
     await _seed_proxy_config(db_url, org_id)
     if os.environ.get("SEED_MCP_RESOURCES") == "1":
         await _seed_mcp_resources(db_url, org_id)
+    await _seed_internal_agents(db_url, org_id)
     return 0
 
 

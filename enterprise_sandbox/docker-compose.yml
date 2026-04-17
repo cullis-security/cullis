@@ -245,6 +245,12 @@ services:
       # ``request.url`` for DPoP htu reconstruction — matches the agent's
       # signed htu in both cases instead of pinning one.
       # MCP_PROXY_PROXY_PUBLIC_URL: unset
+      # Pull the Court's agent registry into ``cached_federated_agents``
+      # on a timer so the Mastio dashboard shows the SPIRE/BYOCA agents
+      # that authenticate directly against the Court — otherwise the
+      # "Agents" table looks empty in the sandbox (they were never
+      # enrolled through the Connector flow).
+      PROXY_FEDERATION_SYNC:       "true"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
@@ -467,6 +473,7 @@ services:
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
       # See proxy-a comment above — unset so DPoP htu falls back to request.url.
       # MCP_PROXY_PROXY_PUBLIC_URL: unset
+      PROXY_FEDERATION_SYNC:       "true"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-b"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orgb"
