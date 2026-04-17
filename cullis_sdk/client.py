@@ -104,10 +104,20 @@ class CullisClient:
         self._pubkey_cache: dict[str, tuple[str, float]] = {}
         self._client_seq: dict[str, int] = {}
 
-        # DPoP ephemeral key pair
+        # DPoP ephemeral key pair (ingress / broker /auth/token flow)
         self._dpop_privkey = None
         self._dpop_pubkey_jwk: dict | None = None
         self._dpop_nonce: str | None = None
+
+        # Egress DPoP (F-B-11 Phase 3c, #181) — persistent keypair the
+        # server stores the thumbprint of. Separate from the ingress
+        # ephemeral one because egress proofs must be signed by the
+        # key the agent registered at enrollment, not a fresh session
+        # key. Populated by from_enrollment / from_connector when
+        # ``enable_dpop`` is true; None means the SDK falls back to
+        # bare X-API-Key on /v1/egress/*.
+        self._egress_dpop_key: Any = None  # cullis_sdk.dpop.DpopKey
+        self._egress_dpop_nonce: str | None = None
 
         # ADR-004 — last-seen server role (proxy|broker|None) from
         # the `x-cullis-role` response header. The SDK's base URL can
@@ -195,6 +205,8 @@ class CullisClient:
         save_config: str | None = None,
         verify_tls: bool = True,
         timeout: float = 10.0,
+        enable_dpop: bool = True,
+        dpop_base_dir: "Path | None" = None,
     ) -> CullisClient:
         """Bootstrap a proxy-connected client from an enrollment URL.
 
@@ -254,19 +266,122 @@ class CullisClient:
         instance._dpop_privkey = None
         instance._dpop_pubkey_jwk = None
         instance._dpop_nonce = None
+        instance._egress_dpop_key = None
+        instance._egress_dpop_nonce = None
         # Store proxy credentials for egress API
         instance._proxy_api_key = config["api_key"]
         instance._proxy_agent_id = config["agent_id"]
         instance._proxy_org_id = config["org_id"]
 
+        # F-B-11 Phase 3c (#181) — load or generate the persistent
+        # DPoP keypair. The server stores the thumbprint in
+        # ``internal_agents.dpop_jkt`` and refuses proofs signed by a
+        # different key once the flag flips to ``required``. First-run
+        # generates + persists, subsequent runs load from disk.
+        if enable_dpop:
+            from cullis_sdk.dpop import DpopKey
+            try:
+                instance._egress_dpop_key = DpopKey.load_or_generate(
+                    config["agent_id"], base_dir=dpop_base_dir,
+                )
+                log("sdk", f"egress DPoP key ready (jkt={instance._egress_dpop_key.thumbprint()[:16]}…)")
+            except OSError as exc:
+                # Read-only containers, missing ``HOME``, etc. Fall
+                # back to legacy bearer with a warning rather than
+                # blowing up enrollment on a DPoP-first deploy.
+                import warnings
+                warnings.warn(
+                    f"Could not persist egress DPoP key ({exc}); "
+                    "falling back to legacy X-API-Key bearer. Set "
+                    "dpop_base_dir to a writable directory or pass "
+                    "enable_dpop=False to silence this warning.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
         log("sdk", f"Enrolled as {config['agent_id']} via proxy {config['proxy_url']}")
         return instance
 
-    def proxy_headers(self) -> dict:
-        """Return headers for proxy egress API calls (X-API-Key auth)."""
+    def proxy_headers(self, method: str = "POST", url: str = "") -> dict:
+        """Return headers for proxy egress API calls.
+
+        Always includes ``X-API-Key``. When ``_egress_dpop_key`` is set
+        (Phase 3c, #181), also signs and includes a DPoP proof bound
+        to ``method`` + ``url`` + the API key (via ``ath``) + the last
+        server nonce we saw. Missing method/url on a DPoP-enabled
+        client falls back to the bearer header alone — the call sites
+        in this module all pass the concrete values; external callers
+        that invoke ``proxy_headers`` without them (legacy integration
+        code, custom tooling) stay on the legacy path so they never
+        silently ship unsigned proofs.
+        """
         if not hasattr(self, "_proxy_api_key") or not self._proxy_api_key:
             raise RuntimeError("Not enrolled — use from_enrollment() or set proxy credentials")
-        return {"X-API-Key": self._proxy_api_key, "Content-Type": "application/json"}
+        headers = {
+            "X-API-Key": self._proxy_api_key,
+            "Content-Type": "application/json",
+        }
+        key = getattr(self, "_egress_dpop_key", None)
+        if key is not None and url:
+            proof = key.sign_proof(
+                method,
+                url,
+                access_token=self._proxy_api_key,
+                nonce=self._egress_dpop_nonce,
+            )
+            headers["DPoP"] = proof
+        return headers
+
+    def _egress_http(
+        self,
+        method: str,
+        path_or_url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Wrap an httpx call on the egress surface with a single
+        ``use_dpop_nonce`` retry (RFC 9449 §8).
+
+        On the first attempt we sign with the nonce we already have
+        (may be empty on cold-start). If the server returns 401 with
+        the ``use_dpop_nonce`` marker, we pick up the fresh nonce from
+        the ``DPoP-Nonce`` response header, re-sign, and replay the
+        request exactly once. Further 401s propagate.
+
+        ``method`` matches httpx verbs (``get`` / ``post`` / …).
+        ``path_or_url`` is either an absolute URL or a base-relative
+        path starting with ``/``. Any keyword args are forwarded.
+        """
+        url = (
+            path_or_url
+            if "://" in path_or_url
+            else f"{self.base}{path_or_url}"
+        )
+
+        extra_headers = kwargs.pop("headers", None) or {}
+
+        def _send() -> httpx.Response:
+            headers = self.proxy_headers(method.upper(), url)
+            if extra_headers:
+                headers = {**headers, **extra_headers}
+            http_fn = getattr(self._http, method.lower())
+            return http_fn(url, headers=headers, **kwargs)
+
+        resp = _send()
+        # ``headers`` is a dict-like on httpx Response; tolerate stubs
+        # and older test doubles that only set ``status_code`` + body.
+        resp_headers = getattr(resp, "headers", {}) or {}
+        if resp.status_code == 401 and "use_dpop_nonce" in getattr(resp, "text", ""):
+            fresh_nonce = resp_headers.get("dpop-nonce")
+            if fresh_nonce:
+                self._egress_dpop_nonce = fresh_nonce
+                resp = _send()
+                resp_headers = getattr(resp, "headers", {}) or {}
+        # Opportunistically cache any nonce the server rotates on a
+        # successful response so the next call does not pay the retry.
+        rotated = resp_headers.get("dpop-nonce")
+        if rotated:
+            self._egress_dpop_nonce = rotated
+        return resp
 
     @classmethod
     def from_connector(
@@ -274,6 +389,7 @@ class CullisClient:
         config_dir: str | Path | None = None,
         *,
         timeout: float = 10.0,
+        enable_dpop: bool = True,
     ) -> CullisClient:
         """Build a client from an enrolled Connector Desktop identity on disk.
 
@@ -340,9 +456,31 @@ class CullisClient:
         instance._dpop_privkey = None
         instance._dpop_pubkey_jwk = None
         instance._dpop_nonce = None
+        instance._egress_dpop_key = None
+        instance._egress_dpop_nonce = None
         instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+
+        # F-B-11 Phase 3c — load the DPoP keypair alongside the rest
+        # of the Connector identity. First-run on a freshly-enrolled
+        # Connector generates it; subsequent runs reuse the same key
+        # so its thumbprint stays pinned server-side.
+        if enable_dpop:
+            from cullis_sdk.dpop import DpopKey
+            try:
+                instance._egress_dpop_key = DpopKey.load_or_generate(
+                    agent_id, base_dir=identity_dir / "dpop",
+                )
+            except OSError as exc:
+                import warnings
+                warnings.warn(
+                    f"Could not load or generate egress DPoP key under "
+                    f"{identity_dir}: {exc}. Falling back to legacy "
+                    f"X-API-Key bearer; pass enable_dpop=False to silence.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         log("sdk", f"Loaded Connector identity {agent_id} from {identity_dir}")
         return instance
@@ -751,11 +889,9 @@ class CullisClient:
         AND a signing key from :meth:`login` or :meth:`from_spiffe_workload_api`
         when the resolver picks ``mtls-only``.
         """
-        headers = self.proxy_headers()
-
-        resolve_resp = self._http.post(
-            f"{self.base}/v1/egress/resolve",
-            headers=headers,
+        resolve_resp = self._egress_http(
+            "post",
+            "/v1/egress/resolve",
             json={"recipient_id": recipient_id},
         )
         resolve_resp.raise_for_status()
@@ -806,9 +942,9 @@ class CullisClient:
         if idempotency_key is not None:
             body["idempotency_key"] = idempotency_key
 
-        resp = self._http.post(
-            f"{self.base}/v1/egress/send",
-            headers=headers,
+        resp = self._egress_http(
+            "post",
+            "/v1/egress/send",
             json=body,
         )
         resp.raise_for_status()
@@ -837,10 +973,9 @@ class CullisClient:
         ``decrypt_from_agent`` helper remains the caller's responsibility
         until the envelope-via-proxy pass-through lands in a follow-up.
         """
-        headers = self.proxy_headers()
-        resp = self._http.get(
-            f"{self.base}/v1/egress/messages/{session_id}",
-            headers=headers,
+        resp = self._egress_http(
+            "get",
+            f"/v1/egress/messages/{session_id}",
         )
         resp.raise_for_status()
         data = resp.json()
@@ -911,11 +1046,9 @@ class CullisClient:
         Returns the proxy's response dict with ``correlation_id``,
         ``msg_id`` and ``status`` (``enqueued`` or ``duplicate``).
         """
-        headers = self.proxy_headers()
-
-        resolve_resp = self._http.post(
-            f"{self.base}/v1/egress/resolve",
-            headers=headers,
+        resolve_resp = self._egress_http(
+            "post",
+            "/v1/egress/resolve",
             json={"recipient_id": recipient_id},
         )
         resolve_resp.raise_for_status()
@@ -999,9 +1132,9 @@ class CullisClient:
             "capabilities": capabilities or [],
             "v": ONESHOT_ENVELOPE_PROTO_VERSION,
         }
-        resp = self._http.post(
-            f"{self.base}/v1/egress/message/send",
-            headers=headers,
+        resp = self._egress_http(
+            "post",
+            "/v1/egress/message/send",
             json=body,
         )
         resp.raise_for_status()
@@ -1032,9 +1165,9 @@ class CullisClient:
         envelope (same shape session /send produces) to retrieve the
         application payload.
         """
-        resp = self._http.get(
-            f"{self.base}/v1/egress/message/inbox",
-            headers=self.proxy_headers(),
+        resp = self._egress_http(
+            "get",
+            "/v1/egress/message/inbox",
         )
         resp.raise_for_status()
         return resp.json().get("messages", [])
@@ -1278,9 +1411,9 @@ class CullisClient:
 
     def ack_via_proxy(self, session_id: str, msg_id: str) -> bool:
         """Acknowledge a local-queue message to the proxy (at-least-once)."""
-        resp = self._http.post(
-            f"{self.base}/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
-            headers=self.proxy_headers(),
+        resp = self._egress_http(
+            "post",
+            f"/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
         )
         if resp.status_code == 204:
             return True

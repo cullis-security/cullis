@@ -16,6 +16,7 @@ Usage::
 """
 
 from cullis_sdk.client import CullisClient, WebSocketConnection
+from cullis_sdk.dpop import DpopKey
 from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult, RfqQuote
 from cullis_sdk._logging import log, log_msg
 from cullis_sdk._env import load_env_file, cfg
@@ -23,6 +24,7 @@ from cullis_sdk._env import load_env_file, cfg
 __all__ = [
     "CullisClient",
     "WebSocketConnection",
+    "DpopKey",
     "AgentInfo",
     "SessionInfo",
     "InboxMessage",
