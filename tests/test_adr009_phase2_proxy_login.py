@@ -62,7 +62,7 @@ async def test_sign_assertion_includes_mastio_signature(tmp_path, monkeypatch):
             cert_pem, key_pem = mgr._generate_agent_cert("alice")
             raw = generate_api_key("alice")
             await create_agent(
-                agent_id=f"sa-mastio::alice",
+                agent_id="sa-mastio::alice",
                 display_name="alice",
                 capabilities=["oneshot.message"],
                 api_key_hash=hash_api_key(raw),
@@ -70,7 +70,7 @@ async def test_sign_assertion_includes_mastio_signature(tmp_path, monkeypatch):
             )
             # Persist the private key so get_agent_credentials works.
             from mcp_proxy.db import set_config
-            await set_config(f"agent_key:sa-mastio::alice", key_pem)
+            await set_config("agent_key:sa-mastio::alice", key_pem)
 
             r = await cli.post(
                 "/v1/auth/sign-assertion",
