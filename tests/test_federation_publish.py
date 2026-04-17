@@ -23,7 +23,6 @@ import base64
 import json
 
 import pytest
-from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import AsyncClient
