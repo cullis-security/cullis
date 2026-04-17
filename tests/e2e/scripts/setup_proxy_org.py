@@ -145,6 +145,32 @@ async def _do_phase_org(args: argparse.Namespace) -> None:
 # Phase: create local agent + register with broker
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _mark_federated(agent_id: str) -> None:
+    """Flip ``internal_agents.federated=True`` + bump revision.
+
+    ADR-010 Phase 6a-4 — ``POST /v1/registry/agents`` is gone. The
+    publisher loop (Phase 3) picks the flag up on its next tick and
+    pushes the agent to the Court via ``POST /v1/federation/publish-
+    agent``. We're inside the proxy container, so we have DB access
+    directly.
+    """
+    from mcp_proxy.db import get_db
+    from sqlalchemy import text
+
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                UPDATE internal_agents
+                   SET federated = :fed,
+                       federation_revision = federation_revision + 1
+                 WHERE agent_id = :aid
+                """
+            ),
+            {"fed": True, "aid": agent_id},
+        )
+
+
 async def _bind_agent_to_broker(
     broker_url: str,
     org_id: str,
@@ -152,50 +178,72 @@ async def _bind_agent_to_broker(
     agent_id: str,
     display_name: str,
     capabilities: list[str],
+    timeout_s: float = 60.0,
+    retry_s: float = 2.0,
 ) -> None:
-    """Register agent + create binding + auto-approve. Idempotent on 409."""
+    """Mark local row as federated, retry binding-create until the
+    publisher has propagated the agent, then approve.
+
+    ADR-010 Phase 6a-4 rewrite: the legacy
+    ``POST /v1/registry/agents`` path is gone; the Mastio is the sole
+    authoritative writer for agent records and the publisher carries
+    federated rows to the Court. Bindings still flow through
+    ``POST /v1/registry/bindings`` (endpoint unchanged).
+    """
+    import time
+
+    await _mark_federated(agent_id)
+
     headers = {"X-Org-Id": org_id, "X-Org-Secret": org_secret}
+    body = {"org_id": org_id, "agent_id": agent_id, "scope": capabilities}
+
+    deadline = time.monotonic() + timeout_s
+    last = "(no attempt)"
+    binding_id: str | None = None
     async with httpx.AsyncClient(verify=False, timeout=15.0) as http:
-        # 1. Register agent
-        resp = await http.post(
-            f"{broker_url}/v1/registry/agents",
-            json={
-                "agent_id": agent_id,
-                "org_id": org_id,
-                "display_name": display_name,
-                "capabilities": capabilities,
-            },
-            headers=headers,
-        )
-        if resp.status_code not in (201, 409):
-            raise RuntimeError(
-                f"register_agent failed: HTTP {resp.status_code} {resp.text[:300]}"
+        # Retry binding create until the publisher has pushed the agent
+        # to the Court. 404 = not yet visible, retry. 201 = created,
+        # proceed to approve. 409 = already exists (re-run), fetch id
+        # from the bindings list and skip straight to approve.
+        while time.monotonic() < deadline:
+            resp = await http.post(
+                f"{broker_url}/v1/registry/bindings",
+                json=body, headers=headers,
             )
-
-        # 2. Create binding
-        resp = await http.post(
-            f"{broker_url}/v1/registry/bindings",
-            json={"org_id": org_id, "agent_id": agent_id, "scope": capabilities},
-            headers=headers,
-        )
-        if resp.status_code not in (201, 409):
-            raise RuntimeError(
-                f"create_binding failed: HTTP {resp.status_code} {resp.text[:300]}"
-            )
-
-        # 3. Approve binding (only meaningful when we just created it)
-        if resp.status_code == 201:
-            binding_id = resp.json().get("id")
-            if binding_id:
-                approve_resp = await http.post(
-                    f"{broker_url}/v1/registry/bindings/{binding_id}/approve",
+            if resp.status_code == 201:
+                binding_id = resp.json().get("id")
+                break
+            if resp.status_code == 409:
+                list_resp = await http.get(
+                    f"{broker_url}/v1/registry/bindings",
+                    params={"org_id": org_id},
                     headers=headers,
                 )
-                if approve_resp.status_code not in (200, 204):
-                    raise RuntimeError(
-                        f"approve_binding failed: HTTP {approve_resp.status_code} "
-                        f"{approve_resp.text[:300]}"
-                    )
+                list_resp.raise_for_status()
+                binding_id = next(
+                    (b["id"] for b in list_resp.json()
+                     if b.get("agent_id") == agent_id),
+                    None,
+                )
+                break
+            last = f"HTTP {resp.status_code} {resp.text[:200]}"
+            await asyncio.sleep(retry_s)
+
+        if binding_id is None:
+            raise RuntimeError(
+                f"create_binding never succeeded within {timeout_s:.0f}s "
+                f"(publisher stuck? last={last})"
+            )
+
+        approve_resp = await http.post(
+            f"{broker_url}/v1/registry/bindings/{binding_id}/approve",
+            headers=headers,
+        )
+        if approve_resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"approve_binding failed: HTTP {approve_resp.status_code} "
+                f"{approve_resp.text[:300]}"
+            )
 
 
 async def _do_phase_agent(args: argparse.Namespace) -> None:
@@ -231,10 +279,11 @@ async def _do_phase_agent(args: argparse.Namespace) -> None:
     )
     agent_id = agent_info["agent_id"]
 
-    # Belt-and-braces: AgentManager.create_agent already calls
-    # _register_with_broker, but it swallows non-2xx responses. Repeat
-    # the call here so any failure surfaces as a script error instead
-    # of a confusing 401 later when the agent tries to login.
+    # ADR-010 Phase 6a-4 — ``AgentManager.create_agent`` no longer pushes
+    # the agent to the Court (the legacy broker-register call was removed
+    # with ``POST /v1/registry/agents``). Flip the ``federated`` flag and
+    # wait for the publisher to carry the row to the Court so the
+    # cross-org binding can be approved here.
     await _bind_agent_to_broker(
         broker_url=broker_url,
         org_id=args.org_id,

@@ -193,8 +193,9 @@ integration points are the same on k8s as on docker:
 - Agent certificates are signed by your Org CA (generated separately)
 - `/v1/auth/token` is the entry point
 
-See `enterprise-kit/BYOCA.md` and `enterprise-kit/quickstart.sh` for
-the full onboarding flow.
+See `enterprise-kit/BYOCA.md` for the full onboarding flow; agent
+provisioning goes through the Mastio admin API (``POST /v1/admin/
+agents``) on each proxy, not the broker's legacy registry endpoints.
 
 ---
 
