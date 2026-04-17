@@ -15,54 +15,74 @@ follows when joining a federated Cullis network for the first time.
 ## Step 1 · Attach Mastio A to the Court
 
 The Court is the shared broker. The Mastio is your org's gateway. The
-handshake between them is the **attach-ca** flow — admin side creates
-a single-use invite, proxy side redeems it with its CA and a secret
-of its choice.
+handshake between them is the **attach-ca** flow — the admin creates
+an org shell + a single-use attach invite, the proxy redeems it with
+its Org CA + a secret of its choice.
 
-### 1a · Court admin creates the attach invite
+### 1a · Court admin creates the org shell
+
+`orgb` (Globex Inc) was bootstrapped at `demo.sh up`. `orga` (Acme
+Corp) is not on the Court yet — create the shell first:
 
 ```bash
-curl -X POST http://localhost:8000/v1/admin/invites \
+curl -X POST http://localhost:8000/v1/registry/orgs \
   -H "Content-Type: application/json" \
   -H "X-Admin-Secret: sandbox-admin-secret-change-me" \
-  -d '{
-    "label": "acme-corp attach",
-    "ttl_hours": 1,
-    "invite_type": "attach-ca",
-    "linked_org_id": "orga"
-  }'
+  -d '{"org_id":"orga","display_name":"Acme Corp","secret":"placeholder-replaced-at-attach"}'
 ```
 
-Output:
+Expected: `{"org_id":"orga","display_name":"Acme Corp","status":"active",...}`.
 
-```json
-{ "token": "inv_xxxxxxxxxxxx...", ... }
+### 1b · Generate the attach-ca invite
+
+```bash
+curl -X POST http://localhost:8000/v1/admin/orgs/orga/attach-invite \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Secret: sandbox-admin-secret-change-me" \
+  -d '{"label":"orga attach","ttl_hours":1}'
 ```
 
-Copy the `token` — you'll paste it into the Mastio dashboard next.
+Copy the `token` from the response.
 
-### 1b · Mastio A admin redeems it
+### 1c · Mastio A redeems the invite
 
-Open the Mastio A dashboard: <http://localhost:9100/proxy/link-broker>
-Log in with admin secret `sandbox-proxy-admin-a`.
-
-Fill the form:
-
-- Broker URL: `http://broker:8000` (the Court, reachable from the
-  Mastio container)
-- Invite token: the value from Step 1a
-
-Press **Link broker**. The dashboard will reload; Mastio A is now
+**Option A — browser (recommended)**: open
+<http://localhost:9100/proxy/link-broker>, log in with admin secret
+`sandbox-proxy-admin-a`, paste `broker_url=http://broker:8000` and the
+token. Press **Link broker** — the page reloads and the Mastio is
 federated.
 
-Verify from the terminal:
+**Option B — API (scripted)**: the dashboard endpoint needs a browser
+session, so bypass it by calling `/v1/onboarding/attach` directly on
+the Court with the Mastio's Org CA:
+
+```bash
+TOKEN=<paste from 1b>
+CA=$(docker compose -f enterprise_sandbox/docker-compose.yml exec -T proxy-a \
+  python -c "import asyncio; from mcp_proxy.db import init_db,get_config
+async def g():
+    await init_db('sqlite+aiosqlite:////data/mcp_proxy.db')
+    print(await get_config('org_ca_cert'))
+asyncio.run(g())" | grep -v "^INFO")
+python3 -c "
+import json, urllib.request, os
+body = {'ca_certificate': os.environ['CA'], 'invite_token': os.environ['T'],
+        'secret': 'orga-sandbox-secret'}
+req = urllib.request.Request('http://localhost:8000/v1/onboarding/attach',
+    data=json.dumps(body).encode(), method='POST',
+    headers={'Content-Type':'application/json'})
+print(urllib.request.urlopen(req).read().decode())
+" CA="$CA" T="$TOKEN"
+```
+
+Verify:
 
 ```bash
 curl -s http://localhost:8000/v1/registry/orgs \
-  -H "X-Admin-Secret: sandbox-admin-secret-change-me" | jq '.[] | {org_id, status}'
+  -H "X-Admin-Secret: sandbox-admin-secret-change-me"
 ```
 
-You should see both `orga` and `orgb` with `"status": "active"`.
+`orga` now shows `"status":"active"`.
 
 ---
 
@@ -89,17 +109,28 @@ Output:
 
 ### 2b · Pin it on the Court
 
-```bash
-MASTIO_PUBKEY=$(curl -s http://localhost:9100/v1/admin/mastio-pubkey \
-  -H "X-Admin-Secret: sandbox-proxy-admin-a" | jq -r .mastio_pubkey)
+`jq` isn't installed in every sandbox — use Python inline to keep the
+walkthrough dependency-free:
 
-curl -X PATCH http://localhost:8000/v1/admin/orgs/orga/mastio-pubkey \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: sandbox-admin-secret-change-me" \
-  -d "$(jq -n --arg k "$MASTIO_PUBKEY" '{mastio_pubkey: $k}')"
+```bash
+python3 << 'EOF'
+import json, urllib.request
+pubkey = json.loads(urllib.request.urlopen(urllib.request.Request(
+    "http://localhost:9100/v1/admin/mastio-pubkey",
+    headers={"X-Admin-Secret": "sandbox-proxy-admin-a"},
+)).read())["mastio_pubkey"]
+req = urllib.request.Request(
+    "http://localhost:8000/v1/admin/orgs/orga/mastio-pubkey",
+    data=json.dumps({"mastio_pubkey": pubkey}).encode(),
+    headers={"X-Admin-Secret": "sandbox-admin-secret-change-me",
+             "Content-Type": "application/json"},
+    method="PATCH",
+)
+print(urllib.request.urlopen(req).read().decode())
+EOF
 ```
 
-Expected: `{"org_id":"orga","mastio_pubkey_set":true}`
+Expected: `{"org_id":"orga","mastio_pubkey_set":true}`.
 
 From this moment on the Court will refuse to emit a token for `orga`
 without a valid counter-signature.
