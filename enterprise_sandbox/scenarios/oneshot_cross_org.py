@@ -1,11 +1,14 @@
-"""Sandbox scenario — cross-org one-shot messaging (ADR-008 envelope).
+"""Sandbox scenario — cross-org A2A message round-trip.
 
 Executed inside a running agent container with:
     docker compose exec agent-X python /app/scenarios/oneshot_cross_org.py
 
-Reuses the agent's own auth path (SPIRE or BYOCA) so the output
-mirrors what a production deployment would look like — just with
-narrated, colorized steps the user can follow by eye.
+Uses the session flow (``open_session`` + ``send`` + ``close``) because
+the SPIRE and BYOCA agents in this sandbox authenticate directly to the
+broker, and ``send_oneshot`` requires proxy API-key enrollment
+(``CullisClient.from_connector`` or ``from_enrollment``). The session
+path exercises the same cross-org envelope + ADR-009 counter-signature
+chain, just with a session handshake in front.
 
 Env:
     BROKER_URL         proxy reverse-proxy URL
@@ -13,12 +16,12 @@ Env:
     AGENT_NAME         this agent's short name
     AGENT_AUTH         'spire' (default) | 'byoca'
     TARGET_AGENT_ID    peer (e.g. orgb::agent-b) — required
+    TARGET_ORG_ID      peer org_id (defaults to the prefix of TARGET_AGENT_ID)
     SPIFFE_ENDPOINT_SOCKET  (spire mode only)
     CERT_PATH, KEY_PATH     (byoca mode only)
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -80,16 +83,17 @@ def _auth() -> CullisClient:
 
 def main() -> int:
     target = os.environ.get("TARGET_AGENT_ID")
-    if not target:
-        _fail("TARGET_AGENT_ID is required (e.g. orgb::agent-b)")
+    if not target or "::" not in target:
+        _fail("TARGET_AGENT_ID is required, format ``org::agent``")
         return 2
 
+    target_org = os.environ.get("TARGET_ORG_ID") or target.split("::", 1)[0]
     org_id = os.environ["ORG_ID"]
     agent_name = os.environ["AGENT_NAME"]
     sender = f"{org_id}::{agent_name}"
 
     print(
-        f"\n{BOLD}═══ Cross-org one-shot — "
+        f"\n{BOLD}═══ Cross-org session message — "
         f"{sender} → {target} ═══{RESET}",
         flush=True,
     )
@@ -98,32 +102,39 @@ def main() -> int:
     client = _auth()
     _ok(f"logged in as {sender}")
 
-    _step(2, "Resolve the recipient path + envelope transport")
-    _info("the Mastio will call /v1/egress/resolve and return 'cross-org'")
-    _info("with 'envelope' transport (ADR-008 Phase 1 / PR #3)")
+    _step(2, "Open a cross-org session")
+    _info(f"target_org={target_org}, target_agent={target}")
+    try:
+        session_id = client.open_session(
+            target_agent_id=target,
+            target_org_id=target_org,
+            capabilities=["oneshot.message"],
+        )
+    except Exception as exc:
+        _fail(f"open_session failed: {exc!r}")
+        return 1
+    _ok(f"session_id={session_id}")
 
+    _step(3, "Send an end-to-end encrypted message")
     nonce = uuid.uuid4().hex[:16]
     payload = {
         "nonce": nonce,
-        "hello": "ADR-008 cross-org sessionless message",
+        "hello": "cross-org message from the sandbox scenario driver",
         "sender": sender,
         "sent_at": time.time(),
     }
-
-    _step(3, "Send the envelope one-shot")
     _info(f"payload nonce = {nonce}")
     try:
-        resp = client.send_oneshot(
-            recipient_id=target,
+        msg_id = client.send(
+            session_id=session_id,
+            sender_agent_id=sender,
             payload=payload,
-            ttl_seconds=300,
+            recipient_agent_id=target,
         )
     except Exception as exc:
         _fail(f"send failed: {exc!r}")
         return 1
-
-    _ok(f"enqueued — msg_id={resp.get('msg_id')}  status={resp.get('status')}")
-    _ok(f"correlation_id={resp.get('correlation_id')}")
+    _ok(f"message enqueued — msg_id={msg_id}")
 
     _step(4, "Verify on the recipient side")
     _info(
@@ -133,12 +144,7 @@ def main() -> int:
     _info("the recipient agent's polling loop will decrypt + surface it")
 
     print(
-        f"\n{BOLD}{GREEN}✓ one-shot path exercised end-to-end{RESET}",
-        flush=True,
-    )
-    print(
-        f"{GRAY}Run `demo.sh logs {target.split('::', 1)[1]}` "
-        f"to see the receiver's view.{RESET}\n",
+        f"\n{BOLD}{GREEN}✓ cross-org session + envelope exercised end-to-end{RESET}",
         flush=True,
     )
     return 0
