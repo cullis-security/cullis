@@ -101,6 +101,37 @@ app](https://github.com/cullis-security/cullis/releases).
 
 ---
 
+## Enterprise sandbox
+
+A second, heavier demo with SPIRE, Keycloak, Vault, Postgres and the
+Connector Desktop. Two tiers:
+
+```bash
+./enterprise_sandbox/demo.sh up    # Court + Org B wired,
+                                   # Mastio A standalone — you onboard Org A
+./enterprise_sandbox/demo.sh full  # Both orgs + 3 agents + 2 MCP servers,
+                                   # scenarios ready to replay
+```
+
+Pick `up` if you want to *learn* the onboarding flow hand-on; pick
+`full` if you want to *replay* scenarios without any setup.
+
+Scenarios (full mode):
+
+```bash
+./enterprise_sandbox/demo.sh oneshot-a-to-b   # cross-org A2A message
+./enterprise_sandbox/demo.sh oneshot-b-to-a
+./enterprise_sandbox/demo.sh mcp-catalog      # intra-org MCP tool call
+./enterprise_sandbox/demo.sh mcp-inventory
+./enterprise_sandbox/demo.sh guide            # open the onboarding walkthrough
+```
+
+See [`enterprise_sandbox/GUIDE.md`](enterprise_sandbox/GUIDE.md) for the
+step-by-step Org A onboarding — attach-CA flow, mastio counter-signature
+pin (ADR-009), Connector Desktop enrollment, MCP resource registration.
+
+---
+
 ## Key features
 
 - **x509 PKI + SPIFFE per-agent identity** — each agent gets a cert
