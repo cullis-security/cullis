@@ -89,6 +89,26 @@ case "${1:-help}" in
     docker compose logs bootstrap --no-log-prefix
     ;;
 
+  oneshot-a-to-b)
+    _header "Scenario — cross-org one-shot: orga::agent-a → orgb::agent-b"
+    docker compose exec -e TARGET_AGENT_ID=orgb::agent-b agent-a \
+      python /app/scenarios/oneshot_cross_org.py
+    ;;
+
+  oneshot-b-to-a)
+    _header "Scenario — cross-org one-shot: orgb::agent-b → orga::agent-a"
+    docker compose exec -e TARGET_AGENT_ID=orga::agent-a agent-b \
+      python /app/scenarios/oneshot_cross_org.py
+    ;;
+
+  guide)
+    if command -v less >/dev/null 2>&1; then
+      less -R GUIDE.md
+    else
+      cat GUIDE.md
+    fi
+    ;;
+
   help|*)
     cat <<EOF
 Usage: demo.sh <command>
@@ -104,6 +124,13 @@ Inspection:
   logs [svc]      Tail compose logs (default: --tail=50).
   dashboard       Print dashboard URLs + admin secrets.
   bootstrap-logs  Replay the verbose Phase 1-7 bootstrap output.
+
+Scenarios (require 'full' mode — orga workloads must be running):
+  oneshot-a-to-b  Cross-org one-shot from orga::agent-a to orgb::agent-b.
+  oneshot-b-to-a  Cross-org one-shot from orgb::agent-b to orga::agent-a.
+
+Guided onboarding (for 'up' mode — walks you through completing orga):
+  guide           Open the step-by-step Markdown walkthrough.
 EOF
     ;;
 esac
