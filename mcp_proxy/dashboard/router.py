@@ -2286,9 +2286,15 @@ async def overview_page(request: Request):
     # Counts
     local_agents = await list_agents()
     local_count = len(local_agents)
+    local_active_count = sum(1 for a in local_agents if a.get("is_active"))
 
     federated_count = 0
     federated_orgs = 0
+    backend_total = 0
+    backend_enabled = 0
+    binding_total = 0
+    binding_active = 0
+    recent_backends: list[dict] = []
     try:
         from sqlalchemy import text as _text
         from mcp_proxy.db import get_db as _get_db
@@ -2302,9 +2308,55 @@ async def overview_page(request: Request):
             if row:
                 federated_count = int(row["c"] or 0)
                 federated_orgs = int(row["o"] or 0)
+
+            # Backend totals (ADR-007 Phase 1 — table `local_mcp_resources`,
+            # surfaced here as "backends" for the operator UI).
+            brow = (await conn.execute(
+                _text(
+                    "SELECT COUNT(*) AS total, "
+                    "SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled "
+                    "FROM local_mcp_resources"
+                )
+            )).mappings().first()
+            if brow:
+                backend_total = int(brow["total"] or 0)
+                backend_enabled = int(brow["enabled"] or 0)
+
+            grow = (await conn.execute(
+                _text(
+                    "SELECT COUNT(*) AS total, "
+                    "SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END) AS active "
+                    "FROM local_agent_resource_bindings"
+                )
+            )).mappings().first()
+            if grow:
+                binding_total = int(grow["total"] or 0)
+                binding_active = int(grow["active"] or 0)
+
+            # Three newest backends for the overview panel.
+            rrows = (await conn.execute(
+                _text(
+                    "SELECT name, endpoint_url, enabled, created_at "
+                    "FROM local_mcp_resources "
+                    "ORDER BY created_at DESC LIMIT 3"
+                )
+            )).mappings().all()
+            recent_backends = [dict(r) for r in rrows]
     except Exception:
-        # cache table may not exist on very old schemas
+        # cache/backend tables may be missing on older schemas — the
+        # overview still renders, just with zeros.
         pass
+
+    # Three newest local agents for the overview panel.
+    recent_agents = [
+        {
+            "agent_id": a.get("agent_id"),
+            "display_name": a.get("display_name"),
+            "is_active": a.get("is_active"),
+            "created_at": a.get("created_at"),
+        }
+        for a in (local_agents or [])[:3]
+    ]
 
     return templates.TemplateResponse("overview.html", _ctx(
         request, session,
@@ -2314,11 +2366,18 @@ async def overview_page(request: Request):
         broker_url=broker_url,
         org_status=org_status,
         local_count=local_count,
+        local_active_count=local_active_count,
         federated_count=federated_count,
         federated_orgs=federated_orgs,
         fed_stats=fed_stats,
         fed_running=fed_running,
         standalone_mode=standalone_mode,
+        backend_total=backend_total,
+        backend_enabled=backend_enabled,
+        binding_total=binding_total,
+        binding_active=binding_active,
+        recent_agents=recent_agents,
+        recent_backends=recent_backends,
     ))
 
 

@@ -565,8 +565,14 @@ app.include_router(link_broker_admin_router)
 from mcp_proxy.dashboard.policies_local import router as local_policies_router
 app.include_router(local_policies_router)
 
-from mcp_proxy.dashboard.mcp_resources import router as mcp_resources_dashboard_router
+# Mounted under /proxy/backends; /proxy/mcp-resources is redirected via a
+# small legacy router in the same module (compat for old bookmarks).
+from mcp_proxy.dashboard.mcp_resources import (
+    router as mcp_resources_dashboard_router,
+    _legacy_router as mcp_resources_legacy_router,
+)
 app.include_router(mcp_resources_dashboard_router)
+app.include_router(mcp_resources_legacy_router)
 
 from mcp_proxy.dashboard.downloads import router as downloads_router
 app.include_router(downloads_router)

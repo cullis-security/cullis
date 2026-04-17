@@ -40,7 +40,16 @@ _log = logging.getLogger("mcp_proxy.dashboard.mcp_resources")
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
-router = APIRouter(prefix="/proxy/mcp-resources", tags=["dashboard-mcp-resources"])
+router = APIRouter(prefix="/proxy/backends", tags=["dashboard-backends"])
+
+# Legacy redirect — keep old /proxy/mcp-resources path working for existing
+# bookmarks and audit-log links that reference it.
+_legacy_router = APIRouter()
+
+
+@_legacy_router.get("/proxy/mcp-resources", include_in_schema=False)
+async def _legacy_redirect_root() -> RedirectResponse:
+    return RedirectResponse(url="/proxy/backends", status_code=301)
 
 _ALLOWED_AUTH_TYPES = {"none", "bearer", "api_key", "mtls"}
 # Matches mcp_proxy.spiffe._PATH_COMPONENT_RE so a resource name always
@@ -53,7 +62,7 @@ def _ctx(request: Request, session: ProxyDashboardSession, **kwargs) -> dict:
         "request": request,
         "session": session,
         "csrf_token": session.csrf_token,
-        "active": "mcp_resources",
+        "active": "backends",
         **kwargs,
     }
 
@@ -279,7 +288,7 @@ async def resources_create(request: Request):
         status="success",
         detail=f"resource_id={resource_id} name={name} enabled={enabled}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/{resource_id}/update")
@@ -334,7 +343,7 @@ async def resources_update(resource_id: str, request: Request):
         status="success",
         detail=f"resource_id={resource_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/{resource_id}/toggle")
@@ -365,7 +374,7 @@ async def resources_toggle(resource_id: str, request: Request):
         status="success",
         detail=f"resource_id={resource_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/{resource_id}/delete")
@@ -394,7 +403,7 @@ async def resources_delete(resource_id: str, request: Request):
         status="success",
         detail=f"resource_id={resource_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 # ── Bindings ─────────────────────────────────────────────────────────
@@ -460,7 +469,7 @@ async def bindings_create(request: Request):
         status="success",
         detail=f"binding_id={binding_id} agent={agent_id} resource={resource_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/bindings/{binding_id}/revoke")
@@ -488,7 +497,7 @@ async def bindings_revoke(binding_id: str, request: Request):
         status="success",
         detail=f"binding_id={binding_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/bindings/{binding_id}/reapprove")
@@ -516,7 +525,7 @@ async def bindings_reapprove(binding_id: str, request: Request):
         status="success",
         detail=f"binding_id={binding_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)
 
 
 @router.post("/bindings/{binding_id}/delete")
@@ -538,4 +547,4 @@ async def bindings_delete(binding_id: str, request: Request):
         status="success",
         detail=f"binding_id={binding_id}",
     )
-    return RedirectResponse(url="/proxy/mcp-resources", status_code=303)
+    return RedirectResponse(url="/proxy/backends", status_code=303)

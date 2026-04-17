@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}MCP Resources{% endblock %}
-{% block header_title %}MCP Resources (ADR-007){% endblock %}
+{% block title %}Backends{% endblock %}
+{% block header_title %}Backends{% endblock %}
 {% block content %}
 <div class="max-w-6xl space-y-6">
 
     <div class="p-4 bg-surface-900/60 border border-gray-800/60 rounded text-sm text-gray-400">
-        External MCP servers the proxy forwards to, gated by explicit agent bindings.
-        Resources appear in <code>/v1/mcp tools/list</code> only for agents with an
-        active binding. SPIFFE URIs use the 3-component form
+        External MCP servers the Mastio reverse-proxies to, gated by explicit
+        agent bindings. A backend appears in <code>tools/list</code> only for
+        agents with an active binding. SPIFFE URIs use the 3-component form
         <code>spiffe://&lt;td&gt;/&lt;org&gt;/mcp/&lt;name&gt;</code>.
     </div>
 
-    <!-- Create resource form -->
+    <!-- Create backend form -->
     <details class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg">
-        <summary class="text-sm uppercase tracking-[0.2em] text-gray-400 cursor-pointer">New MCP resource</summary>
-        <form method="post" action="/proxy/mcp-resources/create" class="mt-4 space-y-4">
+        <summary class="text-sm uppercase tracking-[0.2em] text-gray-400 cursor-pointer">New backend</summary>
+        <form method="post" action="/proxy/backends/create" class="mt-4 space-y-4">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -77,18 +77,18 @@
             </div>
             <button type="submit"
                     class="px-4 py-2 bg-accent-500/20 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/30 uppercase tracking-wider text-sm font-medium">
-                Create resource
+                Create backend
             </button>
         </form>
     </details>
 
-    <!-- Resource list -->
+    <!-- Backend list -->
     <div class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg">
         <h3 class="text-sm uppercase tracking-[0.2em] text-gray-400 mb-4">
-            Resources ({{ resources|length }})
+            Backends ({{ resources|length }})
         </h3>
         {% if not resources %}
-        <p class="text-sm text-gray-500">No MCP resources yet. Use the form above to create one.</p>
+        <p class="text-sm text-gray-500">No backends yet. Use the form above to attach one.</p>
         {% else %}
         <table class="w-full text-sm">
             <thead>
@@ -121,7 +121,7 @@
                         {{ r.active_count }} / {{ r.total_count }}
                     </td>
                     <td class="text-center">
-                        <form method="post" action="/proxy/mcp-resources/{{ r.resource_id }}/toggle" class="inline">
+                        <form method="post" action="/proxy/backends/{{ r.resource_id }}/toggle" class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="text-xs {% if r.enabled %}text-emerald-400{% else %}text-gray-500{% endif %} hover:underline">
                                 {% if r.enabled %}ON{% else %}OFF{% endif %}
@@ -131,7 +131,7 @@
                     <td class="flex gap-3">
                         <details class="inline">
                             <summary class="text-accent-400 cursor-pointer text-xs">edit</summary>
-                            <form method="post" action="/proxy/mcp-resources/{{ r.resource_id }}/update"
+                            <form method="post" action="/proxy/backends/{{ r.resource_id }}/update"
                                   class="mt-3 p-4 bg-surface-950 border border-gray-800 rounded space-y-3">
                                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                 <div>
@@ -178,7 +178,7 @@
                                 </button>
                             </form>
                         </details>
-                        <form method="post" action="/proxy/mcp-resources/{{ r.resource_id }}/delete" class="inline"
+                        <form method="post" action="/proxy/backends/{{ r.resource_id }}/delete" class="inline"
                               onsubmit="return confirm('Delete {{ r.name }}? Also removes {{ r.total_count }} binding(s).')">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit" class="text-xs text-red-400 hover:underline">delete</button>
@@ -195,7 +195,7 @@
                             </summary>
                             <div class="mt-3 space-y-3">
                                 <!-- New binding form -->
-                                <form method="post" action="/proxy/mcp-resources/bindings/create"
+                                <form method="post" action="/proxy/backends/bindings/create"
                                       class="flex items-end gap-2">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                     <input type="hidden" name="resource_id" value="{{ r.resource_id }}">
@@ -248,17 +248,17 @@
                                             </td>
                                             <td class="flex gap-3">
                                                 {% if b.revoked_at %}
-                                                <form method="post" action="/proxy/mcp-resources/bindings/{{ b.binding_id }}/reapprove" class="inline">
+                                                <form method="post" action="/proxy/backends/bindings/{{ b.binding_id }}/reapprove" class="inline">
                                                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                                     <button type="submit" class="text-emerald-400 hover:underline">re-approve</button>
                                                 </form>
                                                 {% else %}
-                                                <form method="post" action="/proxy/mcp-resources/bindings/{{ b.binding_id }}/revoke" class="inline">
+                                                <form method="post" action="/proxy/backends/bindings/{{ b.binding_id }}/revoke" class="inline">
                                                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                                     <button type="submit" class="text-amber-400 hover:underline">revoke</button>
                                                 </form>
                                                 {% endif %}
-                                                <form method="post" action="/proxy/mcp-resources/bindings/{{ b.binding_id }}/delete" class="inline"
+                                                <form method="post" action="/proxy/backends/bindings/{{ b.binding_id }}/delete" class="inline"
                                                       onsubmit="return confirm('Delete binding permanently?')">
                                                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                                                     <button type="submit" class="text-red-400 hover:underline">delete</button>

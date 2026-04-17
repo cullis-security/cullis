@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Network Admin Console — Cullis Broker</title>
+    <title>Network Admin Console — Cullis Court</title>
     <link rel="stylesheet" href="/static/css/tailwind.css">
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
@@ -70,7 +70,7 @@
 <div class="op-glow"></div>
 
 <!-- Corner registration marks — remind the operator this is a console, not a marketing site -->
-<div class="fixed top-4 left-4 mono text-[10px] text-white/30 tracking-widest uppercase z-10 rise">CULLIS / BROKER / v1</div>
+<div class="fixed top-4 left-4 mono text-[10px] text-white/30 tracking-widest uppercase z-10 rise">CULLIS / COURT / v1</div>
 <div class="fixed top-4 right-4 mono text-[10px] text-white/30 tracking-widest uppercase z-10 rise">auth.session.tls</div>
 <div class="fixed bottom-4 left-4 mono text-[10px] text-white/30 tracking-widest uppercase z-10 rise">// operator terminal</div>
 <div class="fixed bottom-4 right-4 mono text-[10px] text-white/30 tracking-widest uppercase z-10 rise flex items-center gap-2">
@@ -85,8 +85,11 @@
             <div class="flex items-center gap-3 mb-8">
                 <img src="/static/cullis.svg" alt="" style="height:42px;width:auto;filter:drop-shadow(0 0 14px rgba(0,229,199,0.35));">
                 <div>
-                    <div class="heading uppercase font-semibold text-white text-xl tracking-[0.22em] leading-none">Cullis</div>
-                    <div class="mono text-[10px] text-white/40 uppercase tracking-[0.22em] mt-1">federated trust broker</div>
+                    <div class="flex items-baseline gap-2 leading-none">
+                        <span class="heading uppercase font-semibold text-white text-xl tracking-[0.22em]">Cullis</span>
+                        <span class="heading uppercase font-semibold text-[#00e5c7] text-xl tracking-[0.22em]">Court</span>
+                    </div>
+                    <div class="mono text-[10px] text-white/40 uppercase tracking-[0.22em] mt-1.5">cross-org federation</div>
                 </div>
             </div>
 
@@ -95,7 +98,7 @@
             </h1>
 
             <p class="mt-5 text-sm text-white/55 leading-relaxed max-w-sm">
-                Operator-only surface for the federation broker. Approve organizations, issue invite tokens, audit the cross-org chain, and observe the live proxy mesh.
+                Operator-only surface for the Cullis Court. Approve organizations, issue invite tokens, audit the cross-org chain, and observe the live Mastio mesh.
             </p>
 
             <!-- Scope chips -->
@@ -120,7 +123,7 @@
             <div class="flex items-center justify-between mb-6">
                 <div class="flex items-center gap-2">
                     <span class="w-1.5 h-1.5 rounded-full bg-[#00e5c7]" style="box-shadow:0 0 8px rgba(0,229,199,0.7)"></span>
-                    <span class="mono text-[10px] uppercase tracking-[0.22em] text-white/55">sign in · tenant = network</span>
+                    <span class="mono text-[10px] uppercase tracking-[0.22em] text-white/55">sign in · court · network admin</span>
                 </div>
                 <span class="mono text-[10px] text-white/30">0x01</span>
             </div>
@@ -167,9 +170,9 @@
 
             <!-- Footer info inside card -->
             <div class="mt-6 pt-4 border-t hairline flex items-center justify-between">
-                <p class="mono text-[10px] text-white/35 uppercase tracking-wider">tenants → proxy.cullis.local</p>
+                <p class="mono text-[10px] text-white/35 uppercase tracking-wider">tenants → mastio.cullis.local</p>
                 <p class="mono text-[10px] text-white/35">
-                    <span class="text-[#00e5c7]">●</span> broker · ready
+                    <span class="text-[#00e5c7]">●</span> court · ready
                 </p>
             </div>
         </div>
@@ -183,7 +186,7 @@
                 <span class="px-5">audit chain verified</span><span class="text-[#00e5c7]/60">◆</span>
                 <span class="px-5">tsa anchor armed</span><span class="text-[#00e5c7]/60">◆</span>
                 <span class="px-5">federation sse ↗</span><span class="text-[#00e5c7]/60">◆</span>
-                <span class="px-5">tenants on proxy</span><span class="text-[#00e5c7]/60">◆</span>
+                <span class="px-5">tenants on mastio</span><span class="text-[#00e5c7]/60">◆</span>
                 {% endfor %}
             </div>
         </div>

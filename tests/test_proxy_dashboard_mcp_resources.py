@@ -1,6 +1,6 @@
 """ADR-007 Phase 1 PR #5a — dashboard CRUD for MCP resources + bindings.
 
-Exercises the admin UI at /proxy/mcp-resources: list, create/update/
+Exercises the admin UI at /proxy/backends: list, create/update/
 toggle/delete resources, binding create/revoke/reapprove/delete, and
 the hot-reload of the tool_registry after any mutation.
 """
@@ -43,7 +43,7 @@ async def proxy_logged_in(tmp_path, monkeypatch):
 
 
 async def _csrf(client) -> str:
-    page = await client.get("/proxy/mcp-resources")
+    page = await client.get("/proxy/backends")
     assert page.status_code == 200, page.text
     m = re.search(r'name="csrf_token" value="([^"]+)"', page.text)
     assert m, "csrf_token not found"
@@ -65,7 +65,7 @@ async def _create_resource(
 ) -> str:
     csrf = await _csrf(client)
     resp = await client.post(
-        "/proxy/mcp-resources/create",
+        "/proxy/backends/create",
         data={
             "csrf_token": csrf,
             "name": name,
@@ -117,10 +117,10 @@ async def _seed_local_agent(agent_id: str, display: str = "Agent") -> None:
 
 @pytest.mark.asyncio
 async def test_list_page_renders_empty(proxy_logged_in):
-    page = await proxy_logged_in.get("/proxy/mcp-resources")
+    page = await proxy_logged_in.get("/proxy/backends")
     assert page.status_code == 200
-    assert "MCP Resources" in page.text
-    assert "No MCP resources yet" in page.text
+    assert "Backends" in page.text
+    assert "No backends yet" in page.text
 
 
 # ── Resource create ─────────────────────────────────────────────────
@@ -192,7 +192,7 @@ async def test_update_changes_fields(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     resp = await proxy_logged_in.post(
-        f"/proxy/mcp-resources/{rid}/update",
+        f"/proxy/backends/{rid}/update",
         data={
             "csrf_token": csrf,
             "description": "updated",
@@ -226,7 +226,7 @@ async def test_toggle_flips_enabled(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     resp = await proxy_logged_in.post(
-        f"/proxy/mcp-resources/{rid}/toggle",
+        f"/proxy/backends/{rid}/toggle",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -250,14 +250,14 @@ async def test_delete_removes_resource_and_cascade_bindings(proxy_logged_in):
     # Create one binding for the resource.
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
 
     csrf = await _csrf(proxy_logged_in)
     resp = await proxy_logged_in.post(
-        f"/proxy/mcp-resources/{rid}/delete",
+        f"/proxy/backends/{rid}/delete",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -282,7 +282,7 @@ async def test_delete_removes_resource_and_cascade_bindings(proxy_logged_in):
 @pytest.mark.asyncio
 async def test_spiffe_uri_shown_on_list(proxy_logged_in):
     await _create_resource(proxy_logged_in, name="pg-svc")
-    page = await proxy_logged_in.get("/proxy/mcp-resources")
+    page = await proxy_logged_in.get("/proxy/backends")
     assert "spiffe://test.local/acme/mcp/pg-svc" in page.text
 
 
@@ -296,7 +296,7 @@ async def test_create_binding_persists(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     resp = await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
@@ -322,7 +322,7 @@ async def test_create_binding_duplicate_returns_409(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     r1 = await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
@@ -330,7 +330,7 @@ async def test_create_binding_duplicate_returns_409(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     r2 = await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
@@ -345,7 +345,7 @@ async def test_revoke_and_reapprove_binding(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
@@ -360,7 +360,7 @@ async def test_revoke_and_reapprove_binding(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        f"/proxy/mcp-resources/bindings/{bid}/revoke",
+        f"/proxy/backends/bindings/{bid}/revoke",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -374,7 +374,7 @@ async def test_revoke_and_reapprove_binding(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        f"/proxy/mcp-resources/bindings/{bid}/reapprove",
+        f"/proxy/backends/bindings/{bid}/reapprove",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -396,13 +396,13 @@ async def test_list_shows_binding_counts(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::buyer", "resource_id": rid},
         follow_redirects=False,
     )
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        "/proxy/mcp-resources/bindings/create",
+        "/proxy/backends/bindings/create",
         data={"csrf_token": csrf, "agent_id": "acme::seller", "resource_id": rid},
         follow_redirects=False,
     )
@@ -418,12 +418,12 @@ async def test_list_shows_binding_counts(proxy_logged_in):
         )).scalar()
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        f"/proxy/mcp-resources/bindings/{bid}/revoke",
+        f"/proxy/backends/bindings/{bid}/revoke",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
 
-    page = await proxy_logged_in.get("/proxy/mcp-resources")
+    page = await proxy_logged_in.get("/proxy/backends")
     assert "1 / 2" in page.text
 
 
@@ -447,7 +447,7 @@ async def test_registry_reloaded_on_delete(proxy_logged_in):
 
     csrf = await _csrf(proxy_logged_in)
     await proxy_logged_in.post(
-        f"/proxy/mcp-resources/{rid}/delete",
+        f"/proxy/backends/{rid}/delete",
         data={"csrf_token": csrf},
         follow_redirects=False,
     )
@@ -470,7 +470,7 @@ async def test_requires_login(tmp_path, monkeypatch):
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/proxy/mcp-resources", follow_redirects=False)
+            resp = await client.get("/proxy/backends", follow_redirects=False)
             assert resp.status_code == 303
     get_settings.cache_clear()
 
@@ -478,7 +478,7 @@ async def test_requires_login(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_csrf_enforced_on_create(proxy_logged_in):
     resp = await proxy_logged_in.post(
-        "/proxy/mcp-resources/create",
+        "/proxy/backends/create",
         data={
             "csrf_token": "bogus",
             "name": "no-csrf",
