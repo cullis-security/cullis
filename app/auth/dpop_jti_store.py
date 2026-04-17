@@ -88,12 +88,36 @@ _store: DpopJtiStore | None = None
 
 
 def _init_store() -> DpopJtiStore:
-    """Select the best available backend."""
+    """Select the best available backend.
+
+    Audit F-E-04 — production startup refuses empty REDIS_URL in
+    ``validate_config``, so by the time we land here production is
+    guaranteed to have Redis configured. If Redis later goes down at
+    runtime, ``get_redis()`` returns None and we would silently drop to
+    in-memory: defeat replay protection across workers. Refuse the
+    fallback in production so the next /auth/token request surfaces the
+    outage (fail-fast) instead of a latent replay window.
+    """
     from app.redis.pool import get_redis
+    from app.config import get_settings
+
     redis = get_redis()
     if redis is not None:
         _log.info("DPoP JTI store: Redis")
         return RedisDpopJtiStore(redis)
+
+    if get_settings().environment == "production":
+        _log.critical(
+            "DPoP JTI store: Redis client unavailable in production. "
+            "Refusing to fall back to in-memory (would allow cross-worker "
+            "replay of DPoP proofs, RFC 9449). Check REDIS_URL and Redis "
+            "reachability.",
+        )
+        raise RuntimeError(
+            "DPoP JTI store requires Redis in production; in-memory "
+            "fallback is disabled (audit F-E-04)."
+        )
+
     _log.info("DPoP JTI store: in-memory")
     return InMemoryDpopJtiStore()
 
