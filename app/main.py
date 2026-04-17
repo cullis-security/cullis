@@ -376,6 +376,12 @@ app.include_router(v1)
 from app.federation.publish import router as federation_router
 app.include_router(federation_router)
 
+# ADR-010 Phase 6a-1 — read-side federation API (cross-org discovery +
+# public-key lookup). Mirrors the legacy /v1/registry/agents GETs so
+# consumers can migrate by URL swap; Phase 6a-4 deletes the originals.
+from app.federation.read import router as federation_read_router
+app.include_router(federation_read_router)
+
 # ── Static files ─────────────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
