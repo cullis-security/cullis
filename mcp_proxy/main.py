@@ -566,6 +566,14 @@ app.include_router(admin_mcp_resources_router)
 from mcp_proxy.admin.agents import router as admin_agents_router
 app.include_router(admin_agents_router)
 
+# ADR-011 Phase 1b — BYOCA enrollment endpoint. ``/v1/admin/agents/enroll/byoca``
+# takes a caller-supplied cert/key pair, verifies the chain to the Mastio's
+# Org CA, and emits an API key + optional DPoP binding. Registered here,
+# not inside the CRUD router, so the two concerns (admin CRUD vs verified
+# enrollment) stay separable as Phase 1c adds the SPIFFE variant.
+from mcp_proxy.admin.enroll import router as admin_enroll_router
+app.include_router(admin_enroll_router)
+
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
 # Must precede the reverse-proxy catch-all: /v1/federation/agents/{id}/
 # public-key would otherwise fall into the `/v1/federation/*` forward
