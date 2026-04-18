@@ -918,24 +918,23 @@ async def agents_page(request: Request):
     agents = await list_agents()
     has_ca = bool(await get_config("org_ca_cert"))
 
-    # Federated peers grouped by org. Read-only view over the Phase 4b
-    # cache — safe to show even when the subscriber is not running (rows
-    # are simply stale, not wrong). Accordion expansion is wired via a
-    # HTMX partial at /proxy/agents/federated/{org}.
-    own_org_id = await get_config("org_id") or ""
-    federated_orgs = await _load_federated_orgs(exclude_org=own_org_id)
-    open_orgs = _parse_open_orgs(request.query_params.get("open"))
+    # Split by reach so the template can render two sections:
+    # Federated (reach in {'cross','both'}) on top, Local (reach ==
+    # 'intra') below. Peer-org agents live on /proxy/network now —
+    # this page is exclusively "my agents".
+    federated_agents = [a for a in agents if a.get("reach", "both") != "intra"]
+    local_agents = [a for a in agents if a.get("reach", "both") == "intra"]
 
     return templates.TemplateResponse("agents.html", _ctx(
         request, session,
         active="agents",
         agents=agents,
+        federated_agents=federated_agents,
+        local_agents=local_agents,
         org_status=org_status,
         has_ca=has_ca,
         new_api_key=None,
         new_agent_id=None,
-        federated_orgs=federated_orgs,
-        open_orgs=open_orgs,
     ))
 
 
@@ -1281,6 +1280,71 @@ async def agent_toggle_federate(request: Request, agent_id: str):
     return RedirectResponse(url="/proxy/agents", status_code=303)
 
 
+_VALID_REACH = {"intra", "cross", "both"}
+
+
+@router.post("/agents/{agent_id:path}/reach")
+async def agent_set_reach(request: Request, agent_id: str):
+    """Set ``internal_agents.reach`` from the dashboard.
+
+    Migration 0017 introduced three states:
+
+    * ``intra``  — same-org chat only, NOT published to the Court
+    * ``cross``  — other-org chat only, published to the Court
+    * ``both``   — intra + cross, published
+
+    The legacy ``federated`` boolean is kept in sync so the publisher
+    (ADR-010 Phase 3) still finds the right rows to PUT / revoke; it is
+    now derived from ``reach`` instead of being the primary knob.
+    ``federation_revision`` is bumped on every mutation so the publisher
+    picks up the change on its next tick.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    form = await request.form()
+    new_reach = (form.get("reach") or "").strip().lower()
+    if new_reach not in _VALID_REACH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"reach must be one of {sorted(_VALID_REACH)}",
+        )
+
+    from mcp_proxy.db import get_agent, get_db, log_audit
+    from sqlalchemy import text as _text
+
+    agent = await get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    new_federated = new_reach != "intra"
+    async with get_db() as conn:
+        await conn.execute(
+            _text(
+                """
+                UPDATE internal_agents
+                   SET reach = :reach,
+                       federated = :fed,
+                       federation_revision = federation_revision + 1
+                 WHERE agent_id = :aid
+                """
+            ),
+            {"reach": new_reach, "fed": bool(new_federated), "aid": agent_id},
+        )
+
+    await log_audit(
+        agent_id=agent_id,
+        action="agent.reach_set",
+        status="success",
+        detail=f"source=dashboard reach={new_reach} federated={new_federated}",
+    )
+
+    return RedirectResponse(url="/proxy/agents", status_code=303)
+
+
 @router.post("/agents/{agent_id:path}/deactivate")
 async def agent_deactivate(request: Request, agent_id: str):
     session = require_login(request)
@@ -1382,9 +1446,19 @@ async def network_page(request: Request):
     org_filter = (request.query_params.get("org_id") or "").strip() or None
     capabilities_raw = (request.query_params.get("capabilities") or "").strip()
     capabilities = [c.strip() for c in capabilities_raw.split(",") if c.strip()] or None
-    include_own_org = request.query_params.get("include_own_org") == "on"
+    # ``include_own_org`` defaults on for the first page load — the list is
+    # a directory, not a filter result, so showing your own org's agents
+    # alongside peers is the expected default. Operators uncheck it when
+    # they want to focus on cross-org visibility.
+    has_query = any(k in request.query_params for k in (
+        "q", "pattern", "org_id", "capabilities", "include_own_org", "querier",
+    ))
+    include_own_org = (
+        request.query_params.get("include_own_org") == "on"
+        if has_query
+        else True
+    )
     querier = (request.query_params.get("querier") or "").strip() or None
-    submitted = any(k in request.query_params for k in ("q", "pattern", "org_id", "capabilities"))
 
     internal_agents = await list_agents()
     own_org_id = await get_config("org_id") or ""
@@ -1402,27 +1476,34 @@ async def network_page(request: Request):
     agents: list[dict] = []
     error: str | None = None
 
-    if submitted:
-        if bridge is None:
-            error = "Broker bridge not initialized — complete the Setup wizard first."
-        elif not internal_agents:
-            error = "Create an internal agent first — discovery queries go through an agent identity."
-        elif not querier:
-            error = "Select a querier agent."
-        else:
-            try:
-                agents = await bridge.discover_agents(
-                    querier,
-                    capabilities=capabilities,
-                    q=q,
-                    org_id=org_filter,
-                    pattern=pattern,
-                )
-                if not include_own_org and own_org_id:
-                    agents = [a for a in agents if a.get("org_id") != own_org_id]
-            except Exception as exc:
-                _log.warning("Network directory query failed: %s", exc)
-                error = f"Discovery failed: {exc}"
+    # Always populate the directory on every page load (no more ``submitted``
+    # gate). Empty filters = full peer list under the selected querier;
+    # typed filters narrow the same list. Errors are surfaced inline so the
+    # missing-prereq path (no bridge / no internal agents) stays discoverable.
+    if bridge is None:
+        error = "Broker bridge not initialized — complete the Setup wizard first."
+    elif not internal_agents:
+        error = "Create an internal agent first — discovery queries go through an agent identity."
+    elif not querier:
+        error = "Select a querier agent."
+    else:
+        try:
+            agents = await bridge.discover_agents(
+                querier,
+                capabilities=capabilities,
+                q=q,
+                org_id=org_filter,
+                pattern=pattern,
+            )
+            if not include_own_org and own_org_id:
+                agents = [a for a in agents if a.get("org_id") != own_org_id]
+        except Exception as exc:
+            _log.warning("Network directory query failed: %s", exc)
+            error = f"Discovery failed: {exc}"
+
+    own_org_count = sum(1 for a in agents if a.get("org_id") == own_org_id) if own_org_id else 0
+    peer_count = len(agents) - own_org_count
+    has_active_filters = bool(q or pattern or org_filter or capabilities)
 
     return templates.TemplateResponse("network.html", _ctx(
         request, session,
@@ -1434,8 +1515,10 @@ async def network_page(request: Request):
         org_filter=org_filter or "",
         capabilities=capabilities_raw,
         include_own_org=include_own_org,
-        submitted=submitted,
         agents=agents,
+        own_org_count=own_org_count,
+        peer_count=peer_count,
+        has_active_filters=has_active_filters,
         own_org_id=own_org_id,
         broker_url=broker_url,
         error=error,
@@ -1592,6 +1675,34 @@ async def policies_test_webhook(request: Request):
 # Audit
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _pretty_and_recipient(raw: str | None) -> tuple[str | None, str | None]:
+    """Pretty-print a JSON detail string and pluck the recipient hint.
+
+    The proxy writes traffic events to ``local_audit.details`` as JSON
+    strings (oneshot forwarded, mcp tool execute, session send…). We
+    parse the payload once server-side so the template can show both a
+    formatted blob in the inspector and a ``Target`` hint in the row
+    without doing the parsing twice.
+    """
+    import json as _json
+    if not raw:
+        return None, None
+    try:
+        parsed = _json.loads(raw)
+    except (ValueError, TypeError):
+        return raw, None
+    pretty = _json.dumps(parsed, indent=2, sort_keys=True)
+    recipient = None
+    if isinstance(parsed, dict):
+        recipient = (
+            parsed.get("recipient")
+            or parsed.get("recipient_agent_id")
+            or parsed.get("target_agent_id")
+            or parsed.get("target")
+        )
+    return pretty, recipient
+
+
 @router.get("/audit", response_class=HTMLResponse)
 async def audit_page(request: Request):
     session = require_login(request)
@@ -1600,63 +1711,142 @@ async def audit_page(request: Request):
 
     from mcp_proxy.db import get_db, list_agents
 
-    # Query parameters
     agent_filter = request.query_params.get("agent", "")
     action_filter = request.query_params.get("action", "")
     status_filter = request.query_params.get("status", "")
+    source_filter = request.query_params.get("source", "")  # '', 'admin', 'traffic'
     page = int(request.query_params.get("page", "1"))
     per_page = 50
 
-    # Build query
     from sqlalchemy import text
 
-    conditions: list[str] = []
-    params: dict[str, object] = {}
-    if agent_filter:
-        conditions.append("agent_id = :agent_id")
-        params["agent_id"] = agent_filter
-    if action_filter:
-        conditions.append("action = :action")
-        params["action"] = action_filter
-    if status_filter:
-        conditions.append("status = :status")
-        params["status"] = status_filter
-
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    # ``audit_log`` uses ``status='success'``; ``local_audit`` uses
+    # ``result='ok'`` for the same concept. Map the UI filter once and
+    # use the per-table equivalent when building WHERE clauses.
+    local_audit_result_for = {"success": "ok", "ok": "ok", "error": "error", "denied": "denied"}
 
     async with get_db() as db:
-        # Count total
-        result = await db.execute(
-            text(f"SELECT COUNT(*) as cnt FROM audit_log{where}"), params,
-        )
-        row = result.mappings().first()
-        total = row["cnt"] if row else 0
+        admin_rows: list[dict] = []
+        traffic_rows: list[dict] = []
 
-        # Fetch page
-        offset = (page - 1) * per_page
-        page_params = {**params, "limit": per_page, "offset": offset}
-        result = await db.execute(
-            text(f"SELECT * FROM audit_log{where} ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"),
-            page_params,
-        )
-        entries = [dict(r) for r in result.mappings().all()]
+        # Admin stream — legacy ``audit_log`` (auth, enroll, agent CRUD, policy…)
+        if source_filter in ("", "admin"):
+            a_conds: list[str] = []
+            a_params: dict[str, object] = {}
+            if agent_filter:
+                a_conds.append("agent_id = :agent_id")
+                a_params["agent_id"] = agent_filter
+            if action_filter:
+                a_conds.append("action = :action")
+                a_params["action"] = action_filter
+            if status_filter:
+                a_conds.append("status = :status")
+                a_params["status"] = status_filter
+            a_where = (" WHERE " + " AND ".join(a_conds)) if a_conds else ""
+            result = await db.execute(
+                text(f"SELECT * FROM audit_log{a_where} ORDER BY timestamp DESC LIMIT 500"),
+                a_params,
+            )
+            admin_rows = [dict(r) for r in result.mappings().all()]
 
-    # Distinct agents and actions for filter dropdowns
+        # Traffic stream — hash-chained ``local_audit`` (oneshot, mcp, sessions)
+        if source_filter in ("", "traffic"):
+            t_conds: list[str] = []
+            t_params: dict[str, object] = {}
+            if agent_filter:
+                t_conds.append("agent_id = :agent_id")
+                t_params["agent_id"] = agent_filter
+            if action_filter:
+                t_conds.append("event_type = :event_type")
+                t_params["event_type"] = action_filter
+            if status_filter:
+                t_conds.append("result = :result")
+                t_params["result"] = local_audit_result_for.get(status_filter, status_filter)
+            t_where = (" WHERE " + " AND ".join(t_conds)) if t_conds else ""
+            result = await db.execute(
+                text(f"SELECT * FROM local_audit{t_where} ORDER BY timestamp DESC LIMIT 500"),
+                t_params,
+            )
+            traffic_rows = [dict(r) for r in result.mappings().all()]
+
+        # Distinct actions + event_types for the filter dropdown.
+        r1 = await db.execute(text("SELECT DISTINCT action FROM audit_log WHERE action IS NOT NULL"))
+        r2 = await db.execute(text("SELECT DISTINCT event_type FROM local_audit WHERE event_type IS NOT NULL"))
+        actions = sorted(set(r[0] for r in r1.fetchall()) | set(r[0] for r in r2.fetchall()))
+
+    # Normalize both streams into a single shape so the template has
+    # exactly one cell layout to render. Fields that only exist in one
+    # table are left as ``None`` for the other source; the inspector
+    # hides rows where the value is missing.
+    unified: list[dict] = []
+    for r in admin_rows:
+        detail_pretty, _ = _pretty_and_recipient(r.get("detail"))
+        unified.append({
+            "source": "admin",
+            "timestamp": r.get("timestamp"),
+            "agent_id": r.get("agent_id"),
+            "event": r.get("action"),
+            "status": r.get("status"),
+            "target": r.get("tool_name"),
+            "tool_name": r.get("tool_name"),
+            "duration_ms": r.get("duration_ms"),
+            "request_id": r.get("request_id"),
+            "session_id": None,
+            "org_id": None,
+            "chain_seq": None,
+            "entry_hash": None,
+            "peer_org_id": None,
+            "detail_pretty": detail_pretty,
+        })
+    for r in traffic_rows:
+        detail_pretty, recipient = _pretty_and_recipient(r.get("details"))
+        raw_result = r.get("result")
+        status_display = "success" if raw_result == "ok" else raw_result
+        unified.append({
+            "source": "traffic",
+            "timestamp": r.get("timestamp"),
+            "agent_id": r.get("agent_id"),
+            "event": r.get("event_type"),
+            "status": status_display,
+            "target": recipient,
+            "tool_name": None,
+            "duration_ms": None,
+            "request_id": None,
+            "session_id": r.get("session_id"),
+            "org_id": r.get("org_id"),
+            "chain_seq": r.get("chain_seq"),
+            "entry_hash": r.get("entry_hash"),
+            "peer_org_id": r.get("peer_org_id"),
+            "detail_pretty": detail_pretty,
+        })
+
+    # ISO-8601 strings sort correctly as plain strings — no parsing needed.
+    unified.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+
+    total = len(unified)
+    admin_total = sum(1 for e in unified if e["source"] == "admin")
+    traffic_total = total - admin_total
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    offset = (page - 1) * per_page
+    entries = unified[offset:offset + per_page]
+
     agents = await list_agents()
     agent_ids = sorted(set(a["agent_id"] for a in agents))
-
-    total_pages = max(1, (total + per_page - 1) // per_page)
 
     return templates.TemplateResponse("audit.html", _ctx(
         request, session,
         active="audit",
         entries=entries,
         agent_ids=agent_ids,
+        actions=actions,
         agent_filter=agent_filter,
         action_filter=action_filter,
         status_filter=status_filter,
+        source_filter=source_filter,
         page=page,
         total_pages=total_pages,
+        admin_total=admin_total,
+        traffic_total=traffic_total,
         total=total,
     ))
 

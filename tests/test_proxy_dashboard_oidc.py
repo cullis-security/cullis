@@ -374,42 +374,11 @@ async def test_federated_partial_lists_cached_agents(proxy_app):
     assert "peer::agent-1" in body
 
 
-@pytest.mark.asyncio
-async def test_agents_page_shows_federated_section(proxy_app):
-    _, client = proxy_app
-    from sqlalchemy import text
-
-    from mcp_proxy.db import get_db, set_config
-    await set_config("org_id", "acme")
-
-    async with get_db() as conn:
-        await conn.execute(
-            text(
-                "INSERT INTO cached_federated_agents "
-                "(agent_id, org_id, display_name, capabilities, revoked, updated_at) "
-                "VALUES ('peer::a', 'peer-org', 'A', '[]', 0, '2026-04-14T00:00:00Z')"
-            )
-        )
-        # own-org row must be excluded from the federated section
-        await conn.execute(
-            text(
-                "INSERT INTO cached_federated_agents "
-                "(agent_id, org_id, display_name, capabilities, revoked, updated_at) "
-                "VALUES ('acme::self', 'acme', 'Self', '[]', 0, '2026-04-14T00:00:00Z')"
-            )
-        )
-
-    name, value = _admin_cookie()
-    client.cookies.set(name, value)
-    resp = await client.get("/proxy/agents")
-    assert resp.status_code == 200
-    body = resp.text
-    assert "Federated Agents" in body
-    assert "peer-org" in body
-    # own-org MUST NOT appear in the federated peer list (it's us)
-    # The acme::self row is allowed to appear only if acme is the own_org;
-    # we set org_id=acme above, so acme is excluded from the federated accordion.
-    assert "acme::self" not in body or "Federated Agents" in body  # lenient
-
-    # accordion partial endpoint is linked
-    assert "/proxy/federated/peer-org" in body
+# NOTE: the former ``test_agents_page_shows_federated_section`` has been
+# retired. That test exercised the Peer Agents accordion that used to
+# live on ``/proxy/agents``; the accordion has since been removed —
+# peer-org discovery moved to ``/proxy/network``, and ``/proxy/agents``
+# is now scoped to "my agents" only (split into Federated / Local by
+# ``reach``). The ``/proxy/federated/{org}`` partial endpoint itself
+# is kept (see ``test_federated_partial_*`` above), but it is no
+# longer rendered from the Agents page.

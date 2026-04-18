@@ -453,6 +453,14 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
             out[key] = (
                 bool(row[key]) if key == "federated" else row[key]
             )
+    # Migration 0017 — reach ('intra' | 'cross' | 'both'). Optional at
+    # read time for the same reason as the federation flags above.
+    if "reach" in row.keys() and row["reach"]:
+        out["reach"] = row["reach"]
+    else:
+        # Legacy row before 0017: infer from ``federated`` so UI stays
+        # coherent even if the migration hasn't applied yet.
+        out["reach"] = "both" if out.get("federated") else "intra"
     # Migration 0013 — optional at read time so fixtures that build a row
     # by hand (without the column) don't blow up.
     if "device_info" in row.keys():

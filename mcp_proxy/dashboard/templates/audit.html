@@ -5,15 +5,40 @@
 <div class="max-w-6xl">
 
     <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
-        <div>
+    <div class="flex items-start justify-between mb-6 gap-6">
+        <div class="min-w-0">
             <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Audit Log</h2>
-            <p class="text-xs text-gray-600 mt-0.5">{{ total }} total entries</p>
+            <p class="text-xs text-gray-600 mt-0.5">
+                Unified stream — admin events + local runtime chain
+            </p>
+        </div>
+
+        <!-- Counter chip: Total · Admin · Traffic -->
+        <div class="flex items-center gap-0 flex-shrink-0 border border-gray-800/60 rounded-md overflow-hidden bg-surface-900/60 backdrop-blur-sm">
+            <div class="px-3 py-1.5 flex items-center gap-2">
+                <span class="text-[10px] font-heading uppercase tracking-[0.2em] text-gray-600">Total</span>
+                <span class="text-sm font-mono text-white">{{ total }}</span>
+            </div>
+            <div class="w-px h-5 bg-gray-800/80 self-center"></div>
+            <div class="px-3 py-1.5 flex items-center gap-2">
+                <span class="text-[10px] font-heading uppercase tracking-[0.2em] text-blue-400/80">Admin</span>
+                <span class="text-sm font-mono text-blue-400">{{ admin_total }}</span>
+            </div>
+            <div class="w-px h-5 bg-gray-800/80 self-center"></div>
+            <div class="px-3 py-1.5 flex items-center gap-2">
+                <span class="text-[10px] font-heading uppercase tracking-[0.2em] text-accent-400/80">Traffic</span>
+                <span class="text-sm font-mono text-accent-400">{{ traffic_total }}</span>
+            </div>
         </div>
     </div>
 
     <!-- Filter bar -->
-    <form method="get" action="/proxy/audit" class="flex items-center gap-3 mb-5">
+    <form method="get" action="/proxy/audit" class="flex flex-wrap items-center gap-3 mb-5">
+        <select name="source" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
+            <option value="" {% if not source_filter %}selected{% endif %}>All Sources</option>
+            <option value="admin" {% if source_filter == 'admin' %}selected{% endif %}>Admin</option>
+            <option value="traffic" {% if source_filter == 'traffic' %}selected{% endif %}>Traffic</option>
+        </select>
         <select name="agent" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
             <option value="">All Agents</option>
             {% for aid in agent_ids %}
@@ -21,14 +46,10 @@
             {% endfor %}
         </select>
         <select name="action" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
-            <option value="">All Actions</option>
-            <option value="tool_execute" {% if action_filter == 'tool_execute' %}selected{% endif %}>tool_execute</option>
-            <option value="agent.create" {% if action_filter == 'agent.create' %}selected{% endif %}>agent.create</option>
-            <option value="agent.rotate_key" {% if action_filter == 'agent.rotate_key' %}selected{% endif %}>agent.rotate_key</option>
-            <option value="agent.deactivate" {% if action_filter == 'agent.deactivate' %}selected{% endif %}>agent.deactivate</option>
-            <option value="setup.complete" {% if action_filter == 'setup.complete' %}selected{% endif %}>setup.complete</option>
-            <option value="policy.update_rules" {% if action_filter == 'policy.update_rules' %}selected{% endif %}>policy.update_rules</option>
-            <option value="tools.reload" {% if action_filter == 'tools.reload' %}selected{% endif %}>tools.reload</option>
+            <option value="">All Events</option>
+            {% for act in actions %}
+            <option value="{{ act }}" {% if act == action_filter %}selected{% endif %}>{{ act }}</option>
+            {% endfor %}
         </select>
         <select name="status" class="bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 transition-all" style="font-family: 'DM Sans', sans-serif;">
             <option value="">All Statuses</option>
@@ -40,7 +61,7 @@
                 class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
             Filter
         </button>
-        {% if agent_filter or action_filter or status_filter %}
+        {% if agent_filter or action_filter or status_filter or source_filter %}
         <a href="/proxy/audit" class="px-3 py-2 text-xs text-gray-600 hover:text-gray-400 transition-colors">Clear</a>
         {% endif %}
     </form>
@@ -52,24 +73,34 @@
                 <tr class="border-b border-gray-800/60">
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider w-6"></th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Source</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agent</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Event</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider" title="tool name for admin events, recipient for traffic">Target</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Duration</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Request ID</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider w-6"></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800/40">
                 {% for entry in entries %}
-                <tr class="table-row-hover transition-colors">
+                <tr class="table-row-hover transition-colors cursor-pointer select-none"
+                    data-audit-row data-audit-index="{{ loop.index0 }}"
+                    role="button" tabindex="0" aria-expanded="false"
+                    aria-controls="audit-expand-{{ loop.index0 }}">
                     <td class="px-5 py-3">
                         <span class="w-1.5 h-1.5 rounded-full inline-block {% if entry.status == 'success' %}bg-emerald-500{% elif entry.status == 'denied' %}bg-red-500{% elif entry.status == 'error' %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
                     </td>
-                    <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.agent_id }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
-                    <td class="px-5 py-3 text-xs text-gray-500 font-mono">{{ entry.tool_name or '-' }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] if entry.timestamp else '—' }}</td>
+                    <td class="px-5 py-3">
+                        {% if entry.source == 'admin' %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-400 uppercase tracking-wider border border-blue-500/20">Admin</span>
+                        {% else %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent-400/10 text-accent-400 uppercase tracking-wider border border-accent-400/20">Traffic</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.agent_id or '—' }}</td>
+                    <td class="px-5 py-3 text-xs text-gray-300 font-mono">{{ entry.event or '—' }}</td>
+                    <td class="px-5 py-3 text-[11px] {% if entry.target %}text-gray-400{% else %}text-gray-700{% endif %} font-mono">{{ entry.target or '—' }}</td>
                     <td class="px-5 py-3">
                         {% if entry.status == 'success' %}
                         <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">OK</span>
@@ -78,14 +109,117 @@
                         {% elif entry.status == 'error' %}
                         <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">Error</span>
                         {% else %}
-                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">{{ entry.status or '—' }}</span>
                         {% endif %}
                     </td>
-                    <td class="px-5 py-3 text-xs text-gray-500 font-mono">
-                        {% if entry.duration_ms is not none %}{{ '%.1f' | format(entry.duration_ms) }}ms{% else %}-{% endif %}
+                    <td class="px-5 py-3 text-gray-600">
+                        <svg class="audit-chevron w-3.5 h-3.5 transition-transform duration-150" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
                     </td>
-                    <td class="px-5 py-3 text-xs text-gray-600 font-mono" title="{{ entry.request_id or '' }}">
-                        {{ (entry.request_id or '')[:12] }}{% if entry.request_id %}...{% endif %}
+                </tr>
+                <tr class="audit-expand-row" data-audit-expand-for="{{ loop.index0 }}" id="audit-expand-{{ loop.index0 }}" aria-hidden="true" hidden>
+                    <td colspan="8" class="p-0">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-0 border-l-2 {% if entry.source == 'admin' %}border-blue-500/40{% else %}border-accent-400/40{% endif %} bg-surface-950/60">
+                            <!-- Left: detail JSON pretty -->
+                            <div class="lg:col-span-2 p-5 border-b lg:border-b-0 lg:border-r border-gray-800/40">
+                                <div class="flex items-center justify-between mb-2">
+                                    <h4 class="text-[10px] font-heading uppercase tracking-[0.18em] {% if entry.source == 'admin' %}text-blue-400/80{% else %}text-accent-400/80{% endif %}">Detail</h4>
+                                    {% if entry.detail_pretty %}
+                                    <button type="button" data-copy-detail="{{ loop.index0 }}"
+                                            class="text-[10px] uppercase tracking-wider text-gray-500 hover:text-accent-400 transition-colors flex items-center gap-1"
+                                            title="Copy detail as JSON">
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                                        Copy
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                {% if entry.detail_pretty %}
+                                <pre id="audit-detail-{{ loop.index0 }}" class="text-[11px] leading-relaxed font-mono text-gray-300 bg-surface-950 border border-gray-800/60 rounded p-3 overflow-x-auto whitespace-pre">{{ entry.detail_pretty }}</pre>
+                                {% else %}
+                                <p class="text-xs text-gray-600 italic">No detail attached to this event.</p>
+                                {% endif %}
+                            </div>
+
+                            <!-- Right: metadata stack (source-aware) -->
+                            <div class="p-5 space-y-3">
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Timestamp</p>
+                                    <p class="text-[11px] font-mono text-gray-300">{{ entry.timestamp or '—' }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Agent</p>
+                                    <p class="text-[11px] font-mono text-gray-300 break-all">{{ entry.agent_id or '—' }}</p>
+                                </div>
+                                {% if entry.source == 'admin' %}
+                                {% if entry.request_id %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Request ID</p>
+                                    <div class="flex items-center gap-1.5">
+                                        <code class="flex-1 min-w-0 text-[11px] font-mono text-accent-400 truncate">{{ entry.request_id }}</code>
+                                        <button type="button" onclick="copyToClipboard('{{ entry.request_id }}')"
+                                                class="flex-shrink-0 text-gray-600 hover:text-accent-400 transition-colors" title="Copy">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endif %}
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Tool</p>
+                                        <p class="text-[11px] font-mono text-gray-300">{{ entry.tool_name or '—' }}</p>
+                                    </div>
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Duration</p>
+                                        <p class="text-[11px] font-mono text-gray-300">{% if entry.duration_ms is not none %}{{ '%.1f' | format(entry.duration_ms) }} ms{% else %}—{% endif %}</p>
+                                    </div>
+                                </div>
+                                {% else %}
+                                {% if entry.target %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Recipient</p>
+                                    <p class="text-[11px] font-mono text-gray-300 break-all">{{ entry.target }}</p>
+                                </div>
+                                {% endif %}
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Org</p>
+                                        <p class="text-[11px] font-mono text-gray-300">{{ entry.org_id or '—' }}</p>
+                                    </div>
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Chain Seq</p>
+                                        <p class="text-[11px] font-mono text-gray-300">#{{ entry.chain_seq if entry.chain_seq is not none else '—' }}</p>
+                                    </div>
+                                </div>
+                                {% if entry.session_id %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Session</p>
+                                    <p class="text-[11px] font-mono text-gray-300 break-all">{{ entry.session_id }}</p>
+                                </div>
+                                {% endif %}
+                                {% if entry.peer_org_id %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Peer Org</p>
+                                    <p class="text-[11px] font-mono text-gray-300">{{ entry.peer_org_id }}</p>
+                                </div>
+                                {% endif %}
+                                {% if entry.entry_hash %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Entry Hash</p>
+                                    <div class="flex items-center gap-1.5">
+                                        <code class="flex-1 min-w-0 text-[11px] font-mono text-accent-400 truncate">{{ entry.entry_hash }}</code>
+                                        <button type="button" onclick="copyToClipboard('{{ entry.entry_hash }}')"
+                                                class="flex-shrink-0 text-gray-600 hover:text-accent-400 transition-colors" title="Copy">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endif %}
+                                {% endif %}
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Status</p>
+                                    <p class="text-[11px] font-mono {% if entry.status == 'success' %}text-emerald-400{% elif entry.status in ('denied','error') %}text-red-400{% else %}text-yellow-400{% endif %}">{{ entry.status or '—' }}</p>
+                                </div>
+                            </div>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
@@ -93,7 +227,7 @@
                 <tr>
                     <td colspan="8" class="px-5 py-16 text-center">
                         <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                        <p class="text-sm text-gray-600">No audit entries{% if agent_filter or action_filter or status_filter %} matching filters{% endif %}</p>
+                        <p class="text-sm text-gray-600">No audit entries{% if agent_filter or action_filter or status_filter or source_filter %} matching filters{% endif %}</p>
                     </td>
                 </tr>
                 {% endif %}
@@ -108,14 +242,15 @@
             Page {{ page }} of {{ total_pages }}
         </p>
         <div class="flex items-center gap-2">
+            {% set _qs %}{% if source_filter %}&source={{ source_filter }}{% endif %}{% if agent_filter %}&agent={{ agent_filter }}{% endif %}{% if action_filter %}&action={{ action_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% endset %}
             {% if page > 1 %}
-            <a href="/proxy/audit?page={{ page - 1 }}{% if agent_filter %}&agent={{ agent_filter }}{% endif %}{% if action_filter %}&action={{ action_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}"
+            <a href="/proxy/audit?page={{ page - 1 }}{{ _qs }}"
                class="px-3 py-1.5 text-xs font-medium border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
                 Prev
             </a>
             {% endif %}
             {% if page < total_pages %}
-            <a href="/proxy/audit?page={{ page + 1 }}{% if agent_filter %}&agent={{ agent_filter }}{% endif %}{% if action_filter %}&action={{ action_filter }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}"
+            <a href="/proxy/audit?page={{ page + 1 }}{{ _qs }}"
                class="px-3 py-1.5 text-xs font-medium border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-gray-300 transition-colors">
                 Next
             </a>
@@ -124,4 +259,54 @@
     </div>
     {% endif %}
 </div>
+
+<style>
+    [data-audit-row][aria-expanded="true"] .audit-chevron { transform: rotate(90deg); color: rgb(0 229 199 / 0.8); }
+    [data-audit-row][aria-expanded="true"] { background: rgb(10 15 26 / 0.45); }
+    .audit-expand-row > td > div { opacity: 0; transform: translateY(-4px); transition: opacity 180ms ease-out, transform 180ms ease-out; }
+    .audit-expand-row:not([hidden]) > td > div { opacity: 1; transform: translateY(0); }
+</style>
+
+<script>
+(function () {
+    function togglePair(index) {
+        var row = document.querySelector('[data-audit-row][data-audit-index="' + index + '"]');
+        var panel = document.querySelector('[data-audit-expand-for="' + index + '"]');
+        if (!row || !panel) return;
+        var isOpen = row.getAttribute('aria-expanded') === 'true';
+        row.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+        if (isOpen) {
+            panel.setAttribute('hidden', '');
+            panel.setAttribute('aria-hidden', 'true');
+        } else {
+            panel.removeAttribute('hidden');
+            panel.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    document.querySelectorAll('[data-audit-row]').forEach(function (row) {
+        row.addEventListener('click', function (e) {
+            if (e.target.closest('a, button, code')) return;
+            togglePair(row.dataset.auditIndex);
+        });
+        row.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                togglePair(row.dataset.auditIndex);
+            }
+        });
+    });
+
+    document.querySelectorAll('[data-copy-detail]').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var idx = btn.dataset.copyDetail;
+            var pre = document.getElementById('audit-detail-' + idx);
+            if (pre && window.copyToClipboard) {
+                window.copyToClipboard(pre.textContent);
+            }
+        });
+    });
+})();
+</script>
 {% endblock %}

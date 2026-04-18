@@ -66,6 +66,13 @@ class InternalAgent(Base):
     enrollment_method = Column(Text, nullable=True)
     spiffe_id = Column(Text, nullable=True)
     enrolled_at = Column(Text, nullable=True)
+    # Migration 0017 — reach classifies who an agent is allowed to talk
+    # to: ``intra`` (same-org only), ``cross`` (other orgs only),
+    # ``both``. Legacy rows backfill to ``intra`` when federated=0 or
+    # ``both`` when federated=1 (see the migration for the CASE).
+    # Nullable=False + default ``both`` keeps the permissive shape for
+    # rows written during the grace period before enforcement lands.
+    reach = Column(String, nullable=False, server_default="both")
 
 
 class AuditLogEntry(Base):

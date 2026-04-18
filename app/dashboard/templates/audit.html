@@ -49,14 +49,18 @@
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Event</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Result</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agent</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Organization</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Details</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Recipient</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Org</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Hash</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider w-6"></th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800/40">
                 {% for event in events %}
-                <tr class="table-row-hover transition-colors">
+                <tr class="table-row-hover transition-colors cursor-pointer select-none"
+                    data-audit-row data-audit-index="{{ loop.index0 }}"
+                    role="button" tabindex="0" aria-expanded="false"
+                    aria-controls="audit-expand-{{ loop.index0 }}">
                     <td class="px-5 py-3">
                         <span class="w-1.5 h-1.5 rounded-full inline-block {% if event.result == 'ok' %}bg-emerald-500{% elif event.result == 'denied' %}bg-red-500{% else %}bg-yellow-500{% endif %}"></span>
                     </td>
@@ -72,13 +76,87 @@
                         {% endif %}
                     </td>
                     <td class="px-5 py-3 text-[10px] text-gray-400 font-mono">{{ event.agent_id or '-' }}</td>
+                    <td class="px-5 py-3 text-[10px] font-mono {% if event.recipient %}text-gray-300{% else %}text-gray-700{% endif %}">{{ event.recipient or '—' }}</td>
                     <td class="px-5 py-3 text-[10px] text-gray-400 font-mono">{{ event.org_id or '-' }}</td>
-                    <td class="px-5 py-3 text-[10px] text-gray-600 max-w-[200px] truncate" title="{{ event.details | e }}">{{ event.details or '' }}</td>
                     <td class="px-5 py-3 text-[10px] text-gray-600 font-mono" title="{{ event.entry_hash or '' }}">{{ (event.entry_hash or '')[:12] }}{% if event.entry_hash %}…{% endif %}</td>
+                    <td class="px-5 py-3 text-gray-600">
+                        <svg class="audit-chevron w-3.5 h-3.5 transition-transform duration-150" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+                    </td>
+                </tr>
+                <tr class="audit-expand-row" data-audit-expand-for="{{ loop.index0 }}" id="audit-expand-{{ loop.index0 }}" aria-hidden="true" hidden>
+                    <td colspan="9" class="p-0">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-0 border-l-2 border-accent-400/40 bg-surface-950/60">
+                            <!-- Left: details JSON pretty -->
+                            <div class="lg:col-span-2 p-5 border-b lg:border-b-0 lg:border-r border-gray-800/40">
+                                <div class="flex items-center justify-between mb-2">
+                                    <h4 class="text-[10px] font-heading uppercase tracking-[0.18em] text-accent-400/80">Details</h4>
+                                    {% if event.details_pretty %}
+                                    <button type="button" data-copy-detail="{{ loop.index0 }}"
+                                            class="text-[10px] uppercase tracking-wider text-gray-500 hover:text-accent-400 transition-colors flex items-center gap-1"
+                                            title="Copy details as JSON">
+                                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                                        Copy
+                                    </button>
+                                    {% endif %}
+                                </div>
+                                {% if event.details_pretty %}
+                                <pre id="audit-detail-{{ loop.index0 }}" class="text-[11px] leading-relaxed font-mono text-gray-300 bg-surface-950 border border-gray-800/60 rounded p-3 overflow-x-auto whitespace-pre">{{ event.details_pretty }}</pre>
+                                {% else %}
+                                <p class="text-xs text-gray-600 italic">No details attached to this event.</p>
+                                {% endif %}
+                            </div>
+
+                            <!-- Right: metadata stack -->
+                            <div class="p-5 space-y-3">
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Event Hash</p>
+                                    {% if event.entry_hash %}
+                                    <div class="flex items-center gap-1.5">
+                                        <code class="flex-1 min-w-0 text-[11px] font-mono text-accent-400 truncate">{{ event.entry_hash }}</code>
+                                        <button type="button" onclick="copyToClipboard('{{ event.entry_hash }}')"
+                                                class="flex-shrink-0 text-gray-600 hover:text-accent-400 transition-colors" title="Copy">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                                        </button>
+                                    </div>
+                                    {% else %}
+                                    <p class="text-[11px] text-gray-600">—</p>
+                                    {% endif %}
+                                </div>
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Timestamp</p>
+                                    <p class="text-[11px] font-mono text-gray-300">{{ event.created_at.isoformat() if event.created_at else '—' }}</p>
+                                </div>
+                                <div>
+                                    <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Event Type</p>
+                                    <p class="text-[11px] font-mono text-gray-300">{{ event.event_type or '—' }}</p>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Agent</p>
+                                        <p class="text-[11px] font-mono text-gray-300 break-all">{{ event.agent_id or '—' }}</p>
+                                    </div>
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Recipient</p>
+                                        <p class="text-[11px] font-mono {% if event.recipient %}text-gray-300{% else %}text-gray-600{% endif %} break-all">{{ event.recipient or '—' }}</p>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Org</p>
+                                        <p class="text-[11px] font-mono text-gray-300">{{ event.org_id or '—' }}</p>
+                                    </div>
+                                    <div>
+                                        <p class="text-[9px] font-heading uppercase tracking-[0.2em] text-gray-600 mb-1">Result</p>
+                                        <p class="text-[11px] font-mono {% if event.result == 'ok' %}text-emerald-400{% elif event.result == 'denied' %}text-red-400{% else %}text-yellow-400{% endif %}">{{ event.result or '—' }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
                 {% if not events %}
-                <tr><td colspan="8" class="px-5 py-16 text-center">
+                <tr><td colspan="9" class="px-5 py-16 text-center">
                     <p class="text-sm text-gray-600">No audit events{% if query %} matching "{{ query }}"{% endif %}</p>
                 </td></tr>
                 {% endif %}
@@ -86,4 +164,54 @@
         </table>
     </div>
 </div>
+
+<style>
+    [data-audit-row][aria-expanded="true"] .audit-chevron { transform: rotate(90deg); color: rgb(0 229 199 / 0.8); }
+    [data-audit-row][aria-expanded="true"] { background: rgb(10 15 26 / 0.45); }
+    .audit-expand-row > td > div { opacity: 0; transform: translateY(-4px); transition: opacity 180ms ease-out, transform 180ms ease-out; }
+    .audit-expand-row:not([hidden]) > td > div { opacity: 1; transform: translateY(0); }
+</style>
+
+<script>
+(function () {
+    function togglePair(index) {
+        var row = document.querySelector('[data-audit-row][data-audit-index="' + index + '"]');
+        var panel = document.querySelector('[data-audit-expand-for="' + index + '"]');
+        if (!row || !panel) return;
+        var isOpen = row.getAttribute('aria-expanded') === 'true';
+        row.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+        if (isOpen) {
+            panel.setAttribute('hidden', '');
+            panel.setAttribute('aria-hidden', 'true');
+        } else {
+            panel.removeAttribute('hidden');
+            panel.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    document.querySelectorAll('[data-audit-row]').forEach(function (row) {
+        row.addEventListener('click', function (e) {
+            if (e.target.closest('a, button, code')) return;
+            togglePair(row.dataset.auditIndex);
+        });
+        row.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                togglePair(row.dataset.auditIndex);
+            }
+        });
+    });
+
+    document.querySelectorAll('[data-copy-detail]').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var idx = btn.dataset.copyDetail;
+            var pre = document.getElementById('audit-detail-' + idx);
+            if (pre && window.copyToClipboard) {
+                window.copyToClipboard(pre.textContent);
+            }
+        });
+    });
+})();
+</script>
 {% endblock %}

@@ -948,6 +948,45 @@ async def sessions_list(
 
 _AUDIT_LIMIT = 200
 
+
+def _build_audit_event_dict(e) -> dict:
+    """Project an ``AuditLog`` row into the dict shape the audit template
+    consumes, adding a pretty-printed ``details`` string plus a parsed
+    ``recipient`` hint for oneshot/forwarded events so the UI can show
+    who was on the receiving end of the traffic.
+
+    ``details_pretty`` is ``None`` when the original column was empty;
+    non-JSON legacy strings pass through verbatim so nothing is lost.
+    """
+    import json as _json
+    raw = e.details
+    recipient = None
+    details_pretty: str | None = None
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            details_pretty = _json.dumps(parsed, indent=2, sort_keys=True)
+            if isinstance(parsed, dict):
+                recipient = (
+                    parsed.get("recipient_agent_id")
+                    or parsed.get("target_agent_id")
+                    or parsed.get("recipient")
+                )
+        except (ValueError, TypeError):
+            details_pretty = raw
+    return {
+        "event_type": e.event_type,
+        "result": e.result,
+        "agent_id": e.agent_id,
+        "org_id": e.org_id,
+        "details": e.details,
+        "details_pretty": details_pretty,
+        "recipient": recipient,
+        "created_at": e.timestamp,
+        "entry_hash": e.entry_hash,
+    }
+
+
 @router.get("/audit", response_class=HTMLResponse)
 async def audit_log(
     request: Request,
@@ -977,18 +1016,7 @@ async def audit_log(
     result = await db.execute(query)
     events = result.scalars().all()
 
-    # Use timestamp field (named 'timestamp' in the model)
-    event_list = []
-    for e in events:
-        event_list.append({
-            "event_type": e.event_type,
-            "result": e.result,
-            "agent_id": e.agent_id,
-            "org_id": e.org_id,
-            "details": e.details,
-            "created_at": e.timestamp,
-            "entry_hash": e.entry_hash,
-        })
+    event_list = [_build_audit_event_dict(e) for e in events]
 
     return templates.TemplateResponse("audit.html",
         _ctx(request, session, active="audit", events=event_list, query=q or "", limit=_AUDIT_LIMIT)
@@ -1018,12 +1046,7 @@ async def verify_audit_chain(
     query = select(AuditLog).order_by(AuditLog.id.desc()).limit(_AUDIT_LIMIT)
     result = await db.execute(query)
     events = result.scalars().all()
-    event_list = [{
-        "event_type": e.event_type, "result": e.result,
-        "agent_id": e.agent_id, "org_id": e.org_id,
-        "details": e.details, "created_at": e.timestamp,
-        "entry_hash": e.entry_hash,
-    } for e in events]
+    event_list = [_build_audit_event_dict(e) for e in events]
 
     return templates.TemplateResponse("audit.html",
         _ctx(request, session, active="audit", events=event_list, query="",
