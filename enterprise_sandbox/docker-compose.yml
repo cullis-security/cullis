@@ -250,6 +250,12 @@ services:
       MCP_PROXY_ORG_ID:            "orga"
       MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100"
       MCP_PROXY_ENVIRONMENT:       "development"
+      # ADR-010 Phase 6a-4 — tighten the federation publisher tick so
+      # agents seeded by ``bootstrap-mastio`` reach the Court within a
+      # few seconds. Sandbox demo lives/dies on this: agent-a/agent-b/
+      # byoca-bot start right after seeding and 401 on first-login if
+      # the Court hasn't yet received their federated push.
+      MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
     volumes:
       - proxy-a-data:/data
     networks:
@@ -472,6 +478,8 @@ services:
       MCP_PROXY_ORG_ID:            "orgb"
       MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9200"
       MCP_PROXY_ENVIRONMENT:       "development"
+      # ADR-010 Phase 6a-4 — see proxy-a rationale.
+      MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
     volumes:
       - proxy-b-data:/data
     networks:
@@ -651,6 +659,15 @@ services:
       # Must match bootstrap's scope — in ``up`` only orgb is patched;
       # orga doesn't exist on the Court yet.
       BOOTSTRAP_SCOPE:       "${BOOTSTRAP_SCOPE:-up}"
+    # ADR-010 Phase 6a-4 — bootstrap_mastio now reads the agent cert/key
+    # pairs that ``bootstrap`` persisted under /state/{org}/agents/{name}/
+    # and forwards them to the owning Mastio via ``POST /v1/admin/agents``
+    # with ``federated=true``. Without this mount the seed loop skips
+    # every agent ("no agents directory"), the federation publisher has
+    # nothing to push, and byoca/agent-a/agent-b fail first-login with
+    # 401 "Agent not found or org mismatch".
+    volumes:
+      - bootstrap-state:/state:ro
     # Needs all three networks: Court via public-wan, Mastio A via
     # orga-internal, Mastio B via orgb-internal (per-org isolation).
     networks: [public-wan, orga-internal, orgb-internal]

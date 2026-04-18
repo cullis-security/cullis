@@ -528,6 +528,25 @@ def phase_4_register_agents(client: httpx.Client, orgs_data: dict[str, dict]) ->
         meta = _provision_agent(client, agent_def, orgs_data)
         results.append(meta)
         print(flush=True)
+
+    # ADR-010 Phase 6a-4 — hand off to bootstrap_mastio.py. It needs the
+    # caller-defined capabilities both to seed the Mastio (PATCH is still
+    # TODO) and to POST /v1/registry/bindings on the Court. The seeded
+    # agent row carries empty caps today; writing a manifest here keeps
+    # the two bootstrap stages loosely coupled.
+    manifest = [
+        {
+            "agent_id":     a["agent_id"],
+            "org_id":       a["org_id"],
+            "agent_name":   a["agent_id"].split("::", 1)[1],
+            "capabilities": a["capabilities"],
+        }
+        for a in targets
+    ]
+    manifest_path = STATE / "agents.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest_path.chmod(0o644)
+    _ok(f"agents manifest → {manifest_path}")
     return results
 
 

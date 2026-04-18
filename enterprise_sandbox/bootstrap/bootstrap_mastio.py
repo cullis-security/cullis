@@ -1,9 +1,9 @@
-"""Post-proxy-boot wiring: mastio_pubkey pin + agent seeding.
+"""Post-proxy-boot wiring: mastio_pubkey pin + agent seeding + bindings.
 
 Runs **after** the proxies have booted and generated their Mastio CA +
 leaf identity (lifespan hook in ``mcp_proxy/main.py``).
 
-Two responsibilities:
+Three responsibilities:
 
 1. **ADR-009 mastio pubkey pinning** (original job):
    - poll ``GET /v1/admin/mastio-pubkey`` on each proxy until populated
@@ -14,14 +14,23 @@ Two responsibilities:
      ``/state/{org}/agents/{name}/``, ``POST /v1/admin/agents`` on the
      owning Mastio with the pre-generated material and ``federated=true``
    - the Phase 3 publisher loop picks the row up from
-     ``internal_agents`` and pushes it to the Court (no more direct
-     ``/v1/registry/agents`` call from bootstrap)
+     ``internal_agents`` and pushes it to the Court
+
+3. **ADR-010 Phase 6a-4 — binding create+approve on the Court**:
+   - PR #191 removed the binding step from ``bootstrap.py`` but never
+     migrated it anywhere; without an approved binding the agent's
+     ``/v1/auth/login`` on the Court returns 403 "No approved binding".
+   - We retry ``POST /v1/registry/bindings`` until the publisher has
+     pushed the agent (404 = not yet visible, retry). 409 = already
+     there, fetch id. Then ``POST .../approve``.
 
 Idempotent: the Mastio returns 409 on duplicates; we silently continue.
 """
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 import sys
 import time
 
@@ -131,22 +140,50 @@ def _pin_on_court(
         raise SystemExit(1)
 
 
+def _load_manifest() -> list[dict]:
+    """Load the agents manifest written by bootstrap.py phase_4.
+
+    Each entry has ``agent_id``, ``org_id``, ``agent_name``, and
+    ``capabilities``. Returns ``[]`` if the file is missing (older
+    bootstrap, or scope=up without agents for this org) — callers fall
+    back to directory scan with empty caps.
+    """
+    path = pathlib.Path("/state/agents.json")
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        _warn(f"/state/agents.json corrupt ({exc}) — treating as empty")
+        return []
+
+
+def _read_org_secret(org_id: str) -> str | None:
+    """Read the per-org secret the outer bootstrap persisted."""
+    path = pathlib.Path("/state") / org_id / "org_secret"
+    if not path.exists():
+        return None
+    return path.read_text().strip()
+
+
 def _seed_agents_on_mastio(
     client: httpx.Client, proxy_url: str, admin_secret: str, org_id: str,
-) -> None:
+    manifest: list[dict],
+) -> list[dict]:
     """ADR-010 Phase 4 — register each /state/{org}/agents/* on the Mastio.
 
-    The outer bootstrap already generated agent cert/key pairs and wrote
-    them under ``/state/{org}/agents/{name}/agent.pem,agent-key.pem``.
-    We forward them to the Mastio's ``POST /v1/admin/agents`` with
-    ``federated=true``; the publisher loop then pushes to the Court.
+    Returns the subset of ``manifest`` that belongs to ``org_id`` and
+    was accepted (201) or already present (409), so the caller can
+    drive binding create+approve on the Court.
     """
-    import pathlib
     agents_dir = pathlib.Path("/state") / org_id / "agents"
     if not agents_dir.exists():
         _info(f"{org_id}: no agents directory — skipping seed")
-        return
+        return []
 
+    caps_by_name = {e["agent_name"]: e.get("capabilities", []) for e in manifest
+                    if e.get("org_id") == org_id}
+    seeded: list[dict] = []
     for entry in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
         name = entry.name
         cert_path = entry / "agent.pem"
@@ -156,13 +193,14 @@ def _seed_agents_on_mastio(
             continue
         cert_pem = cert_path.read_text()
         key_pem = key_path.read_text()
+        capabilities = caps_by_name.get(name, [])
         r = client.post(
             f"{proxy_url}/v1/admin/agents",
             headers={"X-Admin-Secret": admin_secret},
             json={
                 "agent_name": name,
                 "display_name": name,
-                "capabilities": [],  # assigned later by admin via PATCH
+                "capabilities": capabilities,
                 "federated": True,
                 "cert_pem": cert_pem,
                 "private_key_pem": key_pem,
@@ -170,14 +208,89 @@ def _seed_agents_on_mastio(
             timeout=10.0,
         )
         if r.status_code == 201:
-            _ok(f"{org_id}::{name}: seeded on Mastio (federated=True)")
+            _ok(f"{org_id}::{name}: seeded on Mastio "
+                f"(federated=True, caps={capabilities or '[]'})")
+            seeded.append({"org_id": org_id, "agent_name": name,
+                           "capabilities": capabilities})
         elif r.status_code == 409:
-            _info(f"{org_id}::{name}: already on Mastio — skipping")
+            _info(f"{org_id}::{name}: already on Mastio — skipping seed")
+            seeded.append({"org_id": org_id, "agent_name": name,
+                           "capabilities": capabilities})
         else:
             _fail(
                 f"{org_id}::{name}: seed failed "
                 f"HTTP {r.status_code} {r.text[:200]}"
             )
+    return seeded
+
+
+def _bind_agents_on_court(
+    client: httpx.Client, seeded: list[dict],
+    timeout_s: float = 60.0, retry_s: float = 2.0,
+) -> None:
+    """ADR-010 Phase 6a-4 — create + approve a binding per seeded agent.
+
+    Retries ``POST /v1/registry/bindings`` while the publisher is still
+    catching up (404 on the agent lookup). 409 = already bound, look up
+    the existing id and approve idempotently.
+    """
+    if not seeded:
+        return
+    for agent in seeded:
+        org_id = agent["org_id"]
+        agent_name = agent["agent_name"]
+        agent_id = f"{org_id}::{agent_name}"
+        capabilities = agent["capabilities"]
+        org_secret = _read_org_secret(org_id)
+        if org_secret is None:
+            _fail(f"{agent_id}: no /state/{org_id}/org_secret — cannot bind")
+            raise SystemExit(1)
+        headers = {"X-Org-Id": org_id, "X-Org-Secret": org_secret}
+        body = {"org_id": org_id, "agent_id": agent_id, "scope": capabilities}
+
+        binding_id: int | str | None = None
+        deadline = time.monotonic() + timeout_s
+        last = "(no attempt)"
+        while time.monotonic() < deadline:
+            r = client.post(
+                f"{BROKER_URL}/v1/registry/bindings",
+                json=body, headers=headers, timeout=10.0,
+            )
+            if r.status_code == 201:
+                binding_id = r.json().get("id")
+                break
+            if r.status_code == 409:
+                lr = client.get(
+                    f"{BROKER_URL}/v1/registry/bindings",
+                    params={"org_id": org_id}, headers=headers, timeout=10.0,
+                )
+                lr.raise_for_status()
+                binding_id = next(
+                    (b["id"] for b in lr.json() if b.get("agent_id") == agent_id),
+                    None,
+                )
+                break
+            last = f"HTTP {r.status_code} {r.text[:160]}"
+            time.sleep(retry_s)
+
+        if binding_id is None:
+            _fail(
+                f"{agent_id}: binding create never succeeded in {timeout_s:.0f}s "
+                f"(publisher stuck? last={last})"
+            )
+            raise SystemExit(1)
+
+        ar = client.post(
+            f"{BROKER_URL}/v1/registry/bindings/{binding_id}/approve",
+            headers=headers, timeout=10.0,
+        )
+        if ar.status_code not in (200, 204):
+            _fail(
+                f"{agent_id}: binding approve failed "
+                f"HTTP {ar.status_code} {ar.text[:200]}"
+            )
+            raise SystemExit(1)
+        _ok(f"{agent_id}: binding {binding_id} approved (scope={capabilities or '[]'})")
 
 
 def main() -> int:
@@ -186,6 +299,8 @@ def main() -> int:
         f"{'═' * 10}{RESET}\n",
         flush=True,
     )
+    manifest = _load_manifest()
+    all_seeded: list[dict] = []
     with httpx.Client(timeout=10.0) as client:
         for cfg in PROXIES:
             org_id = cfg["org_id"]
@@ -201,14 +316,22 @@ def main() -> int:
             _ok(f"{org_id}: mastio_pubkey pinned — counter-sig enforcement active")
 
             _info(f"seeding agents on Mastio {BOLD}{org_id}{RESET}")
-            _seed_agents_on_mastio(
+            seeded = _seed_agents_on_mastio(
                 client, cfg["proxy_url"], cfg["admin_secret"], org_id,
+                manifest,
             )
+            all_seeded.extend(seeded)
+
+        if all_seeded:
+            _info(
+                f"creating+approving bindings on Court "
+                f"({len(all_seeded)} agent(s), waiting for publisher)"
+            )
+            _bind_agents_on_court(client, all_seeded)
 
     print(
         f"\n{BOLD}{GREEN}"
-        f"✓ mastio identities pinned + agents seeded "
-        f"(publisher will propagate to Court){RESET}\n",
+        f"✓ mastio identities pinned + agents seeded + bindings approved{RESET}\n",
         flush=True,
     )
     return 0

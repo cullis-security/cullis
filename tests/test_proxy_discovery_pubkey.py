@@ -8,14 +8,45 @@ unknown locally AND the proxy is running federated.
 """
 from __future__ import annotations
 
+import datetime
 import json
 
 import pytest
 import pytest_asyncio
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from mcp_proxy.db import get_db
+
+
+def _real_cert_pem(cn: str = "test-agent") -> str:
+    """Build a minimal but syntactically valid X.509 cert PEM.
+
+    The standalone public-key endpoint parses ``cert_pem`` with
+    ``load_pem_x509_certificate`` and extracts SPKI, so the seed rows
+    must carry real certs. Self-signed EC keeps the helper fast.
+    """
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = issuer = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, cn)]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+        .not_valid_after(
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
 @pytest_asyncio.fixture
@@ -247,7 +278,7 @@ async def test_search_requires_api_key(standalone_proxy):
 @pytest.mark.asyncio
 async def test_public_key_served_from_local_agents(standalone_proxy):
     _, client = standalone_proxy
-    cert_pem = "-----BEGIN CERTIFICATE-----\nU1RVQg==\n-----END CERTIFICATE-----\n"
+    cert_pem = _real_cert_pem("alice-bot")
     await _insert_local_agent("alice-bot", cert_pem=cert_pem)
 
     resp = await client.get("/v1/federation/agents/alice-bot/public-key")
@@ -255,12 +286,16 @@ async def test_public_key_served_from_local_agents(standalone_proxy):
     body = resp.json()
     assert body["agent_id"] == "alice-bot"
     assert body["scope"] == "local"
-    assert "BEGIN CERTIFICATE" in body["public_key_pem"]
-    # ADR-010 Phase 6b: thumbprint is computed on-the-fly from the PEM
-    # (``internal_agents`` doesn't persist a thumbprint column).
+    # Endpoint extracts SPKI from ``cert_pem``; SDK feeds this straight
+    # into ``load_pem_public_key`` which only accepts ``BEGIN PUBLIC KEY``.
+    assert "BEGIN PUBLIC KEY" in body["public_key_pem"]
+    assert "BEGIN CERTIFICATE" not in body["public_key_pem"]
+    # ADR-010 Phase 6b: thumbprint is SHA-256 of the DER the PEM wraps.
+    import base64
     import hashlib
-    expected = hashlib.sha256(b"STUB").hexdigest()
-    assert body["cert_thumbprint"] == expected
+    import re as _re
+    der = base64.b64decode(_re.sub(r"-----.*?-----|\s", "", cert_pem))
+    assert body["cert_thumbprint"] == hashlib.sha256(der).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -295,7 +330,7 @@ async def test_public_key_endpoint_wins_over_reverse_proxy(standalone_proxy):
     _, client = standalone_proxy
     await _insert_local_agent(
         "ordering-check",
-        cert_pem="-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n",
+        cert_pem=_real_cert_pem("ordering-check"),
     )
     resp = await client.get("/v1/federation/agents/ordering-check/public-key")
     # 200 = proxy-native route wins. 503 = reverse-proxy caught it first

@@ -27,6 +27,8 @@ import logging
 from typing import Literal
 
 import httpx
+from cryptography import x509 as crypto_x509
+from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -50,35 +52,61 @@ class PublicKeyResponse(BaseModel):
 
 @federation_router.get("/{agent_id}/public-key", response_model=PublicKeyResponse)
 async def get_public_key(agent_id: str, request: Request) -> PublicKeyResponse:
-    """Return the agent's cert PEM.
+    """Return the agent's public key PEM.
 
     Unauthenticated on purpose: public keys are public. This mirrors the
-    broker's equivalent endpoint (``/v1/registry/agents/{id}/public-key``
+    broker's equivalent endpoint (``/v1/federation/agents/{id}/public-key``
     is also unauthenticated there).
+
+    Federated proxies always forward to the Court. SPIFFE-authed agents
+    rotate their leaf cert on every ``/v1/auth/login``; the Court updates
+    ``agents.cert_pem`` on that path but the Mastio's ``internal_agents``
+    row still carries the pre-SPIFFE bootstrap cert. Serving the stale
+    local copy breaks E2E encryption: the peer encrypts to a public key
+    whose private half the recipient no longer holds. The Court is the
+    single source of truth for post-login cert material.
+
+    Standalone proxies (no uplink) still answer locally — there's no
+    Court to ask, and standalone agents don't rotate via SPIFFE anyway.
     """
-    # Local-first.
-    async with get_db() as conn:
-        row = (await conn.execute(
-            text(
-                """
-                SELECT cert_pem FROM internal_agents
-                 WHERE agent_id = :aid AND is_active = 1
-                """
-            ),
-            {"aid": agent_id},
-        )).first()
-    if row and row[0]:
+    settings = get_settings()
+
+    # Standalone: answer locally, no fallback.
+    if settings.standalone:
+        async with get_db() as conn:
+            row = (await conn.execute(
+                text(
+                    """
+                    SELECT cert_pem FROM internal_agents
+                     WHERE agent_id = :aid AND is_active = 1
+                    """
+                ),
+                {"aid": agent_id},
+            )).first()
+        if not row or not row[0]:
+            raise HTTPException(status_code=404, detail="agent not found")
+        cert_pem = row[0]
+        try:
+            cert = crypto_x509.load_pem_x509_certificate(cert_pem.encode())
+            pubkey_pem = cert.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            ).decode()
+        except ValueError as exc:
+            _log.error(
+                "internal_agents.cert_pem for %s is not a valid cert: %s",
+                agent_id, exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="stored cert for local agent is not a valid X.509 PEM",
+            )
         return PublicKeyResponse(
             agent_id=agent_id,
-            public_key_pem=row[0],
-            cert_thumbprint=cert_thumbprint_from_pem(row[0]),
+            public_key_pem=pubkey_pem,
+            cert_thumbprint=cert_thumbprint_from_pem(cert_pem),
             scope="local",
         )
-
-    # Not local — in standalone there's nothing else to try.
-    settings = get_settings()
-    if settings.standalone:
-        raise HTTPException(status_code=404, detail="agent not found")
 
     # Federated: hit the broker's live endpoint. We intentionally do NOT
     # serve from cached_federated_agents — the cache stores thumbprint
