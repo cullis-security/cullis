@@ -166,24 +166,59 @@ def _read_org_secret(org_id: str) -> str | None:
     return path.read_text().strip()
 
 
-def _seed_agents_on_mastio(
+def _generate_dpop_jwk() -> tuple[dict, dict]:
+    """Generate an EC P-256 DPoP keypair. Returns ``(public_jwk, private_jwk)``.
+
+    ADR-011 Phase 4 — enrollment must ship a public JWK so the Mastio
+    pins its jkt from the first request, and the agent container needs
+    the matching private JWK on disk to sign proofs at runtime. The
+    sandbox bootstrap is the single producer/consumer, so we hand-roll
+    the keypair here rather than import cullis_sdk.dpop (keeps the
+    container lean — SDK lives in the agent image, not here).
+    """
+    import base64 as _b64
+    from cryptography.hazmat.primitives.asymmetric import ec
+    priv = ec.generate_private_key(ec.SECP256R1())
+    pub_nums = priv.public_key().public_numbers()
+    priv_nums = priv.private_numbers()
+    def _b64url(n: int) -> str:
+        return _b64.urlsafe_b64encode(n.to_bytes(32, "big")).rstrip(b"=").decode()
+    public_jwk = {
+        "kty": "EC", "crv": "P-256",
+        "x": _b64url(pub_nums.x), "y": _b64url(pub_nums.y),
+    }
+    private_jwk = {**public_jwk, "d": _b64url(priv_nums.private_value)}
+    return public_jwk, private_jwk
+
+
+def _enroll_agents_via_byoca(
     client: httpx.Client, proxy_url: str, admin_secret: str, org_id: str,
     manifest: list[dict],
 ) -> list[dict]:
-    """ADR-010 Phase 4 — register each /state/{org}/agents/* on the Mastio.
+    """ADR-011 Phase 4 — enroll each bootstrap-minted agent via
+    ``/v1/admin/agents/enroll/byoca``.
 
-    Returns the subset of ``manifest`` that belongs to ``org_id`` and
-    was accepted (201) or already present (409), so the caller can
-    drive binding create+approve on the Court.
+    The outer bootstrap already minted an Org-CA-signed cert/key pair
+    per agent under ``/state/{org}/agents/{name}/``. Phase 1b exposed a
+    verified enrollment endpoint that accepts that material, verifies
+    the chain, and emits an API key + pins DPoP jkt. We persist the
+    returned credentials alongside the cert so agent containers can
+    ``from_api_key_file(...)`` at runtime — no more SPIFFE/BYOCA
+    direct login to the Court.
+
+    Returns the subset of manifest rows successfully enrolled so the
+    caller can drive binding create+approve on the Court. Row shape
+    matches the old ``_seed_agents_on_mastio`` contract for caller
+    back-compat.
     """
     agents_dir = pathlib.Path("/state") / org_id / "agents"
     if not agents_dir.exists():
-        _info(f"{org_id}: no agents directory — skipping seed")
+        _info(f"{org_id}: no agents directory — skipping enroll")
         return []
 
     caps_by_name = {e["agent_name"]: e.get("capabilities", []) for e in manifest
                     if e.get("org_id") == org_id}
-    seeded: list[dict] = []
+    enrolled: list[dict] = []
     for entry in sorted(p for p in agents_dir.iterdir() if p.is_dir()):
         name = entry.name
         cert_path = entry / "agent.pem"
@@ -194,8 +229,9 @@ def _seed_agents_on_mastio(
         cert_pem = cert_path.read_text()
         key_pem = key_path.read_text()
         capabilities = caps_by_name.get(name, [])
+        public_jwk, private_jwk = _generate_dpop_jwk()
         r = client.post(
-            f"{proxy_url}/v1/admin/agents",
+            f"{proxy_url}/v1/admin/agents/enroll/byoca",
             headers={"X-Admin-Secret": admin_secret},
             json={
                 "agent_name": name,
@@ -204,24 +240,37 @@ def _seed_agents_on_mastio(
                 "federated": True,
                 "cert_pem": cert_pem,
                 "private_key_pem": key_pem,
+                "dpop_jwk": public_jwk,
             },
             timeout=10.0,
         )
         if r.status_code == 201:
-            _ok(f"{org_id}::{name}: seeded on Mastio "
-                f"(federated=True, caps={capabilities or '[]'})")
-            seeded.append({"org_id": org_id, "agent_name": name,
-                           "capabilities": capabilities})
+            resp = r.json()
+            # Persist the runtime credentials next to the cert so the
+            # agent container's volume mount finds them. Layout matches
+            # ``CullisClient.from_api_key_file`` expectations: one file
+            # per artifact, 0600-ish (sandbox mount is 0644 by default).
+            (entry / "api-key").write_text(resp["api_key"])
+            (entry / "api-key").chmod(0o644)
+            import json as _json
+            (entry / "dpop.jwk").write_text(
+                _json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
+            )
+            (entry / "dpop.jwk").chmod(0o644)
+            _ok(f"{org_id}::{name}: enrolled via BYOCA "
+                f"(caps={capabilities or '[]'}, jkt={resp.get('dpop_jkt', '')[:12]}…)")
+            enrolled.append({"org_id": org_id, "agent_name": name,
+                             "capabilities": capabilities})
         elif r.status_code == 409:
-            _info(f"{org_id}::{name}: already on Mastio — skipping seed")
-            seeded.append({"org_id": org_id, "agent_name": name,
-                           "capabilities": capabilities})
+            _info(f"{org_id}::{name}: already enrolled — skipping")
+            enrolled.append({"org_id": org_id, "agent_name": name,
+                             "capabilities": capabilities})
         else:
             _fail(
-                f"{org_id}::{name}: seed failed "
+                f"{org_id}::{name}: enroll failed "
                 f"HTTP {r.status_code} {r.text[:200]}"
             )
-    return seeded
+    return enrolled
 
 
 def _bind_agents_on_court(
@@ -315,12 +364,12 @@ def main() -> int:
             _pin_on_court(client, org_id, pem)
             _ok(f"{org_id}: mastio_pubkey pinned — counter-sig enforcement active")
 
-            _info(f"seeding agents on Mastio {BOLD}{org_id}{RESET}")
-            seeded = _seed_agents_on_mastio(
+            _info(f"enrolling agents via BYOCA on Mastio {BOLD}{org_id}{RESET}")
+            enrolled = _enroll_agents_via_byoca(
                 client, cfg["proxy_url"], cfg["admin_secret"], org_id,
                 manifest,
             )
-            all_seeded.extend(seeded)
+            all_seeded.extend(enrolled)
 
         if all_seeded:
             _info(

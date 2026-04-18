@@ -181,12 +181,67 @@ def _send_to_peers(client: CullisClient, self_id: str, peers: list[str]) -> None
                           flush=True)
 
 
+def _auth_api_key_file(mastio_url: str, identity_dir: str, self_id: str) -> CullisClient:
+    """ADR-011 Phase 4 — runtime agents read the credentials the
+    bootstrap-mastio stage enrolled for them.
+
+    Layout matches what ``_enroll_agents_via_byoca`` writes under
+    ``/state/{org}/agents/{name}/``: ``api-key`` + ``dpop.jwk`` (both
+    required for egress DPoP enforcement).
+    """
+    api_key_path = pathlib.Path(identity_dir) / "api-key"
+    dpop_key_path = pathlib.Path(identity_dir) / "dpop.jwk"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if api_key_path.exists() and dpop_key_path.exists():
+            break
+        time.sleep(0.5)
+    else:
+        raise RuntimeError(
+            f"[{self_id}] api-key or dpop.jwk missing under {identity_dir} "
+            "— did bootstrap-mastio run?"
+        )
+    client = CullisClient.from_api_key_file(
+        mastio_url,
+        api_key_path=api_key_path,
+        dpop_key_path=dpop_key_path,
+        agent_id=self_id,
+        org_id=self_id.split("::", 1)[0],
+    )
+    # Session APIs (``list_sessions`` / ``open_session`` / ``send``) still
+    # require a broker JWT. ``login_via_proxy`` converts the API key into
+    # one by asking the Mastio to mint a client_assertion on the agent's
+    # behalf + forwarding it to the Court — the agent never handles a
+    # cert. Egress / ``send_oneshot`` calls continue to use the API-key
+    # + DPoP path directly.
+    client.login_via_proxy()
+    # ``client.send`` signs each A2A message with the agent's private
+    # key (end-to-end non-repudiation layer sitting on top of the
+    # session envelope). Under ADR-011 the agent keeps reading its
+    # cert/key from the identity dir alongside ``api-key`` + ``dpop.jwk``
+    # — the key is bound to the same row the Mastio enrolled, so the
+    # broker verifies the inner signature against the public half it
+    # already has. Enrollment via Connector/admin-token would persist
+    # its own ``agent-key.pem`` here; BYOCA/SPIFFE enrollment reuses
+    # the cert the operator submitted.
+    key_path = pathlib.Path(identity_dir) / "agent-key.pem"
+    if key_path.exists():
+        client._signing_key_pem = key_path.read_text()
+    return client
+
+
 def main() -> int:
     broker = os.environ["BROKER_URL"].rstrip("/")
     org_id = os.environ["ORG_ID"]
     name = os.environ["AGENT_NAME"]
-    auth_mode = os.environ.get("AGENT_AUTH", "spire").lower()
+    auth_mode = os.environ.get("AGENT_AUTH", "api-key").lower()
     peers_file = os.environ.get("PEERS_FILE", "/state/peers.json")
+    # ADR-011 Phase 4 — auto-send demo traffic on boot is opt-in now.
+    # Default is idle (auto_accept + receive loops run in background,
+    # no sessions opened until an explicit scenario triggers traffic).
+    # This keeps ``demo.sh full`` observation-friendly — the Court
+    # dashboard stays empty until the user drives a scenario.
+    auto_send = os.environ.get("AGENT_AUTO_SEND", "false").lower() in ("1", "true", "yes")
     self_id = f"{org_id}::{name}"
 
     if not wait_for_http(f"{broker}/health", timeout=60):
@@ -195,12 +250,21 @@ def main() -> int:
         return 1
 
     try:
-        if auth_mode == "spire":
+        if auth_mode == "api-key":
+            identity_dir = os.environ.get(
+                "IDENTITY_DIR", f"/state/{org_id}/agents/{name}",
+            )
+            client = _auth_api_key_file(broker, identity_dir, self_id)
+            auth_label = "API-key+DPoP"
+        elif auth_mode == "spire":
+            # ADR-011: legacy SPIFFE-direct-to-Court path. Retained for
+            # smoke B4 backwards-compat until the smoke assertions are
+            # flipped to the unified model; emits DeprecationWarning.
             client = _auth_spire(broker, org_id)
-            auth_label = "SPIFFE"
+            auth_label = "SPIFFE (deprecated)"
         elif auth_mode == "byoca":
             client = _auth_byoca(broker, org_id, self_id)
-            auth_label = "BYOCA"
+            auth_label = "BYOCA (deprecated)"
         else:
             print(f"[{self_id}] FAIL: unknown AGENT_AUTH={auth_mode!r}",
                   file=sys.stderr, flush=True)
@@ -210,8 +274,11 @@ def main() -> int:
               file=sys.stderr, flush=True)
         return 2
 
-    print(f"[{self_id}] {auth_label} auth OK — "
-          f"token={client.token[:24] if client.token else None}...", flush=True)
+    token_preview = (
+        client.token[:24] if getattr(client, "token", None) else "(api-key only)"
+    )
+    print(f"[{self_id}] {auth_label} auth OK — token={token_preview}...",
+          flush=True)
     pathlib.Path("/tmp/ready").write_text(self_id + "\n")
     _persist_received()  # initialize empty /tmp/received.json
 
@@ -237,11 +304,15 @@ def main() -> int:
         target=_receive_loop, args=(client, self_id), daemon=True,
     ).start()
 
-    # Give peer containers a head start so their auto_accept loop is running
-    # when we open sessions toward them.
-    time.sleep(5)
-    if peers:
+    if auto_send and peers:
+        # Give peer containers a head start so their auto_accept loop is
+        # running when we open sessions toward them.
+        time.sleep(5)
         _send_to_peers(client, self_id, peers)
+    else:
+        print(f"[{self_id}] idle — AGENT_AUTO_SEND=false (set to 'true' to "
+              "trigger the legacy demo nonce round-trip on boot)",
+              flush=True)
 
     # Keep the process alive — daemons handle accept + receive in background.
     while True:

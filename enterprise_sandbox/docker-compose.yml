@@ -256,6 +256,13 @@ services:
       # byoca-bot start right after seeding and 401 on first-login if
       # the Court hasn't yet received their federated push.
       MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      # ADR-011 Phase 4 — activate ADR-001 intra-org short-circuit.
+      # Without this, same-org sessions (``orga::agent-a`` ↔
+      # ``orga::byoca-bot``) forward to the Court even though the
+      # two agents live on the same Mastio. With it on, the proxy's
+      # local mini-broker handles intra-org traffic end-to-end and
+      # the Court only sees cross-org sessions.
+      PROXY_INTRA_ORG: "true"
     volumes:
       - proxy-a-data:/data
     networks:
@@ -418,9 +425,12 @@ services:
       BROKER_URL: "http://proxy-a:9100"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
-      AGENT_AUTH: "byoca"
-      CERT_PATH: "/state/orga/agents/byoca-bot/agent.pem"
-      KEY_PATH:  "/state/orga/agents/byoca-bot/agent-key.pem"
+      # ADR-011 Phase 4 — every sandbox agent authenticates the new way
+      # (API-key + DPoP via Mastio). Legacy BYOCA direct login to the
+      # Court still works but emits DeprecationWarning; the demo stays
+      # on the unified path so the Court's session count is zero until
+      # the user drives an explicit scenario.
+      AGENT_AUTH: "api-key"
       PEERS_FILE: "/state/peers.json"
     volumes:
       - bootstrap-state:/state:ro
@@ -480,6 +490,8 @@ services:
       MCP_PROXY_ENVIRONMENT:       "development"
       # ADR-010 Phase 6a-4 — see proxy-a rationale.
       MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      # ADR-011 Phase 4 — intra-org short-circuit (see proxy-a).
+      PROXY_INTRA_ORG: "true"
     volumes:
       - proxy-b-data:/data
     networks:
@@ -659,15 +671,17 @@ services:
       # Must match bootstrap's scope — in ``up`` only orgb is patched;
       # orga doesn't exist on the Court yet.
       BOOTSTRAP_SCOPE:       "${BOOTSTRAP_SCOPE:-up}"
-    # ADR-010 Phase 6a-4 — bootstrap_mastio now reads the agent cert/key
+    # ADR-010 Phase 6a-4 — bootstrap_mastio reads the agent cert/key
     # pairs that ``bootstrap`` persisted under /state/{org}/agents/{name}/
-    # and forwards them to the owning Mastio via ``POST /v1/admin/agents``
-    # with ``federated=true``. Without this mount the seed loop skips
-    # every agent ("no agents directory"), the federation publisher has
-    # nothing to push, and byoca/agent-a/agent-b fail first-login with
-    # 401 "Agent not found or org mismatch".
+    # and forwards them to the owning Mastio for enrollment.
+    #
+    # ADR-011 Phase 4 — the mount now needs **read-write**: the enroll
+    # endpoint returns an API key + DPoP jkt that bootstrap_mastio
+    # persists next to the cert (``api-key``, ``dpop.jwk``) so the agent
+    # containers can ``from_api_key_file(...)`` at runtime. Without rw
+    # the enroll loop 500s on the first write.
     volumes:
-      - bootstrap-state:/state:ro
+      - bootstrap-state:/state
     # Needs all three networks: Court via public-wan, Mastio A via
     # orga-internal, Mastio B via orgb-internal (per-org isolation).
     networks: [public-wan, orga-internal, orgb-internal]

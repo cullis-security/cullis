@@ -448,6 +448,10 @@ class CullisClient:
         instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        # ``_update_nonce`` reads ``self.server_role`` on every response;
+        # since we skip ``__init__`` above (the ``cls.__new__(cls)`` route
+        # that other factories also use), the attribute must exist.
+        instance.server_role = None
 
         if dpop_key_path is not None:
             from cullis_sdk.dpop import DpopKey
@@ -638,6 +642,7 @@ class CullisClient:
         instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        instance.server_role = None
 
         log("sdk", f"Enrolled {agent_id} via {endpoint_path}")
         return instance
