@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from mcp_proxy.auth.dpop_api_key import get_agent_from_dpop_api_key
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
+from mcp_proxy.egress.reach_guard import check_reach, resolve_target_org
 from mcp_proxy.egress.routing import decide_route
 from mcp_proxy.local import message_queue as local_queue
 from mcp_proxy.local.audit import append_local_audit
@@ -214,6 +215,30 @@ async def open_session(
     """
     request_id = str(uuid.uuid4())
     t0 = time.monotonic()
+
+    # Reach gate (migration 0017): refuse before we create a local
+    # session row or call out to the broker. ``target_org_id`` on the
+    # request body is authoritative when the client sent one; fall
+    # back to parsing the handle otherwise.
+    _settings = get_settings()
+    target_org = resolve_target_org(body.target_agent_id, body.target_org_id)
+    try:
+        check_reach(agent, target_org, _settings.org_id or "")
+    except HTTPException as deny:
+        await append_local_audit(
+            event_type="session_denied",
+            result="denied",
+            agent_id=agent.agent_id,
+            org_id=_settings.org_id,
+            details={
+                "target_agent_id": body.target_agent_id,
+                "target_org_id": body.target_org_id,
+                "reason": "reach",
+                "reach": agent.reach,
+                "target_org": target_org,
+            },
+        )
+        raise deny
 
     local_store = _get_local_store(request)
     if local_store is not None and _should_route_intra(body.target_agent_id, body.target_org_id):
@@ -450,6 +475,38 @@ async def send_message(
 
     local_store = _get_local_store(request)
     local_session = local_store.get(body.session_id) if local_store else None
+
+    # Reach gate (migration 0017) — session might have been opened
+    # while reach was permissive and then tightened by the operator
+    # mid-flight; we refuse every non-compliant send to make the
+    # toggle actually matter. Intra-org sends come from local_session
+    # (same org by definition); broker-session sends are cross-org
+    # when ``body.target_org_id != local_org``, cross otherwise the
+    # intra short-circuit would have picked them up.
+    _settings = get_settings()
+    local_org = _settings.org_id or ""
+    if local_session is not None:
+        send_target_org = local_org
+    else:
+        send_target_org = resolve_target_org(body.recipient_agent_id)
+    try:
+        check_reach(agent, send_target_org, local_org)
+    except HTTPException as deny:
+        await append_local_audit(
+            event_type="message_denied",
+            result="denied",
+            agent_id=agent.agent_id,
+            session_id=body.session_id,
+            org_id=local_org,
+            details={
+                "recipient": body.recipient_agent_id,
+                "reason": "reach",
+                "reach": agent.reach,
+                "target_org": send_target_org,
+            },
+        )
+        raise deny
+
     if local_session is not None:
         if not local_session.involves(agent.agent_id):
             raise HTTPException(status_code=403, detail="not a participant")

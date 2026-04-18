@@ -57,6 +57,12 @@ class InternalAgent(BaseModel):
     # the grace period for pre-Phase-3 agents; the dep treats NULL and
     # the flag mode asymmetrically — see ``dpop_api_key``.
     dpop_jkt: str | None = None
+    # Migration 0017 — scope of A2A communication allowed for this
+    # agent: ``intra`` (same-org only), ``cross`` (other orgs only),
+    # ``both``. Consulted by ``mcp_proxy.egress.reach_guard`` before
+    # any forwarding; defaults to ``both`` so rows without the column
+    # (pre-migration fixtures, legacy inserts) stay permissive.
+    reach: str = "both"
 
 
 class AuditEntry(BaseModel):

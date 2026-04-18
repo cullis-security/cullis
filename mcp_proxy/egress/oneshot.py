@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from mcp_proxy.auth.dpop_api_key import get_agent_from_dpop_api_key
 from mcp_proxy.config import get_settings
+from mcp_proxy.egress.reach_guard import check_reach, resolve_target_org
 from mcp_proxy.egress.routing import decide_route
 from mcp_proxy.local import message_queue as local_queue
 from mcp_proxy.local.audit import append_local_audit
@@ -183,6 +184,27 @@ async def send_oneshot(
         path = decide_route(body.recipient_id, local_org, trust_domain)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Reach gate (migration 0017): refuse before we build any envelope
+    # or touch the audit chain. A per-agent denied event is still
+    # appended below so operators see the block in the audit UI.
+    target_org = resolve_target_org(body.recipient_id)
+    try:
+        check_reach(agent, target_org, local_org)
+    except HTTPException as deny:
+        await append_local_audit(
+            event_type="oneshot_denied",
+            result="denied",
+            agent_id=agent.agent_id,
+            org_id=local_org,
+            details={
+                "recipient": body.recipient_id,
+                "reason": "reach",
+                "reach": agent.reach,
+                "target_org": target_org,
+            },
+        )
+        raise deny
 
     # correlation_id: generate if absent.
     corr_id = body.correlation_id or str(uuid.uuid4())
