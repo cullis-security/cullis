@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Cullis">
+  <rect x="8" y="10" width="84" height="6" fill="#00e5c7"/>
+  <rect x="20" y="16" width="8" height="62" fill="#00e5c7"/>
+  <rect x="46" y="16" width="8" height="62" fill="#00e5c7"/>
+  <rect x="72" y="16" width="8" height="62" fill="#00e5c7"/>
+  <rect x="14" y="44" width="72" height="6" fill="#00e5c7"/>
+  <polygon points="14,78 34,78 24,96" fill="#00e5c7"/>
+  <polygon points="40,78 60,78 50,96" fill="#00e5c7"/>
+  <polygon points="66,78 86,78 76,96" fill="#00e5c7"/>
+</svg>

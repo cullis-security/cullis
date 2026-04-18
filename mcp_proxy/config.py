@@ -55,6 +55,16 @@ class ProxySettings(BaseSettings):
     admin_secret: str = "change-me-in-production"
     dashboard_signing_key: str = ""
 
+    # Break-glass re-enable for the local admin password sign-in path.
+    # Normal state: operators flip the toggle in Settings → Sign-in methods,
+    # which writes ``proxy_config.local_password_enabled`` in the DB. Setting
+    # this env var to 1/true at boot forces the password form on regardless
+    # of the stored flag, so an operator who has locked themselves out after
+    # an IdP outage can still reach the dashboard from the host. Paired with
+    # the ``cullis-proxy reset-password`` CLI. Mirror of Grafana's
+    # ``GF_AUTH_DISABLE_LOGIN_FORM`` pattern (inverted).
+    force_local_password: bool = False
+
     # Standalone mode — ship the proxy as a product on its own, without a
     # Cullis broker in front of it. When true:
     #   - BrokerBridge and the reverse-proxy httpx client are not initialized.
@@ -173,6 +183,12 @@ class ProxySettings(BaseSettings):
         standalone_flag = os.environ.get("MCP_PROXY_STANDALONE")
         if standalone_flag is not None:
             self.standalone = standalone_flag.lower() in (
+                "1", "true", "yes", "on",
+            )
+
+        force_pwd = os.environ.get("MCP_PROXY_FORCE_LOCAL_PASSWORD")
+        if force_pwd is not None:
+            self.force_local_password = force_pwd.lower() in (
                 "1", "true", "yes", "on",
             )
 

@@ -4,6 +4,7 @@ Entry point: `python -m mcp_proxy.cli <subcommand>`.
 
 Subcommands:
   rebuild-cache    Drop and re-fetch the federation cache from the broker.
+  reset-password   Overwrite the admin bcrypt hash and re-enable local sign-in.
 
 Each subcommand is a thin async wrapper around helpers that live next
 to the runtime code (e.g. mcp_proxy.sync.cache_admin) so the CLI itself
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import logging
 import sys
 
@@ -39,6 +41,20 @@ def _build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument(
         "--yes", action="store_true",
         help="Skip the interactive confirmation prompt.",
+    )
+
+    reset = sub.add_parser(
+        "reset-password",
+        help="Recovery path: overwrite the admin bcrypt hash and "
+        "re-enable the local password sign-in toggle. Use when the "
+        "admin password is lost OR the SSO-only toggle was flipped "
+        "off and the IdP is unreachable.",
+    )
+    reset.add_argument(
+        "--password",
+        help="New password (skip the interactive prompt). Length must "
+        "meet the proxy's MIN_PASSWORD_LENGTH. If omitted the CLI "
+        "prompts twice on stderr.",
     )
 
     return parser
@@ -78,6 +94,55 @@ async def _cmd_rebuild_cache(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_reset_password(args: argparse.Namespace) -> int:
+    from mcp_proxy.dashboard.session import (
+        MIN_PASSWORD_LENGTH,
+        set_admin_password,
+        set_local_password_login_enabled,
+    )
+    from mcp_proxy.db import log_audit
+
+    password = args.password
+    if not password:
+        # Read from a TTY, never from stdin pipe — the user asked for an
+        # interactive reset explicitly when they didn't pass --password.
+        password = getpass.getpass("New admin password: ")
+        confirm = getpass.getpass("Confirm: ")
+        if password != confirm:
+            sys.stderr.write("passwords do not match — aborted\n")
+            return 1
+
+    if len(password) < MIN_PASSWORD_LENGTH:
+        sys.stderr.write(
+            f"password must be at least {MIN_PASSWORD_LENGTH} characters\n"
+        )
+        return 1
+
+    settings = get_settings()
+    await init_db(settings.database_url)
+    try:
+        await set_admin_password(password)
+        # The only reason someone runs this CLI is to get back in. If the
+        # toggle was disabled (that's precisely the lockout scenario),
+        # re-enable it so the next login actually works — otherwise the
+        # reset is silently useless.
+        await set_local_password_login_enabled(True)
+        await log_audit(
+            agent_id="admin",
+            action="auth.password_reset_cli",
+            status="success",
+            detail="admin password reset + local password sign-in re-enabled",
+        )
+    finally:
+        await dispose_db()
+
+    sys.stdout.write(
+        "admin password reset; local password sign-in re-enabled. "
+        "Sign in at /proxy/login.\n"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -88,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "rebuild-cache":
         return asyncio.run(_cmd_rebuild_cache(args))
+    if args.command == "reset-password":
+        return asyncio.run(_cmd_reset_password(args))
 
     parser.print_help(sys.stderr)
     return 2

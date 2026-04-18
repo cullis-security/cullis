@@ -86,5 +86,76 @@
         {% endif %}
     </div>
 
+    <!-- Sign-in methods card -->
+    <div class="bg-surface-900/60 border border-gray-800/60 rounded-lg p-6">
+        <div class="mb-5">
+            <h2 class="text-base font-semibold text-white" style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.06em;">
+                Sign-in methods
+            </h2>
+            <p class="text-xs text-gray-500 mt-1">
+                Control which paths the dashboard accepts at /proxy/login. Best-practice hardening
+                is to leave only SSO enabled once the IdP is proven working.
+            </p>
+        </div>
+
+        <form method="post" action="/proxy/settings/local-password" class="space-y-5">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div>
+                <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                    Local admin password
+                    {% if local_password_enabled %}
+                    <span class="ml-2 text-accent-400 normal-case tracking-normal">(enabled{% if force_local_password_env %} — forced by env{% endif %})</span>
+                    {% else %}
+                    <span class="ml-2 text-gray-500 normal-case tracking-normal">(disabled — SSO-only)</span>
+                    {% endif %}
+                </label>
+                <p class="text-[10px] text-gray-600 mt-1">
+                    {% if local_password_enabled %}
+                        {% if oidc_configured %}
+                    Password sign-in is active alongside SSO. Disable it to collapse daily sign-in to SSO only.
+                        {% else %}
+                    Cannot be disabled until an OIDC issuer is saved above — prevents a single-click lockout.
+                        {% endif %}
+                    {% else %}
+                    /proxy/login shows only the SSO button. Re-enable to restore the password form alongside SSO.
+                    {% endif %}
+                </p>
+            </div>
+
+            <div class="pt-2">
+                {% if local_password_enabled %}
+                <input type="hidden" name="enabled" value="0">
+                <button type="submit"
+                        {% if not oidc_configured %}disabled{% endif %}
+                        class="px-5 py-2.5 text-xs font-semibold rounded transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.1em; text-transform: uppercase;"
+                        onmouseover="if(!this.disabled){this.style.background='#fff'}"
+                        onmouseout="this.style.background='#00e5c7'">
+                    Disable Password Sign-in
+                </button>
+                {% else %}
+                <input type="hidden" name="enabled" value="1">
+                <button type="submit"
+                        class="px-5 py-2.5 text-xs font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.1em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'"
+                        onmouseout="this.style.background='#00e5c7'">
+                    Enable Password Sign-in
+                </button>
+                {% endif %}
+            </div>
+        </form>
+
+        {% if force_local_password_env %}
+        <div class="mt-6 p-3 bg-surface-950 border border-gray-800/60 rounded">
+            <p class="text-[10px] text-gray-600 uppercase tracking-[0.2em] mb-1">Break-glass override (env)</p>
+            <code class="text-xs text-accent-400 break-all" style="font-family: 'JetBrains Mono', monospace;">
+                MCP_PROXY_FORCE_LOCAL_PASSWORD=1
+            </code>
+        </div>
+        {% endif %}
+    </div>
+
 </div>
 {% endblock %}

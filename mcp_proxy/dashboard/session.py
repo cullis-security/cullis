@@ -212,6 +212,10 @@ def clear_oidc_state(response: Response) -> None:
 ADMIN_PASSWORD_KEY = "admin_password_hash"
 MIN_PASSWORD_LENGTH = 8
 
+# Key under which the admin toggles local-password sign-in on/off from
+# Settings. Absent row → enabled (retro-compat for pre-existing proxies).
+LOCAL_PASSWORD_ENABLED_KEY = "local_password_enabled"
+
 
 async def is_admin_password_set() -> bool:
     """Return True if an admin password has been set on this proxy instance."""
@@ -247,3 +251,48 @@ async def verify_admin_password(plaintext: str) -> bool:
         return bcrypt.checkpw(plaintext.encode(), stored.encode())
     except (ValueError, TypeError):
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local admin password sign-in path — toggle (enterprise SSO-only hardening)
+#
+# With SSO (OIDC) wired, the bcrypt admin password is a dual-auth path:
+# anyone who learns it bypasses MFA the IdP enforces. Operators harden
+# this by flipping the toggle off once OIDC is proven working, collapsing
+# daily sign-in to SSO only. Local password stays as a break-glass: the
+# env var ``MCP_PROXY_FORCE_LOCAL_PASSWORD`` forces it back on at boot
+# even if the DB flag says disabled, so an IdP outage can't strand the
+# admin out of their own dashboard. Pattern mirrors Grafana's
+# ``auth.disable_login_form`` and Argo CD's ``admin.enabled=false``.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def is_local_password_login_enabled() -> bool:
+    """Return True when /proxy/login is allowed to accept a password.
+
+    Order of precedence:
+      1. env var ``MCP_PROXY_FORCE_LOCAL_PASSWORD=1`` → always True (break-glass)
+      2. stored flag ``proxy_config.local_password_enabled``
+         - absent (new install / pre-toggle proxy) → True (retro-compat)
+         - "1" → True, "0" → False
+
+    The toggle is consulted on every request; no caching — the admin
+    must be able to flip it off and see the form vanish immediately.
+    """
+    from mcp_proxy.config import get_settings
+    if get_settings().force_local_password:
+        return True
+
+    from mcp_proxy.db import get_config
+    stored = await get_config(LOCAL_PASSWORD_ENABLED_KEY)
+    if stored is None:
+        return True
+    return stored == "1"
+
+
+async def set_local_password_login_enabled(enabled: bool) -> None:
+    """Persist the toggle. Caller is responsible for refusing to disable
+    when no alternative sign-in path (OIDC) is configured — this function
+    does not second-guess the caller to keep the CLI recovery path simple."""
+    from mcp_proxy.db import set_config
+    await set_config(LOCAL_PASSWORD_ENABLED_KEY, "1" if enabled else "0")

@@ -225,13 +225,16 @@ async def login_page(request: Request):
         return RedirectResponse(url=await _post_login_redirect(), status_code=303)
 
     from mcp_proxy.dashboard.oidc import is_oidc_configured
+    from mcp_proxy.dashboard.session import is_local_password_login_enabled
     oidc_enabled = await is_oidc_configured()
+    password_enabled = await is_local_password_login_enabled()
     display_name = await _load_display_name()
 
     return templates.TemplateResponse("login.html", {
         "request": request,
         "error": None,
         "oidc_enabled": oidc_enabled,
+        "password_enabled": password_enabled,
         "display_name": display_name,
     })
 
@@ -241,6 +244,25 @@ async def login_submit(request: Request):
     # State guard: if no password is set, you can't sign in — go register first.
     if not await is_admin_password_set():
         return RedirectResponse(url="/proxy/register", status_code=303)
+
+    # SSO-only hardening toggle: refuse before touching bcrypt so a
+    # timing side-channel can't probe the stored secret. The env
+    # break-glass (``MCP_PROXY_FORCE_LOCAL_PASSWORD=1``) is honoured
+    # inside ``is_local_password_login_enabled`` itself.
+    from mcp_proxy.dashboard.session import is_local_password_login_enabled
+    if not await is_local_password_login_enabled():
+        from mcp_proxy.db import log_audit
+        await log_audit(
+            agent_id="admin",
+            action="auth.login",
+            status="denied",
+            detail="password sign-in disabled",
+        )
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Password sign-in is disabled. Use the SSO button instead.",
+            "password_enabled": False,
+        }, status_code=403)
 
     form = await request.form()
     password = str(form.get("password", ""))
@@ -2598,6 +2620,51 @@ async def settings_submit(request: Request):
         error=None,
         success="OIDC configuration saved.",
     ))
+
+
+@router.post("/settings/local-password")
+async def settings_local_password(request: Request):
+    """Flip the local-password sign-in toggle from Settings.
+
+    Single-click lockout guard: we refuse to disable the toggle when no
+    OIDC provider is configured — without SSO or an env break-glass the
+    admin would have no way back into the dashboard. Operators who
+    really want a password-less deploy can set the env
+    ``MCP_PROXY_FORCE_LOCAL_PASSWORD=1`` and re-enable later; the guard
+    is here because the UI flip is the easy-to-misfire path.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.dashboard.oidc import is_oidc_configured
+    from mcp_proxy.dashboard.session import set_local_password_login_enabled
+    from mcp_proxy.db import log_audit
+
+    form = await request.form()
+    enabled = str(form.get("enabled", "")).strip() not in ("0", "false", "no", "off", "")
+
+    if not enabled and not await is_oidc_configured():
+        return HTMLResponse(
+            "Refusing to disable password sign-in: no OIDC provider is "
+            "configured on this proxy. Configure OIDC in Settings first, "
+            "otherwise flipping this toggle would lock the admin out.",
+            status_code=400,
+        )
+
+    await set_local_password_login_enabled(enabled)
+    await log_audit(
+        agent_id="admin",
+        action="auth.password_login_toggle",
+        status="success",
+        detail=f"source=dashboard enabled={enabled}",
+    )
+    return HTMLResponse(
+        f"Local password sign-in {'enabled' if enabled else 'disabled'}.",
+        status_code=200,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

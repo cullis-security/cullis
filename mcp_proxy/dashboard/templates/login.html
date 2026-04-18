@@ -31,7 +31,7 @@
     <!-- Brand block -->
     <div class="text-center mb-10 fade-up">
         <div class="inline-flex items-center justify-center mb-4">
-            <img src="/static/cullis.svg" alt="Cullis" style="height: 44px; width: auto; filter: drop-shadow(0 0 18px rgba(0,229,199,0.35));">
+            <img src="/static/cullis-mark.svg" alt="Cullis" style="height: 44px; width: auto; filter: drop-shadow(0 0 18px rgba(0,229,199,0.35));">
         </div>
         <h1 style="font-family: 'Chakra Petch', sans-serif; font-weight: 600; font-size: 1.5rem; text-transform: uppercase; letter-spacing: 0.22em; color: white;">
             Cullis <span style="color: #00e5c7;">Mastio</span>
@@ -57,7 +57,11 @@
                 <span class="block text-xs text-gray-500 font-normal mt-1" style="font-family: 'JetBrains Mono', monospace; text-transform: none; letter-spacing: 0;">{{ display_name }}</span>
                 {% endif %}
             </h2>
+            {% if password_enabled %}
             <p class="text-xs text-gray-500 mt-1">Enter the admin password to access the dashboard.</p>
+            {% else %}
+            <p class="text-xs text-gray-500 mt-1">Password sign-in is disabled. Use your SSO provider to continue.</p>
+            {% endif %}
         </div>
 
         {% if oidc_enabled %}
@@ -68,13 +72,16 @@
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
             Sign in with SSO
         </a>
+        {% if password_enabled %}
         <div class="flex items-center gap-3 my-4">
             <div class="flex-1 h-px bg-gray-800/60"></div>
             <span class="text-[10px] uppercase tracking-[0.2em] text-gray-600">or password</span>
             <div class="flex-1 h-px bg-gray-800/60"></div>
         </div>
         {% endif %}
+        {% endif %}
 
+        {% if password_enabled %}
         <form method="post" action="/proxy/login" class="space-y-5">
             <div>
                 <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
@@ -94,6 +101,7 @@
                 Sign In &rarr;
             </button>
         </form>
+        {% endif %}
     </div>
 
     <!-- Status footer -->
