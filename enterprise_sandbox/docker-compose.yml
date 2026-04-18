@@ -263,6 +263,12 @@ services:
       # local mini-broker handles intra-org traffic end-to-end and
       # the Court only sees cross-org sessions.
       PROXY_INTRA_ORG: "true"
+      # ADR-011 Phase 4b — signed-but-not-encrypted transport for
+      # intra-org one-shots. Keeps the SDK from needing the peer's
+      # cert_pem at send time (the proxy verifies the signature +
+      # drops the payload into the local inbox). Hybrid/envelope
+      # would require distributing every peer's cert ahead of time.
+      PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
     volumes:
       - proxy-a-data:/data
     networks:
@@ -492,6 +498,8 @@ services:
       MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
       # ADR-011 Phase 4 — intra-org short-circuit (see proxy-a).
       PROXY_INTRA_ORG: "true"
+      # ADR-011 Phase 4b — see proxy-a rationale.
+      PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
     volumes:
       - proxy-b-data:/data
     networks:

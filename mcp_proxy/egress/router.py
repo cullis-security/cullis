@@ -837,19 +837,23 @@ async def resolve_recipient(
 
         target_cert_pem: str | None = None
         if transport == "mtls-only":
+            # ``internal_agents.agent_id`` is stored as ``<org>::<name>``;
+            # ``parse_recipient`` returns just the short name, so the
+            # lookup must reassemble the full key before querying.
+            full_agent_id = f"{target_org}::{target_agent}"
             async with get_db() as conn:
                 result = await conn.execute(
                     text(
                         "SELECT cert_pem, is_active FROM internal_agents "
                         "WHERE agent_id = :agent_id"
                     ),
-                    {"agent_id": target_agent},
+                    {"agent_id": full_agent_id},
                 )
                 row = result.mappings().first()
                 if row is None or not row["is_active"]:
                     raise HTTPException(
                         status_code=404,
-                        detail=f"intra-org target not found: {target_agent}",
+                        detail=f"intra-org target not found: {full_agent_id}",
                     )
                 target_cert_pem = row["cert_pem"]
 

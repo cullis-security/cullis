@@ -98,87 +98,72 @@ def _auth_byoca(broker: str, org_id: str, agent_id: str) -> CullisClient:
     return client
 
 
-def _auto_accept_loop(client: CullisClient, self_id: str) -> None:
-    """Accept every pending session targeting this agent."""
+def _receive_loop(client: CullisClient, self_id: str) -> None:
+    """Drain the proxy's one-shot inbox and record nonce payloads.
+
+    ADR-011 Phase 4b — replaces the old session-based poll loop. The
+    egress one-shot inbox lives on the Mastio (``/v1/egress/message/inbox``
+    under API-key + DPoP auth) for intra-org deliveries short-circuited
+    by ADR-001, and mirrors cross-org rows the broker pushed back after
+    the publisher replay. ``decrypt_oneshot`` verifies the envelope
+    signature and returns the inner payload.
+    """
     seen: set[str] = set()
     while True:
         try:
-            sessions = client.list_sessions(status="pending")
-            for s in sessions:
-                if s.target_agent_id == self_id and s.session_id not in seen:
-                    try:
-                        client.accept_session(s.session_id)
-                        seen.add(s.session_id)
-                        print(f"[{self_id}] accepted session {s.session_id[:8]} "
-                              f"from {s.initiator_agent_id}", flush=True)
-                    except Exception as exc:
-                        print(f"[{self_id}] accept {s.session_id[:8]} failed: {exc!r}",
-                              flush=True)
-        except Exception as exc:
-            print(f"[{self_id}] list_sessions(pending) failed: {exc!r}", flush=True)
-        time.sleep(1)
-
-
-def _receive_loop(client: CullisClient, self_id: str) -> None:
-    """Poll every active session and record any nonce payloads."""
-    cursors: dict[str, int] = {}
-    while True:
-        try:
-            sessions = client.list_sessions(status="active")
-            for s in sessions:
-                sid = s.session_id
-                after = cursors.get(sid, -1)
-                try:
-                    msgs = client.poll(sid, after=after, poll_interval=0)
-                except Exception as exc:
-                    print(f"[{self_id}] poll {sid[:8]} failed: {exc!r}", flush=True)
+            rows = client.receive_oneshot()
+            for row in rows:
+                msg_id = row.get("msg_id")
+                if not msg_id or msg_id in seen:
                     continue
-                for m in msgs:
-                    if isinstance(m.payload, dict) and "nonce" in m.payload:
-                        _record(m.payload["nonce"])
-                        print(f"[{self_id}] received nonce from {m.sender_agent_id}: "
-                              f"{m.payload['nonce']}", flush=True)
-                    cursors[sid] = max(cursors.get(sid, -1), m.seq)
+                try:
+                    payload = client.decrypt_oneshot(row)
+                except Exception as exc:
+                    print(f"[{self_id}] decrypt_oneshot {msg_id[:8]} failed: {exc!r}",
+                          flush=True)
+                    continue
+                # ``decrypt_oneshot`` wraps the inner payload under
+                # ``payload`` and attaches verification metadata
+                # (``sender_verified``, ``mode``). Fall back to the bare
+                # key for legacy callers that already dropped the
+                # envelope before handing us the row.
+                nested = payload.get("payload") if isinstance(payload, dict) else None
+                inner = nested if isinstance(nested, dict) and "nonce" in nested else payload
+                if isinstance(inner, dict) and "nonce" in inner:
+                    _record(inner["nonce"])
+                    sender = row.get("sender_agent_id", "?")
+                    print(f"[{self_id}] received nonce from {sender}: "
+                          f"{inner['nonce']}", flush=True)
+                seen.add(msg_id)
+                # Dedup via the ``seen`` set is enough for the sandbox —
+                # the inbox endpoint returns every undelivered row on
+                # each poll, and the demo's nonce set is bounded + small.
+                # A production runtime would also ack so pg/broker state
+                # can reclaim the row (ADR-008 Phase 2 work).
         except Exception as exc:
-            print(f"[{self_id}] list_sessions(active) failed: {exc!r}", flush=True)
+            print(f"[{self_id}] receive_oneshot failed: {exc!r}", flush=True)
         time.sleep(1)
 
 
 def _send_to_peers(client: CullisClient, self_id: str, peers: list[str]) -> None:
-    """Open a session to each peer and send one nonce, retrying until the
-    session transitions from pending → active (peer accepts)."""
-    for peer_id in peers:
-        peer_org, _ = peer_id.split("::", 1)
-        try:
-            # target_agent_id is the full "{org}::{name}" form — broker's
-            # lookup is keyed on that, not on the short name.
-            session_id = client.open_session(
-                target_agent_id=peer_id,
-                target_org_id=peer_org,
-                capabilities=["sandbox.read"],
-            )
-        except Exception as exc:
-            print(f"[{self_id}] open_session {peer_id} failed: {exc!r}", flush=True)
-            continue
-        print(f"[{self_id}] session {session_id[:8]} opened → {peer_id}", flush=True)
+    """Send one nonce per peer via the ADR-008 sessionless one-shot path.
 
+    ADR-011 Phase 4b — replaced ``open_session`` + ``send`` with
+    ``send_oneshot``. The call hits ``/v1/egress/resolve`` + ``/v1/egress/
+    message/send`` on the Mastio (API-key + DPoP), which triggers the
+    ADR-001 intra-org short-circuit when ``PROXY_INTRA_ORG=true`` and the
+    peer lives on the same proxy — the Court never sees intra-org
+    traffic. Cross-org targets resolve to ``envelope`` transport and
+    ride the ADR-009 counter-signature chain end-to-end.
+    """
+    for peer_id in peers:
         nonce = f"{self_id}->{peer_id}:{uuid.uuid4().hex[:8]}"
-        for attempt in range(90):  # up to 90s for peer auto-accept
-            try:
-                client.send(
-                    session_id=session_id,
-                    sender_agent_id=self_id,
-                    payload={"nonce": nonce},
-                    recipient_agent_id=peer_id,
-                )
-                print(f"[{self_id}] sent nonce to {peer_id}", flush=True)
-                break
-            except Exception as exc:
-                if attempt < 89:
-                    time.sleep(1)
-                else:
-                    print(f"[{self_id}] send to {peer_id} giving up: {exc!r}",
-                          flush=True)
+        try:
+            client.send_oneshot(peer_id, {"nonce": nonce})
+            print(f"[{self_id}] sent oneshot nonce to {peer_id}", flush=True)
+        except Exception as exc:
+            print(f"[{self_id}] send_oneshot {peer_id} failed: {exc!r}",
+                  flush=True)
 
 
 def _auth_api_key_file(mastio_url: str, identity_dir: str, self_id: str) -> CullisClient:
@@ -297,9 +282,9 @@ def main() -> int:
         peers = []
     print(f"[{self_id}] peers: {peers}", flush=True)
 
-    threading.Thread(
-        target=_auto_accept_loop, args=(client, self_id), daemon=True,
-    ).start()
+    # ADR-011 Phase 4b — no ``_auto_accept_loop`` anymore. One-shot
+    # envelopes are fire-and-forget on the sender side and inbox-polled
+    # on the receiver side; there is no session handshake to accept.
     threading.Thread(
         target=_receive_loop, args=(client, self_id), daemon=True,
     ).start()

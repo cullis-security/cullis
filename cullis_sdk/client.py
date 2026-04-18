@@ -1225,7 +1225,19 @@ class CullisClient:
         resolve_resp.raise_for_status()
         decision = resolve_resp.json()
         transport = decision["transport"]
-        target_agent_id = decision["target_agent_id"]
+        # Resolve strips the org prefix from ``target_agent_id`` (returns
+        # just ``byoca-bot``), but every downstream handler keys on
+        # ``<org>::<agent>``. Reassemble so ``/v1/egress/message/send``'s
+        # ``decide_route`` classifies the recipient intra vs cross
+        # correctly — otherwise intra-org sends are mis-routed to the
+        # broker bridge and 404 on the Court side.
+        _resolved_org = decision.get("target_org_id")
+        _raw_target = decision["target_agent_id"]
+        target_agent_id = (
+            f"{_resolved_org}::{_raw_target}"
+            if _resolved_org and "::" not in _raw_target
+            else _raw_target
+        )
 
         sender_agent_id = getattr(self, "_proxy_agent_id", None) or self._label
         client_seq = self._client_seq.get(session_id, 0)
@@ -1382,7 +1394,19 @@ class CullisClient:
         resolve_resp.raise_for_status()
         decision = resolve_resp.json()
         transport = decision["transport"]
-        target_agent_id = decision["target_agent_id"]
+        # Resolve strips the org prefix from ``target_agent_id`` (returns
+        # just ``byoca-bot``), but every downstream handler keys on
+        # ``<org>::<agent>``. Reassemble so ``/v1/egress/message/send``'s
+        # ``decide_route`` classifies the recipient intra vs cross
+        # correctly — otherwise intra-org sends are mis-routed to the
+        # broker bridge and 404 on the Court side.
+        _resolved_org = decision.get("target_org_id")
+        _raw_target = decision["target_agent_id"]
+        target_agent_id = (
+            f"{_resolved_org}::{_raw_target}"
+            if _resolved_org and "::" not in _raw_target
+            else _raw_target
+        )
 
         if transport not in ("mtls-only", "envelope"):
             raise NotImplementedError(

@@ -289,23 +289,28 @@ async def send_oneshot(
             status="duplicate" if duplicate else "enqueued",
         )
 
-    # Recipient must match the internal_agents.agent_id format the
-    # receiver presents at /inbox. Session /send stores the bare agent
-    # name (recipient=session.target_agent_id); align here.
-    recipient_bare: str
+    # ADR-011 Phase 4b — persist the full ``<org>::<agent>`` form so the
+    # ``/inbox`` lookup (keyed on ``agent.agent_id`` from the DPoP dep,
+    # which carries the full form) matches. Session /send used to store
+    # only the bare agent name which worked because the session was
+    # already scoped to this org by the session row itself — one-shots
+    # have no such scope, so the bare form dropped rows on the floor
+    # during intra-org delivery.
+    recipient_full: str
     if body.recipient_id.startswith("spiffe://"):
         from mcp_proxy.spiffe import parse_spiffe
-        _, _, recipient_bare = parse_spiffe(body.recipient_id)
+        _, rec_org, rec_bare = parse_spiffe(body.recipient_id)
+        recipient_full = f"{rec_org}::{rec_bare}"
     elif "::" in body.recipient_id:
-        recipient_bare = body.recipient_id.split("::", 1)[1]
+        recipient_full = body.recipient_id
     else:
-        recipient_bare = body.recipient_id
+        recipient_full = f"{local_org}::{body.recipient_id}" if local_org else body.recipient_id
 
     envelope = _serialize_envelope(body)
 
     msg_id, inserted = await local_queue.enqueue_oneshot(
         sender_agent_id=agent.agent_id,
-        recipient_agent_id=recipient_bare,
+        recipient_agent_id=recipient_full,
         correlation_id=corr_id,
         reply_to_correlation_id=body.reply_to,
         payload_ciphertext=envelope,
@@ -319,7 +324,7 @@ async def send_oneshot(
     if ws_manager is not None and inserted:
         try:
             await ws_manager.send_to_agent(
-                recipient_bare,
+                recipient_full,
                 {
                     "type": "oneshot_message",
                     "msg_id": msg_id,

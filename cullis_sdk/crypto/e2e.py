@@ -211,9 +211,19 @@ def verify_inner_signature(
     raises ValueError if invalid.
     """
     from cryptography import x509 as crypto_x509
+    from cryptography.hazmat.primitives import serialization
 
-    cert = crypto_x509.load_pem_x509_certificate(sender_cert_pem.encode())
-    pub_key = cert.public_key()
+    # Accept either a full X.509 certificate PEM or a bare SPKI public
+    # key PEM — different Cullis surfaces return one or the other (the
+    # Mastio public-key endpoint returns SPKI, the broker registry
+    # historically returned the cert). Matches the pattern in
+    # ``message_signer.verify_oneshot_envelope_signature``.
+    pem_bytes = sender_cert_pem.encode()
+    if b"CERTIFICATE" in pem_bytes:
+        cert = crypto_x509.load_pem_x509_certificate(pem_bytes)
+        pub_key = cert.public_key()
+    else:
+        pub_key = serialization.load_pem_public_key(pem_bytes)
     sig = _b64url_decode(inner_signature_b64)
 
     # Canonical format must match sign_message() in message_signer.py
