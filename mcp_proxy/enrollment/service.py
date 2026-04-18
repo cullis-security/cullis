@@ -303,9 +303,10 @@ async def approve(
             text(
                 """INSERT INTO internal_agents
                    (agent_id, display_name, capabilities, api_key_hash,
-                    cert_pem, created_at, is_active, device_info, dpop_jkt)
+                    cert_pem, created_at, is_active, device_info, dpop_jkt,
+                    enrollment_method, enrolled_at)
                    VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1,
-                           :device, :dpop_jkt)"""
+                           :device, :dpop_jkt, 'connector', :created)"""
             ),
             {
                 "aid": agent_id,

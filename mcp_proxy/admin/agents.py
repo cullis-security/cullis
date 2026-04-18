@@ -190,11 +190,13 @@ async def create_agent(
                     INSERT INTO internal_agents (
                         agent_id, display_name, capabilities, api_key_hash,
                         cert_pem, created_at, is_active,
-                        federated, federated_at, federation_revision
+                        federated, federated_at, federation_revision,
+                        enrollment_method, enrolled_at
                     ) VALUES (
                         :aid, :name, :caps, :hash,
                         :cert, :now, 1,
-                        :federated, NULL, 1
+                        :federated, NULL, 1,
+                        'admin', :now
                     )
                     """
                 ),

@@ -272,14 +272,29 @@ async def create_agent(
     capabilities: list[str],
     api_key_hash: str,
     cert_pem: str | None = None,
+    enrollment_method: str = "admin",
+    spiffe_id: str | None = None,
 ) -> None:
-    """Register a new internal agent."""
+    """Register a new internal agent.
+
+    ADR-011 Phase 1 — ``enrollment_method`` defaults to ``admin`` so
+    legacy callers (tests, dashboard) get the right metadata without
+    code changes. The Connector approve flow and the BYOCA/SPIFFE
+    enrollment endpoints pass the matching method value explicitly.
+    """
     ts = datetime.now(timezone.utc).isoformat()
     async with get_db() as conn:
         await conn.execute(
             text(
-                """INSERT INTO internal_agents (agent_id, display_name, capabilities, api_key_hash, cert_pem, created_at)
-                   VALUES (:agent_id, :display_name, :capabilities, :api_key_hash, :cert_pem, :created_at)"""
+                """INSERT INTO internal_agents (
+                       agent_id, display_name, capabilities, api_key_hash,
+                       cert_pem, created_at, enrollment_method, spiffe_id,
+                       enrolled_at
+                   ) VALUES (
+                       :agent_id, :display_name, :capabilities, :api_key_hash,
+                       :cert_pem, :created_at, :enrollment_method, :spiffe_id,
+                       :enrolled_at
+                   )"""
             ),
             {
                 "agent_id": agent_id,
@@ -288,6 +303,9 @@ async def create_agent(
                 "api_key_hash": api_key_hash,
                 "cert_pem": cert_pem,
                 "created_at": ts,
+                "enrollment_method": enrollment_method,
+                "spiffe_id": spiffe_id,
+                "enrolled_at": ts,
             },
         )
 

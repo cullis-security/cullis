@@ -55,6 +55,17 @@ class InternalAgent(Base):
     # ``mcp_proxy.auth.dpop_api_key.get_agent_from_dpop_api_key`` when
     # ``CULLIS_EGRESS_DPOP_MODE`` is ``optional`` or ``required``.
     dpop_jkt = Column(Text, nullable=True)
+    # ADR-011 Phase 1 — enrollment metadata. ``enrollment_method`` is one of
+    # ``admin`` / ``connector`` / ``byoca`` / ``spiffe`` and records how the
+    # agent authenticated at enrollment time. ``spiffe_id`` is populated when
+    # the Mastio received a SPIFFE SVID (either at enrollment or via a future
+    # SPIRE-attached deployment). ``enrolled_at`` is separate from
+    # ``created_at`` so an admin can create a placeholder row and complete
+    # enrollment later; on backfill of existing rows we set
+    # ``enrolled_at = created_at``.
+    enrollment_method = Column(Text, nullable=True)
+    spiffe_id = Column(Text, nullable=True)
+    enrolled_at = Column(Text, nullable=True)
 
 
 class AuditLogEntry(Base):
