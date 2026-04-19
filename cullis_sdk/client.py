@@ -1213,9 +1213,12 @@ class CullisClient:
         ``recipient_id`` may be a SPIFFE URI (``spiffe://td/org/agent``) or
         the internal ``org::agent`` form.
 
-        Requires proxy credentials from :meth:`from_enrollment` (API key)
-        AND a signing key from :meth:`login` or :meth:`from_spiffe_workload_api`
-        when the resolver picks ``mtls-only``.
+        Requires proxy credentials from :meth:`from_enrollment` or
+        :meth:`from_api_key_file` (API key) AND a signing key — either
+        populated by :meth:`login` / :meth:`login_from_pem` (cert + key
+        bundle) or assigned manually to ``_signing_key_pem`` after
+        :meth:`from_api_key_file` — when the resolver picks
+        ``mtls-only``.
         """
         resolve_resp = self._egress_http(
             "post",
@@ -1247,7 +1250,8 @@ class CullisClient:
             if not self._signing_key_pem:
                 raise RuntimeError(
                     "mtls-only transport requires a signing key — "
-                    "initialize the client via login() or from_spiffe_workload_api()"
+                    "populate it via login() (cert+key bundle) or assign "
+                    "_signing_key_pem after from_api_key_file()"
                 )
             nonce = str(uuid.uuid4())
             timestamp = int(time.time())
@@ -1415,8 +1419,9 @@ class CullisClient:
 
         if not self._signing_key_pem:
             raise RuntimeError(
-                "one-shot send requires a signing key — initialize the "
-                "client via login() or from_spiffe_workload_api()"
+                "one-shot send requires a signing key — populate it via "
+                "login() (cert+key bundle) or assign _signing_key_pem "
+                "after from_api_key_file()"
             )
 
         corr_id = correlation_id or str(uuid.uuid4())
@@ -1617,7 +1622,8 @@ class CullisClient:
         if not self._signing_key_pem:
             raise RuntimeError(
                 "envelope decrypt requires a private signing key — "
-                "initialize the client via login() or from_spiffe_workload_api()"
+                "populate it via login() (cert+key bundle) or assign "
+                "_signing_key_pem after from_api_key_file()"
             )
 
         cipher_blob = envelope["payload"]

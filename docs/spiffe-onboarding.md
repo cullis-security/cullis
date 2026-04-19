@@ -1,5 +1,7 @@
 # Cullis — Onboarding an org with SPIFFE/SPIRE
 
+> **Deprecation notice (ADR-011).** `CullisClient.from_spiffe_workload_api()` as shown in Step 4 below is the **legacy direct-to-Court login** path. It still works and emits a `DeprecationWarning` until the Court's `/v1/auth/token` returns `410 Gone` (see the `Deprecation` / `Sunset` response headers). New deployments should use SPIFFE as an *enrollment* primitive instead — call `CullisClient.enroll_via_spiffe(...)` once at provisioning time to exchange an SVID for an API key + DPoP jkt, then run the agent with `CullisClient.from_api_key_file(...)` at runtime. See [`migration-from-direct-login.md`](migration-from-direct-login.md) for the full migration walkthrough.
+
 This guide is for org operators who want their Cullis agents to authenticate via short-lived SVIDs issued by SPIRE, instead of long-lived BYOCA agent certificates. Both models coexist in the same broker and even in the same org.
 
 If you're starting from scratch and your agents don't use SPIFFE, see the regular [Operations Runbook](operations-runbook.md) and quickstart — you don't need any of this.
