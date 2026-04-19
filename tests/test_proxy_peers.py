@@ -162,3 +162,95 @@ async def test_peers_requires_auth(proxy_app):
     resp = await client.get("/v1/egress/peers")
     # Same shape as every other /v1/egress/* endpoint without API-key.
     assert resp.status_code in (401, 403, 422)
+
+
+# ── Reach filter (audit NEW #4) ─────────────────────────────────────
+#
+# The send-path reach gate is enforced in ``reach_guard.check_reach``;
+# the listing path must apply the same discipline at the SQL layer so
+# an intra-only agent never receives cross-org handles in the first
+# place (layering defence-in-depth). These three cases pin the
+# filter behaviour for intra / cross / both.
+
+async def _set_reach(agent_id: str, reach: str) -> None:
+    """Flip ``internal_agents.reach`` for an already-provisioned row."""
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            text("UPDATE internal_agents SET reach = :reach WHERE agent_id = :aid"),
+            {"reach": reach, "aid": agent_id},
+        )
+
+
+async def _seed_cross_org_peer(agent_id: str, org_id: str) -> None:
+    """Seed a cached cross-org peer row the way federation would."""
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO cached_federated_agents (
+                    agent_id, org_id, display_name, capabilities,
+                    thumbprint, revoked, updated_at
+                ) VALUES (:aid, :org, :aid, '["cap.peer"]', NULL, 0,
+                          '2026-04-19T00:00:00Z')
+                """
+            ),
+            {"aid": agent_id, "org": org_id},
+        )
+
+
+@pytest.mark.asyncio
+async def test_peers_reach_intra_hides_cross_org(proxy_app):
+    _, client = proxy_app
+    api_key = await _provision_caller("caller-bot")
+    await _set_reach("caller-bot", "intra")
+    await _provision_local_peer("mario", "Mario Rossi")
+    await _seed_cross_org_peer("remote-bot", "orgb")
+
+    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    scopes = {p["scope"] for p in body["peers"]}
+    assert scopes == {"intra-org"}
+    handles = {p["agent_id"] for p in body["peers"]}
+    assert "acme::mario" in handles
+    assert "remote-bot" not in handles
+
+
+@pytest.mark.asyncio
+async def test_peers_reach_cross_hides_intra_org(proxy_app):
+    _, client = proxy_app
+    api_key = await _provision_caller("caller-bot")
+    await _set_reach("caller-bot", "cross")
+    await _provision_local_peer("mario", "Mario Rossi")
+    await _seed_cross_org_peer("remote-bot", "orgb")
+
+    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    scopes = {p["scope"] for p in body["peers"]}
+    assert scopes == {"cross-org"}
+    handles = {p["agent_id"] for p in body["peers"]}
+    assert "remote-bot" in handles
+    assert "acme::mario" not in handles
+
+
+@pytest.mark.asyncio
+async def test_peers_reach_both_returns_all(proxy_app):
+    _, client = proxy_app
+    api_key = await _provision_caller("caller-bot")
+    # ``both`` is the DB default but pin it explicitly so the test
+    # documents the contract rather than relying on a server_default.
+    await _set_reach("caller-bot", "both")
+    await _provision_local_peer("mario", "Mario Rossi")
+    await _seed_cross_org_peer("remote-bot", "orgb")
+
+    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    scopes = {p["scope"] for p in body["peers"]}
+    assert scopes == {"intra-org", "cross-org"}
+    handles = {p["agent_id"] for p in body["peers"]}
+    assert "acme::mario" in handles
+    assert "remote-bot" in handles

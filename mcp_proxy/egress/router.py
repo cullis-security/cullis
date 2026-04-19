@@ -1009,6 +1009,20 @@ async def list_peers(
     local_org = settings.org_id or ""
     qnorm = (q or "").strip().lower()
 
+    # Audit NEW #4 — reach gate mirrors ``check_reach`` used by session
+    # open / send, but expressed as a filter rather than a deny: the
+    # listing must NEVER surface peers the caller couldn't contact
+    # anyway. Without this gate an ``intra``-only agent would receive a
+    # ready-made cross-org target list the moment federation primes
+    # the cache, which is a layering violation (defence-in-depth if the
+    # send-path gate is ever weakened). Unknown reach values default to
+    # ``both`` to match ``check_reach``'s permissive fallback.
+    caller_reach = (getattr(agent, "reach", None) or "both").lower()
+    if caller_reach not in {"intra", "cross", "both"}:
+        caller_reach = "both"
+    include_intra = caller_reach in {"intra", "both"}
+    include_cross = caller_reach in {"cross", "both"}
+
     from sqlalchemy import text
 
     from mcp_proxy.db import get_db
@@ -1019,68 +1033,76 @@ async def list_peers(
         # Intra-org from the authoritative local registry. Self-row
         # excluded so the caller never sees themselves in their own
         # contact list (the DB stores both bare and ``org::name`` rows
-        # historically; check both forms).
-        bare = agent.agent_id.split("::", 1)[-1]
-        result = await conn.execute(
-            text(
-                """
-                SELECT agent_id, display_name, capabilities, is_active
-                  FROM internal_agents
-                 WHERE is_active = 1
-                   AND agent_id NOT IN (:full, :bare)
-                 ORDER BY display_name, agent_id
-                """
-            ),
-            {"full": agent.agent_id, "bare": bare},
-        )
-        for row in result.mappings():
-            aid_full = (
-                row["agent_id"]
-                if "::" in row["agent_id"]
-                else f"{local_org}::{row['agent_id']}"
-            )
-            display = row["display_name"] or row["agent_id"]
-            if qnorm and qnorm not in aid_full.lower() and qnorm not in display.lower():
-                continue
-            peers.append(PeerInfo(
-                agent_id=aid_full,
-                org_id=local_org,
-                display_name=display,
-                capabilities=json.loads(row["capabilities"] or "[]"),
-                status="active",
-                scope="intra-org",
-            ))
-
-        # Cross-org cached snapshots, if federation has primed the cache.
-        # The table is missing in older standalone deploys — tolerate
-        # that and skip silently.
-        try:
+        # historically; check both forms). Skipped entirely when the
+        # caller's reach forbids intra-org traffic — the SELECT does
+        # not run, so the filter is enforced at the SQL layer (no
+        # post-hoc Python strip that could regress silently if
+        # refactored).
+        if include_intra:
+            bare = agent.agent_id.split("::", 1)[-1]
             result = await conn.execute(
                 text(
                     """
-                    SELECT agent_id, org_id, display_name, capabilities
-                      FROM cached_federated_agents
-                     WHERE revoked = 0
-                       AND org_id != :local_org
-                     ORDER BY org_id, display_name
+                    SELECT agent_id, display_name, capabilities, is_active
+                      FROM internal_agents
+                     WHERE is_active = 1
+                       AND agent_id NOT IN (:full, :bare)
+                     ORDER BY display_name, agent_id
                     """
                 ),
-                {"local_org": local_org},
+                {"full": agent.agent_id, "bare": bare},
             )
             for row in result.mappings():
-                aid = row["agent_id"]
-                display = row["display_name"] or aid
-                if qnorm and qnorm not in aid.lower() and qnorm not in display.lower():
+                aid_full = (
+                    row["agent_id"]
+                    if "::" in row["agent_id"]
+                    else f"{local_org}::{row['agent_id']}"
+                )
+                display = row["display_name"] or row["agent_id"]
+                if qnorm and qnorm not in aid_full.lower() and qnorm not in display.lower():
                     continue
                 peers.append(PeerInfo(
-                    agent_id=aid,
-                    org_id=row["org_id"],
+                    agent_id=aid_full,
+                    org_id=local_org,
                     display_name=display,
                     capabilities=json.loads(row["capabilities"] or "[]"),
-                    scope="cross-org",
+                    status="active",
+                    scope="intra-org",
                 ))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("federated cache unreadable, skipping: %s", exc)
+
+        # Cross-org cached snapshots, if federation has primed the cache.
+        # The table is missing in older standalone deploys — tolerate
+        # that and skip silently. Skipped entirely when the caller's
+        # reach forbids cross-org traffic (same SQL-level rationale as
+        # the intra-org branch above).
+        if include_cross:
+            try:
+                result = await conn.execute(
+                    text(
+                        """
+                        SELECT agent_id, org_id, display_name, capabilities
+                          FROM cached_federated_agents
+                         WHERE revoked = 0
+                           AND org_id != :local_org
+                         ORDER BY org_id, display_name
+                        """
+                    ),
+                    {"local_org": local_org},
+                )
+                for row in result.mappings():
+                    aid = row["agent_id"]
+                    display = row["display_name"] or aid
+                    if qnorm and qnorm not in aid.lower() and qnorm not in display.lower():
+                        continue
+                    peers.append(PeerInfo(
+                        agent_id=aid,
+                        org_id=row["org_id"],
+                        display_name=display,
+                        capabilities=json.loads(row["capabilities"] or "[]"),
+                        scope="cross-org",
+                    ))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("federated cache unreadable, skipping: %s", exc)
 
     if limit and len(peers) > limit:
         peers = peers[:limit]
