@@ -251,8 +251,26 @@ def validate_config(settings: "Settings") -> None:
     if settings.vault_token == _INSECURE_VAULT_TOKEN:
         _startup_logger.warning("VAULT_TOKEN is the default dev token '%s'.", _INSECURE_VAULT_TOKEN)
 
-    if settings.allowed_origins.strip() == "*":
-        _startup_logger.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
+    # Audit F-B-13 — wildcard origin on the WebSocket upgrade defeats the
+    # Origin check entirely (CORSMiddleware does not cover WS). In
+    # production this is a hard refusal; dev keeps the warning so
+    # local-compose setups still boot.
+    _origins_list = [
+        o.strip() for o in settings.allowed_origins.split(",") if o.strip()
+    ]
+    if "*" in _origins_list:
+        if is_production:
+            _startup_logger.critical(
+                "ALLOWED_ORIGINS contains '*' in production. Wildcard is "
+                "rejected on the WebSocket upgrade (audit F-B-13) and "
+                "disables CORS credentials. Enumerate origins explicitly, "
+                "e.g. https://console.example.com,https://broker.example.com.",
+            )
+            raise SystemExit(1)
+        _startup_logger.warning(
+            "ALLOWED_ORIGINS is '*' — CORS fully open and WebSocket "
+            "upgrades are rejected (audit F-B-13).",
+        )
 
     if not settings.dashboard_signing_key:
         if is_production:

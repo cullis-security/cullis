@@ -38,6 +38,20 @@ def _get_manager(app) -> LocalConnectionManager | None:
     return getattr(app.state, "local_ws_manager", None)
 
 
+def _is_localhost_origin(origin: str) -> bool:
+    """Accept http(s)://localhost[:port] and http(s)://127.0.0.1[:port] only.
+
+    Mirrors the broker's narrow dev exemption (audit F-B-13). Non-browser
+    clients (Python SDK, curl) typically omit the Origin header entirely;
+    those requests bypass the origin check and rely solely on ``api_key``.
+    """
+    import re
+    return bool(origin and re.fullmatch(
+        r"https?://(localhost|127\.0\.0\.1)(:\d{1,5})?",
+        origin,
+    ))
+
+
 @router.websocket("/ws")
 async def local_ws(
     websocket: WebSocket,
@@ -49,6 +63,36 @@ async def local_ws(
         # Phase 3 not wired — refuse the upgrade before sending anything.
         await websocket.close(code=_WS_CLOSE_INTERNAL_ERROR, reason="ws_not_ready")
         return
+
+    # Audit F-B-13 — browser-originated upgrades must match the configured
+    # allow-list. Non-browser clients (Python SDK, curl, CLI tools) do not
+    # send an Origin header and are let through on the strength of the
+    # API key alone.
+    origin = websocket.headers.get("origin", "")
+    if origin:
+        from mcp_proxy.config import get_settings
+        _settings = get_settings()
+        _allow = [o.strip() for o in _settings.allowed_origins.split(",") if o.strip()]
+        if "*" in _allow:
+            logger.warning(
+                "Local WS rejected: MCP_PROXY_ALLOWED_ORIGINS contains '*' "
+                "— wildcard is not honoured on the WS upgrade (audit F-B-13).",
+            )
+            await websocket.close(code=_WS_CLOSE_UNAUTHORIZED, reason="origin_denied")
+            return
+        if _allow:
+            if origin not in _allow:
+                await websocket.close(code=_WS_CLOSE_UNAUTHORIZED, reason="origin_denied")
+                return
+        else:
+            # No allow-list: only the narrow localhost exemption passes
+            # in development; production refuses with closed code.
+            if _settings.environment == "production":
+                await websocket.close(code=_WS_CLOSE_UNAUTHORIZED, reason="origin_denied")
+                return
+            if not _is_localhost_origin(origin):
+                await websocket.close(code=_WS_CLOSE_UNAUTHORIZED, reason="origin_denied")
+                return
 
     if not api_key or not api_key.startswith("sk_local_"):
         await websocket.close(code=_WS_CLOSE_UNAUTHORIZED, reason="missing_api_key")

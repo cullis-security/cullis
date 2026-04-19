@@ -318,8 +318,24 @@ def validate_config(settings: ProxySettings) -> None:
             _INSECURE_DEFAULT_SECRET,
         )
 
-    if settings.allowed_origins.strip() == "*":
-        _log.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
+    # Audit F-B-13 — wildcard origin is never safe in production and is
+    # always rejected on the WebSocket upgrade path. The dashboard and
+    # reverse-proxy WS endpoints are gated the same way as the broker.
+    _origins_list = [
+        o.strip() for o in settings.allowed_origins.split(",") if o.strip()
+    ]
+    if "*" in _origins_list:
+        if is_production:
+            _log.critical(
+                "MCP_PROXY_ALLOWED_ORIGINS contains '*' in production. "
+                "Wildcard disables CORS credentials and is rejected on "
+                "the WebSocket upgrade (audit F-B-13). Enumerate origins "
+                "explicitly.",
+            )
+            raise SystemExit(1)
+        _log.warning(
+            "MCP_PROXY_ALLOWED_ORIGINS is '*' — CORS fully open (dev only).",
+        )
 
     # Audit F-B-12 — Mastio keeps a DPoP JTI cache and per-agent rate
     # limiter in process memory by default. Single-instance deployments
