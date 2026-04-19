@@ -211,6 +211,16 @@ class ProxySettings(BaseSettings):
         # traffic" deployments — e.g. schema-only validation in CI).
         if self.standalone and _env("PROXY_INTRA_ORG") is None:
             self.intra_org_routing = True
+        # Standalone also flips the default intra-org transport from
+        # "envelope" to "mtls-only". The envelope resolve handler does
+        # not populate target_cert_pem for intra-org peers, so the SDK
+        # send_oneshot path fails with a misleading "cross-org one-shot
+        # requires recipient public key" error on a fresh install. The
+        # mtls-only path short-circuits through the proxy itself and
+        # works out of the box. Operators who explicitly set
+        # PROXY_TRANSPORT_INTRA_ORG keep full control.
+        if self.standalone and _env("PROXY_TRANSPORT_INTRA_ORG") is None:
+            self.transport_intra_org = "mtls-only"
         return self
 
 

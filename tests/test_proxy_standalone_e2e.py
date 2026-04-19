@@ -27,9 +27,11 @@ async def standalone_proxy(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("MCP_PROXY_STANDALONE", "true")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
-    # Deliberately NOT setting PROXY_INTRA_ORG — the default in standalone
-    # mode must flip it on, otherwise the point of this PR is lost.
+    # Deliberately NOT setting PROXY_INTRA_ORG or PROXY_TRANSPORT_INTRA_ORG
+    # — the defaults in standalone mode must flip them both on, otherwise
+    # the point of this fixture is lost.
     monkeypatch.delenv("PROXY_INTRA_ORG", raising=False)
+    monkeypatch.delenv("PROXY_TRANSPORT_INTRA_ORG", raising=False)
     monkeypatch.delenv("MCP_PROXY_BROKER_URL", raising=False)
     monkeypatch.delenv("MCP_PROXY_BROKER_JWKS_URL", raising=False)
 
@@ -69,6 +71,27 @@ async def test_standalone_defaults_to_intra_org_routing(standalone_proxy):
     assert settings.intra_org_routing is True, (
         "standalone mode must enable intra-org routing by default — "
         "without it /v1/egress/* 503s on missing bridge"
+    )
+
+
+@pytest.mark.asyncio
+async def test_standalone_defaults_to_mtls_only_transport(standalone_proxy):
+    """Standalone must default transport_intra_org to mtls-only.
+
+    The envelope resolve handler does not populate target_cert_pem for
+    intra-org peers, so SDK send_oneshot fails with a misleading
+    "cross-org one-shot requires recipient public key" error on a
+    fresh install. The mtls-only path short-circuits through the proxy
+    itself and works out of the box.
+    """
+    from mcp_proxy.config import get_settings
+
+    settings = get_settings()
+    assert settings.standalone is True
+    assert settings.transport_intra_org == "mtls-only", (
+        "standalone mode must default to mtls-only transport — "
+        "envelope leaves send_oneshot without target_cert_pem on "
+        "intra-org peers, fresh installs get misleading errors"
     )
 
 
