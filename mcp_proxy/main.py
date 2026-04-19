@@ -94,7 +94,12 @@ async def lifespan(app: FastAPI):
 
     if settings.standalone:
         broker_url = ""
-        org_id = settings.org_id
+        # Same precedence as the federated branch below: the operator's
+        # env/config pin wins, then whatever was persisted at first-boot
+        # (ADR-006 §2.2 derived id), then the default. Without the DB
+        # fall-through every restart in standalone drops org_id back to
+        # "" and decide_route mislabels every intra-org send as cross-org.
+        org_id = settings.org_id or await get_config("org_id") or ""
         app.state.reverse_proxy_broker_url = None
         app.state.reverse_proxy_client = None
         # Explicit reset: the singleton ``app`` survives across test
@@ -136,12 +141,14 @@ async def lifespan(app: FastAPI):
         await agent_mgr.generate_org_ca(derive_org_id=derive)
         if derive:
             org_id = agent_mgr.org_id
-            # ``get_settings`` is lru_cached so mutating the shared
-            # instance is how we propagate the derived id to the rest
-            # of the app. Without this, ``decide_route`` keeps reading
-            # the default ``""`` and classifies every intra-org resolve
-            # as cross-org.
-            settings.org_id = org_id
+
+    # ``get_settings`` is lru_cached so mutating the shared instance
+    # propagates the resolved id to every call-site (decide_route,
+    # reach_guard, oneshot router, dashboard fallbacks). Without this,
+    # anything that reads ``get_settings().org_id`` keeps seeing the
+    # default ``""`` and classifies intra-org traffic as cross-org.
+    if settings.standalone and org_id and not settings.org_id:
+        settings.org_id = org_id
 
     # ADR-009 Phase 1 — derive/persist the Mastio CA + leaf so the proxy can
     # counter-sign Court requests. Only possible once the Org CA is loaded;
