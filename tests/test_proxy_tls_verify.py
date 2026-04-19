@@ -40,6 +40,8 @@ def _prod_settings(**overrides) -> ProxySettings:
         admin_secret="strong-random-admin-secret",
         broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
         standalone=False,
+        # Audit F-B-10 — prod now refuses empty signing key.
+        dashboard_signing_key="strong-signing-key",
     )
     base.update(overrides)
     return ProxySettings(**base)
