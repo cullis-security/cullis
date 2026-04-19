@@ -33,7 +33,16 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
 
     admin_secret: str = "change-me-in-production"
-    dashboard_signing_key: str = ""  # separate key for dashboard cookie HMAC; auto-generated if empty
+    # Separate key for dashboard cookie HMAC. Production MUST set
+    # ``DASHBOARD_SIGNING_KEY`` — validate_config refuses to start with an
+    # empty value. Development auto-generates and persists the key to
+    # ``dashboard_signing_key_path`` (audit F-B-10) so multi-worker deploys
+    # and restarts don't break sessions.
+    dashboard_signing_key: str = ""
+    # Persisted path for the dev auto-generated signing key. Created with
+    # 0600 perms on first use; reused across restarts and workers on the
+    # same filesystem. Ignored when ``dashboard_signing_key`` is set.
+    dashboard_signing_key_path: str = "certs/.dashboard_signing_key"
 
     trust_domain: str = "cullis.local"
     require_spiffe_san: bool = False
@@ -242,19 +251,49 @@ def validate_config(settings: "Settings") -> None:
     if settings.vault_token == _INSECURE_VAULT_TOKEN:
         _startup_logger.warning("VAULT_TOKEN is the default dev token '%s'.", _INSECURE_VAULT_TOKEN)
 
-    if settings.allowed_origins.strip() == "*":
-        _startup_logger.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
+    # Audit F-B-13 — wildcard origin on the WebSocket upgrade defeats the
+    # Origin check entirely (CORSMiddleware does not cover WS). In
+    # production this is a hard refusal; dev keeps the warning so
+    # local-compose setups still boot.
+    _origins_list = [
+        o.strip() for o in settings.allowed_origins.split(",") if o.strip()
+    ]
+    if "*" in _origins_list:
+        if is_production:
+            _startup_logger.critical(
+                "ALLOWED_ORIGINS contains '*' in production. Wildcard is "
+                "rejected on the WebSocket upgrade (audit F-B-13) and "
+                "disables CORS credentials. Enumerate origins explicitly, "
+                "e.g. https://console.example.com,https://broker.example.com.",
+            )
+            raise SystemExit(1)
+        _startup_logger.warning(
+            "ALLOWED_ORIGINS is '*' — CORS fully open and WebSocket "
+            "upgrades are rejected (audit F-B-13).",
+        )
 
     if not settings.dashboard_signing_key:
         if is_production:
             _startup_logger.critical(
                 "DASHBOARD_SIGNING_KEY is not set in production. "
-                "Sessions will not survive restarts or work across workers.")
+                "Sessions will not survive restarts or work across workers "
+                "(audit F-B-10).")
             raise SystemExit(1)
         else:
-            _startup_logger.warning(
-                "DASHBOARD_SIGNING_KEY not set — auto-generating per-process key. "
-                "Dashboard sessions will not persist across restarts.")
+            # Dev mode persists the auto key to disk so multi-worker +
+            # restart keeps sessions intact. Log the chosen path so the
+            # operator can verify it ended up somewhere the process can
+            # actually write to.
+            _startup_logger.info(
+                "DASHBOARD_SIGNING_KEY not set — persisting auto-generated "
+                "key at %s (audit F-B-10). Set DASHBOARD_SIGNING_KEY to "
+                "override, or back up the file to keep sessions across "
+                "container rebuilds.",
+                settings.dashboard_signing_key_path,
+            )
+    else:
+        _startup_logger.info(
+            "Dashboard signing key loaded from DASHBOARD_SIGNING_KEY env.")
 
     _startup_logger.info(
         "Startup validation passed (environment=%s, kms_backend=%s, redis=%s).",

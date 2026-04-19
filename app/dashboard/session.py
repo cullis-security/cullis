@@ -73,14 +73,76 @@ REAUTH_MAX_ENTRIES = 16
 _auto_key: str = ""
 
 
+def _load_or_create_signing_key_file(path: str) -> str:
+    """Load a persisted signing key from ``path``, creating it (0600) if missing.
+
+    Audit F-B-10 — the previous ``os.urandom`` fallback was in-memory-only, so
+    every worker / replica had its own key and sessions broke on worker hop.
+    Persisting the auto-generated key to disk makes it deterministic across
+    workers (same filesystem → same key) and survives restarts without
+    logging users out. File perms are 0600 so only the process UID can read
+    it; the directory is created with 0700.
+    """
+    import pathlib
+    p = pathlib.Path(path)
+    if p.exists():
+        # Existing key wins — reused across restarts + workers.
+        return p.read_text().strip()
+    # Create parent with tight perms if it doesn't exist yet.
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = os.urandom(32).hex()
+    # Write atomically via temp file + rename so two workers starting at
+    # the same time don't race on a half-written file.
+    tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(key)
+    os.chmod(tmp, 0o600)
+    try:
+        os.rename(tmp, p)
+    except OSError:
+        # Another worker beat us to it — reread its key.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        if p.exists():
+            return p.read_text().strip()
+        raise
+    return key
+
+
 def _get_secret() -> str:
-    """Return a dedicated dashboard signing key, separate from admin_secret."""
+    """Return a dedicated dashboard signing key, separate from admin_secret.
+
+    Order of precedence (audit F-B-10):
+      1. ``DASHBOARD_SIGNING_KEY`` env → wins. Recommended for prod.
+      2. Persisted file at ``dashboard_signing_key_path`` → dev fallback,
+         shared across workers and restarts. Auto-created on first call.
+      3. Legacy in-memory ``os.urandom`` — only when file cannot be
+         written (e.g. read-only FS in a sandbox test). Logs a warning.
+    """
     global _auto_key
     from app.config import get_settings
-    key = get_settings().dashboard_signing_key
-    if key:
-        return key
-    # Auto-generate a per-process key if none configured
+    settings = get_settings()
+    if settings.dashboard_signing_key:
+        return settings.dashboard_signing_key
+    # File-backed auto key — consulted even after an in-memory fallback
+    # fired once, so a later write recovers determinism.
+    key_path = settings.dashboard_signing_key_path
+    if key_path:
+        try:
+            key = _load_or_create_signing_key_file(key_path)
+            if key:
+                _auto_key = key
+                return key
+        except OSError as exc:
+            _log.warning(
+                "Could not persist dashboard signing key to %s (%s) — "
+                "falling back to per-process key. Sessions will not "
+                "survive restart or span multiple workers. Fix by "
+                "setting DASHBOARD_SIGNING_KEY or making the path "
+                "writable (audit F-B-10).",
+                key_path, exc,
+            )
     if not _auto_key:
         _auto_key = os.urandom(32).hex()
     return _auto_key

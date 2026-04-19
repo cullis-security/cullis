@@ -53,7 +53,16 @@ class ProxySettings(BaseSettings):
 
     # Dashboard
     admin_secret: str = "change-me-in-production"
+    # Separate HMAC key for the dashboard session cookie. Production MUST set
+    # ``MCP_PROXY_DASHBOARD_SIGNING_KEY`` — ``validate_config`` refuses to
+    # start with an empty value. Development auto-generates and persists
+    # the key to ``dashboard_signing_key_path`` (audit F-B-10) so multi-
+    # worker deploys + restarts keep sessions intact.
     dashboard_signing_key: str = ""
+    # Persisted path for the dev auto-generated signing key. Created with
+    # 0600 perms on first use; reused across restarts and workers on the
+    # same filesystem. Ignored when ``dashboard_signing_key`` is set.
+    dashboard_signing_key_path: str = "certs/.mcp_proxy_dashboard_signing_key"
 
     # Break-glass re-enable for the local admin password sign-in path.
     # Normal state: operators flip the toggle in Settings → Sign-in methods,
@@ -281,6 +290,20 @@ def validate_config(settings: ProxySettings) -> None:
             )
             raise SystemExit(1)
 
+        # Audit F-B-10 — dashboard signing key must be explicitly set in
+        # production. The dev fallback is file-backed, which is fine for
+        # single-host docker-compose but brittle in Helm / multi-replica
+        # (each replica writes its own file, sessions break on worker
+        # hop). Mirrors the broker-side refusal in app.config.
+        if not settings.dashboard_signing_key:
+            _log.critical(
+                "MCP_PROXY_DASHBOARD_SIGNING_KEY is not set in production. "
+                "Sessions will not survive restarts or work across workers "
+                "(audit F-B-10). Set it to a strong random value (e.g. "
+                "openssl rand -hex 32).",
+            )
+            raise SystemExit(1)
+
         # Audit F-E-03 (proxy analogue) — secret_backend=env keeps connector
         # and agent private keys in the proxy process environment or in the
         # local sqlite, with no audit trail on reads and no rotation story.
@@ -305,8 +328,24 @@ def validate_config(settings: ProxySettings) -> None:
             _INSECURE_DEFAULT_SECRET,
         )
 
-    if settings.allowed_origins.strip() == "*":
-        _log.warning("ALLOWED_ORIGINS is '*' — CORS fully open.")
+    # Audit F-B-13 — wildcard origin is never safe in production and is
+    # always rejected on the WebSocket upgrade path. The dashboard and
+    # reverse-proxy WS endpoints are gated the same way as the broker.
+    _origins_list = [
+        o.strip() for o in settings.allowed_origins.split(",") if o.strip()
+    ]
+    if "*" in _origins_list:
+        if is_production:
+            _log.critical(
+                "MCP_PROXY_ALLOWED_ORIGINS contains '*' in production. "
+                "Wildcard disables CORS credentials and is rejected on "
+                "the WebSocket upgrade (audit F-B-13). Enumerate origins "
+                "explicitly.",
+            )
+            raise SystemExit(1)
+        _log.warning(
+            "MCP_PROXY_ALLOWED_ORIGINS is '*' — CORS fully open (dev only).",
+        )
 
     # Audit F-B-12 — Mastio keeps a DPoP JTI cache and per-agent rate
     # limiter in process memory by default. Single-instance deployments
@@ -327,6 +366,18 @@ def validate_config(settings: ProxySettings) -> None:
         _log.warning(
             "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. "
             "External JWT validation will not work until configured."
+        )
+
+    # Audit F-B-10 — surface which signing key source is in use so operators
+    # can tell env vs persisted file apart from the logs.
+    if settings.dashboard_signing_key:
+        _log.info("Dashboard signing key loaded from MCP_PROXY_DASHBOARD_SIGNING_KEY env.")
+    elif not is_production:
+        _log.info(
+            "MCP_PROXY_DASHBOARD_SIGNING_KEY not set — persisting auto-generated "
+            "key at %s (audit F-B-10). Set the env var to override, or back up "
+            "the file to keep sessions across container rebuilds.",
+            settings.dashboard_signing_key_path,
         )
 
     _log.info(

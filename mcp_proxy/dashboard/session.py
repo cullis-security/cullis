@@ -45,13 +45,71 @@ _NO_SESSION = ProxyDashboardSession(role="none", csrf_token="", logged_in=False)
 _auto_key: str = ""
 
 
+def _load_or_create_signing_key_file(path: str) -> str:
+    """Load a persisted signing key from ``path``, creating it (0600) if missing.
+
+    Audit F-B-10 — the legacy ``os.urandom`` fallback was in-memory-only, so
+    every proxy worker / replica held its own key and sessions broke on
+    worker hop. Persisting the auto-generated key to disk makes it
+    deterministic across workers (same FS → same key) and survives restart
+    without logging users out. File perms are 0600; parent directory gets
+    0700 when we create it.
+    """
+    import pathlib
+    p = pathlib.Path(path)
+    if p.exists():
+        return p.read_text().strip()
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = os.urandom(32).hex()
+    # Write via tmp + rename so two workers starting at the same time
+    # don't race on a half-written file.
+    tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(key)
+    os.chmod(tmp, 0o600)
+    try:
+        os.rename(tmp, p)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        if p.exists():
+            return p.read_text().strip()
+        raise
+    return key
+
+
 def _get_secret() -> str:
-    """Return the dashboard signing key from settings, or auto-generate one."""
+    """Return the dashboard signing key from settings, or auto-generate one.
+
+    Order of precedence (audit F-B-10):
+      1. ``MCP_PROXY_DASHBOARD_SIGNING_KEY`` env → wins.
+      2. Persisted file at ``dashboard_signing_key_path`` → dev fallback,
+         shared across workers and restarts. Created on first call.
+      3. Legacy in-memory ``os.urandom`` — only when the file cannot be
+         written (e.g. read-only sandbox). Logs a warning.
+    """
     global _auto_key
     from mcp_proxy.config import get_settings
-    key = get_settings().dashboard_signing_key
-    if key:
-        return key
+    settings = get_settings()
+    if settings.dashboard_signing_key:
+        return settings.dashboard_signing_key
+    key_path = getattr(settings, "dashboard_signing_key_path", "")
+    if key_path:
+        try:
+            key = _load_or_create_signing_key_file(key_path)
+            if key:
+                _auto_key = key
+                return key
+        except OSError as exc:
+            _log.warning(
+                "Could not persist dashboard signing key to %s (%s) — "
+                "falling back to per-process key. Sessions will not "
+                "survive restart or span multiple workers. Fix by "
+                "setting MCP_PROXY_DASHBOARD_SIGNING_KEY or making the "
+                "path writable (audit F-B-10).",
+                key_path, exc,
+            )
     if not _auto_key:
         _auto_key = os.urandom(32).hex()
     return _auto_key

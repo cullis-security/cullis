@@ -94,7 +94,11 @@ async def validate_and_consume(
     Validate an invite token and mark it as consumed.
 
     Returns the record if valid, None otherwise.
-    Token is consumed atomically — a second call with the same token fails.
+    Token is consumed atomically — a second call with the same token fails
+    (audit F-B-17). Mirrors the F-B-4 atomic-consume pattern from
+    ``app.kms.admin_secret.consume_bootstrap_token_and_set_password``: a
+    single ``UPDATE ... WHERE used = FALSE ... RETURNING *`` is the only
+    write that matters; two concurrent callers cannot both win.
 
     For attach-ca invites the token's linked_org_id must equal the provided
     org_id; the org_id is NEVER trusted from the client alone.
@@ -105,38 +109,35 @@ async def validate_and_consume(
     now = datetime.now(timezone.utc)
 
     # Atomic consume: UPDATE WHERE used=false AND revoked=false AND type matches
-    # RETURNING *. This prevents TOCTOU race and cross-type abuse in one query.
+    # AND expires_at > now RETURNING *. Putting the expiry check inside the
+    # same UPDATE (audit F-B-17) removes the legacy rollback branch that
+    # would set used=False again on an expired race — that branch could
+    # mask concurrent valid consumption attempts under adverse clock drift.
     where_clauses = [
         InviteToken.token_hash == h,
         InviteToken.used == False,  # noqa: E712
         InviteToken.revoked == False,  # noqa: E712
         InviteToken.invite_type == expected_type,
+        InviteToken.expires_at > now,
     ]
     if expected_type == INVITE_TYPE_ATTACH_CA:
         # Attach-ca tokens are bound to a specific org — require match.
         where_clauses.append(InviteToken.linked_org_id == org_id)
 
+    # synchronize_session=False: the ORM "evaluate" pass trips over
+    # naive-vs-aware datetime comparisons on SQLite; the UPDATE+RETURNING
+    # already gives us the authoritative row straight from the DB.
     stmt = (
         sa_update(InviteToken)
         .where(*where_clauses)
         .values(used=True, used_at=now, used_by_org_id=org_id)
         .returning(InviteToken)
+        .execution_options(synchronize_session=False)
     )
     result = await db.execute(stmt)
     record = result.scalar_one_or_none()
 
     if record is None:
-        return None
-
-    expires_at = record.expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if now > expires_at:
-        # Token was expired — rollback consumption
-        record.used = False
-        record.used_at = None
-        record.used_by_org_id = None
-        await db.commit()
         return None
 
     await db.commit()

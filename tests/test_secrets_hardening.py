@@ -111,6 +111,9 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         broker_verify_tls=True,
         secret_backend="vault",
         vault_verify_tls=True,
+        # Audit F-B-10 — prod now refuses empty signing key, so every
+        # prod-shaped helper has to provide one.
+        dashboard_signing_key="strong-signing-key",
     )
     base.update(overrides)
     return ProxySettings(**base)
@@ -146,6 +149,7 @@ def test_proxy_validate_config_rejects_standalone_prod_with_env_backend():
         standalone=True,
         secret_backend="env",
         vault_verify_tls=True,
+        dashboard_signing_key="strong-signing-key",  # F-B-10
     )
     with pytest.raises(SystemExit):
         proxy_validate_config(settings)

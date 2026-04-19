@@ -1100,6 +1100,23 @@ async def _handle_ws_resume(
         _log.exception("WS drain failed for agent %s (resume path)", agent_id)
 
 
+def _is_localhost_origin(origin: str) -> bool:
+    """Return True iff ``origin`` is a dev-mode localhost Origin header.
+
+    Matches ``http(s)://localhost[:port]`` and ``http(s)://127.0.0.1[:port]``
+    only. Wildcard, IPv6 (``[::1]``), and bare hostnames are NOT accepted —
+    audit F-B-13 requires explicit enumeration outside this narrow dev
+    exemption. An Origin without a scheme returns False.
+    """
+    if not origin:
+        return False
+    # Accept http(s)://localhost[:port] and http(s)://127.0.0.1[:port] only.
+    return bool(re.fullmatch(
+        r"https?://(localhost|127\.0\.0\.1)(:\d{1,5})?",
+        origin,
+    ))
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(get_db)):
     """
@@ -1113,19 +1130,72 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
       4. Server pusha: {"type": "new_message", ...} e {"type": "session_pending", ...}
       5. Client può mandare {"type": "ping"} → server risponde {"type": "pong"}
     """
-    # ── Origin validation (#25) — CORSMiddleware does not cover WebSocket ──
+    # ── Origin validation (#25 + audit F-B-13) — CORSMiddleware does not
+    # cover WebSocket. The legacy check treated a configured ``*`` as
+    # "allow everything" because the first branch did not fire and the
+    # elif only caught an *empty* allow-list: any cross-site page could
+    # open a ws:// to the broker. Fixed stance:
+    #   - allow-list contains literal ``*`` → always reject with a
+    #     warning. Operators must enumerate origins explicitly.
+    #   - allow-list configured → Origin (when present) must match an
+    #     entry exactly.
+    #   - no allow-list + prod → reject any browser-originated upgrade
+    #     (non-browser clients that omit Origin are let through).
+    #   - no allow-list + dev → accept ``http://localhost[:port]`` and
+    #     ``http://127.0.0.1[:port]`` so `cullis-connector` on the
+    #     operator's laptop works without ALLOWED_ORIGINS.
+    #
+    # CSWSH (cross-site WS hijacking) is a browser-only attack. SDK
+    # agents (Python, TS, CLI) do not send an Origin header; treating
+    # an absent Origin as "non-browser, let through" keeps the server
+    # usable for legitimate clients while still hard-closing any
+    # browser-originated upgrade that doesn't match the allow-list.
     from app.config import get_settings
     _ws_settings = get_settings()
     _ws_origins = [o.strip() for o in _ws_settings.allowed_origins.split(",") if o.strip()]
     origin = websocket.headers.get("origin", "")
-    if _ws_origins and "*" not in _ws_origins:
-        if origin not in _ws_origins:
-            await websocket.close(code=1008)
-            return
-    elif not _ws_origins and _ws_settings.environment == "production":
-        _log.warning("WebSocket rejected: ALLOWED_ORIGINS empty in production (origin=%s)", origin)
+    if _ws_origins and "*" in _ws_origins:
+        _log.warning(
+            "WebSocket rejected: ALLOWED_ORIGINS contains '*' — wildcard "
+            "is never accepted on the WS upgrade (audit F-B-13). Enumerate "
+            "origins explicitly."
+        )
         await websocket.close(code=1008)
         return
+
+    if origin:
+        # A browser (or anything pretending to be one) set the Origin.
+        # Apply the explicit gate.
+        if _ws_origins:
+            if origin not in _ws_origins:
+                await websocket.close(code=1008)
+                return
+        else:
+            # No allow-list configured. Prod hard-closes any
+            # browser-originated upgrade; dev accepts only localhost.
+            if _ws_settings.environment == "production":
+                _log.warning(
+                    "WebSocket rejected: browser Origin %r with no "
+                    "ALLOWED_ORIGINS configured (prod).", origin,
+                )
+                await websocket.close(code=1008)
+                return
+            if not _is_localhost_origin(origin):
+                _log.info(
+                    "WebSocket rejected in dev: origin %r not localhost "
+                    "and ALLOWED_ORIGINS not configured.", origin,
+                )
+                await websocket.close(code=1008)
+                return
+    elif _ws_settings.environment == "production" and not _ws_origins:
+        # No Origin + prod + no allow-list: ambiguous. We still allow
+        # this because legitimate non-browser SDK clients omit Origin,
+        # but we warn once per connection so operators can see it in
+        # logs. Defense-in-depth lives in the JWT/DPoP auth below.
+        _log.info(
+            "WebSocket accepted without Origin in production (non-browser "
+            "client assumed). Set ALLOWED_ORIGINS for browser clients.",
+        )
 
     await websocket.accept()
     agent_id: str | None = None
