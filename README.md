@@ -69,66 +69,34 @@ them, no agent re-enrollment.
 
 ## Quickstart
 
-Boot the full stack (Court + 2 Mastios + 2 agents in 2 organizations),
-route one cross-org end-to-end encrypted message. About a minute.
+Boot the full enterprise stack — Court + 2 Mastios + 3 agents + 2 MCP servers
+in 2 organizations, wired with SPIRE, Keycloak, Vault and Postgres — then
+replay intra-org and cross-org traffic.
 
-**Requirements**: Docker Engine with Compose v2, Python 3.10+, free ports
-8800/9800/9801, ~2 GB free disk.
+**Requirements**: Docker Engine with Compose v2, ~6 GB free disk, ~4 GB RAM.
 
 ```bash
 git clone https://github.com/cullis-security/cullis
 cd cullis
-python3 -m venv .venv
-.venv/bin/pip install httpx cryptography
-./deploy_demo.sh up
-./deploy_demo.sh send
+./enterprise_sandbox/demo.sh full
 ```
 
-https://github.com/user-attachments/assets/d838ce65-c0cc-4d12-95de-12cb8a37325e
-
-See [`scripts/demo/README.md`](scripts/demo/README.md) for the full guided
-tour — dashboards, customization, troubleshooting, and the full table of
-what is turned off in the demo vs. production.
-
-For single-user install, download the [Connector desktop
-app](https://github.com/cullis-security/cullis/releases).
-
-> [!CAUTION]
-> The demo deliberately disables production security (TLS, KMS, SSRF
-> protection, strict cert validation) to let you explore the routing
-> with simple scripts. Do not expose demo ports outside localhost. Do
-> not use demo credentials anywhere.
-
----
-
-## Enterprise sandbox
-
-A second, heavier demo with SPIRE, Keycloak, Vault, Postgres and the
-Connector Desktop. Two tiers:
+Replay scenarios (stack must be up):
 
 ```bash
-./enterprise_sandbox/demo.sh up    # Court + Org B wired,
-                                   # Mastio A standalone — you onboard Org A
-./enterprise_sandbox/demo.sh full  # Both orgs + 3 agents + 2 MCP servers,
-                                   # scenarios ready to replay
-```
-
-Pick `up` if you want to *learn* the onboarding flow hand-on; pick
-`full` if you want to *replay* scenarios without any setup.
-
-Scenarios (full mode):
-
-```bash
-./enterprise_sandbox/demo.sh oneshot-a-to-b   # cross-org A2A message
-./enterprise_sandbox/demo.sh oneshot-b-to-a
-./enterprise_sandbox/demo.sh mcp-catalog      # intra-org MCP tool call
-./enterprise_sandbox/demo.sh mcp-inventory
-./enterprise_sandbox/demo.sh guide            # open the onboarding walkthrough
+./enterprise_sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
+./enterprise_sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
+./enterprise_sandbox/demo.sh oneshot-a-to-b  # cross-org: A2A encrypted message A → B
+./enterprise_sandbox/demo.sh oneshot-b-to-a  # cross-org: A2A encrypted message B → A
+./enterprise_sandbox/demo.sh guide           # open the onboarding walkthrough
 ```
 
 See [`enterprise_sandbox/GUIDE.md`](enterprise_sandbox/GUIDE.md) for the
-step-by-step Org A onboarding — attach-CA flow, mastio counter-signature
-pin (ADR-009), Connector Desktop enrollment, MCP resource registration.
+step-by-step onboarding — attach-CA flow, Mastio counter-signature pin
+(ADR-009), Connector Desktop enrollment, MCP resource registration.
+
+For single-user install, download the [Connector desktop
+app](https://github.com/cullis-security/cullis/releases).
 
 ---
 
@@ -179,7 +147,7 @@ cullis_sdk/        Python SDK + MCP server
 sdk-ts/            TypeScript SDK
 alembic/           Court database migrations
 tests/             Unit + integration + e2e tests
-scripts/demo/      End-to-end demo orchestrator
+enterprise_sandbox/ Full-stack demo (SPIRE, Keycloak, Vault, Postgres)
 deploy/            Helm chart, Docker Compose
 enterprise-kit/    BYOCA guide, OPA policy bundles, PDP template
 docs/              cullis.io site source + ops runbook
