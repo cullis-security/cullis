@@ -182,7 +182,7 @@ def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
         state.agent_id = identity.metadata.agent_id
         state.extra["identity"] = identity
 
-        client = CullisClient.from_connector(config.config_dir, enable_dpop=False)
+        client = CullisClient.from_connector(config.config_dir)
         key_path = config.config_dir / "identity" / "agent.key"
         if key_path.exists():
             client._signing_key_pem = key_path.read_text()

@@ -329,14 +329,7 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
     try:
         from cullis_sdk import CullisClient
 
-        # ``enable_dpop=False`` — the SDK otherwise generates a local DPoP
-        # keypair whose thumbprint the Mastio doesn't know about, so the
-        # egress endpoint 401s on the DPoP proof even though the API-key
-        # itself is valid. Until enrollment binds the Connector's DPoP
-        # jkt server-side (ADR-011 Phase 3d follow-up / #206), fall back
-        # to the legacy X-API-Key bearer — accepted while the Mastio's
-        # ``egress_dpop_mode`` stays at ``optional`` (Phase 5 default).
-        client = CullisClient.from_connector(cfg.config_dir, enable_dpop=False)
+        client = CullisClient.from_connector(cfg.config_dir)
         key_path = cfg.config_dir / "identity" / "agent.key"
         if key_path.exists():
             client._signing_key_pem = key_path.read_text()
