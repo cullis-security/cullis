@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Enterprise sandbox — smoke test
-# Assertion list: imp/enterprise_sandbox_plan.md §smoke
+# Assertion list: imp/sandbox_plan.md §smoke
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -31,7 +31,7 @@ fi
 echo ""
 echo "[smoke] Blocco 2 — proxies + attach-ca (2 orgs)"
 
-orgs=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
+orgs=$(docker exec sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
     "SELECT org_id FROM organizations WHERE status='active' ORDER BY org_id;")
 if [[ "$orgs" == $'orga\norgb' ]]; then
     pass "B2.1 orga + orgb active on broker"
@@ -64,7 +64,7 @@ echo ""
 echo "[smoke] Blocco 3 — Keycloak OIDC per proxy (three-tier refactor)"
 
 # B3.1 — Keycloak-a discovery reachable from broker network
-if docker exec enterprise_sandbox-broker-1 python -c "
+if docker exec sandbox-broker-1 python -c "
 import urllib.request
 urllib.request.urlopen('http://keycloak-a:8180/realms/orga/.well-known/openid-configuration')
 " 2>/dev/null; then
@@ -74,7 +74,7 @@ else
 fi
 
 # B3.2 — Keycloak-b discovery reachable from broker network
-if docker exec enterprise_sandbox-broker-1 python -c "
+if docker exec sandbox-broker-1 python -c "
 import urllib.request
 urllib.request.urlopen('http://keycloak-b:8280/realms/orgb/.well-known/openid-configuration')
 " 2>/dev/null; then
@@ -92,8 +92,8 @@ r = c.execute(\"SELECT value FROM proxy_config WHERE key='oidc_issuer_url'\").fe
 print(r[0] if r else '')
 " 2>/dev/null
 }
-oidc_a=$(q_oidc enterprise_sandbox-proxy-a-1)
-oidc_b=$(q_oidc enterprise_sandbox-proxy-b-1)
+oidc_a=$(q_oidc sandbox-proxy-a-1)
+oidc_b=$(q_oidc sandbox-proxy-b-1)
 if [[ "$oidc_a" == "http://keycloak-a:8180/realms/orga" && "$oidc_b" == "http://keycloak-b:8280/realms/orgb" ]]; then
     pass "B3.3 per-proxy OIDC config (proxy_config table)"
 else
@@ -101,7 +101,7 @@ else
 fi
 
 # B3.4 — Broker DB has NO per-org OIDC (columns still exist but unused)
-broker_oidc=$(docker exec enterprise_sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
+broker_oidc=$(docker exec sandbox-postgres-1 psql -U atn -d agent_trust -Atc \
     "SELECT COALESCE(oidc_issuer_url, 'NULL') FROM organizations ORDER BY org_id;" | tr '\n' ',')
 if [[ "$broker_oidc" == "NULL,NULL," ]]; then
     pass "B3.4 broker has no org OIDC config (network-admin-only)"
@@ -110,7 +110,7 @@ else
 fi
 
 # B3.5 — alice@orga Keycloak direct grant (IdP tenant works standalone)
-b35=$(docker exec enterprise_sandbox-broker-1 python -c "
+b35=$(docker exec sandbox-broker-1 python -c "
 import urllib.request, urllib.parse, json, base64
 data = urllib.parse.urlencode({
     'grant_type':'password','client_id':'cullis-proxy-dashboard',
@@ -128,7 +128,7 @@ else
 fi
 
 # B3.6 — Tenant isolation: bob rejected by keycloak-a realm
-if docker exec enterprise_sandbox-broker-1 python -c "
+if docker exec sandbox-broker-1 python -c "
 import urllib.request, urllib.parse
 data = urllib.parse.urlencode({
     'grant_type':'password','client_id':'cullis-proxy-dashboard',
@@ -223,11 +223,11 @@ fi
 # B4.2 — Registration entries created (one per org).
 # spire-server image is distroless — no shell — but docker exec with the
 # absolute binary path bypasses PATH lookup and works anyway.
-entries_a=$(docker exec enterprise_sandbox-spire-server-a-1 \
+entries_a=$(docker exec sandbox-spire-server-a-1 \
     /opt/spire/bin/spire-server entry show \
     -socketPath /tmp/spire-server/private/api.sock 2>/dev/null | \
     grep -c "spiffe://orga.test/agent-a" || true)
-entries_b=$(docker exec enterprise_sandbox-spire-server-b-1 \
+entries_b=$(docker exec sandbox-spire-server-b-1 \
     /opt/spire/bin/spire-server entry show \
     -socketPath /tmp/spire-server/private/api.sock 2>/dev/null | \
     grep -c "spiffe://orgb.test/agent-b" || true)

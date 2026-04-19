@@ -26,7 +26,7 @@ tests/e2e/.fixtures/
 
 # Local-only: notes, drafts, root demo dir, CLI tools.
 # File globs here are rooted with `/` so they only match the repo root —
-# `enterprise_sandbox/bootstrap/bootstrap.py` (etc.) stays tracked.
+# `sandbox/bootstrap/bootstrap.py` (etc.) stays tracked.
 imp/
 /demo/
 drafts/

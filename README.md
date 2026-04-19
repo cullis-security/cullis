@@ -78,20 +78,20 @@ replay intra-org and cross-org traffic.
 ```bash
 git clone https://github.com/cullis-security/cullis
 cd cullis
-./enterprise_sandbox/demo.sh full
+./sandbox/demo.sh full
 ```
 
 Replay scenarios (stack must be up):
 
 ```bash
-./enterprise_sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
-./enterprise_sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
-./enterprise_sandbox/demo.sh oneshot-a-to-b  # cross-org: A2A encrypted message A → B
-./enterprise_sandbox/demo.sh oneshot-b-to-a  # cross-org: A2A encrypted message B → A
-./enterprise_sandbox/demo.sh guide           # open the onboarding walkthrough
+./sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
+./sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
+./sandbox/demo.sh oneshot-a-to-b  # cross-org: A2A encrypted message A → B
+./sandbox/demo.sh oneshot-b-to-a  # cross-org: A2A encrypted message B → A
+./sandbox/demo.sh guide           # open the onboarding walkthrough
 ```
 
-See [`enterprise_sandbox/GUIDE.md`](enterprise_sandbox/GUIDE.md) for the
+See [`sandbox/GUIDE.md`](sandbox/GUIDE.md) for the
 step-by-step onboarding — attach-CA flow, Mastio counter-signature pin
 (ADR-009), Connector Desktop enrollment, MCP resource registration.
 
@@ -147,7 +147,7 @@ cullis_sdk/        Python SDK + MCP server
 sdk-ts/            TypeScript SDK
 alembic/           Court database migrations
 tests/             Unit + integration + e2e tests
-enterprise_sandbox/ Full-stack demo (SPIRE, Keycloak, Vault, Postgres)
+sandbox/ Full-stack demo (SPIRE, Keycloak, Vault, Postgres)
 deploy/            Helm chart, Docker Compose
 enterprise-kit/    BYOCA guide, OPA policy bundles, PDP template
 docs/              cullis.io site source + ops runbook

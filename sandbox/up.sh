@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Enterprise sandbox — up
-# Status: stub, populated per block in imp/enterprise_sandbox_plan.md
+# Status: stub, populated per block in imp/sandbox_plan.md
 set -euo pipefail
 
 cd "$(dirname "$0")"

@@ -106,7 +106,7 @@ jobs:
         # EUDI wallet shipped a MITM-wide-open URLSession. Keep the
         # guard so new code can't regress.
         #
-        # Allow-list: tests/, enterprise_sandbox/ (dev-only), demo/,
+        # Allow-list: tests/, sandbox/ (dev-only), demo/,
         # demo_network/ use self-signed fixtures deliberately. Any
         # production surface (app/, mcp_proxy/, cullis_sdk/,
         # cullis_connector/, agents/, sdk-ts/src/) must use the wired

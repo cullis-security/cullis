@@ -3,7 +3,7 @@
 Machine-readable accessors for bootstrap / CI / sandbox automation. Auth
 uses the ``admin_secret`` shared between the proxy and its orchestrator,
 so there is no dashboard session involved — intended for calls from
-containers like ``enterprise_sandbox/bootstrap``.
+containers like ``sandbox/bootstrap``.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class MastioPubkeyResponse(BaseModel):
 async def get_mastio_pubkey(request: Request) -> MastioPubkeyResponse:
     """Return the mastio leaf pubkey pinned at onboarding.
 
-    Used by ``enterprise_sandbox/bootstrap/bootstrap.py`` to include the
+    Used by ``sandbox/bootstrap/bootstrap.py`` to include the
     key in its ``/v1/onboarding/join`` or ``/v1/onboarding/attach`` call
     so the Court can enforce the ADR-009 counter-signature from then on.
     """

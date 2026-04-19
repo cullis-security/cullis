@@ -183,14 +183,14 @@ import Layout from '../layouts/Layout.astro';
       </p>
       <pre class="reveal" data-delay="3"><code>git clone https://github.com/cullis-security/cullis
 cd cullis
-./enterprise_sandbox/demo.sh full</code></pre>
+./sandbox/demo.sh full</code></pre>
       <p class="reveal" data-delay="4">
         Then replay intra-org MCP tool calls and cross-org A2A messages:
       </p>
-      <pre class="reveal" data-delay="5"><code>./enterprise_sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
-./enterprise_sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
-./enterprise_sandbox/demo.sh oneshot-a-to-b  # cross-org: encrypted A2A message A → B
-./enterprise_sandbox/demo.sh oneshot-b-to-a  # cross-org: encrypted A2A message B → A</code></pre>
+      <pre class="reveal" data-delay="5"><code>./sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
+./sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
+./sandbox/demo.sh oneshot-a-to-b  # cross-org: encrypted A2A message A → B
+./sandbox/demo.sh oneshot-b-to-a  # cross-org: encrypted A2A message B → A</code></pre>
       <p class="reveal note" data-delay="6">
         <strong>For single-user install</strong> — download the Cullis
         Connector from <a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener">Releases</a> and double-click. It will register with a Mastio you point it at and configure

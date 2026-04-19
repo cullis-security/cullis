@@ -13,11 +13,11 @@ COPY cullis_connector/ /build/cullis_connector/
 
 RUN pip install --no-cache-dir "/build[spiffe]"
 
-COPY enterprise_sandbox/agent/agent.py /app/agent.py
+COPY sandbox/agent/agent.py /app/agent.py
 # ADR-009 sandbox PR 4 — ship the scenario drivers alongside the runtime
 # agent so `docker compose exec agent-X python /app/scenarios/…` works
 # without extra build or volume wiring.
-COPY enterprise_sandbox/scenarios/ /app/scenarios/
+COPY sandbox/scenarios/ /app/scenarios/
 
 # Match spire-server registration entry `unix:uid:1000`
 RUN groupadd -g 1000 agent && useradd -u 1000 -g 1000 -m -s /bin/sh agent

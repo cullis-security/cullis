@@ -1,7 +1,7 @@
 """Shared helper — load a CullisClient using the credentials that
 ``bootstrap-mastio`` enrolled for each sandbox agent (ADR-011 Phase 4).
 
-Mirrors the runtime auth used by ``enterprise_sandbox/agent/agent.py``:
+Mirrors the runtime auth used by ``sandbox/agent/agent.py``:
 read ``api-key`` + ``dpop.jwk`` from ``/state/{org}/agents/{name}/`` and
 hand them to ``CullisClient.from_api_key_file``. That is the same API-key
 + DPoP identity the egress surface expects for ``send_oneshot`` and the

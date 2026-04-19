@@ -10,7 +10,7 @@
 # - org-internal networks are empty until Blocco 2 (proxy, agent, IdP)
 # - Local KMS (filesystem), HTTP only — TLS + Vault arrive in Blocco 2
 #
-# Plan: imp/enterprise_sandbox_plan.md
+# Plan: imp/sandbox_plan.md
 
 networks:
   orga-internal:
@@ -201,7 +201,7 @@ services:
   proxy-a-init:
     build:
       context: ..
-      dockerfile: enterprise_sandbox/proxy-init/Dockerfile
+      dockerfile: sandbox/proxy-init/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -375,7 +375,7 @@ services:
     profiles: ["full"]
     build:
       context: ..
-      dockerfile: enterprise_sandbox/agent/Dockerfile
+      dockerfile: sandbox/agent/Dockerfile
     depends_on:
       spire-agent-a:
         condition: service_healthy
@@ -418,7 +418,7 @@ services:
     profiles: ["full"]
     build:
       context: ..
-      dockerfile: enterprise_sandbox/agent/Dockerfile
+      dockerfile: sandbox/agent/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -448,7 +448,7 @@ services:
   proxy-b-init:
     build:
       context: ..
-      dockerfile: enterprise_sandbox/proxy-init/Dockerfile
+      dockerfile: sandbox/proxy-init/Dockerfile
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -587,7 +587,7 @@ services:
   agent-b:
     build:
       context: ..
-      dockerfile: enterprise_sandbox/agent/Dockerfile
+      dockerfile: sandbox/agent/Dockerfile
     depends_on:
       spire-agent-b:
         condition: service_healthy

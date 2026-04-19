@@ -154,7 +154,7 @@ After the full grace window (at least 90 days from sunset advertisement), the en
 No. Enrollment uses the same material you already have — the Mastio verifies it once and derives a separate runtime credential. Your PKI policy doesn't change.
 
 **Does the sandbox still demonstrate SPIFFE?**
-Yes — the `enterprise_sandbox` bootstrap now enrolls every agent via `/enroll/byoca` (SPIRE stack stays in the compose but the agents don't hit `/v1/auth/token` anymore). You can use it as a reference topology. See the GUIDE in the sandbox repo.
+Yes — the `sandbox` bootstrap now enrolls every agent via `/enroll/byoca` (SPIRE stack stays in the compose but the agents don't hit `/v1/auth/token` anymore). You can use it as a reference topology. See the GUIDE in the sandbox repo.
 
 **What if I'm running a Court-only deployment with no Mastio?**
 The ADR-009 direction is: every deployment has a Mastio. For small topologies you can run a "thin Mastio" sidecar container next to the Court — footprint is one container + SQLite, no external deps. This is the same container operators use in large deployments; it just runs in standalone mode for tiny cases.

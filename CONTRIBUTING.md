@@ -24,8 +24,8 @@ pytest tests/ -v
 
 # Or boot the full enterprise sandbox (SPIRE, Keycloak, Vault, Postgres,
 # 3 agents, 2 MCP servers in 2 orgs) and replay a scenario:
-./enterprise_sandbox/demo.sh full
-./enterprise_sandbox/demo.sh oneshot-a-to-b
+./sandbox/demo.sh full
+./sandbox/demo.sh oneshot-a-to-b
 ```
 
 ## Frontend Assets (Dashboard)

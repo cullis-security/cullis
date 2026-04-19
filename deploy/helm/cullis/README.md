@@ -11,7 +11,7 @@ In-cluster fallbacks exist for `kind` / `minikube` development.
 > Kubernetes cluster yet. Treat it as a starting point you can fork and
 > harden for your environment, not a turnkey install. The end-to-end path
 > currently covered by automated tests is the
-> [`enterprise_sandbox/`](../../../enterprise_sandbox/) demo, not this chart.
+> [`sandbox/`](../../../sandbox/) demo, not this chart.
 
 ## Quick start
 

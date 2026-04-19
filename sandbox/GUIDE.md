@@ -58,7 +58,7 @@ the Court with the Mastio's Org CA:
 
 ```bash
 TOKEN=<paste from 1b>
-CA=$(docker compose -f enterprise_sandbox/docker-compose.yml exec -T proxy-a \
+CA=$(docker compose -f sandbox/docker-compose.yml exec -T proxy-a \
   python -c "import asyncio; from mcp_proxy.db import init_db,get_config
 async def g():
     await init_db('sqlite+aiosqlite:////data/mcp_proxy.db')
