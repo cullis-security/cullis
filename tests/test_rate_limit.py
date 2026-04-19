@@ -4,10 +4,16 @@ Test rate limiting — verifies that limits are enforced.
 Tests reset the limiter before each run to avoid interference
 with other tests that use the same agents/orgs.
 """
-import pytest
-from httpx import AsyncClient
+import asyncio
+from unittest.mock import AsyncMock
 
-from app.rate_limit.limiter import rate_limiter
+import pytest
+from fastapi import HTTPException
+from httpx import AsyncClient
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from app.rate_limit.limiter import SlidingWindowLimiter, rate_limiter
 from tests.cert_factory import make_assertion, get_org_ca_pem, sign_message
 from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
@@ -191,3 +197,97 @@ async def test_session_rate_limit(client: AsyncClient, dpop):
         "requested_capabilities": [],
     }, headers=dpop.headers("POST", "/v1/broker/sessions", token_a))
     assert r.status_code == 429
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit F-D-2 — fail-open behaviour when Redis is unavailable
+#
+# Rate limiting is a best-effort DoS control, not an auth gate. When Redis
+# is unreachable the limiter must log at WARNING and allow the request
+# through rather than returning 500 (which would convert a cache outage
+# into a wider DoS).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _limiter_with_fake_redis(fake_redis) -> SlidingWindowLimiter:
+    """Build a fresh limiter already bound to a fake Redis backend."""
+    limiter = SlidingWindowLimiter()
+    limiter.register("test.bucket", window_seconds=60, max_requests=5)
+    limiter._use_redis = True
+    limiter._redis = fake_redis
+    # Pre-seed the SHA so the limiter does not try to load the Lua script
+    # (script_load would be the first call hitting the mock).
+    limiter._lua_sha = "deadbeef"
+    return limiter
+
+
+async def test_failopen_on_redis_connection_error():
+    """Redis ConnectionError → request passes (audit F-D-2).
+
+    Asserting on the failure counter rather than the WARNING log:
+    the log emit races with caplog under xdist workers and produces
+    empty records, but the counter increment is a deterministic
+    invariant of the fail-open path.
+    """
+    fake_redis = AsyncMock()
+    fake_redis.evalsha.side_effect = RedisConnectionError("connection refused")
+    limiter = _limiter_with_fake_redis(fake_redis)
+
+    # Must not raise — fail-open: request is allowed.
+    await limiter.check("subject-A", "test.bucket")
+
+    assert limiter._redis_failure_count == 1
+
+
+async def test_failopen_on_redis_timeout_error():
+    """Redis TimeoutError → request passes (audit F-D-2)."""
+    fake_redis = AsyncMock()
+    fake_redis.evalsha.side_effect = RedisTimeoutError("timed out")
+    limiter = _limiter_with_fake_redis(fake_redis)
+
+    await limiter.check("subject-B", "test.bucket")
+
+    assert limiter._redis_failure_count == 1
+
+
+async def test_failopen_on_asyncio_timeout():
+    """asyncio.TimeoutError (socket-level) → fail-open (audit F-D-2)."""
+    fake_redis = AsyncMock()
+    fake_redis.evalsha.side_effect = asyncio.TimeoutError()
+    limiter = _limiter_with_fake_redis(fake_redis)
+
+    await limiter.check("subject-C", "test.bucket")
+
+    assert limiter._redis_failure_count == 1
+
+
+async def test_redis_healthy_still_enforces_limit():
+    """Regression: when Redis answers normally the limit is still enforced."""
+    fake_redis = AsyncMock()
+    # evalsha returns 0 → the Lua script says "over limit".
+    fake_redis.evalsha.return_value = 0
+    limiter = _limiter_with_fake_redis(fake_redis)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await limiter.check("subject-D", "test.bucket")
+
+    assert exc_info.value.status_code == 429
+    # Genuine 429 must NOT be counted as a Redis failure.
+    assert limiter._redis_failure_count == 0
+
+
+async def test_failure_counter_resets_after_recovery():
+    """After a transient outage the counter resets once Redis answers OK."""
+    fake_redis = AsyncMock()
+    # First call fails, second succeeds (returns 1 = allowed).
+    fake_redis.evalsha.side_effect = [
+        RedisConnectionError("boom"),
+        1,
+    ]
+    limiter = _limiter_with_fake_redis(fake_redis)
+
+    await limiter.check("subject-E", "test.bucket")  # fails → fail-open
+    assert limiter._redis_failure_count == 1
+    await limiter.check("subject-E", "test.bucket")  # succeeds → reset
+
+    assert limiter._redis_failure_count == 0

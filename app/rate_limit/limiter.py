@@ -13,6 +13,9 @@ import uuid
 from collections import defaultdict, deque
 
 from fastapi import HTTPException, status
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.telemetry_metrics import RATE_LIMIT_REJECT_COUNTER
 
@@ -20,6 +23,18 @@ _log = logging.getLogger("agent_trust")
 
 
 _MAX_SUBJECTS = 50_000  # maximum unique subjects in memory — LRU eviction
+
+# Transient Redis failures that should trigger fail-open behaviour (audit F-D-2).
+# Rate limiting is a best-effort DoS control, not an auth gate — blocking
+# requests when Redis is unreachable creates a bigger outage than allowing
+# unlimited requests briefly. asyncio.TimeoutError is included because
+# redis.asyncio raises it on socket-level timeouts in some code paths.
+_REDIS_TRANSIENT_ERRORS = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    asyncio.TimeoutError,
+    OSError,
+)
 
 
 class SlidingWindowLimiter:
@@ -38,6 +53,9 @@ class SlidingWindowLimiter:
         # Backend selection
         self._use_redis: bool | None = None  # None = not yet decided
         self._redis = None
+        # Fail-open observability: count consecutive Redis failures so we can
+        # log at WARNING without flooding logs (audit F-D-2).
+        self._redis_failure_count: int = 0
 
     def register(self, bucket: str, window_seconds: int, max_requests: int) -> None:
         """Register the configuration for a bucket. Called at startup."""
@@ -65,7 +83,41 @@ class SlidingWindowLimiter:
         self._select_backend()
 
         if self._use_redis:
-            await self._check_redis(subject, bucket, config)
+            try:
+                await self._check_redis(subject, bucket, config)
+            except HTTPException:
+                # Genuine 429 from the Lua script — must propagate.
+                raise
+            except _REDIS_TRANSIENT_ERRORS as exc:
+                # Audit F-D-2: Redis outage must not surface as HTTP 500.
+                # Fail open — rate limiting is a best-effort DoS control,
+                # not an auth gate. Blocking requests during a Redis outage
+                # is a worse DoS than allowing unlimited requests briefly.
+                self._redis_failure_count += 1
+                _log.warning(
+                    "rate limiter Redis unavailable — allowing request "
+                    "(fail-open) [bucket=%s, consecutive_failures=%d]: %s",
+                    bucket, self._redis_failure_count, exc,
+                )
+                return
+            except RedisError as exc:
+                # Other Redis errors (script errors, response errors) — also
+                # fail open but log at a distinct level so operators can
+                # distinguish transient connectivity from protocol bugs.
+                self._redis_failure_count += 1
+                _log.warning(
+                    "rate limiter Redis error — allowing request "
+                    "(fail-open) [bucket=%s, consecutive_failures=%d]: %s",
+                    bucket, self._redis_failure_count, exc,
+                )
+                return
+            # Reset the failure counter on a successful Redis round-trip.
+            if self._redis_failure_count:
+                _log.info(
+                    "rate limiter Redis recovered after %d failed checks",
+                    self._redis_failure_count,
+                )
+                self._redis_failure_count = 0
         else:
             await self._check_memory(subject, bucket, config)
 
