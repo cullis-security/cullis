@@ -219,10 +219,54 @@ level primitives (`send_oneshot`, `receive_oneshot`, `discover_agents`)
 which remain exposed for power users and scripts. State is kept in
 process memory only — no peer cache survives a server restart.
 
-> Push notifications when a message arrives outside your client are on
-> the next milestone (`imp/connector_ux_v2.md`, Phase 2). For now
-> you have to ask: *"any new messages?"* and the LLM will call
-> `receive_oneshot`.
+### Notifications
+
+When you also keep `cullis-connector dashboard` running (typically via
+`cullis-connector install-autostart`), it polls the local Mastio every
+~10 seconds in the background and pops a **native OS notification**
+(libnotify on Linux, NSUserNotification on macOS, Toast on Windows)
+when a new message arrives. Click the notification to open
+`http://127.0.0.1:7777/inbox`. Works regardless of whether your MCP
+client (Claude Code, Cursor, …) is open — the dashboard process is
+the one that owns the poll loop.
+
+Tweaks via env on the dashboard process:
+
+| Env var                              | Default | Effect                                             |
+|--------------------------------------|---------|----------------------------------------------------|
+| `CULLIS_CONNECTOR_NOTIFICATIONS=off` | `on`    | Disables the poller entirely (no popups, no badge) |
+| `CULLIS_CONNECTOR_POLL_S=30`         | `10`    | Poll interval, in seconds                          |
+
+Native notifications need the `dashboard` extra (which now pulls in
+`plyer`):
+
+```bash
+pip install 'cullis-connector[dashboard]'
+```
+
+Headless boxes without a notification daemon fall back gracefully to
+`stderr` — you'll see lines like `[cullis-notify] Message from
+acme::mario: ciao!` in the dashboard log.
+
+#### Statusline badge in Claude Code
+
+The dashboard exposes `GET http://127.0.0.1:7777/status/inbox` which
+returns the unread count + last sender. Drop this snippet into your
+`~/.claude/settings.json` to see "📨 N from <sender>" in the Claude
+Code status bar:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "s=$(curl -s http://127.0.0.1:7777/status/inbox); u=$(echo $s | jq -r .unread); n=$(echo $s | jq -r .last_sender); [ \"$u\" != \"0\" ] && echo \"📨 $u from $n\" || true"
+  }
+}
+```
+
+When you've read the messages, `POST /status/inbox/seen` clears the
+counter (the dashboard's `/inbox` view does this automatically on
+load).
 
 ---
 
