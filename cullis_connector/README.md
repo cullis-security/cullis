@@ -90,6 +90,32 @@ approval or timeout. See `cullis-connector enroll --help` for all flags.
 
 ---
 
+## Native desktop shell (no terminal)
+
+```bash
+pip install 'cullis-connector[dashboard,desktop]'
+cullis-connector desktop
+```
+
+Launches a tray icon plus a native OS webview wrapping the local
+dashboard — the process you'd usually see in a browser tab is now a
+window on your taskbar. Closing the window hides it; quit from the
+tray. The dashboard, enrollment flow, IDE autoconfig cards, and inbox
+poller are identical to `cullis-connector dashboard`; only the shell
+is native.
+
+Platform prerequisites that `pip` cannot fetch:
+
+- **macOS / Windows 10+**: nothing extra. The OS ships WebKit / WebView2.
+- **Linux**: `gtk3` and `webkit2gtk` packages — present on mainstream
+  distros out of the box, installable via the distro's package manager
+  on minimal images (e.g. `apt install libgtk-3-0 libwebkit2gtk-4.1-0`).
+
+Combine with `cullis-connector install-autostart` to have the tray
+appear at login.
+
+---
+
 ## Wire up your MCP client
 
 Every example below assumes you have already enrolled successfully.

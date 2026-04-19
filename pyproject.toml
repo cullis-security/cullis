@@ -36,6 +36,22 @@ dashboard = [
     # `connector` deploys without `dashboard` keep working.
     "plyer>=2.1",
 ]
+# Native desktop shell: tray icon + system webview wrapping the
+# dashboard so non-technical users never see a terminal. Builds on
+# top of `dashboard` — keep both installed together.
+#   pywebview: embeds the OS-native webview (Cocoa WebKit, WebView2,
+#              GTK WebKit) pointed at http://127.0.0.1:7777.
+#   pystray : system-tray icon with a minimal menu (Open / Quit).
+#   Pillow  : drawing surface for the tray glyph (we render the
+#             portcullis mark at runtime, no PNG assets to ship).
+# Platform prerequisites not installable via pip: on Linux the user
+# still needs `gtk3` + `webkit2gtk` (present by default on mainstream
+# distros); macOS and Windows 10+ ship the webview in the OS.
+desktop = [
+    "pywebview>=5.0",
+    "pystray>=0.19",
+    "Pillow>=10.0",
+]
 spiffe = [
     "spiffe>=0.2.0",
 ]

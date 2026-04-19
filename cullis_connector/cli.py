@@ -193,6 +193,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not auto-open a browser tab on startup.",
     )
 
+    desktop = subparsers.add_parser(
+        "desktop",
+        help="Run the Connector as a native desktop shell (tray icon + "
+             "system webview wrapping the dashboard — no terminal).",
+    )
+    _add_shared_args(desktop)
+    desktop.add_argument(
+        "--host",
+        dest="web_host",
+        default="127.0.0.1",
+        help="Bind address for the embedded dashboard (default 127.0.0.1).",
+    )
+    desktop.add_argument(
+        "--port",
+        dest="web_port",
+        type=int,
+        default=7777,
+        help="Dashboard port (default 7777).",
+    )
+
     return parser
 
 
@@ -534,6 +554,14 @@ def _cmd_dashboard(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_desktop(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    from cullis_connector.desktop_app import run_desktop_app
+
+    host = getattr(args, "web_host", "127.0.0.1")
+    port = int(getattr(args, "web_port", 7777))
+    return run_desktop_app(cfg, host=host, port=port)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
 
@@ -563,6 +591,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_install_autostart(cfg, args)
     if command == "dashboard":
         return _cmd_dashboard(cfg, args)
+    if command == "desktop":
+        return _cmd_desktop(cfg, args)
     return _cmd_serve(cfg)
 
 
