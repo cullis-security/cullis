@@ -136,6 +136,12 @@ async def lifespan(app: FastAPI):
         await agent_mgr.generate_org_ca(derive_org_id=derive)
         if derive:
             org_id = agent_mgr.org_id
+            # ``get_settings`` is lru_cached so mutating the shared
+            # instance is how we propagate the derived id to the rest
+            # of the app. Without this, ``decide_route`` keeps reading
+            # the default ``""`` and classifies every intra-org resolve
+            # as cross-org.
+            settings.org_id = org_id
 
     # ADR-009 Phase 1 — derive/persist the Mastio CA + leaf so the proxy can
     # counter-sign Court requests. Only possible once the Org CA is loaded;
