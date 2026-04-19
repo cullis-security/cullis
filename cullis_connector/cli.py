@@ -19,6 +19,13 @@ Three top-level modes:
   that wraps enrollment in a three-screen wizard and can auto-configure
   Claude Desktop / Cursor / Cline. Intended as the default onboarding
   path for end users who shouldn't need the CLI.
+
+Shared flags (``--site-url``, ``--config-dir``, ``--no-verify-tls``,
+``--log-level``) must be placed **after** the subcommand name — git-style.
+If you omit the subcommand we inject ``serve`` for you so
+``cullis-connector --config-dir ~/foo`` keeps working, but once a
+subcommand is present argparse parses its flags from that subparser
+only.
 """
 from __future__ import annotations
 
@@ -186,10 +193,85 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not auto-open a browser tab on startup.",
     )
 
-    # Shared args also live on the root parser so the default (no
-    # subcommand) behaviour stays backward-compatible with Phase 1.
-    _add_shared_args(parser)
     return parser
+
+
+_KNOWN_SUBCOMMANDS = frozenset({
+    "serve",
+    "enroll",
+    "install-mcp",
+    "install-autostart",
+    "dashboard",
+})
+
+# Shared flags are parsed by the subparser that owns the chosen command.
+# When the caller wrote them *before* the subcommand (the pre-fix layout
+# some users already have persisted in MCP configs), we relocate them so
+# argparse finds them on the right subparser.
+_SHARED_VALUE_FLAGS = frozenset({"--site-url", "--config-dir", "--log-level"})
+_SHARED_STORE_FLAGS = frozenset({"--no-verify-tls"})
+
+
+def _ensure_subcommand(argv: list[str]) -> list[str]:
+    """Normalize argv so shared flags land on the correct subparser.
+
+    Shared flags (``--site-url`` etc.) live only on the subparsers so
+    the subcommand-level ``dest`` doesn't get silently clobbered back
+    to None by a duplicated root-level one. Two UX carve-outs keep the
+    older call conventions working:
+
+    * No subcommand at all → prepend ``serve`` (covers ``cullis-connector
+      --config-dir ~/foo``).
+    * Shared flag appears *before* the subcommand → move it after it
+      (covers MCP configs that list args as
+      ``[--site-url, X, --config-dir, Y, serve]``).
+
+    ``--version`` / ``--help`` on the root exit before dispatch, so
+    we leave argv alone when we see them.
+    """
+    for tok in argv:
+        if tok in ("--version", "-V", "-h", "--help"):
+            return list(argv)
+
+    sub_idx = next(
+        (i for i, tok in enumerate(argv) if tok in _KNOWN_SUBCOMMANDS),
+        None,
+    )
+    if sub_idx is None:
+        return ["serve", *argv]
+    if sub_idx == 0:
+        return list(argv)
+
+    # Harvest shared flags (and their values) from the run of tokens
+    # before the subcommand. Anything unrecognised is left in place so
+    # argparse still raises the usual "unrecognized arguments" error
+    # — we don't want to silently drop a typo.
+    extracted: list[str] = []
+    remainder: list[str] = []
+    i = 0
+    before = argv[:sub_idx]
+    while i < len(before):
+        tok = before[i]
+        base = tok.split("=", 1)[0]
+        if base in _SHARED_VALUE_FLAGS:
+            if "=" in tok:
+                extracted.append(tok)
+                i += 1
+            elif i + 1 < len(before):
+                extracted.extend([tok, before[i + 1]])
+                i += 2
+            else:
+                remainder.append(tok)
+                i += 1
+        elif tok in _SHARED_STORE_FLAGS:
+            extracted.append(tok)
+            i += 1
+        else:
+            remainder.append(tok)
+            i += 1
+
+    after = argv[sub_idx:]
+    return [*remainder, after[0], *extracted, *after[1:]]
 
 
 # ── Commands ─────────────────────────────────────────────────────────────
@@ -217,6 +299,54 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
     state = get_state()
     state.agent_id = identity.metadata.agent_id
     state.extra["identity"] = identity
+
+    # The enrollment flow already pinned the Site URL in metadata.json —
+    # adopt it if the operator did not pass --site-url / CULLIS_SITE_URL.
+    # Without this, diagnostic tools like hello_site report "not configured"
+    # even though the identity we just loaded was issued against that site.
+    if not cfg.site_url and identity.metadata.site_url:
+        cfg.site_url = identity.metadata.site_url
+        _log.info(
+            "adopted site_url from identity metadata: %s", cfg.site_url,
+        )
+
+    # Build the CullisClient from the on-disk enrollment bundle.
+    #
+    # The Phase 1 ``connect`` tool went away with enrollment but the
+    # wiring was never completed: every tool reached for a client that
+    # nobody constructed. We build it here and load the signing key so
+    # ``send_oneshot`` (API-key + DPoP + inner/outer signatures, no
+    # broker JWT) works out of the box.
+    #
+    # We deliberately *do not* call ``login_via_proxy()`` eagerly:
+    # it asks the Mastio to sign a client_assertion with the agent's
+    # private key, but device-code enrollment leaves that key on the
+    # user's machine, not on the Mastio — so the call 404s with
+    # "agent credentials not available on proxy". Session-based tools
+    # mint the token lazily via ``ensure_broker_token`` and surface a
+    # clear error if it can't be obtained; one-shot tools don't need
+    # a token at all.
+    try:
+        from cullis_sdk import CullisClient
+
+        # ``enable_dpop=False`` — the SDK otherwise generates a local DPoP
+        # keypair whose thumbprint the Mastio doesn't know about, so the
+        # egress endpoint 401s on the DPoP proof even though the API-key
+        # itself is valid. Until enrollment binds the Connector's DPoP
+        # jkt server-side (ADR-011 Phase 3d follow-up / #206), fall back
+        # to the legacy X-API-Key bearer — accepted while the Mastio's
+        # ``egress_dpop_mode`` stays at ``optional`` (Phase 5 default).
+        client = CullisClient.from_connector(cfg.config_dir, enable_dpop=False)
+        key_path = cfg.config_dir / "identity" / "agent.key"
+        if key_path.exists():
+            client._signing_key_pem = key_path.read_text()
+        state.client = client
+    except Exception as exc:
+        _log.error(
+            "Failed to initialize CullisClient from %s: %s. "
+            "Tools requiring a connected client will not work.",
+            cfg.config_dir, exc,
+        )
 
     _log.info(
         "serving as %s (cert subject %s)",
@@ -418,7 +548,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point for both ``python -m cullis_connector`` and the
     installed ``cullis-connector`` console script."""
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(_ensure_subcommand(raw))
     cfg = load_config(vars(args))
     setup_logging(cfg.log_level)
 

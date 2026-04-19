@@ -58,6 +58,18 @@ services:
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}
       MCP_PROXY_VAULT_ADDR:        ${MCP_PROXY_VAULT_ADDR:-}
       MCP_PROXY_VAULT_TOKEN:       ${MCP_PROXY_VAULT_TOKEN:-}
+      # ADR-001 §10 — intra-org routing + transport. All read by
+      # ``_apply_routing_overrides`` in mcp_proxy/config.py. Exposing
+      # them here lets operators flip behaviour through proxy.env
+      # without touching the compose file.
+      PROXY_TRUST_DOMAIN:          ${PROXY_TRUST_DOMAIN:-}
+      PROXY_INTRA_ORG:             ${PROXY_INTRA_ORG:-}
+      PROXY_TRANSPORT_INTRA_ORG:   ${PROXY_TRANSPORT_INTRA_ORG:-}
+      PROXY_EGRESS_INSPECTION_ENABLED: ${PROXY_EGRESS_INSPECTION_ENABLED:-}
+      PROXY_FEDERATION_SYNC:       ${PROXY_FEDERATION_SYNC:-}
+      # F-B-11 Phase 5 — DPoP enforcement mode for /v1/egress/*
+      # (off | optional | required). optional is the current default.
+      CULLIS_EGRESS_DPOP_MODE:     ${CULLIS_EGRESS_DPOP_MODE:-}
     volumes:
       - mcp_proxy_data:/data
       # Optional corporate CA mount. The env above points at a file under /certs

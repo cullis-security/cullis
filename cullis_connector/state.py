@@ -25,6 +25,7 @@ class ConnectorState:
     agent_id: str = ""
     active_session: str | None = None
     active_peer: str | None = None
+    last_correlation_id: str | None = None
     extra: dict[str, object] = field(default_factory=dict)
 
 

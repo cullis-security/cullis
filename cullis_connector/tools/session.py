@@ -5,16 +5,63 @@ import json
 import time
 from typing import TYPE_CHECKING
 
+from cullis_connector._logging import get_logger
 from cullis_connector.state import get_state
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
+_log = get_logger("tools.session")
+
 
 def _require_client():
+    """Return a client with a valid broker JWT, minting one if absent.
+
+    Device-code enrollment leaves the agent private key on the user's
+    machine, so ``login_via_proxy()`` 404s ("agent credentials not
+    available on proxy") when the Mastio tries to sign the assertion
+    on the agent's behalf. We still call it because BYOCA/Mastio-held-key
+    deployments work fine and we don't want to hard-code that split;
+    callers see the same user-visible error regardless.
+    """
     state = get_state()
-    if state.client is None or state.client.token is None:
-        raise RuntimeError("Not connected. Use the connect tool first.")
+    if state.client is None:
+        raise RuntimeError(
+            "Connector client not initialized — identity missing or unreadable. "
+            "Re-run enrollment via the Connector dashboard."
+        )
+    if state.client.token is None:
+        try:
+            state.client.login_via_proxy()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("lazy login_via_proxy failed: %s", exc)
+            raise RuntimeError(
+                f"Session tools require a broker JWT, but login_via_proxy failed: "
+                f"{exc}. If you enrolled via the dashboard (device-code), the "
+                f"Mastio doesn't hold your private key so this path 404s — use "
+                f"send_oneshot for fire-and-forget messages instead."
+            ) from exc
+    return state.client
+
+
+def _require_oneshot_client():
+    """Client for API-key + DPoP + local-signature one-shot sends.
+
+    Does *not* need a broker JWT — ``send_oneshot`` talks to the local
+    Mastio's egress API with API-key/DPoP only, and signs the inner +
+    outer envelope locally with ``_signing_key_pem``.
+    """
+    state = get_state()
+    if state.client is None:
+        raise RuntimeError(
+            "Connector client not initialized — identity missing or unreadable. "
+            "Re-run enrollment via the Connector dashboard."
+        )
+    if not getattr(state.client, "_signing_key_pem", None):
+        raise RuntimeError(
+            "Agent signing key not loaded — send_oneshot needs the private key "
+            "at ~/.cullis/identity/agent.key. Re-run enrollment if missing."
+        )
     return state.client
 
 

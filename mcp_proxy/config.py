@@ -155,18 +155,28 @@ class ProxySettings(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_routing_overrides(self):
-        td = os.environ.get("PROXY_TRUST_DOMAIN")
+        # ``os.environ.get`` returns ``""`` when docker-compose passes
+        # through an unset variable via ``${FOO:-}`` — same semantics
+        # the operator means by "not set". Treat both as absent so we
+        # don't silently clobber the model defaults (especially the
+        # standalone auto-enable path below, which used to see the empty
+        # string and conclude the operator had explicitly opted out).
+        def _env(name: str) -> str | None:
+            v = os.environ.get(name)
+            return v if v else None
+
+        td = _env("PROXY_TRUST_DOMAIN")
         if td:
             self.trust_domain = td
-        flag = os.environ.get("PROXY_INTRA_ORG")
+        flag = _env("PROXY_INTRA_ORG")
         if flag is not None:
             self.intra_org_routing = flag.lower() in ("1", "true", "yes", "on")
-        sync_flag = os.environ.get("PROXY_FEDERATION_SYNC")
+        sync_flag = _env("PROXY_FEDERATION_SYNC")
         if sync_flag is not None:
             self.federation_sync_enabled = sync_flag.lower() in (
                 "1", "true", "yes", "on",
             )
-        transport = os.environ.get("PROXY_TRANSPORT_INTRA_ORG")
+        transport = _env("PROXY_TRANSPORT_INTRA_ORG")
         if transport is not None:
             normalized = transport.strip().lower()
             if normalized not in ("envelope", "mtls-only", "hybrid"):
@@ -175,18 +185,18 @@ class ProxySettings(BaseSettings):
                     f"envelope|mtls-only|hybrid, got {transport!r}"
                 )
             self.transport_intra_org = normalized
-        egress_flag = os.environ.get("PROXY_EGRESS_INSPECTION_ENABLED")
+        egress_flag = _env("PROXY_EGRESS_INSPECTION_ENABLED")
         if egress_flag is not None:
             self.egress_inspection_enabled = egress_flag.lower() in (
                 "1", "true", "yes", "on",
             )
-        standalone_flag = os.environ.get("MCP_PROXY_STANDALONE")
+        standalone_flag = _env("MCP_PROXY_STANDALONE")
         if standalone_flag is not None:
             self.standalone = standalone_flag.lower() in (
                 "1", "true", "yes", "on",
             )
 
-        force_pwd = os.environ.get("MCP_PROXY_FORCE_LOCAL_PASSWORD")
+        force_pwd = _env("MCP_PROXY_FORCE_LOCAL_PASSWORD")
         if force_pwd is not None:
             self.force_local_password = force_pwd.lower() in (
                 "1", "true", "yes", "on",
@@ -199,7 +209,7 @@ class ProxySettings(BaseSettings):
         # overridden it via PROXY_INTRA_ORG. An explicit
         # PROXY_INTRA_ORG=0 still wins (useful for intentional "no
         # traffic" deployments — e.g. schema-only validation in CI).
-        if self.standalone and os.environ.get("PROXY_INTRA_ORG") is None:
+        if self.standalone and _env("PROXY_INTRA_ORG") is None:
             self.intra_org_routing = True
         return self
 
