@@ -1,5 +1,7 @@
-# Demo Cullis agent — installs the SDK from the local repo (with [spiffe] extra)
-# and uses CullisClient.from_spiffe_workload_api() to authenticate.
+# Demo Cullis agent — installs the SDK from the local repo and uses
+# CullisClient.from_api_key_file() under ADR-011 to authenticate. The
+# [spiffe] extra is still pulled in so scenario drivers that exercise
+# the deprecated SPIFFE entry point still build.
 #
 # Build context must be the repo root (so pyproject.toml + cullis_sdk/ are visible).
 FROM python:3.11-slim

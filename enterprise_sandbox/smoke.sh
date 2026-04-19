@@ -245,35 +245,33 @@ else
     fail "B4.3 spire-agent healthy"
 fi
 
-# B4.4 — agent-a authenticates to broker via SVID (no CN/O, full 3-level
-# chain leaf ← SPIRE intermediate ← Org CA). The container writes
-# /tmp/ready only after CullisClient.from_spiffe_workload_api returns a
-# token, and that file is what the Docker healthcheck reads.
+# B4.4 — agent-a authenticates to the Mastio via ADR-011 API-key+DPoP.
+# bootstrap-mastio enrolls the agent (BYOCA-style cert + key) and writes
+# api-key + dpop.jwk under /state/orga/agents/agent-a/. The container
+# writes /tmp/ready only after CullisClient.from_api_key_file returns,
+# and the Docker healthcheck reads that marker.
 if docker compose ps agent-a --format json | grep -q '"Health":"healthy"'; then
-    pass "B4.4 agent-a SPIFFE auth OK (container healthy, /tmp/ready marker set)"
+    pass "B4.4 agent-a API-key+DPoP auth OK (container healthy, /tmp/ready marker set)"
 else
-    fail "B4.4 agent-a SPIFFE auth"
+    fail "B4.4 agent-a API-key+DPoP auth"
 fi
 
-# B4.5 — same for agent-b under a different trust_domain (orgb.test).
-# Exercises the per-org trust_domain lookup and the independent Org CA
-# chain walk for a second tenant.
+# B4.5 — same for agent-b in orgb (independent trust_domain orgb.test
+# and independent Org CA chain). Proves the unified ADR-011 flow holds
+# across tenants.
 if docker compose ps agent-b --format json | grep -q '"Health":"healthy"'; then
-    pass "B4.5 agent-b SPIFFE auth OK (container healthy, /tmp/ready marker set)"
+    pass "B4.5 agent-b API-key+DPoP auth OK (container healthy, /tmp/ready marker set)"
 else
-    fail "B4.5 agent-b SPIFFE auth"
+    fail "B4.5 agent-b API-key+DPoP auth"
 fi
 
-# B4.6 — classic BYOCA agent (byoca-bot) coexists with the SPIRE workload
-# in Org A (ADR-003 §2.6 mixed mode). Login uses a CN/O cert signed
-# directly by the Org CA — hits the classic code path with thumbprint
-# pinning active — while agent-a in the same org goes through the SPIFFE
-# SVID path with pinning skipped. Same broker, same org, different auth
-# branches resolving to different agent_ids.
+# B4.6 — byoca-bot coexists with agent-a in orga. Both enroll through
+# the ADR-011 unified path now, so this assertion is mostly proving the
+# second orga agent is healthy (no auth-mode divergence anymore).
 if docker compose ps byoca-a --format json | grep -q '"Health":"healthy"'; then
-    pass "B4.6 byoca-a classic auth OK (mixed mode alongside SPIRE in orga)"
+    pass "B4.6 byoca-a API-key+DPoP auth OK (second orga agent alongside agent-a)"
 else
-    fail "B4.6 byoca-a classic auth"
+    fail "B4.6 byoca-a API-key+DPoP auth"
 fi
 
 # B4.7 — full 3-agent A2A round-trip under the ADR-011 unified model.
@@ -288,19 +286,13 @@ for c in agent-a byoca-a agent-b; do
     docker compose exec -dT "$c" python -c "
 import json, os, pathlib, sys
 sys.path.insert(0, '/app')
-from agent import _send_to_peers, _auth_api_key_file, _auth_spire, _auth_byoca
+from agent import _send_to_peers, _auth_api_key_file
 broker = os.environ['BROKER_URL'].rstrip('/')
 org_id = os.environ['ORG_ID']
 name = os.environ['AGENT_NAME']
-mode = os.environ.get('AGENT_AUTH', 'api-key').lower()
 self_id = f'{org_id}::{name}'
-if mode == 'api-key':
-    identity_dir = os.environ.get('IDENTITY_DIR', f'/state/{org_id}/agents/{name}')
-    client = _auth_api_key_file(broker, identity_dir, self_id)
-elif mode == 'spire':
-    client = _auth_spire(broker, org_id)
-else:
-    client = _auth_byoca(broker, org_id, self_id)
+identity_dir = os.environ.get('IDENTITY_DIR', f'/state/{org_id}/agents/{name}')
+client = _auth_api_key_file(broker, identity_dir, self_id)
 peers = json.loads(pathlib.Path(os.environ.get('PEERS_FILE', '/state/peers.json')).read_text()).get(self_id, [])
 _send_to_peers(client, self_id, peers)
 " 2>/dev/null || true

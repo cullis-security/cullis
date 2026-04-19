@@ -389,7 +389,6 @@ services:
       BROKER_URL: "http://proxy-a:9100"
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
-      SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
       PEERS_FILE: "/state/peers.json"
     volumes:
       - spire-a-agent-socket:/run/spire/sockets:ro
@@ -431,12 +430,6 @@ services:
       BROKER_URL: "http://proxy-a:9100"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
-      # ADR-011 Phase 4 — every sandbox agent authenticates the new way
-      # (API-key + DPoP via Mastio). Legacy BYOCA direct login to the
-      # Court still works but emits DeprecationWarning; the demo stays
-      # on the unified path so the Court's session count is zero until
-      # the user drives an explicit scenario.
-      AGENT_AUTH: "api-key"
       PEERS_FILE: "/state/peers.json"
     volumes:
       - bootstrap-state:/state:ro
@@ -606,7 +599,6 @@ services:
       BROKER_URL: "http://proxy-b:9100"
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
-      SPIFFE_ENDPOINT_SOCKET: "/run/spire/sockets/agent.sock"
       PEERS_FILE: "/state/peers.json"
     volumes:
       - spire-b-agent-socket:/run/spire/sockets:ro

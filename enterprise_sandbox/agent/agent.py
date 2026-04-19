@@ -1,19 +1,18 @@
-"""Sandbox demo agent — SPIFFE or BYOCA auth + A2A messaging round-trip.
+"""Sandbox demo agent — ADR-011 unified API-key+DPoP auth + A2A messaging.
 
-Each agent authenticates to the broker, opens a session with every peer
-listed in ``/state/peers.json``, and sends a single nonce payload. In
-parallel it auto-accepts inbound sessions (so peers can send to it) and
-polls every active session for messages, accumulating received nonces
-to ``/tmp/received.json`` for the smoke suite to inspect.
+Each agent authenticates to the Mastio with the API key + DPoP key the
+bootstrap stage enrolled for it, drains the one-shot inbox, and (when
+``AGENT_AUTO_SEND=true``) fires a nonce at every peer listed in
+``/state/peers.json``. Received nonces land in ``/tmp/received.json``
+for the smoke suite to inspect.
 
 Env:
-    BROKER_URL                e.g. http://broker:8000
+    BROKER_URL                e.g. http://proxy-a:9100
     ORG_ID                    e.g. orga
     AGENT_NAME                short name (becomes {ORG_ID}::{AGENT_NAME})
-    AGENT_AUTH                'spire' (default) or 'byoca'
-    SPIFFE_ENDPOINT_SOCKET    spire mode only
-    CERT_PATH, KEY_PATH       byoca mode only
+    IDENTITY_DIR              /state/{ORG_ID}/agents/{AGENT_NAME} by default
     PEERS_FILE                /state/peers.json (written by bootstrap)
+    AGENT_AUTO_SEND           'true' to trigger the legacy nonce round-trip
 """
 from __future__ import annotations
 
@@ -47,15 +46,6 @@ def _record(nonce: str) -> None:
     _persist_received()
 
 
-def wait_for_socket(path: str, timeout: float = 60.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if pathlib.Path(path).exists():
-            return True
-        time.sleep(0.5)
-    return False
-
-
 def wait_for_http(url: str, timeout: float = 60.0) -> bool:
     import urllib.request
     import urllib.error
@@ -67,35 +57,6 @@ def wait_for_http(url: str, timeout: float = 60.0) -> bool:
         except (urllib.error.URLError, OSError):
             time.sleep(1)
     return False
-
-
-def _auth_spire(broker: str, org_id: str) -> CullisClient:
-    socket = os.environ.get(
-        "SPIFFE_ENDPOINT_SOCKET", "/run/spire/sockets/agent.sock"
-    )
-    raw = socket.removeprefix("unix://") if socket.startswith("unix://") else socket
-    if not wait_for_socket(raw, timeout=60):
-        raise RuntimeError(f"socket {raw} not available after 60s")
-    return CullisClient.from_spiffe_workload_api(
-        broker, org_id=org_id, socket_path=socket,
-    )
-
-
-def _auth_byoca(broker: str, org_id: str, agent_id: str) -> CullisClient:
-    cert_path = os.environ["CERT_PATH"]
-    key_path = os.environ["KEY_PATH"]
-    deadline = time.monotonic() + 60
-    while time.monotonic() < deadline:
-        if pathlib.Path(cert_path).exists() and pathlib.Path(key_path).exists():
-            break
-        time.sleep(0.5)
-    else:
-        raise RuntimeError(f"BYOCA cert/key not found at {cert_path} / {key_path}")
-    cert_pem = pathlib.Path(cert_path).read_text()
-    key_pem = pathlib.Path(key_path).read_text()
-    client = CullisClient(broker)
-    client.login_from_pem(agent_id, org_id, cert_pem, key_pem)
-    return client
 
 
 def _receive_loop(client: CullisClient, self_id: str) -> None:
@@ -219,7 +180,6 @@ def main() -> int:
     broker = os.environ["BROKER_URL"].rstrip("/")
     org_id = os.environ["ORG_ID"]
     name = os.environ["AGENT_NAME"]
-    auth_mode = os.environ.get("AGENT_AUTH", "api-key").lower()
     peers_file = os.environ.get("PEERS_FILE", "/state/peers.json")
     # ADR-011 Phase 4 — auto-send demo traffic on boot is opt-in now.
     # Default is idle (auto_accept + receive loops run in background,
@@ -235,34 +195,19 @@ def main() -> int:
         return 1
 
     try:
-        if auth_mode == "api-key":
-            identity_dir = os.environ.get(
-                "IDENTITY_DIR", f"/state/{org_id}/agents/{name}",
-            )
-            client = _auth_api_key_file(broker, identity_dir, self_id)
-            auth_label = "API-key+DPoP"
-        elif auth_mode == "spire":
-            # ADR-011: legacy SPIFFE-direct-to-Court path. Retained for
-            # smoke B4 backwards-compat until the smoke assertions are
-            # flipped to the unified model; emits DeprecationWarning.
-            client = _auth_spire(broker, org_id)
-            auth_label = "SPIFFE (deprecated)"
-        elif auth_mode == "byoca":
-            client = _auth_byoca(broker, org_id, self_id)
-            auth_label = "BYOCA (deprecated)"
-        else:
-            print(f"[{self_id}] FAIL: unknown AGENT_AUTH={auth_mode!r}",
-                  file=sys.stderr, flush=True)
-            return 2
+        identity_dir = os.environ.get(
+            "IDENTITY_DIR", f"/state/{org_id}/agents/{name}",
+        )
+        client = _auth_api_key_file(broker, identity_dir, self_id)
     except Exception as exc:
-        print(f"[{self_id}] FAIL: {auth_mode} auth: {exc!r}",
+        print(f"[{self_id}] FAIL: api-key auth: {exc!r}",
               file=sys.stderr, flush=True)
         return 2
 
     token_preview = (
         client.token[:24] if getattr(client, "token", None) else "(api-key only)"
     )
-    print(f"[{self_id}] {auth_label} auth OK — token={token_preview}...",
+    print(f"[{self_id}] API-key+DPoP auth OK — token={token_preview}...",
           flush=True)
     pathlib.Path("/tmp/ready").write_text(self_id + "\n")
     _persist_received()  # initialize empty /tmp/received.json
