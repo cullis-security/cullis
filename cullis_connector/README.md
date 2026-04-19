@@ -90,6 +90,52 @@ approval or timeout. See `cullis-connector enroll --help` for all flags.
 
 ---
 
+## Multiple profiles on the same machine
+
+Need more than one identity on a single workstation — say a `north`
+and a `south` agent for testing, or a personal profile alongside a
+work one? Pass `--profile <name>` (or set `CULLIS_PROFILE`) and each
+profile lives in its own directory under `~/.cullis/profiles/<name>/`
+with a separate enrollment, config, and certificate.
+
+```bash
+# enroll two independent identities
+cullis-connector enroll --profile north \
+  --site-url https://cullis.acme.local \
+  --requester-name "North Bot" --requester-email north@acme.example
+cullis-connector enroll --profile south \
+  --site-url https://cullis.acme.local \
+  --requester-name "South Bot" --requester-email south@acme.example
+
+# run them as two MCP stdio servers (different shell sessions or
+# different IDE mcp.json entries)
+cullis-connector serve --profile north
+cullis-connector serve --profile south
+```
+
+Wiring both into the same MCP client is just two entries in its JSON:
+
+```json
+{
+  "mcpServers": {
+    "cullis-north": {"command": "cullis-connector", "args": ["serve", "--profile", "north"]},
+    "cullis-south": {"command": "cullis-connector", "args": ["serve", "--profile", "south"]}
+  }
+}
+```
+
+Legacy installs using the flat `~/.cullis/identity/` layout keep
+working untouched — we don't auto-migrate so existing keys aren't
+moved without the operator's consent. To convert an in-place install
+to a named profile, stop the connector and `mv ~/.cullis/identity
+~/.cullis/profiles/default/identity` (same for any other state you
+keep alongside).
+
+Explicit `--config-dir /some/path` still wins over `--profile` for
+operators who need to pin the directory elsewhere.
+
+---
+
 ## Native desktop shell (no terminal)
 
 ```bash

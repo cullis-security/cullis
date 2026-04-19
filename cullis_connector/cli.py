@@ -54,8 +54,18 @@ def _add_shared_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config-dir",
         dest="config_dir",
-        help="Directory holding config.yaml and identity/. Defaults to ~/.cullis/. "
-             "Use distinct dirs for multi-org setups.",
+        help="Directory holding config.yaml and identity/. Overrides "
+             "--profile entirely; only use this when you need to point "
+             "the connector at an arbitrary path.",
+    )
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        help="Name of the profile to activate (default: 'default'). Each "
+             "profile has its own enrollment under "
+             "~/.cullis/profiles/<name>/ — use distinct profiles to "
+             "host several identities on one machine (e.g. 'north' and "
+             "'south').",
     )
     parser.add_argument(
         "--no-verify-tls",

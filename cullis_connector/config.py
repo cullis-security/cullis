@@ -1,16 +1,25 @@
 """Configuration loading for cullis-connector.
 
 Resolution order (highest priority first):
-    1. CLI flags (e.g. --site-url, --config-dir)
-    2. Environment variables (CULLIS_SITE_URL, CULLIS_CONFIG_DIR, ...)
+    1. CLI flags (e.g. --site-url, --config-dir, --profile)
+    2. Environment variables (CULLIS_SITE_URL, CULLIS_CONFIG_DIR,
+       CULLIS_PROFILE, ...)
     3. Config file <config_dir>/config.yaml
     4. Built-in defaults
 
-The config_dir defaults to ~/.cullis/ and holds:
+`--config-dir` always wins: an operator who points the connector at an
+explicit directory knows what they're doing and we won't second-guess
+them. Otherwise `--profile <name>` (or `CULLIS_PROFILE`) maps to
+``~/.cullis/profiles/<name>/``. With neither flag, legacy installs
+(anyone with ``~/.cullis/identity/`` predating M3.3) keep using the
+flat ``~/.cullis/`` layout so in-place upgrades don't lose keys; fresh
+installs land on ``~/.cullis/profiles/default/``.
+
+A profile directory holds:
     config.yaml             — user-editable settings
-    identity/agent.crt      — agent certificate (created by Phase 2 enrollment)
+    identity/agent.crt      — agent certificate (Phase 2 enrollment)
     identity/agent.key      — agent private key (chmod 600)
-    identity/ca-chain.pem   — trust chain for verifying Site/Broker responses
+    identity/ca-chain.pem   — trust chain for Site/Broker verification
 """
 from __future__ import annotations
 
@@ -27,7 +36,11 @@ except ImportError:  # pragma: no cover - tested via integration
     _yaml = None  # type: ignore[assignment]
 
 
-DEFAULT_CONFIG_DIR = Path.home() / ".cullis"
+DEFAULT_CONFIG_ROOT = Path.home() / ".cullis"
+# Back-compat alias — old tests / external integrations may import
+# this name. Keep pointing at the root; the effective config_dir is
+# now resolved through :func:`resolve_config_dir`.
+DEFAULT_CONFIG_DIR = DEFAULT_CONFIG_ROOT
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 
 
@@ -42,8 +55,19 @@ class ConnectorConfig:
     transitional cullis_sdk path. Phase 2+ targets Site exclusively.
     """
 
-    config_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_DIR)
-    """Directory holding identity/ and config.yaml."""
+    config_dir: Path = field(default_factory=lambda: DEFAULT_CONFIG_ROOT)
+    """Directory holding identity/ and config.yaml.
+
+    With M3.3a this is usually a profile directory under
+    ``~/.cullis/profiles/<name>/`` rather than ``~/.cullis/`` itself,
+    unless the operator forced ``--config-dir`` or the machine still
+    holds a pre-M3.3 flat layout.
+    """
+
+    profile_name: str = ""
+    """Active profile name, or empty string when running against a
+    legacy flat layout / explicit --config-dir. Informational — the
+    authoritative source of truth is ``config_dir``."""
 
     verify_tls: bool = True
     """Whether to verify TLS certificates of the Site. Disable only for dev."""
@@ -94,6 +118,54 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def resolve_config_dir(
+    cli: dict[str, Any],
+    env_map: dict[str, str],
+    *,
+    root: Path | None = None,
+) -> tuple[Path, str]:
+    """Pick the effective config_dir and (optional) profile name.
+
+    Ordering reflects operator intent: explicit --config-dir wins
+    unconditionally, then --profile / CULLIS_PROFILE, then legacy
+    flat layout compatibility, then fresh-install default.
+
+    Returns ``(config_dir, profile_name)``. ``profile_name`` is the
+    empty string when no profile is in effect (legacy layout or
+    explicit --config-dir override).
+    """
+    from cullis_connector.profile import (
+        DEFAULT_PROFILE_NAME,
+        has_legacy_layout,
+        profile_dir,
+        validate_profile_name,
+    )
+
+    config_root = (root or DEFAULT_CONFIG_ROOT).expanduser()
+
+    # 1. Explicit override — honour it verbatim.
+    if cli.get("config_dir"):
+        return Path(cli["config_dir"]).expanduser(), ""
+    env_override = env_map.get("CULLIS_CONFIG_DIR")
+    if env_override:
+        return Path(env_override).expanduser(), ""
+
+    # 2. --profile / CULLIS_PROFILE.
+    profile = cli.get("profile") or env_map.get("CULLIS_PROFILE")
+    if profile:
+        validate_profile_name(profile)
+        return profile_dir(config_root, profile), profile
+
+    # 3. Legacy flat layout — keep using it to preserve in-place
+    # upgrades. The operator can `mv identity/ profiles/default/`
+    # on their own schedule.
+    if has_legacy_layout(config_root):
+        return config_root, ""
+
+    # 4. Fresh install.
+    return profile_dir(config_root, DEFAULT_PROFILE_NAME), DEFAULT_PROFILE_NAME
+
+
 def load_config(
     cli_overrides: dict[str, Any] | None = None,
     *,
@@ -113,12 +185,9 @@ def load_config(
     env_map = env if env is not None else os.environ
     cli = {k: v for k, v in (cli_overrides or {}).items() if v is not None}
 
-    # 1. Determine config_dir first so we can locate config.yaml.
-    config_dir = Path(
-        cli.get("config_dir")
-        or env_map.get("CULLIS_CONFIG_DIR")
-        or DEFAULT_CONFIG_DIR
-    ).expanduser()
+    # 1. Determine config_dir (and optional profile) before anything
+    #    else, so we can locate config.yaml.
+    config_dir, profile_name = resolve_config_dir(cli, env_map)
 
     # 2. Read file (if present).
     file_data = _read_yaml(config_dir / DEFAULT_CONFIG_FILENAME)
@@ -140,6 +209,7 @@ def load_config(
     return ConnectorConfig(
         site_url=site_url,
         config_dir=config_dir,
+        profile_name=profile_name,
         verify_tls=verify_tls,
         log_level=log_level,
         request_timeout_s=request_timeout_s,
