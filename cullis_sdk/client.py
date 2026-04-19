@@ -1045,6 +1045,35 @@ class CullisClient:
         resp.raise_for_status()
         return [AgentInfo.from_dict(a) for a in resp.json().get("agents", [])]
 
+    def list_peers(
+        self,
+        q: str | None = None,
+        limit: int = 50,
+    ) -> list[AgentInfo]:
+        """List peers reachable via the local Mastio's egress API.
+
+        Hits ``GET /v1/egress/peers`` (API-key + DPoP authed — does NOT
+        need a broker JWT, unlike :meth:`discover`). Returns intra-org
+        agents from the Mastio's local registry plus any cross-org
+        agents the federation cache currently holds.
+
+        ``q`` is a server-side substring prefilter on ``agent_id`` /
+        ``display_name``; the caller is expected to do the final
+        ranking (e.g. with ``difflib``) since "best match" is UX-driven.
+        """
+        params: list[tuple[str, str]] = []
+        if q:
+            params.append(("q", q))
+        if limit:
+            params.append(("limit", str(limit)))
+        resp = self._egress_http(
+            "get",
+            "/v1/egress/peers",
+            params=params,
+        )
+        resp.raise_for_status()
+        return [AgentInfo.from_dict(p) for p in resp.json().get("peers", [])]
+
     def get_agent_public_key(self, agent_id: str, force_refresh: bool = False) -> str:
         """Retrieve agent PEM public key from the broker (TTL-cached).
 

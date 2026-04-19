@@ -10,6 +10,7 @@ lookup first and, when ``CULLIS_EGRESS_DPOP_MODE`` is ``optional`` or
 validates a DPoP proof carried in the ``DPoP`` header and pins it to
 the agent's registered ``dpop_jkt``.
 """
+import json
 import logging
 import time
 import uuid
@@ -113,6 +114,27 @@ class ResolveResponse(BaseModel):
     transport: Literal["envelope", "mtls-only"]
     egress_inspection: bool = False
     target_cert_pem: str | None = None
+
+
+class PeerInfo(BaseModel):
+    """A peer the caller can address with /v1/egress/* (intra-org local
+    or, when federation is wired, cross-org cached).
+
+    Mirrors ``cullis_sdk.types.AgentInfo`` so the SDK can deserialize
+    via ``AgentInfo.from_dict``.
+    """
+    agent_id: str
+    org_id: str
+    display_name: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    description: str | None = None
+    status: str | None = None
+    scope: Literal["intra-org", "cross-org"] = "intra-org"
+
+
+class PeersResponse(BaseModel):
+    peers: list[PeerInfo]
+    count: int
 
 
 class InvokeToolRequest(BaseModel):
@@ -960,6 +982,109 @@ async def resolve_recipient(
         egress_inspection=settings.egress_inspection_enabled,
         target_cert_pem=target_cert_pem,
     )
+
+
+@router.get("/peers", response_model=PeersResponse)
+async def list_peers(
+    request: Request,
+    q: str | None = None,
+    limit: int = 50,
+    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+) -> PeersResponse:
+    """List peers the caller can address right now via /v1/egress/*.
+
+    Powers the Connector's ``contact("name")`` UX without requiring a
+    broker JWT (which device-code-enrolled agents don't hold) and
+    without leaking the admin secret. Returns:
+      - intra-org agents from ``internal_agents`` (always available)
+      - cross-org agents from ``cached_federated_agents`` when federation
+        is configured (the cache is empty in pure standalone deploys)
+
+    ``q``: optional case-insensitive substring filter applied to
+    ``agent_id`` and ``display_name``. Server-side filter is just a
+    prefilter — the caller is expected to do the final ranking
+    (e.g. difflib fuzzy match) since "best match" is UX-dependent.
+    """
+    settings = get_settings()
+    local_org = settings.org_id or ""
+    qnorm = (q or "").strip().lower()
+
+    from sqlalchemy import text
+
+    from mcp_proxy.db import get_db
+
+    peers: list[PeerInfo] = []
+
+    async with get_db() as conn:
+        # Intra-org from the authoritative local registry. Self-row
+        # excluded so the caller never sees themselves in their own
+        # contact list (the DB stores both bare and ``org::name`` rows
+        # historically; check both forms).
+        bare = agent.agent_id.split("::", 1)[-1]
+        result = await conn.execute(
+            text(
+                """
+                SELECT agent_id, display_name, capabilities, is_active
+                  FROM internal_agents
+                 WHERE is_active = 1
+                   AND agent_id NOT IN (:full, :bare)
+                 ORDER BY display_name, agent_id
+                """
+            ),
+            {"full": agent.agent_id, "bare": bare},
+        )
+        for row in result.mappings():
+            aid_full = (
+                row["agent_id"]
+                if "::" in row["agent_id"]
+                else f"{local_org}::{row['agent_id']}"
+            )
+            display = row["display_name"] or row["agent_id"]
+            if qnorm and qnorm not in aid_full.lower() and qnorm not in display.lower():
+                continue
+            peers.append(PeerInfo(
+                agent_id=aid_full,
+                org_id=local_org,
+                display_name=display,
+                capabilities=json.loads(row["capabilities"] or "[]"),
+                status="active",
+                scope="intra-org",
+            ))
+
+        # Cross-org cached snapshots, if federation has primed the cache.
+        # The table is missing in older standalone deploys — tolerate
+        # that and skip silently.
+        try:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT agent_id, org_id, display_name, capabilities
+                      FROM cached_federated_agents
+                     WHERE revoked = 0
+                       AND org_id != :local_org
+                     ORDER BY org_id, display_name
+                    """
+                ),
+                {"local_org": local_org},
+            )
+            for row in result.mappings():
+                aid = row["agent_id"]
+                display = row["display_name"] or aid
+                if qnorm and qnorm not in aid.lower() and qnorm not in display.lower():
+                    continue
+                peers.append(PeerInfo(
+                    agent_id=aid,
+                    org_id=row["org_id"],
+                    display_name=display,
+                    capabilities=json.loads(row["capabilities"] or "[]"),
+                    scope="cross-org",
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("federated cache unreadable, skipping: %s", exc)
+
+    if limit and len(peers) > limit:
+        peers = peers[:limit]
+    return PeersResponse(peers=peers, count=len(peers))
 
 
 @router.post("/discover")
