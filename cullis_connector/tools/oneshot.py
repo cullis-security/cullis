@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from cryptography import x509
+
 from cullis_connector._logging import get_logger
 from cullis_connector.state import get_state
 from cullis_connector.tools.session import _require_oneshot_client
@@ -19,6 +21,35 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 _log = get_logger("tools.oneshot")
+
+
+def _own_org_id() -> str | None:
+    """Return the sender's org_id from the loaded identity's cert subject.
+
+    The Mastio's ``/v1/egress/resolve`` rejects bare recipient names —
+    it needs ``org::agent``. Enrollment writes the agent's cert with
+    ``O=<org_id>`` so we can recover the sender's org even when
+    ``metadata.json`` stored only the short agent_id.
+    """
+    state = get_state()
+    identity = state.extra.get("identity")
+    cert = getattr(identity, "cert", None)
+    if cert is None:
+        return None
+    attrs = cert.subject.get_attributes_for_oid(x509.NameOID.ORGANIZATION_NAME)
+    if not attrs:
+        return None
+    return attrs[0].value or None
+
+
+def _canonical_recipient(recipient_id: str) -> str:
+    """Prefix the sender's org when the caller gave a bare agent name."""
+    if "::" in recipient_id:
+        return recipient_id
+    org = _own_org_id()
+    if not org:
+        return recipient_id
+    return f"{org}::{recipient_id}"
 
 
 def register(mcp: "FastMCP") -> None:
@@ -56,9 +87,10 @@ def register(mcp: "FastMCP") -> None:
         client = _require_oneshot_client()
         state = get_state()
         caps = [c.strip() for c in capabilities.split(",") if c.strip()]
+        canonical = _canonical_recipient(recipient_id)
         try:
             result = client.send_oneshot(
-                recipient_id,
+                canonical,
                 {"type": "message", "text": message},
                 correlation_id=correlation_id or None,
                 reply_to=reply_to or None,
@@ -66,12 +98,12 @@ def register(mcp: "FastMCP") -> None:
                 capabilities=caps or None,
             )
         except Exception as exc:  # noqa: BLE001
-            _log.warning("send_oneshot to %s failed: %s", recipient_id, exc)
-            return f"Failed to send one-shot to {recipient_id}: {exc}"
+            _log.warning("send_oneshot to %s failed: %s", canonical, exc)
+            return f"Failed to send one-shot to {canonical}: {exc}"
 
         state.last_correlation_id = result.get("correlation_id")
         return (
-            f"One-shot {result.get('status', 'sent')} to {recipient_id} "
+            f"One-shot {result.get('status', 'sent')} to {canonical} "
             f"(correlation_id={result.get('correlation_id')}, "
             f"msg_id={result.get('msg_id')})"
         )
