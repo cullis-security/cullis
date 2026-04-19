@@ -407,6 +407,38 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         _clear_pending()
         return RedirectResponse("/setup", status_code=303)
 
+    @app.get("/status/inbox")
+    def status_inbox(request: Request) -> JSONResponse:
+        """Statusline-friendly snapshot of the inbox state.
+
+        Designed to be polled cheaply (every few seconds) by a Claude
+        Code statusline command or any external script that wants
+        to render a "📨 N from Mario" badge. Always returns 200 with
+        a stable shape — when notifications are off or the dashboard
+        hasn't seen any messages yet, ``unread`` is 0 and the rest
+        is null.
+        """
+        dispatcher = getattr(request.app.state, "inbox_dispatcher", None)
+        if dispatcher is None:
+            return JSONResponse({
+                "unread": 0,
+                "last_sender": None,
+                "last_preview": None,
+                "last_received_at": None,
+                "total_seen": 0,
+            })
+        return JSONResponse(dispatcher.status_snapshot())
+
+    @app.post("/status/inbox/seen")
+    def status_inbox_seen(request: Request) -> JSONResponse:
+        """Reset the unread counter — call when the user has read the
+        latest batch (the dashboard's `/inbox` view does it on load,
+        statusline scripts can call it on click)."""
+        dispatcher = getattr(request.app.state, "inbox_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.ack()
+        return JSONResponse({"ok": True})
+
     @app.get("/connected", response_class=HTMLResponse)
     def connected_get(request: Request) -> Response:
         if not has_identity(config.config_dir):

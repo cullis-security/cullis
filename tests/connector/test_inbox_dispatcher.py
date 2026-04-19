@@ -136,3 +136,66 @@ async def test_dispatcher_stop_cancels_blocked_consumer():
     await asyncio.sleep(0.05)
     await d.stop(timeout_s=1.0)  # should return without hanging
     notifier.notify.assert_not_called()
+
+
+# ── status snapshot + ack ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_initially_empty():
+    poller = _FakePoller()
+    d = InboxDispatcher(poller, MagicMock())
+    snap = d.status_snapshot()
+    assert snap["unread"] == 0
+    assert snap["last_sender"] is None
+    assert snap["last_preview"] is None
+    assert snap["last_received_at"] is None
+    assert snap["total_seen"] == 0
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_tracks_unread_and_last_event():
+    poller = _FakePoller()
+    d = InboxDispatcher(poller, MagicMock())
+    d.start()
+    try:
+        await poller.events.put(_ev("m1", sender="acme::alice", text="ciao"))
+        await poller.events.put(_ev("m2", sender="acme::bob", text="yo"))
+        await asyncio.sleep(0.1)
+    finally:
+        await d.stop()
+
+    snap = d.status_snapshot()
+    assert snap["unread"] == 2
+    assert snap["last_sender"] == "acme::bob"
+    assert snap["last_preview"] == "yo"
+    assert snap["last_received_at"] is not None
+    assert snap["total_seen"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ack_resets_unread_but_keeps_dedup():
+    poller = _FakePoller()
+    d = InboxDispatcher(poller, MagicMock())
+    d.start()
+    try:
+        await poller.events.put(_ev("m1"))
+        await asyncio.sleep(0.05)
+
+        d.ack()
+        snap = d.status_snapshot()
+        assert snap["unread"] == 0
+        assert snap["total_seen"] == 1  # dedup memory survives ack
+
+        # Re-delivery of the same msg_id stays suppressed.
+        await poller.events.put(_ev("m1"))
+        await asyncio.sleep(0.05)
+        snap = d.status_snapshot()
+        assert snap["unread"] == 0
+
+        # New msg bumps the counter again.
+        await poller.events.put(_ev("m2"))
+        await asyncio.sleep(0.05)
+    finally:
+        await d.stop()
+    assert d.status_snapshot()["unread"] == 1
