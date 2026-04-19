@@ -35,7 +35,9 @@ def _ev(msg_id: str, sender: str = "acme::alice", text: str = "hello") -> InboxE
 
 def test_lruseen_ignores_duplicates_and_evicts_oldest():
     s = _LRUSeen(maxsize=3)
-    s.add("a"); s.add("b"); s.add("c")
+    s.add("a")
+    s.add("b")
+    s.add("c")
     assert "a" in s and "b" in s and "c" in s
 
     s.add("d")  # evicts oldest ("a")
