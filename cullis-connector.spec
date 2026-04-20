@@ -30,6 +30,29 @@ hiddenimports = [
     "uvicorn.logging",
 ]
 
+# Desktop shell deps are imported lazily inside function bodies in
+# cullis_connector/desktop_app.py and notifier.py, so PyInstaller's
+# static analysis misses them. Pull in every submodule — each ships
+# platform-specific backends (pystray._xorg / _win32 / _darwin,
+# webview.platforms.*, plyer.platforms.*) chosen at runtime.
+from PyInstaller.utils.hooks import collect_submodules
+
+for _pkg in ("pystray", "webview", "plyer", "PIL"):
+    try:
+        hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        # Package not installed (e.g. building a connector-only binary
+        # without the desktop extras) — skip silently.
+        pass
+# NOTE: gi (pygobject) and cairo (pycairo) are intentionally NOT bundled.
+# They ship with the host Python on every supported desktop target:
+#   - macOS runners:   `brew install pygobject3` side-installs them
+#   - Windows runners: pip wheels resolve them cleanly
+#   - Ubuntu runners:  `apt install python3-gi` puts them in site-packages
+# Bundling them cross-platform risks ABI mismatches against the OS-provided
+# GLib/GObjectIntrospection at runtime (observed on NixOS: "TypeError:
+# must be an interface" during gi.overrides.Gtk import).
+
 
 a = Analysis(
     ["cullis_connector/__main__.py"],
