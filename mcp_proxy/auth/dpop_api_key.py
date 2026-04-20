@@ -110,7 +110,19 @@ async def get_agent_from_dpop_api_key(request: Request) -> InternalAgent:
     window, and ``ath`` must match ``base64url(sha256(api_key))`` so
     the proof is bound to *this* API-key and not a different one that
     the same attacker might also control.
+
+    ADR-012 Phase 5: when ``local_auth_enabled`` is on and the request
+    carries a Bearer LOCAL_TOKEN issued by this Mastio, return an
+    ``InternalAgent`` synthesized from the token claims + DB record and
+    skip the X-API-Key path entirely. Cross-org work downstream goes
+    through ``BrokerBridge`` which performs its own per-agent login
+    against the Court, so the LOCAL_TOKEN never leaves the Mastio.
     """
+    from mcp_proxy.auth.local_agent_dep import _maybe_local_internal_agent
+    local_agent = await _maybe_local_internal_agent(request)
+    if local_agent is not None:
+        return local_agent
+
     agent = await get_agent_from_api_key(request)
 
     mode = _resolve_mode()

@@ -269,6 +269,12 @@ services:
       # drops the payload into the local inbox). Hybrid/envelope
       # would require distributing every peer's cert ahead of time.
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
+      # ADR-012 — Mastio-local /v1/auth/token. With this on, login
+      # traffic for intra-org operations (MCP, intra-org send/receive)
+      # never reaches the Court. Cross-org sends still route through
+      # BrokerBridge's own per-agent Court login, so the envelope path
+      # keeps working.
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
     volumes:
       - proxy-a-data:/data
     networks:
@@ -493,6 +499,8 @@ services:
       PROXY_INTRA_ORG: "true"
       # ADR-011 Phase 4b — see proxy-a rationale.
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
+      # ADR-012 — Mastio-local /v1/auth/token (see proxy-a rationale).
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
     volumes:
       - proxy-b-data:/data
     networks:

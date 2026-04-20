@@ -24,7 +24,7 @@ from fastapi import HTTPException, Request, status
 from mcp_proxy.auth.local_validator import LocalTokenError, validate_local_token
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import get_agent
-from mcp_proxy.models import TokenPayload
+from mcp_proxy.models import InternalAgent, TokenPayload
 
 _log = logging.getLogger("mcp_proxy.auth.local_agent_dep")
 
@@ -90,6 +90,69 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
         jti=payload.jti,
         scope=list(capabilities),
         cnf=None,
+    )
+
+
+async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
+    """Egress variant of ``_maybe_local_token``.
+
+    Egress handlers consume ``InternalAgent`` (API-key + DB shape), not
+    ``TokenPayload``. Accept a Bearer LOCAL_TOKEN here so an SDK that
+    logged in via the Mastio's ``/v1/auth/token`` (ADR-012 Phase 2) can
+    also drive ``/v1/egress/*`` without re-authenticating. When the send
+    is cross-org, the handlers then delegate to ``BrokerBridge`` which
+    lazily performs its own per-agent login_from_pem against the Court
+    — the ``LOCAL_TOKEN`` never leaves this process.
+    """
+    settings = get_settings()
+    if not settings.local_auth_enabled:
+        return None
+
+    issuer = getattr(request.app.state, "local_issuer", None)
+    if issuer is None:
+        return None
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth[7:].strip()
+    if not token:
+        return None
+
+    try:
+        payload = validate_local_token(token, issuer)
+    except LocalTokenError as exc:
+        _log.info("local token rejected (egress): %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"local token: {exc}",
+            headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
+        ) from exc
+
+    record = await get_agent(payload.agent_id)
+    if record is None or not record.get("is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="agent not registered or deactivated",
+            headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
+        )
+
+    capabilities = record.get("capabilities") or []
+    if isinstance(capabilities, str):
+        import json
+        try:
+            capabilities = json.loads(capabilities)
+        except Exception:
+            capabilities = [c for c in capabilities.split(",") if c]
+
+    return InternalAgent(
+        agent_id=payload.agent_id,
+        display_name=record.get("display_name") or payload.agent_id,
+        capabilities=list(capabilities),
+        created_at=str(record.get("created_at") or ""),
+        is_active=bool(record.get("is_active", True)),
+        cert_pem=record.get("cert_pem"),
+        dpop_jkt=record.get("dpop_jkt"),
     )
 
 
