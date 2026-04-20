@@ -104,10 +104,37 @@ async def test_unknown_agent_is_rejected(app_with_flag_on):
 
 
 @pytest.mark.asyncio
-async def test_invalid_bearer_does_not_fall_through_to_dpop(app_with_flag_on):
-    """Flag on + bad Bearer → 401 "local token: …", not a DPoP challenge."""
+async def test_non_local_kid_falls_through_to_dpop(app_with_flag_on):
+    """Flag on + token whose kid does NOT match the LocalIssuer → the
+    local branch must step aside so the DPoP path can decide. This is
+    how broker-issued JWTs keep working alongside local tokens and how
+    a malformed bearer never short-circuits the canonical auth flow.
+    """
     with TestClient(app_with_flag_on["app"]) as client:
         resp = client.get("/probe", headers={"Authorization": "Bearer not-a-jwt"})
+    assert resp.status_code == 401
+    # Fall-through to DPoP → challenge mentions DPoP realm.
+    assert "dpop" in resp.headers.get("WWW-Authenticate", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_tampered_local_token_is_rejected(app_with_flag_on):
+    """Kid matches but signature / claims invalid → 401 "local token: …".
+    This catches tamper attempts that stripped and resigned a genuine
+    header without the matching key.
+    """
+    import jwt as jose_jwt
+    issuer = app_with_flag_on["issuer"]
+    # Forge a header that mimics the LocalIssuer's kid so we go past the
+    # pre-filter, but sign with an HMAC key so the signature check fails.
+    tampered = jose_jwt.encode(
+        {"sub": "orga::alice"},
+        "not-the-mastio-key",
+        algorithm="HS256",
+        headers={"kid": issuer.kid},
+    )
+    with TestClient(app_with_flag_on["app"]) as client:
+        resp = client.get("/probe", headers={"Authorization": f"Bearer {tampered}"})
     assert resp.status_code == 401
     assert "local token" in resp.json()["detail"].lower()
 

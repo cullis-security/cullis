@@ -21,12 +21,45 @@ import logging
 
 from fastapi import HTTPException, Request, status
 
+import jwt as jose_jwt
+
 from mcp_proxy.auth.local_validator import LocalTokenError, validate_local_token
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import get_agent
 from mcp_proxy.models import InternalAgent, TokenPayload
 
 _log = logging.getLogger("mcp_proxy.auth.local_agent_dep")
+
+
+def _extract_bearer_or_dpop_token(request: Request) -> str | None:
+    """Pull the opaque JWT from ``Authorization: Bearer …`` OR
+    ``Authorization: DPoP …``. The SDK's ``login_via_proxy`` path still
+    sends the token with the ``DPoP`` scheme on the downstream request
+    even when the Mastio handed it a LOCAL_TOKEN (Phase 2 kept the wire
+    format stable). Both shapes must funnel into the local-first branch.
+    """
+    auth = request.headers.get("Authorization", "")
+    lower = auth.lower()
+    if lower.startswith("bearer "):
+        return auth[7:].strip() or None
+    if lower.startswith("dpop "):
+        return auth[5:].strip() or None
+    return None
+
+
+def _is_local_kid(token: str, issuer) -> bool:
+    """Cheap pre-check: unverified header kid == LocalIssuer's kid.
+
+    Used to decide whether a ``Authorization: DPoP <jwt>`` should funnel
+    into the local validator (and pre-empt the DPoP path) or be left
+    alone. Broker-issued JWTs carry a different kid, so that path
+    continues to reach ``_get_authenticated_agent_dpop`` unchanged.
+    """
+    try:
+        header = jose_jwt.get_unverified_header(token)
+    except jose_jwt.PyJWTError:
+        return False
+    return header.get("kid") == issuer.kid
 
 
 async def _maybe_local_token(request: Request) -> TokenPayload | None:
@@ -41,22 +74,23 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
     if issuer is None:
         return None
 
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
+    token = _extract_bearer_or_dpop_token(request)
+    if token is None:
         return None
 
-    token = auth[7:].strip()
-    if not token:
+    # When the scheme is DPoP, the token might be a broker-issued JWT
+    # (different kid) the caller legitimately wants handled by the DPoP
+    # path. Pre-filter by kid so we only intercept tokens this Mastio
+    # actually signed.
+    if not _is_local_kid(token, issuer):
         return None
 
     try:
         payload = validate_local_token(token, issuer)
     except LocalTokenError as exc:
-        # Bearer was provided but invalid — surface 401 rather than
-        # falling through to DPoP, otherwise we'd leak a confusing
-        # "DPoP required" message for what is clearly a local-auth
-        # attempt. Operators opted into local_auth_enabled; a bad Bearer
-        # is a client mistake, not a probe.
+        # kid matched this Mastio but validation still failed — that's a
+        # spoofing or tamper attempt, surface 401 rather than falling
+        # through silently.
         _log.info("local token rejected: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -112,11 +146,10 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
     if issuer is None:
         return None
 
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
+    token = _extract_bearer_or_dpop_token(request)
+    if token is None:
         return None
-    token = auth[7:].strip()
-    if not token:
+    if not _is_local_kid(token, issuer):
         return None
 
     try:

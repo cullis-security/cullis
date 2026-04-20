@@ -89,7 +89,13 @@ services:
         condition: service_healthy
     environment:
       ADMIN_SECRET: "sandbox-admin-secret-change-me"
-      DASHBOARD_SIGNING_KEY: "sandbox-dashboard-signing-key-32chars-long"
+      # Intentionally unset — the broker auto-generates a signing key at
+      # first boot and persists it under /app/certs/ (tmpfs). Each
+      # ``demo.sh down && demo.sh full`` cycle therefore rotates the key,
+      # invalidating any dashboard cookie the browser held from the
+      # previous run. Pinning a static value made the "reset password"
+      # demo point look broken: the cookie kept validating across
+      # reboots because the signature stayed good.
       KMS_BACKEND: "local"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem

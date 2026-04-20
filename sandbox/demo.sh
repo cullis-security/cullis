@@ -73,7 +73,8 @@ case "${1:-help}" in
     _note "is NOT registered on the Court — you will do that from the guide."
     export BOOTSTRAP_SCOPE=up
     docker compose build --quiet
-    docker compose up -d --wait
+    _note "booting services (this takes ~60s)…"
+    docker compose --progress quiet up -d --wait --quiet-pull
     _header "Services Running"
     docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
     _print_dashboards
@@ -87,7 +88,8 @@ case "${1:-help}" in
     _note "Both orgs registered, three agents enrolled, two MCP servers online."
     export BOOTSTRAP_SCOPE=full
     docker compose --profile full build --quiet
-    docker compose --profile full up -d --wait
+    _note "booting services (this takes ~60s)…"
+    docker compose --progress quiet --profile full up -d --wait --quiet-pull
     _header "Services Running"
     docker compose --profile full ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
     _print_dashboards
