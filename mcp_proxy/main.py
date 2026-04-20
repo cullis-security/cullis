@@ -590,6 +590,16 @@ app.include_router(sign_assertion_router)
 from mcp_proxy.auth.jwks_local import router as jwks_local_router
 app.include_router(jwks_local_router)
 
+# ADR-012 Phase 2 — proxy-native /v1/auth/token. Gated behind
+# ``settings.local_auth_enabled`` so the reverse-proxy path remains the
+# default. MUST be registered before ``build_reverse_proxy_router()`` so
+# it wins route matching against the ``/v1/auth/*`` catch-all when the
+# flag is on.
+if get_settings().local_auth_enabled:
+    from mcp_proxy.auth.local_token import router as local_token_router
+    app.include_router(local_token_router)
+    _log.info("ADR-012 local /v1/auth/token handler ENABLED")
+
 # ADR-009 Phase 2 — /v1/admin/mastio-pubkey for bootstrap automation.
 from mcp_proxy.admin.info import router as admin_info_router
 app.include_router(admin_info_router)
