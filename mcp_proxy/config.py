@@ -155,6 +155,15 @@ class ProxySettings(BaseSettings):
     # local cache tables. Default off — flip via PROXY_FEDERATION_SYNC.
     federation_sync_enabled: bool = False
 
+    # ADR-012 Phase 2 — local /v1/auth/token issuance. When true the
+    # Mastio's LocalIssuer signs session tokens in-process for intra-org
+    # operations and the Court is never contacted for login traffic.
+    # Default off so the existing reverse-proxy behavior is preserved —
+    # operators opt in after migrating clients to accept Bearer tokens
+    # scoped to ``local``. Flip via MCP_PROXY_LOCAL_AUTH_ENABLED /
+    # PROXY_LOCAL_AUTH.
+    local_auth_enabled: bool = False
+
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
@@ -208,6 +217,12 @@ class ProxySettings(BaseSettings):
         force_pwd = _env("MCP_PROXY_FORCE_LOCAL_PASSWORD")
         if force_pwd is not None:
             self.force_local_password = force_pwd.lower() in (
+                "1", "true", "yes", "on",
+            )
+
+        local_auth_flag = _env("MCP_PROXY_LOCAL_AUTH_ENABLED") or _env("PROXY_LOCAL_AUTH")
+        if local_auth_flag is not None:
+            self.local_auth_enabled = local_auth_flag.lower() in (
                 "1", "true", "yes", "on",
             )
 
