@@ -163,6 +163,23 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
 
+    # ADR-012 Phase 1 — local JWT issuer. Signs intra-org session tokens
+    # with the Mastio leaf key so the Court never sees login traffic for
+    # MCP/intra-org operations. Requires the Mastio identity to be loaded;
+    # degrades soft (``local_issuer = None``) otherwise so lifespan never
+    # blocks on this.
+    app.state.local_issuer = None
+    if getattr(agent_mgr, "mastio_loaded", False) and org_id:
+        try:
+            from mcp_proxy.auth.local_issuer import build_from_agent_manager
+            app.state.local_issuer = build_from_agent_manager(org_id, agent_mgr)
+            _log.info(
+                "LocalIssuer initialized (kid=%s, iss=%s)",
+                app.state.local_issuer.kid, app.state.local_issuer.issuer,
+            )
+        except Exception as exc:
+            _log.warning("LocalIssuer init failed: %s", exc)
+
     # ADR-007 Phase 1 PR #3 — SecretProvider is consumed by the MCP
     # resource forwarder (env:// / vault:// refs). Same instance used by
     # /v1/ingress/execute via the executor, now also exposed on state so
@@ -566,6 +583,12 @@ async def pdp_health():
 # reverse-proxy catch-all so the sign endpoint wins route matching.
 from mcp_proxy.auth.sign_assertion import router as sign_assertion_router
 app.include_router(sign_assertion_router)
+
+# ADR-012 Phase 1 — JWKS for the Mastio local issuer. Published at
+# /.well-known/jwks-local.json; paths under /.well-known are not
+# reverse-proxied so the registration order vs forwarder is moot.
+from mcp_proxy.auth.jwks_local import router as jwks_local_router
+app.include_router(jwks_local_router)
 
 # ADR-009 Phase 2 — /v1/admin/mastio-pubkey for bootstrap automation.
 from mcp_proxy.admin.info import router as admin_info_router
