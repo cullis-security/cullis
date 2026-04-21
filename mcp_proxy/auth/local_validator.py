@@ -1,15 +1,19 @@
 """ADR-012 Phase 3 — validator for Mastio-issued local tokens.
 
-The counterpart to ``mcp_proxy.auth.local_issuer``: given a Bearer JWT
-signed by the Mastio leaf key, verify it against the in-process
-``LocalIssuer`` (no remote JWKS fetch needed — the public key is the
-one we use ourselves to sign) and surface the claims as a typed payload
-downstream handlers can trust.
+The counterpart to ``mcp_proxy.auth.local_issuer``: given a Bearer
+JWT signed by a Mastio key, look the ``kid`` up in the keystore and
+verify the signature against the corresponding public key.
+
+Phase 2.0 note: the validator is now keystore-driven instead of
+issuer-driven. A kid in the JWT header can match any active *or*
+within-grace deprecated row in ``mastio_keys`` (``is_valid_for_verification``);
+unknown or expired kids are rejected. This is the structural change
+that lets Phase 2.2 serve a rotation grace window without any more
+code in the validator itself.
 
 A FastAPI dependency ``require_local_token`` exposes the validator to
-route handlers. Wiring onto the actual egress / ingress endpoints is
-the job of a follow-up PR (ADR-012 Phase 4); this module ships the
-primitive and its tests so the subsequent wiring PR stays small.
+route handlers. It reads ``request.app.state.local_keystore``,
+populated by the proxy lifespan.
 """
 from __future__ import annotations
 
@@ -18,14 +22,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import jwt as jose_jwt
-from cryptography.hazmat.primitives import serialization
 from fastapi import HTTPException, Request, status
 
-from mcp_proxy.auth.local_issuer import (
-    LOCAL_AUDIENCE,
-    LOCAL_ISSUER_PREFIX,
-    LocalIssuer,
-)
+from mcp_proxy.auth.local_issuer import LOCAL_AUDIENCE, LOCAL_ISSUER_PREFIX
+from mcp_proxy.auth.local_keystore import LocalKeyStore
 
 _log = logging.getLogger("mcp_proxy.auth.local_validator")
 
@@ -56,14 +56,23 @@ class LocalTokenError(Exception):
     """Raised when a token fails any validation step."""
 
 
-def validate_local_token(
-    token: str, issuer: LocalIssuer, *, leeway: int = _LEEWAY_SECONDS,
+async def validate_local_token(
+    token: str,
+    keystore: LocalKeyStore,
+    *,
+    expected_issuer: str,
+    leeway: int = _LEEWAY_SECONDS,
 ) -> LocalTokenPayload:
-    """Verify ``token`` against ``issuer``'s public key.
+    """Verify ``token`` against a keystore-resolved public key.
 
-    Raises ``LocalTokenError`` with a short reason on any failure. The
-    caller is responsible for turning it into an HTTP 401 (see
-    ``require_local_token``).
+    The ``kid`` in the JWT header is used to look up the signing key
+    in ``keystore``. An unknown or expired kid is rejected. The caller
+    supplies ``expected_issuer`` (typically
+    ``f"cullis-mastio:{org_id}"``) so the validator can enforce the
+    ``iss`` claim without taking a second dependency on the issuer
+    object.
+
+    Raises ``LocalTokenError`` with a short reason on any failure.
     """
     try:
         header = jose_jwt.get_unverified_header(token)
@@ -72,23 +81,24 @@ def validate_local_token(
 
     if header.get("alg") != "ES256":
         raise LocalTokenError(f"unexpected alg: {header.get('alg')}")
-    if header.get("kid") != issuer.kid:
-        raise LocalTokenError(
-            f"kid mismatch (got {header.get('kid')!r}, expect {issuer.kid!r})"
-        )
 
-    pub_pem = issuer._leaf_pubkey_pem  # noqa: SLF001 — one-process trust boundary
-    # Sanity: the PEM must parse. If the issuer was mis-initialized this
-    # raises at decode time; turning it into a 401 here is fine.
-    serialization.load_pem_public_key(pub_pem.encode())
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise LocalTokenError("kid missing from header")
+
+    key = await keystore.find_by_kid(kid)
+    if key is None:
+        raise LocalTokenError(f"unknown kid: {kid!r}")
+    if not key.is_valid_for_verification:
+        raise LocalTokenError(f"kid {kid!r} is no longer valid")
 
     try:
         claims = jose_jwt.decode(
             token,
-            pub_pem,
+            key.pubkey_pem,
             algorithms=["ES256"],
             audience=LOCAL_AUDIENCE,
-            issuer=issuer.issuer,
+            issuer=expected_issuer,
             options={"require": ["exp", "iat", "sub", "aud", "iss", "scope", "jti"]},
             leeway=leeway,
         )
@@ -125,12 +135,19 @@ def validate_local_token(
 async def require_local_token(request: Request) -> LocalTokenPayload:
     """FastAPI dependency — extract+validate a Bearer LOCAL_TOKEN.
 
-    The token is read from ``Authorization: Bearer <jwt>``. 401 on any
-    failure, 503 if the issuer isn't wired up (mastio identity didn't
-    load yet — the wiring PR will pin hard availability expectations).
+    Reads the Bearer token from ``Authorization``. 401 on any failure,
+    503 if the keystore or issuer aren't wired up yet (Mastio identity
+    didn't load — the lifespan has not completed).
     """
+    keystore: LocalKeyStore | None = getattr(
+        request.app.state, "local_keystore", None,
+    )
+    # The issuer is still consulted — purely to obtain ``org_id`` and
+    # so the validator can enforce ``iss``. Tests that stub the state
+    # manually must set both ``local_keystore`` and ``local_issuer``.
+    from mcp_proxy.auth.local_issuer import LocalIssuer  # local import to avoid cycle
     issuer: LocalIssuer | None = getattr(request.app.state, "local_issuer", None)
-    if issuer is None:
+    if keystore is None or issuer is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="local issuer not initialized",
@@ -152,7 +169,9 @@ async def require_local_token(request: Request) -> LocalTokenPayload:
         )
 
     try:
-        return validate_local_token(token, issuer)
+        return await validate_local_token(
+            token, keystore, expected_issuer=issuer.issuer,
+        )
     except LocalTokenError as exc:
         _log.info("local token rejected: %s", exc)
         raise HTTPException(

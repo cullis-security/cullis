@@ -1,4 +1,4 @@
-"""ADR-012 Phase 3 — LocalValidator unit tests.
+"""ADR-012 Phase 3 / Phase 2.0 — LocalValidator unit tests.
 
 Paired with ``tests/test_proxy_local_issuer.py``: that file pins what
 the issuer emits, this one pins what the validator accepts. Round-trip
@@ -9,41 +9,96 @@ Everything that deviates from the expected wire format (wrong audience,
 wrong kid, missing claims, expired, signed by a stranger, malformed
 header) must raise ``LocalTokenError`` — so the FastAPI dependency can
 turn it into a uniform 401 without leaking internals.
+
+Phase 2.0: the validator is now keystore-driven, so tests use a real
+proxy SQLite fixture with the ``mastio_keys`` migration applied and
+insert rows via ``insert_mastio_key`` rather than handing a leaf key
+to an in-memory issuer.
 """
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 
 import jwt as jose_jwt
 import pytest
+import pytest_asyncio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from mcp_proxy.auth.local_issuer import LocalIssuer
+from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
 from mcp_proxy.auth.local_validator import (
     LocalTokenError,
     LocalTokenPayload,
     require_local_token,
     validate_local_token,
 )
+from mcp_proxy.db import insert_mastio_key
 
 
-def _fresh_issuer(org_id: str = "orga") -> LocalIssuer:
-    key = ec.generate_private_key(ec.SECP256R1())
-    pub_pem = key.public_key().public_bytes(
+def _fresh_pair() -> tuple[ec.EllipticCurvePrivateKey, str, str]:
+    priv = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_pem = priv.public_key().public_bytes(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
-    return LocalIssuer(org_id=org_id, leaf_key=key, leaf_pubkey_pem=pub_pem)
+    return priv, priv_pem, pub_pem
 
 
-def test_validate_roundtrip_issuer_to_validator():
-    issuer = _fresh_issuer("orga")
-    token = issuer.issue("orga::alice", ttl_seconds=60, extra_claims={"tenant": "t-1"})
+async def _install_active_issuer(org_id: str = "orga") -> tuple[LocalIssuer, str]:
+    """Insert a fresh active key into the DB and return an issuer for it.
 
-    payload = validate_local_token(token.token, issuer)
+    Returns ``(issuer, priv_pem)`` so tests that hand-craft tokens can
+    sign with the right private key without re-deriving it.
+    """
+    _, priv_pem, pub_pem = _fresh_pair()
+    kid = compute_kid(pub_pem)
+    now = datetime.now(timezone.utc)
+    await insert_mastio_key(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem,
+        created_at=now.isoformat(), activated_at=now.isoformat(),
+    )
+    active = MastioKey(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem, cert_pem=None,
+        created_at=now, activated_at=now, deprecated_at=None, expires_at=None,
+    )
+    return LocalIssuer(org_id=org_id, active_key=active), priv_pem
+
+
+@pytest_asyncio.fixture
+async def proxy_db(tmp_path, monkeypatch):
+    db_file = tmp_path / "proxy.sqlite"
+    url = f"sqlite+aiosqlite:///{db_file}"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", url)
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    from mcp_proxy.db import dispose_db, init_db
+    await init_db(url)
+    yield
+    await dispose_db()
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_validate_roundtrip_issuer_to_validator(proxy_db):
+    issuer, _ = await _install_active_issuer("orga")
+    token = issuer.issue(
+        "orga::alice", ttl_seconds=60, extra_claims={"tenant": "t-1"},
+    )
+
+    keystore = LocalKeyStore()
+    payload = await validate_local_token(
+        token.token, keystore, expected_issuer=issuer.issuer,
+    )
     assert isinstance(payload, LocalTokenPayload)
     assert payload.agent_id == "orga::alice"
     assert payload.issuer == "cullis-mastio:orga"
@@ -51,30 +106,38 @@ def test_validate_roundtrip_issuer_to_validator():
     assert payload.scope == "local"
     assert payload.expires_at == token.expires_at
     assert payload.issued_at == token.issued_at
-    assert payload.jti  # non-empty
+    assert payload.jti
     assert payload.extra == {"tenant": "t-1"}
 
 
-def test_rejects_token_signed_by_foreign_key():
-    issuer_a = _fresh_issuer("orga")
-    issuer_b = _fresh_issuer("orga")  # same org, different key → different kid
+@pytest.mark.asyncio
+async def test_rejects_token_signed_by_foreign_key(proxy_db):
+    issuer_a, _ = await _install_active_issuer("orga")
+    # A second issuer whose kid is NOT registered in the keystore — the
+    # forgery should be caught at the kid-lookup step, not the signature
+    # check.
+    _, priv_pem_b, pub_pem_b = _fresh_pair()
+    now = datetime.now(timezone.utc)
+    foreign = MastioKey(
+        kid=compute_kid(pub_pem_b), pubkey_pem=pub_pem_b, privkey_pem=priv_pem_b,
+        cert_pem=None, created_at=now, activated_at=now,
+        deprecated_at=None, expires_at=None,
+    )
+    issuer_b = LocalIssuer(org_id="orga", active_key=foreign)
     foreign_token = issuer_b.issue("orga::alice").token
 
+    keystore = LocalKeyStore()
     with pytest.raises(LocalTokenError) as err:
-        validate_local_token(foreign_token, issuer_a)
+        await validate_local_token(
+            foreign_token, keystore, expected_issuer=issuer_a.issuer,
+        )
     assert "kid" in str(err.value).lower()
 
 
-def test_rejects_expired_past_leeway():
-    issuer = _fresh_issuer("orga")
-    # Craft an expired token by issuing with a past ttl — since `issue`
-    # validates ttl > 0, mint it manually using the same private key.
+@pytest.mark.asyncio
+async def test_rejects_expired_past_leeway(proxy_db):
+    issuer, priv_pem = await _install_active_issuer("orga")
     now = int(time.time())
-    priv_pem = issuer._leaf_key.private_bytes(  # noqa: SLF001
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
     expired_token = jose_jwt.encode(
         {
             "iss": issuer.issuer,
@@ -89,19 +152,18 @@ def test_rejects_expired_past_leeway():
         algorithm="ES256",
         headers={"kid": issuer.kid, "typ": "JWT"},
     )
+    keystore = LocalKeyStore()
     with pytest.raises(LocalTokenError) as err:
-        validate_local_token(expired_token, issuer)
+        await validate_local_token(
+            expired_token, keystore, expected_issuer=issuer.issuer,
+        )
     assert "expired" in str(err.value).lower()
 
 
-def test_rejects_wrong_audience():
-    issuer = _fresh_issuer("orga")
+@pytest.mark.asyncio
+async def test_rejects_wrong_audience(proxy_db):
+    issuer, priv_pem = await _install_active_issuer("orga")
     now = int(time.time())
-    priv_pem = issuer._leaf_key.private_bytes(  # noqa: SLF001
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
     wrong_aud = jose_jwt.encode(
         {
             "iss": issuer.issuer,
@@ -116,20 +178,18 @@ def test_rejects_wrong_audience():
         algorithm="ES256",
         headers={"kid": issuer.kid, "typ": "JWT"},
     )
+    keystore = LocalKeyStore()
     with pytest.raises(LocalTokenError) as err:
-        validate_local_token(wrong_aud, issuer)
+        await validate_local_token(
+            wrong_aud, keystore, expected_issuer=issuer.issuer,
+        )
     assert "audience" in str(err.value).lower()
 
 
-def test_rejects_missing_required_claim():
-    issuer = _fresh_issuer("orga")
+@pytest.mark.asyncio
+async def test_rejects_missing_required_claim(proxy_db):
+    issuer, priv_pem = await _install_active_issuer("orga")
     now = int(time.time())
-    priv_pem = issuer._leaf_key.private_bytes(  # noqa: SLF001
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    # Missing ``scope`` — one of the required claims.
     token = jose_jwt.encode(
         {
             "iss": issuer.issuer,
@@ -143,13 +203,16 @@ def test_rejects_missing_required_claim():
         algorithm="ES256",
         headers={"kid": issuer.kid, "typ": "JWT"},
     )
+    keystore = LocalKeyStore()
     with pytest.raises(LocalTokenError):
-        validate_local_token(token, issuer)
+        await validate_local_token(
+            token, keystore, expected_issuer=issuer.issuer,
+        )
 
 
-def test_rejects_unexpected_algorithm():
-    # Hand-craft an HS256 JWT with the right claims but wrong alg.
-    issuer = _fresh_issuer("orga")
+@pytest.mark.asyncio
+async def test_rejects_unexpected_algorithm(proxy_db):
+    issuer, _ = await _install_active_issuer("orga")
     token = jose_jwt.encode(
         {
             "iss": issuer.issuer,
@@ -164,41 +227,73 @@ def test_rejects_unexpected_algorithm():
         algorithm="HS256",
         headers={"kid": issuer.kid},
     )
+    keystore = LocalKeyStore()
     with pytest.raises(LocalTokenError) as err:
-        validate_local_token(token, issuer)
+        await validate_local_token(
+            token, keystore, expected_issuer=issuer.issuer,
+        )
     assert "alg" in str(err.value).lower()
 
 
-def test_require_local_token_endpoint_happy_and_error_paths():
-    app = FastAPI()
-    app.state.local_issuer = None
+def test_require_local_token_endpoint_happy_and_error_paths(tmp_path, monkeypatch):
+    """Synchronous harness around the FastAPI dependency — mounts a fresh
+    proxy DB in the test's own event loop."""
+    db_file = tmp_path / "proxy.sqlite"
+    url = f"sqlite+aiosqlite:///{db_file}"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", url)
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
 
-    @app.get("/probe")
-    async def probe(payload=pytest.importorskip("fastapi").Depends(require_local_token)):  # type: ignore[valid-type]
-        return {"agent": payload.agent_id, "scope": payload.scope}
+    import asyncio
+    from mcp_proxy.db import dispose_db, init_db
 
-    with TestClient(app) as client:
-        # No issuer loaded → 503.
-        resp = client.get("/probe", headers={"Authorization": "Bearer xxx"})
-        assert resp.status_code == 503
+    async def _bootstrap() -> tuple[LocalIssuer, str]:
+        await init_db(url)
+        return await _install_active_issuer("orga")
 
-        # Wire an issuer.
-        issuer = _fresh_issuer("orga")
-        app.state.local_issuer = issuer
-        token = issuer.issue("orga::alice", ttl_seconds=60).token
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            issuer, _ = loop.run_until_complete(_bootstrap())
+        finally:
+            loop.close()
 
-        # No header → 401.
-        assert client.get("/probe").status_code == 401
+        app = FastAPI()
+        app.state.local_issuer = None
+        app.state.local_keystore = None
 
-        # Wrong scheme → 401.
-        resp = client.get("/probe", headers={"Authorization": "DPoP " + token})
-        assert resp.status_code == 401
+        @app.get("/probe")
+        async def probe(payload: LocalTokenPayload = Depends(require_local_token)):
+            return {"agent": payload.agent_id, "scope": payload.scope}
 
-        # Malformed → 401.
-        resp = client.get("/probe", headers={"Authorization": "Bearer not-a-jwt"})
-        assert resp.status_code == 401
+        with TestClient(app) as client:
+            resp = client.get("/probe", headers={"Authorization": "Bearer xxx"})
+            assert resp.status_code == 503
 
-        # Happy path.
-        resp = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
-        assert resp.status_code == 200
-        assert resp.json() == {"agent": "orga::alice", "scope": "local"}
+            app.state.local_issuer = issuer
+            app.state.local_keystore = LocalKeyStore()
+            token = issuer.issue("orga::alice", ttl_seconds=60).token
+
+            assert client.get("/probe").status_code == 401
+            resp = client.get(
+                "/probe", headers={"Authorization": "DPoP " + token},
+            )
+            assert resp.status_code == 401
+            resp = client.get(
+                "/probe", headers={"Authorization": "Bearer not-a-jwt"},
+            )
+            assert resp.status_code == 401
+
+            resp = client.get(
+                "/probe", headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+            assert resp.json() == {"agent": "orga::alice", "scope": "local"}
+    finally:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(dispose_db())
+        finally:
+            loop.close()
+        get_settings.cache_clear()

@@ -1,16 +1,19 @@
-"""ADR-012 Phase 1 — unit tests for ``LocalIssuer`` and the
+"""ADR-012 Phase 1 / Phase 2.0 — unit tests for ``LocalIssuer`` and the
 ``/.well-known/jwks-local.json`` endpoint.
 
 The issuer is the primitive behind every intra-org session token. These
 tests pin the wire format (ES256 claims, kid derivation, JWKS shape) so
-future refactors can't silently break the contract the validator will
-depend on in Phase 4.
+future refactors can't silently break the contract the validator depends
+on. Phase 2.0 shifts the issuer from holding its own leaf key+pubkey
+pair to wrapping a ``MastioKey`` pulled from the keystore; the tests
+reflect that change but keep the same wire-level assertions.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import time
+from datetime import datetime, timezone
 
 import jwt as jose_jwt
 import pytest
@@ -24,24 +27,44 @@ from mcp_proxy.auth.local_issuer import (
     LOCAL_ISSUER_PREFIX,
     LOCAL_SCOPE,
     LocalIssuer,
-    build_from_agent_manager,
 )
+from mcp_proxy.auth.local_keystore import MastioKey, compute_kid
 
 
-def _fresh_key() -> tuple[ec.EllipticCurvePrivateKey, str]:
-    key = ec.generate_private_key(ec.SECP256R1())
-    pub_pem = key.public_key().public_bytes(
+def _fresh_key() -> tuple[ec.EllipticCurvePrivateKey, str, str]:
+    """Return ``(priv_key_obj, priv_pem, pub_pem)`` for a fresh EC P-256 key."""
+    priv = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = priv.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_pem = priv.public_key().public_bytes(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
-    return key, pub_pem
+    return priv, priv_pem, pub_pem
+
+
+def _active_key(priv_pem: str, pub_pem: str) -> MastioKey:
+    """Build an in-memory active ``MastioKey`` without touching the DB."""
+    now = datetime.now(timezone.utc)
+    return MastioKey(
+        kid=compute_kid(pub_pem),
+        pubkey_pem=pub_pem,
+        privkey_pem=priv_pem,
+        cert_pem=None,
+        created_at=now,
+        activated_at=now,
+        deprecated_at=None,
+        expires_at=None,
+    )
 
 
 def _decode_with_issuer(token: str, issuer: LocalIssuer) -> dict:
-    pub_pem = issuer._leaf_pubkey_pem  # noqa: SLF001 — test-only introspection
     return jose_jwt.decode(
         token,
-        pub_pem,
+        issuer.active_key.pubkey_pem,
         algorithms=["ES256"],
         audience=LOCAL_AUDIENCE,
         issuer=issuer.issuer,
@@ -49,8 +72,8 @@ def _decode_with_issuer(token: str, issuer: LocalIssuer) -> dict:
 
 
 def test_issue_produces_decodable_es256_token_with_expected_claims():
-    key, pub_pem = _fresh_key()
-    issuer = LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem)
+    _, priv_pem, pub_pem = _fresh_key()
+    issuer = LocalIssuer(org_id="orga", active_key=_active_key(priv_pem, pub_pem))
 
     before = int(time.time())
     result = issuer.issue("orga::alice", ttl_seconds=60)
@@ -75,12 +98,12 @@ def test_issue_produces_decodable_es256_token_with_expected_claims():
 
 
 def test_kid_is_stable_for_same_pubkey_and_unique_across_keys():
-    key1, pub1 = _fresh_key()
-    key2, pub2 = _fresh_key()
+    _, priv1, pub1 = _fresh_key()
+    _, priv2, pub2 = _fresh_key()
 
-    issuer1a = LocalIssuer(org_id="orga", leaf_key=key1, leaf_pubkey_pem=pub1)
-    issuer1b = LocalIssuer(org_id="orga", leaf_key=key1, leaf_pubkey_pem=pub1)
-    issuer2 = LocalIssuer(org_id="orga", leaf_key=key2, leaf_pubkey_pem=pub2)
+    issuer1a = LocalIssuer(org_id="orga", active_key=_active_key(priv1, pub1))
+    issuer1b = LocalIssuer(org_id="orga", active_key=_active_key(priv1, pub1))
+    issuer2 = LocalIssuer(org_id="orga", active_key=_active_key(priv2, pub2))
 
     assert issuer1a.kid == issuer1b.kid
     assert issuer1a.kid != issuer2.kid
@@ -90,8 +113,8 @@ def test_kid_is_stable_for_same_pubkey_and_unique_across_keys():
 
 
 def test_extra_claims_cannot_overwrite_reserved_fields():
-    key, pub_pem = _fresh_key()
-    issuer = LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem)
+    _, priv_pem, pub_pem = _fresh_key()
+    issuer = LocalIssuer(org_id="orga", active_key=_active_key(priv_pem, pub_pem))
 
     extra = {
         "iss": "attacker",
@@ -117,8 +140,8 @@ def test_extra_claims_cannot_overwrite_reserved_fields():
 
 
 def test_issue_rejects_invalid_inputs():
-    key, pub_pem = _fresh_key()
-    issuer = LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem)
+    _, priv_pem, pub_pem = _fresh_key()
+    issuer = LocalIssuer(org_id="orga", active_key=_active_key(priv_pem, pub_pem))
 
     with pytest.raises(ValueError):
         issuer.issue("", ttl_seconds=60)
@@ -131,18 +154,26 @@ def test_issue_rejects_invalid_inputs():
 
 
 def test_constructor_rejects_bad_inputs():
-    key, pub_pem = _fresh_key()
+    _, priv_pem, pub_pem = _fresh_key()
     with pytest.raises(ValueError):
-        LocalIssuer(org_id="", leaf_key=key, leaf_pubkey_pem=pub_pem)
-    with pytest.raises(ValueError):
-        LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem="")
+        LocalIssuer(org_id="", active_key=_active_key(priv_pem, pub_pem))
     with pytest.raises(TypeError):
-        LocalIssuer(org_id="orga", leaf_key="not-a-key", leaf_pubkey_pem=pub_pem)  # type: ignore[arg-type]
+        LocalIssuer(org_id="orga", active_key="not-a-key")  # type: ignore[arg-type]
+
+    # An inactive (never-activated or deprecated) key cannot anchor an issuer.
+    now = datetime.now(timezone.utc)
+    never_active = MastioKey(
+        kid=compute_kid(pub_pem), pubkey_pem=pub_pem, privkey_pem=priv_pem,
+        cert_pem=None, created_at=now,
+        activated_at=None, deprecated_at=None, expires_at=None,
+    )
+    with pytest.raises(ValueError, match="not currently active"):
+        LocalIssuer(org_id="orga", active_key=never_active)
 
 
 def test_jwks_roundtrip_matches_leaf_pubkey():
-    key, pub_pem = _fresh_key()
-    issuer = LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem)
+    priv, priv_pem, pub_pem = _fresh_key()
+    issuer = LocalIssuer(org_id="orga", active_key=_active_key(priv_pem, pub_pem))
 
     jwks = issuer.jwks()
     assert "keys" in jwks and len(jwks["keys"]) == 1
@@ -161,40 +192,9 @@ def test_jwks_roundtrip_matches_leaf_pubkey():
         pad = "=" * (-len(s) % 4)
         return int.from_bytes(base64.urlsafe_b64decode(s + pad), "big")
 
-    numbers = key.public_key().public_numbers()
+    numbers = priv.public_key().public_numbers()
     assert _unb64u(jwk["x"]) == numbers.x
     assert _unb64u(jwk["y"]) == numbers.y
-
-
-def test_build_from_agent_manager_happy_and_error_paths():
-    key, pub_pem = _fresh_key()
-
-    class _LoadedManager:
-        mastio_loaded = True
-        _mastio_leaf_key = key
-
-        def get_mastio_pubkey_pem(self) -> str:
-            return pub_pem
-
-    issuer = build_from_agent_manager("orga", _LoadedManager())
-    assert issuer.org_id == "orga"
-    assert issuer.kid.startswith("mastio-")
-
-    class _Unloaded:
-        mastio_loaded = False
-
-    with pytest.raises(RuntimeError):
-        build_from_agent_manager("orga", _Unloaded())
-
-    class _NoKey:
-        mastio_loaded = True
-        _mastio_leaf_key = None
-
-        def get_mastio_pubkey_pem(self) -> str:  # pragma: no cover — unreachable
-            return pub_pem
-
-    with pytest.raises(RuntimeError):
-        build_from_agent_manager("orga", _NoKey())
 
 
 def test_jwks_endpoint_returns_key_when_issuer_loaded():
@@ -209,9 +209,9 @@ def test_jwks_endpoint_returns_key_when_issuer_loaded():
         resp = client.get("/.well-known/jwks-local.json")
         assert resp.status_code == 503
 
-        key, pub_pem = _fresh_key()
+        _, priv_pem, pub_pem = _fresh_key()
         app.state.local_issuer = LocalIssuer(
-            org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem,
+            org_id="orga", active_key=_active_key(priv_pem, pub_pem),
         )
         resp = client.get("/.well-known/jwks-local.json")
         assert resp.status_code == 200

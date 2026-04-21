@@ -22,12 +22,14 @@ from cryptography.x509 import (
 from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
 from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,
     get_agent as db_get_agent,
     get_config,
+    insert_mastio_key,
     set_config,
 )
 
@@ -59,12 +61,19 @@ class AgentManager:
         self._trust_domain = trust_domain
         self._org_ca_key: rsa.RSAPrivateKey | None = None
         self._org_ca_cert: x509.Certificate | None = None
-        # ADR-009 Phase 1 — Mastio CA (intermediate) + leaf identity.
-        # Generated lazily at boot via ``ensure_mastio_identity()``.
+        # ADR-009 Phase 1 — Mastio CA (intermediate). Persisted in
+        # ``proxy_config.mastio_ca_{key,cert}``, loaded lazily at boot
+        # via ``ensure_mastio_identity()``.
         self._mastio_ca_key: ec.EllipticCurvePrivateKey | None = None
         self._mastio_ca_cert: x509.Certificate | None = None
-        self._mastio_leaf_key: ec.EllipticCurvePrivateKey | None = None
-        self._mastio_leaf_cert: x509.Certificate | None = None
+        # ADR-012 Phase 2.0 — the active leaf ``MastioKey`` pulled from
+        # the keystore. Exposes ``cert_pem`` / ``pubkey_pem`` /
+        # ``privkey_pem`` + ``load_private_key()`` for the ADR-009
+        # counter-signature path. Rotation (Phase 2.1) will invalidate
+        # this cache; callers invoke ``refresh_active_key()`` to pick
+        # up the new row.
+        self._keystore = LocalKeyStore()
+        self._active_key: MastioKey | None = None
 
     # ── CA loading ──────────────────────────────────────────────────
 
@@ -438,22 +447,30 @@ class AgentManager:
     def mastio_loaded(self) -> bool:
         return (
             self._mastio_ca_cert is not None
-            and self._mastio_leaf_cert is not None
-            and self._mastio_leaf_key is not None
+            and self._active_key is not None
         )
+
+    async def refresh_active_key(self) -> None:
+        """Re-read the active Mastio leaf from the keystore.
+
+        Called by the proxy lifespan after a Phase 2.1 rotation event so
+        cached holders (issuer, counter-sign path) can observe the new
+        current signer.
+        """
+        self._active_key = await self._keystore.current_signer()
 
     async def ensure_mastio_identity(self) -> None:
         """Load or generate the Mastio CA + leaf identity (EC P-256 / ES256).
 
-        Persisted in ``proxy_config`` under keys ``mastio_ca_key``,
-        ``mastio_ca_cert``, ``mastio_leaf_key``, ``mastio_leaf_cert``. Idempotent:
-        if all four are already present, it loads them; otherwise it generates
-        a fresh intermediate CA signed by the Org CA (``pathLen=0`` — leaves
-        only) and a fresh leaf signed by the Mastio CA. Required before the
-        proxy can counter-sign Court requests.
+        Intermediate CA lives in ``proxy_config`` under
+        ``mastio_ca_key`` / ``mastio_ca_cert``. The leaf key + cert live
+        in ``mastio_keys`` (ADR-012 Phase 2.0) as a row that is either
+        active (current signer) or deprecated-in-grace. Idempotent:
+        when both CA and an active key exist the method just caches
+        them; otherwise it mints whichever piece is missing.
 
-        Raises ``RuntimeError`` if the Org CA is not loaded — the caller must
-        gate on :attr:`ca_loaded`.
+        Raises ``RuntimeError`` if the Org CA is not loaded — the caller
+        must gate on :attr:`ca_loaded`.
         """
         if not self.ca_loaded:
             raise RuntimeError(
@@ -462,35 +479,48 @@ class AgentManager:
 
         ca_key_pem = await get_config("mastio_ca_key")
         ca_cert_pem = await get_config("mastio_ca_cert")
-        leaf_key_pem = await get_config("mastio_leaf_key")
-        leaf_cert_pem = await get_config("mastio_leaf_cert")
 
-        if ca_key_pem and ca_cert_pem and leaf_key_pem and leaf_cert_pem:
+        if ca_key_pem and ca_cert_pem:
             self._mastio_ca_key = serialization.load_pem_private_key(
                 ca_key_pem.encode(), password=None,
             )
             self._mastio_ca_cert = x509.load_pem_x509_certificate(
                 ca_cert_pem.encode(),
             )
-            self._mastio_leaf_key = serialization.load_pem_private_key(
-                leaf_key_pem.encode(), password=None,
-            )
-            self._mastio_leaf_cert = x509.load_pem_x509_certificate(
-                leaf_cert_pem.encode(),
-            )
-            logger.info("Mastio identity loaded from proxy_config")
+
+        try:
+            self._active_key = await self._keystore.current_signer()
+        except RuntimeError:
+            self._active_key = None
+
+        if self.mastio_loaded:
+            logger.info("Mastio identity loaded (ca + active key)")
             return
 
         await self._generate_mastio_identity()
 
     async def _generate_mastio_identity(self) -> None:
-        """Mint a fresh Mastio CA (intermediate) + leaf cert, persist both."""
+        """Mint whichever Mastio pieces are missing — CA and/or leaf.
+
+        Runs idempotently against partial state so a crashed boot (CA
+        persisted, leaf insert failed) or a planned key rotation can
+        complete the identity without re-rooting the intermediate.
+        """
         now = datetime.now(timezone.utc)
 
-        # Intermediate CA — EC P-256, pathLen=0 (cannot sign further CAs).
-        # 3y validity: online signer intended to be rotated ahead of expiry
-        # (NIST SP 800-57 Part 1 §5.3.6 guidance for signing keys in active
-        # use). Automatic rotation is tracked in issue #261.
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            await self._mint_mastio_ca(now)
+
+        if self._active_key is None:
+            await self._mint_mastio_leaf(now)
+
+    async def _mint_mastio_ca(self, now: datetime) -> None:
+        """Mint a fresh EC P-256 intermediate CA and persist it.
+
+        3y validity: online signer intended to be rotated ahead of
+        expiry (NIST SP 800-57 Part 1 §5.3.6 guidance for signing keys
+        in active use). Automatic rotation is tracked in issue #261.
+        """
         mastio_ca_key = ec.generate_private_key(ec.SECP256R1())
         mastio_ca_subject = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, f"{self._org_id} Mastio CA"),
@@ -529,7 +559,24 @@ class AgentManager:
             .sign(self._org_ca_key, hashes.SHA256())
         )
 
-        # Leaf — EC P-256, SAN SPIFFE URI under /proxy/{org}.
+        await set_config("mastio_ca_key", _priv_to_pem(mastio_ca_key))
+        await set_config("mastio_ca_cert", _cert_to_pem(mastio_ca_cert))
+        self._mastio_ca_key = mastio_ca_key
+        self._mastio_ca_cert = mastio_ca_cert
+        logger.info("Mastio intermediate CA minted (CN=%s)", mastio_ca_subject)
+
+    async def _mint_mastio_leaf(self, now: datetime) -> None:
+        """Mint a fresh EC P-256 leaf under the existing intermediate CA.
+
+        The keypair + cert are inserted into ``mastio_keys`` with
+        ``activated_at=now`` (no previous active row in the Phase 2.0
+        cold-start path — multi-row transitions land in Phase 2.1).
+        The cached ``self._active_key`` is refreshed so subsequent
+        signing / counter-signing calls see the new row.
+        """
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError("Mastio CA not loaded — cannot sign leaf")
+
         leaf_key = ec.generate_private_key(ec.SECP256R1())
         proxy_spiffe = f"spiffe://{self._trust_domain}/proxy/{self._org_id}"
         leaf_subject = x509.Name([
@@ -539,7 +586,7 @@ class AgentManager:
         leaf_cert = (
             x509.CertificateBuilder()
             .subject_name(leaf_subject)
-            .issuer_name(mastio_ca_cert.subject)
+            .issuer_name(self._mastio_ca_cert.subject)
             .public_key(leaf_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=5))
@@ -552,59 +599,70 @@ class AgentManager:
                 x509.BasicConstraints(ca=False, path_length=None),
                 critical=True,
             )
-            .sign(mastio_ca_key, hashes.SHA256())
+            .sign(self._mastio_ca_key, hashes.SHA256())
         )
 
-        # Persist.
-        await set_config("mastio_ca_key", _priv_to_pem(mastio_ca_key))
-        await set_config("mastio_ca_cert", _cert_to_pem(mastio_ca_cert))
-        await set_config("mastio_leaf_key", _priv_to_pem(leaf_key))
-        await set_config("mastio_leaf_cert", _cert_to_pem(leaf_cert))
+        priv_pem = _priv_to_pem(leaf_key)
+        cert_pem = _cert_to_pem(leaf_cert)
+        pub_pem = leaf_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        kid = compute_kid(pub_pem)
+        now_iso = now.isoformat()
 
-        self._mastio_ca_key = mastio_ca_key
-        self._mastio_ca_cert = mastio_ca_cert
-        self._mastio_leaf_key = leaf_key
-        self._mastio_leaf_cert = leaf_cert
+        await insert_mastio_key(
+            kid=kid,
+            pubkey_pem=pub_pem,
+            privkey_pem=priv_pem,
+            cert_pem=cert_pem,
+            created_at=now_iso,
+            activated_at=now_iso,
+        )
+        self._active_key = await self._keystore.find_by_kid(kid)
 
         logger.info(
-            "Mastio identity generated — CA=%s, leaf SAN=%s",
-            mastio_ca_subject, proxy_spiffe,
+            "Mastio leaf minted — kid=%s, SAN=%s", kid, proxy_spiffe,
         )
+
+    def _require_active(self) -> MastioKey:
+        if self._active_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError(
+                "Mastio identity not loaded — call ensure_mastio_identity() first",
+            )
+        return self._active_key
 
     def get_mastio_credentials(self) -> tuple[str, str]:
         """Return ``(leaf_cert_pem, leaf_key_pem)`` for counter-signing.
 
-        Raises ``RuntimeError`` if :meth:`ensure_mastio_identity` has not run.
+        Raises ``RuntimeError`` if :meth:`ensure_mastio_identity` has not run,
+        or if the active keystore row lacks an accompanying cert (partial
+        state that shouldn't occur in normal operation).
         """
-        if not self.mastio_loaded:
+        active = self._require_active()
+        if active.cert_pem is None:
             raise RuntimeError(
-                "Mastio identity not loaded — call ensure_mastio_identity() first",
+                f"active mastio key {active.kid!r} has no cert_pem",
             )
-        return _cert_to_pem(self._mastio_leaf_cert), _priv_to_pem(self._mastio_leaf_key)
+        return active.cert_pem, active.privkey_pem
 
     def get_mastio_pubkey_pem(self) -> str:
         """Return the leaf EC P-256 public key in PEM format.
 
         This is what gets pinned to the Court at onboarding (join/attach
-        ``mastio_pubkey``). The Court verifies the counter-signature header
-        against this key.
+        ``mastio_pubkey``). The Court verifies the counter-signature
+        header against this key.
         """
-        if not self.mastio_loaded:
-            raise RuntimeError(
-                "Mastio identity not loaded — call ensure_mastio_identity() first",
-            )
-        return self._mastio_leaf_cert.public_key().public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode()
+        return self._require_active().pubkey_pem
 
     def countersign(self, data: bytes) -> str:
         """ES256 counter-signature over ``data``, base64url no-pad.
 
-        Used by ``BrokerBridge`` to attest every ``/v1/auth/token`` call as
-        proxied through this mastio. The signature goes into the
-        ``X-Cullis-Mastio-Signature`` header; the Court verifies it against
-        the PEM pinned at onboarding in ``organizations.mastio_pubkey``.
+        Used by ``BrokerBridge`` to attest every ``/v1/auth/token`` call
+        as proxied through this mastio. The signature goes into the
+        ``X-Cullis-Mastio-Signature`` header; the Court verifies it
+        against the PEM pinned at onboarding in
+        ``organizations.mastio_pubkey``.
 
         Raises ``RuntimeError`` if :meth:`ensure_mastio_identity` has not run.
         """
@@ -612,11 +670,9 @@ class AgentManager:
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec as _ec
 
-        if not self.mastio_loaded:
-            raise RuntimeError(
-                "Mastio identity not loaded — call ensure_mastio_identity() first",
-            )
-        sig = self._mastio_leaf_key.sign(data, _ec.ECDSA(hashes.SHA256()))
+        active = self._require_active()
+        priv_key = active.load_private_key()
+        sig = priv_key.sign(data, _ec.ECDSA(hashes.SHA256()))
         return base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
 
     # ── Credential retrieval ────────────────────────────────────────
