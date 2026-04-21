@@ -24,7 +24,6 @@ from mcp_proxy.auth.mastio_rotation import (
     build_proof,
     verify_proof,
 )
-from mcp_proxy.db import insert_mastio_key
 
 
 def _fresh_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
@@ -308,7 +307,6 @@ async def test_rotate_counter_signs_with_new_key(agent_manager_with_identity):
     import base64
     import cryptography.hazmat.primitives.asymmetric.ec as _ec
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
     sig_raw = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
     # countersign() emits a DER-encoded signature (``priv.sign`` default).
