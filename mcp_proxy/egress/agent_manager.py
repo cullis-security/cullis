@@ -23,6 +23,7 @@ from cryptography.x509.oid import NameOID
 
 from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
 from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
+from mcp_proxy.auth.mastio_rotation import ContinuityProof, build_proof
 from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
     create_agent as db_create_agent,
@@ -31,7 +32,10 @@ from mcp_proxy.db import (
     get_config,
     insert_mastio_key,
     set_config,
+    swap_active_mastio_key,
 )
+
+from typing import Awaitable, Callable
 
 logger = logging.getLogger("mcp_proxy.egress.agent_manager")
 
@@ -705,6 +709,121 @@ class AgentManager:
         header against this key.
         """
         return self._require_active().pubkey_pem
+
+    async def rotate_mastio_key(
+        self,
+        *,
+        grace_days: int = 7,
+        propagator: "Callable[[ContinuityProof, str], Awaitable[None]] | None" = None,
+    ) -> MastioKey:
+        """Rotate the Mastio leaf key (ADR-012 Phase 2.1, issue #261).
+
+        Mints a fresh EC P-256 leaf under the existing intermediate CA,
+        signs a continuity proof with the current (old) key, propagates
+        the new pubkey + proof to the Court via ``propagator``, and then
+        atomically swaps the active row in ``mastio_keys``.
+
+        ``grace_days`` controls how long the old kid stays
+        verifier-accepted after deprecation. Callers that want a
+        different cadence override it; the default of 7 is the
+        repository-wide baseline for signing-key rotations.
+
+        ``propagator`` receives the built ``ContinuityProof`` plus the
+        new cert PEM and is expected to call the Court. If it raises,
+        no DB mutation happens (Court-first ordering). If it is
+        ``None`` (tests / offline bootstrap), the Court step is
+        skipped entirely — the resulting rotation is purely local and
+        will leave the Court out of sync; callers **must** pass a real
+        propagator in production.
+
+        Returns the freshly-activated :class:`MastioKey` (already
+        cached as ``self._active_key``).
+
+        Raises:
+            RuntimeError: if identity is not loaded (gate on
+                :attr:`mastio_loaded`), if ``grace_days`` is not
+                positive, or if the DB swap finds an inconsistent
+                state.
+        """
+        if grace_days <= 0:
+            raise ValueError("grace_days must be a positive integer")
+        old = self._require_active()
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError("Mastio intermediate CA not loaded")
+
+        now = datetime.now(timezone.utc)
+        new_leaf_key = ec.generate_private_key(ec.SECP256R1())
+        proxy_spiffe = f"spiffe://{self._trust_domain}/proxy/{self._org_id}"
+        leaf_subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, f"proxy:{self._org_id}"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
+        ])
+        new_cert = (
+            x509.CertificateBuilder()
+            .subject_name(leaf_subject)
+            .issuer_name(self._mastio_ca_cert.subject)
+            .public_key(new_leaf_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=365))
+            .add_extension(
+                SubjectAlternativeName([UniformResourceIdentifier(proxy_spiffe)]),
+                critical=False,
+            )
+            .add_extension(
+                x509.BasicConstraints(ca=False, path_length=None),
+                critical=True,
+            )
+            .sign(self._mastio_ca_key, hashes.SHA256())
+        )
+
+        new_priv_pem = _priv_to_pem(new_leaf_key)
+        new_cert_pem = _cert_to_pem(new_cert)
+        new_pub_pem = new_leaf_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        new_kid = compute_kid(new_pub_pem)
+
+        proof = build_proof(
+            old_priv_key=old.load_private_key(),
+            old_kid=old.kid,
+            new_kid=new_kid,
+            new_pubkey_pem=new_pub_pem,
+            issued_at=now,
+        )
+
+        # Court-first: if propagation fails, no local state change.
+        if propagator is not None:
+            await propagator(proof, new_cert_pem)
+        else:
+            logger.warning(
+                "rotate_mastio_key: no propagator provided — Court will "
+                "stay pinned on the old pubkey; production callers must "
+                "supply one",
+            )
+
+        now_iso = now.isoformat()
+        grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
+        await swap_active_mastio_key(
+            new_kid=new_kid,
+            new_pubkey_pem=new_pub_pem,
+            new_privkey_pem=new_priv_pem,
+            new_cert_pem=new_cert_pem,
+            new_activated_at=now_iso,
+            new_created_at=now_iso,
+            old_kid=old.kid,
+            old_deprecated_at=now_iso,
+            old_expires_at=grace_end_iso,
+        )
+
+        await self.refresh_active_key()
+        logger.info(
+            "Mastio key rotated — old_kid=%s, new_kid=%s, grace_days=%d",
+            old.kid, new_kid, grace_days,
+        )
+        assert self._active_key is not None
+        return self._active_key
 
     def countersign(self, data: bytes) -> str:
         """ES256 counter-signature over ``data``, base64url no-pad.

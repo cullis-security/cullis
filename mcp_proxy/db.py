@@ -487,6 +487,78 @@ async def get_mastio_keys_active() -> list[dict]:
         return [dict(row) for row in result.mappings().all()]
 
 
+async def swap_active_mastio_key(
+    *,
+    new_kid: str,
+    new_pubkey_pem: str,
+    new_privkey_pem: str,
+    new_cert_pem: str | None,
+    new_activated_at: str,
+    new_created_at: str,
+    old_kid: str,
+    old_deprecated_at: str,
+    old_expires_at: str,
+) -> None:
+    """Atomically insert a new active mastio key and deprecate the old one.
+
+    Phase 2.1 rotation primitive. Runs the two writes in a single DB
+    transaction so the ``exactly-one-active`` invariant is never
+    observed broken from a parallel reader (e.g. the verifier doing
+    ``find_by_kid`` during the swap).
+
+    Both rows are required: the keystore rejects zero or multiple active
+    rows, and the verifier needs the old row to remain resolvable
+    through its grace window.
+
+    Raises the underlying DBAPI error if either statement fails — the
+    transaction is then rolled back by the ``get_db()`` context exit
+    so the caller observes all-or-nothing semantics.
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO mastio_keys
+                    (kid, pubkey_pem, privkey_pem, cert_pem, created_at,
+                     activated_at, deprecated_at, expires_at)
+                VALUES
+                    (:kid, :pub, :priv, :cert, :created,
+                     :activated, NULL, NULL)
+                """
+            ),
+            {
+                "kid": new_kid,
+                "pub": new_pubkey_pem,
+                "priv": new_privkey_pem,
+                "cert": new_cert_pem,
+                "created": new_created_at,
+                "activated": new_activated_at,
+            },
+        )
+        result = await conn.execute(
+            text(
+                """
+                UPDATE mastio_keys
+                   SET deprecated_at = :deprecated,
+                       expires_at    = :expires
+                 WHERE kid = :kid
+                   AND activated_at IS NOT NULL
+                   AND deprecated_at IS NULL
+                """
+            ),
+            {
+                "kid": old_kid,
+                "deprecated": old_deprecated_at,
+                "expires": old_expires_at,
+            },
+        )
+        if result.rowcount != 1:
+            raise RuntimeError(
+                f"failed to deprecate old mastio key {old_kid!r}: "
+                f"UPDATE touched {result.rowcount} rows"
+            )
+
+
 async def get_mastio_keys_valid() -> list[dict]:
     """All rows still accepted for token verification.
 
