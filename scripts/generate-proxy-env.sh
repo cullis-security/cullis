@@ -76,9 +76,9 @@ case "$MODE" in
         ENVIRONMENT="production"
         ;;
     defaults)
-        BROKER="http://broker:8000"
-        PUBLIC="http://localhost:9100"
-        JWKS="http://broker:8000/.well-known/jwks.json"
+        BROKER="${BROKER_URL:-http://broker:8000}"
+        PUBLIC="${PROXY_PUBLIC_URL:-http://localhost:9100}"
+        JWKS="${BROKER%/}/.well-known/jwks.json"
         ENVIRONMENT="development"
         ;;
     interactive)
