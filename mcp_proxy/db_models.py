@@ -102,6 +102,43 @@ class ProxyConfig(Base):
     value = Column(Text, nullable=False)
 
 
+class MastioKeyRow(Base):
+    """ADR-012 Phase 2.0 — multi-key store for the Mastio ES256 identity.
+
+    A row per historical ES256 leaf keypair. Exactly one row has
+    ``activated_at IS NOT NULL AND deprecated_at IS NULL`` at any time:
+    that is the current signer used by ``LocalIssuer`` and by the
+    ADR-009 counter-signature path.
+
+    Timestamps are ISO-8601 UTC strings (``Text``), matching the
+    convention used by ``internal_agents`` and ``pending_enrollments``.
+    """
+    __tablename__ = "mastio_keys"
+
+    # Deterministic ``mastio-<sha256(pubkey_pem)[:16]>`` — the ``kid``
+    # that the LocalIssuer stamps into JWT headers.
+    kid = Column(Text, primary_key=True)
+    pubkey_pem = Column(Text, nullable=False)
+    privkey_pem = Column(Text, nullable=False)
+    # The X.509 leaf cert currently chained under this key. Nullable so
+    # the CA can re-issue without churning the key, but in practice
+    # ``ensure_mastio_identity`` always writes them together.
+    cert_pem = Column(Text, nullable=True)
+    created_at = Column(Text, nullable=False)
+    # Set when the key becomes the current signer. NULL = never activated
+    # (staged only, will be unusual until rotation lands in Phase 2.1).
+    activated_at = Column(Text, nullable=True)
+    # Set when a newer key takes over. NULL while this key is current.
+    deprecated_at = Column(Text, nullable=True)
+    # After this timestamp the verifier stops accepting this key.
+    # NULL = never expires (legacy / single-key mode).
+    expires_at = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_mastio_keys_active", "activated_at", "deprecated_at"),
+    )
+
+
 class PendingEnrollment(Base):
     """Connector enrollment requests awaiting admin decision.
 

@@ -85,8 +85,14 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
     if not _is_local_kid(token, issuer):
         return None
 
+    keystore = getattr(request.app.state, "local_keystore", None)
+    if keystore is None:
+        return None
+
     try:
-        payload = validate_local_token(token, issuer)
+        payload = await validate_local_token(
+            token, keystore, expected_issuer=issuer.issuer,
+        )
     except LocalTokenError as exc:
         # kid matched this Mastio but validation still failed — that's a
         # spoofing or tamper attempt, surface 401 rather than falling
@@ -152,8 +158,14 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
     if not _is_local_kid(token, issuer):
         return None
 
+    keystore = getattr(request.app.state, "local_keystore", None)
+    if keystore is None:
+        return None
+
     try:
-        payload = validate_local_token(token, issuer)
+        payload = await validate_local_token(
+            token, keystore, expected_issuer=issuer.issuer,
+        )
     except LocalTokenError as exc:
         _log.info("local token rejected (egress): %s", exc)
         raise HTTPException(

@@ -410,6 +410,107 @@ async def set_config(key: str, value: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Mastio keys (ADR-012 Phase 2.0 multi-key store, issue #261)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def insert_mastio_key(
+    *,
+    kid: str,
+    pubkey_pem: str,
+    privkey_pem: str,
+    cert_pem: str | None = None,
+    created_at: str,
+    activated_at: str | None = None,
+    deprecated_at: str | None = None,
+    expires_at: str | None = None,
+) -> None:
+    """Insert a new row into ``mastio_keys``.
+
+    Raises the underlying DBAPI error on duplicate ``kid`` (primary key).
+    Timestamps are stored as ISO-8601 UTC strings to match the rest of
+    the proxy schema.
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO mastio_keys
+                    (kid, pubkey_pem, privkey_pem, cert_pem, created_at,
+                     activated_at, deprecated_at, expires_at)
+                VALUES
+                    (:kid, :pub, :priv, :cert, :created,
+                     :activated, :deprecated, :expires)
+                """
+            ),
+            {
+                "kid": kid,
+                "pub": pubkey_pem,
+                "priv": privkey_pem,
+                "cert": cert_pem,
+                "created": created_at,
+                "activated": activated_at,
+                "deprecated": deprecated_at,
+                "expires": expires_at,
+            },
+        )
+
+
+async def get_mastio_key_by_kid(kid: str) -> dict | None:
+    """Fetch a single mastio key row by kid."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text("SELECT * FROM mastio_keys WHERE kid = :kid"),
+            {"kid": kid},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def get_mastio_keys_active() -> list[dict]:
+    """All rows that are the current signer (activated, not deprecated).
+
+    The invariant is exactly one; callers raise on 0 or >1. The query
+    returns a list so the caller can surface a clear error rather than
+    a silent ``.first()`` miss.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                SELECT * FROM mastio_keys
+                 WHERE activated_at IS NOT NULL
+                   AND deprecated_at IS NULL
+                 ORDER BY activated_at ASC
+                """
+            )
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def get_mastio_keys_valid() -> list[dict]:
+    """All rows still accepted for token verification.
+
+    An activated key stays valid until its ``expires_at`` (if set) has
+    passed. Deprecated-but-not-yet-expired keys remain in the set —
+    that is the grace-period mechanic used by the verifier during
+    rotation (Phase 2.2). Never-activated rows are excluded.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                SELECT * FROM mastio_keys
+                 WHERE activated_at IS NOT NULL
+                   AND (expires_at IS NULL OR expires_at > :now)
+                 ORDER BY activated_at ASC
+                """
+            ),
+            {"now": datetime.now(timezone.utc).isoformat()},
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

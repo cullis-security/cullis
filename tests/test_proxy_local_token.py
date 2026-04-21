@@ -133,8 +133,12 @@ async def flag_on_proxy(tmp_path, monkeypatch):
         mgr = app.state.agent_manager
         await mgr.load_org_ca(ca_key_pem, ca_cert_pem)
         await mgr.ensure_mastio_identity()
-        from mcp_proxy.auth.local_issuer import build_from_agent_manager
-        app.state.local_issuer = build_from_agent_manager("acme", mgr)
+        from mcp_proxy.auth.local_issuer import build_from_keystore
+        from mcp_proxy.auth.local_keystore import LocalKeyStore
+        app.state.local_keystore = LocalKeyStore()
+        app.state.local_issuer = await build_from_keystore(
+            "acme", app.state.local_keystore,
+        )
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -160,7 +164,7 @@ async def test_local_token_issued_from_valid_assertion(flag_on_proxy):
     assert body["issued_by"] == "cullis-mastio:acme"
 
     issuer = ctx["app"].state.local_issuer
-    pub_pem = issuer._leaf_pubkey_pem  # noqa: SLF001
+    pub_pem = issuer.active_key.pubkey_pem
     claims = jose_jwt.decode(
         body["access_token"],
         pub_pem,

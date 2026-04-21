@@ -163,16 +163,20 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
 
-    # ADR-012 Phase 1 — local JWT issuer. Signs intra-org session tokens
-    # with the Mastio leaf key so the Court never sees login traffic for
-    # MCP/intra-org operations. Requires the Mastio identity to be loaded;
-    # degrades soft (``local_issuer = None``) otherwise so lifespan never
-    # blocks on this.
+    # ADR-012 Phase 2.0 — keystore + issuer. The keystore is always
+    # available (pure DB read view), the issuer requires that the Mastio
+    # identity has loaded a current signer. The validator dependency
+    # expects both on ``app.state``, so we publish them together and
+    # degrade soft (both None) if identity bootstrap failed above.
+    from mcp_proxy.auth.local_keystore import LocalKeyStore
+    app.state.local_keystore = LocalKeyStore()
     app.state.local_issuer = None
     if getattr(agent_mgr, "mastio_loaded", False) and org_id:
         try:
-            from mcp_proxy.auth.local_issuer import build_from_agent_manager
-            app.state.local_issuer = build_from_agent_manager(org_id, agent_mgr)
+            from mcp_proxy.auth.local_issuer import build_from_keystore
+            app.state.local_issuer = await build_from_keystore(
+                org_id, app.state.local_keystore,
+            )
             _log.info(
                 "LocalIssuer initialized (kid=%s, iss=%s)",
                 app.state.local_issuer.kid, app.state.local_issuer.issuer,

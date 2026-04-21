@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from mcp_proxy.auth.local_issuer import LocalIssuer
+from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
 from mcp_proxy.auth.dependencies import get_authenticated_agent
 from mcp_proxy.models import TokenPayload
 
@@ -56,15 +57,33 @@ async def app_with_flag_on(tmp_path, monkeypatch):
         api_key_hash=hash_api_key(raw),
     )
 
+    from datetime import datetime, timezone
+
     key = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
     pub_pem = key.public_key().public_bytes(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
-    issuer = LocalIssuer(org_id="orga", leaf_key=key, leaf_pubkey_pem=pub_pem)
+    kid = compute_kid(pub_pem)
+    now = datetime.now(timezone.utc)
+    await db_mod.insert_mastio_key(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem,
+        created_at=now.isoformat(), activated_at=now.isoformat(),
+    )
+    active = MastioKey(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem, cert_pem=None,
+        created_at=now, activated_at=now, deprecated_at=None, expires_at=None,
+    )
+    issuer = LocalIssuer(org_id="orga", active_key=active)
 
     app = FastAPI()
     app.state.local_issuer = issuer
+    app.state.local_keystore = LocalKeyStore()
 
     @app.get("/probe")
     async def probe(agent: TokenPayload = pytest.importorskip("fastapi").Depends(get_authenticated_agent)):  # type: ignore[valid-type]
@@ -159,6 +178,7 @@ async def app_with_flag_off(tmp_path, monkeypatch):
 
     app = FastAPI()
     app.state.local_issuer = None
+    app.state.local_keystore = None
 
     @app.get("/probe")
     async def probe(agent: TokenPayload = pytest.importorskip("fastapi").Depends(get_authenticated_agent)):  # type: ignore[valid-type]
