@@ -152,7 +152,7 @@ async def test_list_returns_empty_when_no_migrations_registered(
     proxy_logged_in, fake_pkg,
 ):
     _, client = proxy_logged_in
-    resp = await client.get("/proxy/updates")
+    resp = await client.get("/proxy/updates/api")
     assert resp.status_code == 200
     assert resp.json() == {"updates": []}
 
@@ -174,7 +174,7 @@ async def test_list_returns_migration_metadata_and_db_state(
         detected_at="2099-01-01T00:00:00+00:00",
     )
 
-    resp = await client.get("/proxy/updates")
+    resp = await client.get("/proxy/updates/api")
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["updates"]) == 1
@@ -201,7 +201,7 @@ async def test_list_shows_migration_without_db_row(
     _, client = proxy_logged_in
     _make_migration(fake_pkg, "Beta", "2099-02-01-beta")
 
-    resp = await client.get("/proxy/updates")
+    resp = await client.get("/proxy/updates/api")
     body = resp.json()
     assert body["updates"][0]["db_status"] is None
     assert body["updates"][0]["applied_at"] is None
@@ -353,6 +353,59 @@ async def test_apply_missing_confirm_text_returns_400(
         data={"csrf_token": csrf},
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_apply_retry_from_failed_status(proxy_logged_in, fake_pkg):
+    """PR 5: apply() accepts status='failed' and clears the stale error.
+
+    Retry semantics: the admin fixed whatever made up() fail and re-runs.
+    up() is documented idempotent (PR 1 ABC contract), so the second call
+    is safe. Post-success the error field must be NULL — a stale error
+    next to a successful apply would confuse the UI badge and the audit
+    trail.
+    """
+    _, client = proxy_logged_in
+    _make_migration(fake_pkg, "RetryOK", "2099-retry-01")
+
+    from mcp_proxy.db import (
+        insert_pending_update,
+        update_pending_update_status,
+        get_pending_updates,
+    )
+
+    # Seed the prior-failed state — row exists, status='failed',
+    # error populated.
+    await insert_pending_update(
+        migration_id="2099-retry-01",
+        detected_at="2099-01-01T00:00:00+00:00",
+    )
+    await update_pending_update_status(
+        migration_id="2099-retry-01",
+        status="failed",
+        error="transient: flaky filesystem, now fixed",
+    )
+
+    csrf = await _csrf_token(client)
+    resp = await client.post(
+        "/proxy/updates/2099-retry-01/apply",
+        data={"csrf_token": csrf, "confirm_text": "APPLY"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "applied", "migration_id": "2099-retry-01",
+    }
+
+    rows = [
+        r for r in await get_pending_updates()
+        if r["migration_id"] == "2099-retry-01"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "applied"
+    assert rows[0]["applied_at"] is not None
+    # The stale ``error`` must be cleared — otherwise the UI shows a
+    # red "Last error" panel next to an applied badge.
+    assert rows[0]["error"] is None
 
 
 @pytest.mark.asyncio

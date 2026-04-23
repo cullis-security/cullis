@@ -2846,6 +2846,64 @@ async def badge_audit(request: Request):
     return HTMLResponse("")
 
 
+@router.get("/badge/updates")
+async def badge_updates(request: Request):
+    """Return federation-update pending count badge fragment.
+
+    Tint encodes the most severe pending criticality on the proxy:
+      - red  → at least one ``critical`` pending migration.
+      - amber → only ``warning`` / ``info`` migrations pending.
+      - empty → no pending migrations.
+
+    Counts all pending migrations regardless of severity so operators
+    see the workload at a glance; the tint signals urgency.
+    """
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+
+    try:
+        from mcp_proxy.db import get_pending_updates
+        from mcp_proxy.updates import discover
+    except Exception:
+        return HTMLResponse("")
+
+    migrations = discover()
+    try:
+        rows_by_id = {
+            r["migration_id"]: r for r in await get_pending_updates()
+        }
+    except Exception:
+        # Table may not exist yet on a pre-0019 deploy; the badge is
+        # observability, not a correctness signal — degrade silent.
+        return HTMLResponse("")
+
+    critical_pending = 0
+    other_pending = 0
+    for m in migrations:
+        row = rows_by_id.get(m.migration_id)
+        if row is None or row["status"] != "pending":
+            continue
+        if m.criticality == "critical":
+            critical_pending += 1
+        else:
+            other_pending += 1
+
+    total = critical_pending + other_pending
+    if not total:
+        return HTMLResponse("")
+
+    tint_cls = (
+        "bg-red-500/20 text-red-400"
+        if critical_pending
+        else "bg-amber-500/20 text-amber-400"
+    )
+    return HTMLResponse(
+        f'<span class="px-1.5 py-0.5 rounded-full text-xs {tint_cls}">'
+        f'{total}</span>'
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Overview (post-login landing)
 # ─────────────────────────────────────────────────────────────────────────────

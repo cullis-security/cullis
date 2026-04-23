@@ -1,0 +1,346 @@
+{% extends "base.html" %}
+{% block title %}Updates{% endblock %}
+{% block header_title %}Federation Updates{% endblock %}
+{% block content %}
+<div class="max-w-6xl space-y-6">
+
+    {# ────────────────────────────────────────────────────────────── #}
+    {# Flash toast — recent action (apply/rollback just happened).    #}
+    {# ────────────────────────────────────────────────────────────── #}
+    {% if request.query_params.get('applied') %}
+    <div id="updates-flash" class="bg-emerald-500/5 border border-emerald-500/30 rounded-lg px-5 py-4 flex items-center gap-4 card-glow">
+        <div class="w-8 h-8 rounded-full bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+        </div>
+        <div class="flex-1 min-w-0">
+            <p class="text-[11px] text-emerald-400 uppercase tracking-[0.18em] font-medium">
+                {% if request.query_params.get('applied') == 'rolled_back' %}Rollback complete{% else %}Apply complete{% endif %}
+            </p>
+            <p class="text-xs text-gray-400 mt-1 font-mono truncate">{{ request.query_params.get('migration_id', '—') }}</p>
+        </div>
+        <button type="button"
+                onclick="document.getElementById('updates-flash').remove(); history.replaceState({}, '', '/proxy/updates');"
+                class="text-gray-500 hover:text-gray-300 transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    {% endif %}
+
+    {# ────────────────────────────────────────────────────────────── #}
+    {# Critical banner — fires when any row is pending+critical.      #}
+    {# Anchors to the first critical row in the table.                 #}
+    {# ────────────────────────────────────────────────────────────── #}
+    {% if has_critical_pending %}
+    <div class="bg-red-500/5 border border-red-500/40 rounded-lg px-5 py-4 flex items-start gap-4 sticky top-4 z-10 card-glow">
+        <div class="w-9 h-9 rounded-full bg-red-500/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+        </div>
+        <div class="flex-1 min-w-0">
+            <p class="text-xs text-red-400 uppercase tracking-[0.18em] font-semibold">Critical updates pending</p>
+            <p class="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                One or more critical federation updates must be applied to
+                restore full service. Signing has been halted for the
+                affected enrollments until an apply or rollback succeeds.
+            </p>
+        </div>
+        <a href="#first-critical"
+           class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded border border-red-500/40 text-red-300 hover:bg-red-500/10 transition-colors self-center flex-shrink-0">
+            Jump to row
+        </a>
+    </div>
+    {% endif %}
+
+    {# ────────────────────────────────────────────────────────────── #}
+    {# Hero — what this page is + why it exists.                      #}
+    {# ────────────────────────────────────────────────────────────── #}
+    <div class="bg-[#111827]/60 border border-gray-800/50 rounded-lg px-6 py-5 backdrop-blur-sm">
+        <p class="text-[10px] text-gray-600 uppercase tracking-[0.22em] mb-2">Federation update framework · Parte 1</p>
+        <h2 class="font-heading text-xl font-semibold text-white tracking-wide">Schema, keys &amp; policy updates</h2>
+        <p class="text-xs text-gray-500 mt-2 leading-relaxed max-w-2xl">
+            Each row is a migration that touches state the proxy owns —
+            certificates, schemas, or policy toggles. ``apply`` runs the
+            migration's idempotent ``up()``; ``rollback`` restores the
+            pre-apply state from the per-migration snapshot. Critical
+            migrations engage sign-halt until resolved.
+        </p>
+    </div>
+
+    {# ────────────────────────────────────────────────────────────── #}
+    {# Table — one row per registered migration.                      #}
+    {# ────────────────────────────────────────────────────────────── #}
+    {% if not updates %}
+    <div class="bg-[#111827]/80 border border-gray-800/50 rounded-lg p-10 backdrop-blur-sm text-center">
+        <svg class="w-12 h-12 mx-auto text-gray-800 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 13l4 4L19 7"/></svg>
+        <p class="text-sm text-gray-500 mb-1">No migrations registered</p>
+        <p class="text-xs text-gray-700">This proxy is up to date with the shipped update framework.</p>
+    </div>
+    {% else %}
+    <div class="bg-[#111827]/80 border border-gray-800/50 rounded-lg backdrop-blur-sm overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="bg-surface-950/60 text-[10px] text-gray-600 uppercase tracking-wider">
+                <tr>
+                    <th class="px-4 py-3 text-left">Migration</th>
+                    <th class="px-4 py-3 text-left">Type</th>
+                    <th class="px-4 py-3 text-left">Affects</th>
+                    <th class="px-4 py-3 text-left">Status</th>
+                    <th class="px-4 py-3 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% set ns = namespace(first_critical_rendered=false) %}
+                {% for u in updates %}
+                {% set is_first_critical = (u.criticality == 'critical' and u.db_status == 'pending' and not ns.first_critical_rendered) %}
+                {% if is_first_critical %}{% set ns.first_critical_rendered = true %}{% endif %}
+                <tr {% if is_first_critical %}id="first-critical"{% endif %}
+                    class="{% if u.criticality == 'critical' %}bg-red-500/[0.03]{% elif u.criticality == 'warning' %}bg-amber-500/[0.03]{% endif %} hover:bg-gray-800/20 transition-colors">
+                    <td class="px-4 py-4 align-top">
+                        <p class="font-mono text-xs text-gray-200 break-all">{{ u.migration_id }}</p>
+                        <p class="text-[11px] text-gray-500 mt-1 leading-snug max-w-md">{{ u.description }}</p>
+                        {% if u.error %}
+                        <details class="mt-2 text-[11px]">
+                            <summary class="cursor-pointer text-red-400 hover:text-red-300 uppercase tracking-wider select-none flex items-center gap-1.5">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01"/></svg>
+                                Last error
+                            </summary>
+                            <pre class="mt-2 font-mono text-[11px] text-red-300/80 bg-red-500/5 border border-red-500/20 p-2 rounded overflow-x-auto max-w-md">{{ u.error }}</pre>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4 align-top">
+                        <span class="inline-block text-[10px] text-gray-500 font-mono">{{ u.migration_type }}</span>
+                        <div class="mt-1">
+                            {% if u.criticality == 'critical' %}
+                            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-500/15 text-red-400 uppercase tracking-wider">Critical</span>
+                            {% elif u.criticality == 'warning' %}
+                            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-400 uppercase tracking-wider">Warning</span>
+                            {% else %}
+                            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] bg-gray-500/15 text-gray-400 uppercase tracking-wider">Info</span>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td class="px-4 py-4 align-top">
+                        {% if u.affects_enrollments %}
+                        <div class="flex flex-wrap gap-1">
+                            {% for kind in u.affects_enrollments %}
+                            <span class="inline-block px-1.5 py-0.5 rounded text-[10px] bg-gray-800/80 text-gray-300 font-mono">{{ kind }}</span>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <span class="text-[11px] text-gray-600">—</span>
+                        {% endif %}
+                        {% if u.preserves_enrollments %}
+                        <p class="text-[10px] text-gray-600 mt-1">Preserves pubkeys</p>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4 align-top">
+                        {% if u.db_status == 'pending' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 pulse-dot"></span>Pending
+                        </span>
+                        {% elif u.db_status == 'applied' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Applied
+                        </span>
+                        {% if u.applied_at %}
+                        <p class="text-[10px] text-gray-600 mt-1 font-mono">{{ u.applied_at[:19] }}</p>
+                        {% endif %}
+                        {% elif u.db_status == 'failed' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Failed
+                        </span>
+                        {% elif u.db_status == 'rolled_back' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Rolled back
+                        </span>
+                        {% if u.applied_at %}
+                        <p class="text-[10px] text-gray-600 mt-1 font-mono">{{ u.applied_at[:19] }}</p>
+                        {% endif %}
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-600/10 text-gray-600 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-gray-700"></span>Not detected
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-4 align-top text-right">
+                        {# Action buttons are context-aware: pending→Apply, applied→Rollback,    #}
+                        {# failed→Retry+Rollback, rolled_back→no-action, null→Apply (operator   #}
+                        {# override allowed; backend inserts the row).                            #}
+                        {% if u.db_status in ('pending', None) %}
+                        <button type="button"
+                                data-update-action="apply"
+                                data-migration-id="{{ u.migration_id }}"
+                                class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded transition-all"
+                                style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em;"
+                                onmouseover="this.style.background='#fff'"
+                                onmouseout="this.style.background='#00e5c7'">
+                            Apply
+                        </button>
+                        {% elif u.db_status == 'applied' %}
+                        <button type="button"
+                                data-update-action="rollback"
+                                data-migration-id="{{ u.migration_id }}"
+                                class="px-3 py-1.5 text-xs font-medium uppercase tracking-wider rounded border border-gray-700 text-gray-300 hover:bg-gray-800 transition-colors">
+                            Rollback
+                        </button>
+                        {% elif u.db_status == 'failed' %}
+                        <div class="flex items-center justify-end gap-2">
+                            <button type="button"
+                                    data-update-action="apply"
+                                    data-migration-id="{{ u.migration_id }}"
+                                    class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider rounded transition-all"
+                                    style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em;"
+                                    onmouseover="this.style.background='#fff'"
+                                    onmouseout="this.style.background='#00e5c7'">
+                                Retry apply
+                            </button>
+                            <button type="button"
+                                    data-update-action="rollback"
+                                    data-migration-id="{{ u.migration_id }}"
+                                    class="px-3 py-1.5 text-xs font-medium uppercase tracking-wider rounded border border-gray-700 text-gray-300 hover:bg-gray-800 transition-colors">
+                                Rollback
+                            </button>
+                        </div>
+                        {% else %}
+                        <span class="text-[11px] text-gray-600">—</span>
+                        {% endif %}
+
+                        {# PR 6 slot for dry-run preview button — deferred                        #}
+                        {# (tracked as a follow-up issue). The backend transactional              #}
+                        {# preview + diff UI lands then.                                          #}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+</div>
+
+{# ────────────────────────────────────────────────────────────── #}
+{# Confirm modal — apply. Type APPLY to enable submit.            #}
+{# Mirrors /proxy/mastio-key rotate modal (PR #288).              #}
+{# ────────────────────────────────────────────────────────────── #}
+<div id="update-apply-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+         onclick="closeUpdateModal('update-apply-modal')"></div>
+    <div class="relative bg-surface-900 border border-gray-800/50 rounded-lg p-6 w-full max-w-md shadow-2xl">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-3 font-heading">Apply migration</h3>
+        <div class="p-3 bg-[#0a0f1a] border border-accent-400/15 rounded mb-4">
+            <p class="text-xs text-gray-400 leading-relaxed">
+                Running <span id="update-apply-id" class="font-mono text-accent-300">—</span>.
+                This may re-sign certificates or mutate persistent state; the
+                backend takes a snapshot before applying so a rollback is
+                possible if the operation succeeds technically but proves
+                wrong in policy.
+            </p>
+        </div>
+        <form id="update-apply-form" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.2em]">Type APPLY to confirm</label>
+            <input type="text" name="confirm_text" required
+                   autocomplete="off" spellcheck="false"
+                   placeholder="APPLY"
+                   class="update-confirm-input w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono tracking-widest transition-all mb-4 focus:outline-none focus:border-accent-400/60"
+                   data-expected="APPLY"
+                   data-submit-id="update-apply-submit">
+            <div class="flex items-center gap-3">
+                <button type="submit" id="update-apply-submit" disabled
+                        class="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em;">
+                    Confirm apply
+                </button>
+                <button type="button"
+                        onclick="closeUpdateModal('update-apply-modal')"
+                        class="px-4 py-2 text-xs text-gray-500 border border-gray-700 rounded hover:bg-gray-800 transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{# ────────────────────────────────────────────────────────────── #}
+{# Confirm modal — rollback. Type ROLLBACK to enable submit.      #}
+{# ────────────────────────────────────────────────────────────── #}
+<div id="update-rollback-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+         onclick="closeUpdateModal('update-rollback-modal')"></div>
+    <div class="relative bg-surface-900 border border-gray-800/50 rounded-lg p-6 w-full max-w-md shadow-2xl">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-3 font-heading">Rollback migration</h3>
+        <div class="p-3 bg-[#0a0f1a] border border-red-500/15 rounded mb-4">
+            <p class="text-xs text-gray-400 leading-relaxed">
+                Restoring pre-apply state for <span id="update-rollback-id" class="font-mono text-red-300">—</span>
+                from the backup snapshot taken before the last apply. Some
+                migrations (``cert-algorithm``) are irreversible by design
+                and raise instead of rolling back.
+            </p>
+        </div>
+        <form id="update-rollback-form" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.2em]">Type ROLLBACK to confirm</label>
+            <input type="text" name="confirm_text" required
+                   autocomplete="off" spellcheck="false"
+                   placeholder="ROLLBACK"
+                   class="update-confirm-input w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono tracking-widest transition-all mb-4 focus:outline-none focus:border-red-400/60"
+                   data-expected="ROLLBACK"
+                   data-submit-id="update-rollback-submit">
+            <div class="flex items-center gap-3">
+                <button type="submit" id="update-rollback-submit" disabled
+                        class="px-4 py-2 text-xs font-semibold uppercase tracking-wider rounded bg-red-500/90 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                    Confirm rollback
+                </button>
+                <button type="button"
+                        onclick="closeUpdateModal('update-rollback-modal')"
+                        class="px-4 py-2 text-xs text-gray-500 border border-gray-700 rounded hover:bg-gray-800 transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+(function() {
+    function openModal(id) {
+        document.getElementById(id).classList.remove('hidden');
+        const input = document.querySelector('#' + id + ' .update-confirm-input');
+        if (input) { input.focus(); input.value = ''; input.dispatchEvent(new Event('input')); }
+    }
+    window.closeUpdateModal = function(id) {
+        document.getElementById(id).classList.add('hidden');
+    };
+
+    // Wire up every action button to open the right modal with the
+    // correct form action wired to the migration id.
+    document.querySelectorAll('[data-update-action]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            const action = btn.getAttribute('data-update-action');
+            const mid = btn.getAttribute('data-migration-id');
+            if (action === 'apply') {
+                document.getElementById('update-apply-id').textContent = mid;
+                document.getElementById('update-apply-form').action =
+                    '/proxy/updates/' + encodeURIComponent(mid) + '/apply';
+                openModal('update-apply-modal');
+            } else if (action === 'rollback') {
+                document.getElementById('update-rollback-id').textContent = mid;
+                document.getElementById('update-rollback-form').action =
+                    '/proxy/updates/' + encodeURIComponent(mid) + '/rollback';
+                openModal('update-rollback-modal');
+            }
+        });
+    });
+
+    // Disable/enable the submit button as the operator types the
+    // confirmation text — live comparison to the expected literal.
+    document.querySelectorAll('.update-confirm-input').forEach(function(input) {
+        const expected = input.getAttribute('data-expected');
+        const submitId = input.getAttribute('data-submit-id');
+        input.addEventListener('input', function() {
+            document.getElementById(submitId).disabled =
+                (this.value !== expected);
+        });
+    });
+})();
+</script>
+{% endblock %}

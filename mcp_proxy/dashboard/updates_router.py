@@ -41,11 +41,15 @@ import json
 import logging
 from typing import Iterable
 
+import pathlib
+
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
 
 from mcp_proxy.dashboard.session import (
+    ProxyDashboardSession,
     require_login,
     verify_csrf,
 )
@@ -57,6 +61,9 @@ from mcp_proxy.db import (
 )
 from mcp_proxy.updates import Migration, discover, get_by_id
 from mcp_proxy.updates.boot import detect_pending_migrations
+
+_TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
+_templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
 
 _log = logging.getLogger("mcp_proxy.dashboard.updates")
@@ -204,27 +211,62 @@ async def _refresh_halt_state(request: Request) -> None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-@router.get("")
-async def updates_list(request: Request):
-    """Return every registered migration merged with its DB row.
+async def _build_updates_view() -> list[dict]:
+    """Shared assembler used by the HTML page and the JSON endpoint."""
+    migrations = discover()
+    rows_by_id = {
+        row["migration_id"]: row for row in await get_pending_updates()
+    }
+    return [
+        _migration_to_dict(m, rows_by_id.get(m.migration_id))
+        for m in migrations
+    ]
 
-    Authenticated read-only endpoint. No CSRF (GET). Consumed by the
-    dashboard UI (PR 5) and by ``curl`` during ops.
+
+def _has_critical_pending(updates_view: list[dict]) -> bool:
+    return any(
+        u["criticality"] == "critical" and u["db_status"] == "pending"
+        for u in updates_view
+    )
+
+
+@router.get("", response_class=HTMLResponse)
+async def updates_page(request: Request):
+    """Render the dashboard UI for federation updates.
+
+    HTML response. Login-gated; GET so no CSRF. The UI consumes the
+    same ``updates`` view the JSON endpoint exposes — matching the
+    dashboard convention of one URL, one content type. The JSON
+    view lives at ``/proxy/updates/api`` for scripts and tests.
     """
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return session
 
-    migrations = discover()
-    rows_by_id = {
-        row["migration_id"]: row for row in await get_pending_updates()
-    }
-    return JSONResponse({
-        "updates": [
-            _migration_to_dict(m, rows_by_id.get(m.migration_id))
-            for m in migrations
-        ],
-    })
+    updates_view = await _build_updates_view()
+    return _templates.TemplateResponse(
+        "proxy_updates.html",
+        {
+            "request": request,
+            "session": session,
+            "csrf_token": session.csrf_token,
+            "active": "updates",
+            "updates": updates_view,
+            "has_critical_pending": _has_critical_pending(updates_view),
+        },
+    )
+
+
+@router.get("/api")
+async def updates_list_json(request: Request):
+    """JSON view of every registered migration + its ``pending_updates`` row.
+
+    Companion to :func:`updates_page` for curl / scripts / tests.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return JSONResponse({"updates": await _build_updates_view()})
 
 
 @router.post("/{migration_id}/apply")
@@ -261,13 +303,17 @@ async def updates_apply(migration_id: str, request: Request):
         row["migration_id"]: row for row in await get_pending_updates()
     }
     row = rows_by_id.get(migration_id)
-    if row is not None and row["status"] != "pending":
+    if row is not None and row["status"] not in ("pending", "failed"):
+        # ``applied`` and ``rolled_back`` terminal states require an
+        # explicit rollback before a new apply; retry-from-failed is
+        # the intended path for recovering a prior failed attempt,
+        # safe because Migration.up() is documented idempotent (PR 1).
         raise HTTPException(
             status_code=409,
             detail=(
                 f"migration {migration_id!r} is currently in status "
-                f"{row['status']!r} — only pending migrations can be applied. "
-                f"Roll back first if a retry is intended."
+                f"{row['status']!r} — only pending or failed migrations "
+                f"can be applied. Roll back first if a reset is intended."
             ),
         )
 
