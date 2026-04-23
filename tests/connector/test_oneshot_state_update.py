@@ -35,11 +35,15 @@ class _FakeClient:
         rows: list[dict],
         decoder=None,
         signing_key: str = "PEM",
+        identity=None,
     ) -> None:
         self._rows = rows
         self._decoder = decoder or (lambda r: {"payload": {"text": "decoded"}})
         self._signing_key_pem = signing_key
         self._pubkey_cache: dict = {}
+        # canonical_recipient pulls the sender's org from this attribute
+        # (mirrors the real CullisClient.identity contract).
+        self.identity = identity
 
     def receive_oneshot(self) -> list[dict]:
         return list(self._rows)
@@ -79,14 +83,13 @@ def receive_tool():
     return mcp.tools["receive_oneshot"]
 
 
-def _install_client(rows, decoder=None) -> _FakeClient:
+def _install_client(rows, decoder=None, identity=None) -> _FakeClient:
     import time as _time
 
-    client = _FakeClient(rows=rows, decoder=decoder)
-    # Pre-seed the cache so prime() short-circuits on the TTL-fresh
-    # branch. The timestamp must be current — a 0.0 seed is always
-    # stale and would trigger the _egress_http refetch path (which
-    # returns 404 in this fixture → PubkeyPrimeError on purpose).
+    client = _FakeClient(rows=rows, decoder=decoder, identity=identity)
+    # Pre-seed the cache so the SDK pubkey-fetcher short-circuits on
+    # the TTL-fresh branch. Timestamp must be current — a 0.0 seed is
+    # always stale and would trigger the _egress_http refetch path.
     now = _time.time()
     for r in rows:
         client._pubkey_cache[r["sender_agent_id"]] = ("PEM", now)
@@ -112,10 +115,11 @@ def test_receive_updates_last_peer_and_reply_to(receive_tool):
 def test_receive_canonicalizes_bare_sender(receive_tool):
     """Older inbox rows can carry the bare agent name; ensure we
     canonicalize it before storing in last_peer_resolved so reply()
-    speaks the form /v1/egress/* expects."""
-    # No identity loaded → canonical_recipient returns the input
-    # unchanged. Set up state.extra["identity"] with a fake cert
-    # whose org name is "acme".
+    speaks the form /v1/egress/* expects.
+
+    Identity is attached to the SDK client (mirrors the production
+    wiring in cli._cmd_serve / web._start_inbox_poller); the legacy
+    state.extra["identity"] global is gone."""
     from unittest.mock import MagicMock
     fake_attr = MagicMock()
     fake_attr.value = "acme"
@@ -123,7 +127,6 @@ def test_receive_canonicalizes_bare_sender(receive_tool):
     fake_cert.subject.get_attributes_for_oid.return_value = [fake_attr]
     fake_identity = MagicMock()
     fake_identity.cert = fake_cert
-    get_state().extra["identity"] = fake_identity
 
     rows = [{
         "sender_agent_id": "mario",
@@ -132,7 +135,7 @@ def test_receive_canonicalizes_bare_sender(receive_tool):
         "reply_to": None,
         "payload_ciphertext": "{}",
     }]
-    _install_client(rows)
+    _install_client(rows, identity=fake_identity)
     receive_tool()
     assert get_state().last_peer_resolved == "acme::mario"
     assert get_state().last_reply_to == "msg-A"

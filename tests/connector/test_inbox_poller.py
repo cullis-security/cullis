@@ -29,6 +29,7 @@ class _FakeClient:
         self,
         rounds: list[Any],
         decoder=None,
+        identity=None,
     ) -> None:
         # Each entry in ``rounds`` is either a list of rows (success)
         # or an Exception class/instance (failure round).
@@ -38,6 +39,9 @@ class _FakeClient:
         )
         self.calls = 0
         self.pubkey_fetch_calls: list[str] = []
+        # Mirror the real CullisClient.identity contract — the poller's
+        # canonical_recipient call reads it for bare senders.
+        self.identity = identity
 
     def get_agent_public_key_via_egress(
         self, agent_id: str, force_refresh: bool = False,
@@ -270,27 +274,26 @@ async def test_pubkey_fetch_failure_skips_message_does_not_crash_loop():
 async def test_canonicalizes_bare_sender():
     """A row whose sender_agent_id is bare (legacy intra-org) must be
     promoted to ``<org>::<name>`` so downstream reply() speaks the
-    canonical form the Mastio expects."""
-    from unittest.mock import MagicMock
-    from cullis_connector.state import get_state, reset_state
+    canonical form the Mastio expects.
 
-    reset_state()
+    Identity is attached directly to the SDK client (mirrors production
+    wiring); the legacy ``state.extra["identity"]`` global is gone."""
+    from unittest.mock import MagicMock
+
     fake_attr = MagicMock()
     fake_attr.value = "acme"
     fake_cert = MagicMock()
     fake_cert.subject.get_attributes_for_oid.return_value = [fake_attr]
     fake_identity = MagicMock()
     fake_identity.cert = fake_cert
-    get_state().extra["identity"] = fake_identity
 
     rows = [{"msg_id": "m1", "sender_agent_id": "alice", "correlation_id": "c", "reply_to": None, "text": "hi"}]
-    client = _FakeClient(rounds=[rows])
+    client = _FakeClient(rounds=[rows], identity=fake_identity)
     poller = DashboardInboxPoller(client, poll_interval_s=99.0)
     poller.start()
     try:
         events = await _drain_events(poller, n=1)
     finally:
         await poller.stop(timeout_s=1.0)
-        reset_state()
 
     assert events[0].sender_agent_id == "acme::alice"

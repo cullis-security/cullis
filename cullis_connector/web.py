@@ -175,22 +175,20 @@ def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
     interval_s = float(os.environ.get("CULLIS_CONNECTOR_POLL_S", "10"))
     try:
         from cullis_sdk import CullisClient
-
-        # Mirror cli._cmd_serve: load the identity into the process-
-        # global state so helpers like own_org_id() / canonical_recipient
-        # can read the sender's org from the cert subject. Without this
-        # the prime_sender_pubkey_cache helper sends a bare recipient
-        # to /v1/egress/resolve and gets a 400 "internal id must be
-        # 'org::agent'" — which then cascades into the JWT-required
-        # fallback path in decrypt_oneshot and surfaces as
-        # "Not authenticated — call login() first" every poll tick.
         from cullis_connector.state import get_state
+
+        # Load the identity bundle and attach it to the client. Helpers
+        # like ``canonical_recipient`` read the sender's org from
+        # ``client.identity.cert`` rather than process-global state —
+        # the previous variant relied on ``state.extra["identity"]`` and
+        # silently failed when that wasn't seeded (the M2.4 dashboard
+        # bootstrap bug).
         identity = load_identity(config.config_dir)
         state = get_state()
         state.agent_id = identity.metadata.agent_id
-        state.extra["identity"] = identity
 
         client = CullisClient.from_connector(config.config_dir)
+        client.identity = identity
         key_path = config.config_dir / "identity" / "agent.key"
         if key_path.exists():
             client._signing_key_pem = key_path.read_text()

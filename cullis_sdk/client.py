@@ -138,6 +138,16 @@ class CullisClient:
         # detect which role is in front of it without a config change.
         self.server_role: str | None = None
 
+        # Opaque identity bundle attached by the caller after
+        # construction. Connector callers set this to the loaded
+        # ``cullis_connector.identity.IdentityBundle`` so helpers like
+        # ``cullis_connector.tools._identity.canonical_recipient`` can
+        # read the sender's org from the cert subject. The SDK never
+        # reads this itself — it's a duck-typed handle for tools
+        # layered on top. ``None`` means "no identity attached"; the
+        # tools that need it must handle that case.
+        self.identity: Any = None
+
     def __enter__(self) -> CullisClient:
         return self
 
@@ -284,6 +294,9 @@ class CullisClient:
         instance._proxy_api_key = config["api_key"]
         instance._proxy_agent_id = config["agent_id"]
         instance._proxy_org_id = config["org_id"]
+        # Mirror __init__: callers may attach the on-disk identity bundle
+        # afterwards (see ``canonical_recipient`` in cullis_connector).
+        instance.identity = None
 
         # F-B-11 Phase 3c (#181) — load or generate the persistent
         # DPoP keypair. The server stores the thumbprint in
@@ -465,6 +478,7 @@ class CullisClient:
         # since we skip ``__init__`` above (the ``cls.__new__(cls)`` route
         # that other factories also use), the attribute must exist.
         instance.server_role = None
+        instance.identity = None
 
         if dpop_key_path is not None:
             from cullis_sdk.dpop import DpopKey
@@ -656,6 +670,7 @@ class CullisClient:
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
         instance.server_role = None
+        instance.identity = None
 
         log("sdk", f"Enrolled {agent_id} via {endpoint_path}")
         return instance
@@ -772,6 +787,9 @@ class CullisClient:
         instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        # Mirror __init__: callers may attach the on-disk identity bundle
+        # afterwards (see ``canonical_recipient`` in cullis_connector).
+        instance.identity = None
 
         # F-B-11 Phase 3c + 3d — load the DPoP keypair alongside the
         # rest of the Connector identity. Phase 3d (#181) has the

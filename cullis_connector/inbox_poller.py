@@ -190,7 +190,7 @@ class DashboardInboxPoller:
         sender_raw = row.get("sender_agent_id", "?")
         sender = (
             sender_raw if "::" in sender_raw
-            else canonical_recipient(sender_raw)
+            else canonical_recipient(sender_raw, self._client.identity)
         )
         msg_id = row.get("msg_id")
         if not msg_id:

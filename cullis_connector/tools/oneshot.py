@@ -62,7 +62,7 @@ def register(mcp: "FastMCP") -> None:
         client = _require_oneshot_client()
         state = get_state()
         caps = [c.strip() for c in capabilities.split(",") if c.strip()]
-        canonical = _canonical_recipient(recipient_id)
+        canonical = _canonical_recipient(recipient_id, client.identity)
         try:
             result = client.send_oneshot(
                 canonical,
@@ -129,7 +129,7 @@ def register(mcp: "FastMCP") -> None:
                 if msg_id:
                     last_decoded_sender = (
                         sender if "::" in sender
-                        else _canonical_recipient(sender)
+                        else _canonical_recipient(sender, client.identity)
                     )
                     last_decoded_msg_id = msg_id
             except Exception as exc:  # noqa: BLE001

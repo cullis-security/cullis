@@ -334,7 +334,6 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
 
     state = get_state()
     state.agent_id = identity.metadata.agent_id
-    state.extra["identity"] = identity
 
     # The enrollment flow already pinned the Site URL in metadata.json —
     # adopt it if the operator did not pass --site-url / CULLIS_SITE_URL.
@@ -366,6 +365,10 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
         from cullis_sdk import CullisClient
 
         client = CullisClient.from_connector(cfg.config_dir)
+        # Attach the loaded identity bundle so downstream helpers
+        # (canonical_recipient, etc.) can derive the sender's org from
+        # the cert subject without reaching into process-global state.
+        client.identity = identity
         key_path = cfg.config_dir / "identity" / "agent.key"
         if key_path.exists():
             client._signing_key_pem = key_path.read_text()
