@@ -13,14 +13,12 @@ Covers:
 """
 from __future__ import annotations
 
-import json
 import time
 import uuid
 
 import pytest
 
 from cullis_sdk.client import CullisClient, PubkeyFetchError
-from cullis_sdk.crypto.message_signer import ONESHOT_ENVELOPE_PROTO_VERSION
 
 from tests.test_audit_oneshot_envelope_integrity import (
     _alice_cert_pem,
