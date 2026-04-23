@@ -2224,6 +2224,103 @@ async def mastio_key_rotate(request: Request):
     )
 
 
+@router.post("/mastio-key/complete-staged")
+async def mastio_key_complete_staged(request: Request):
+    """Resolve an orphaned staged rotation row (issue #281 recovery).
+
+    The form accepts ``decision=activate`` or ``decision=drop`` plus
+    the standard ``confirm_text`` gate. ``activate`` completes a
+    rotation whose Court-side propagation succeeded but whose local
+    commit crashed; ``drop`` discards a staged row whose Court-side
+    propagation never completed.
+
+    On success, clears the sign-halt state on the AgentManager and
+    rebuilds the LocalIssuer so token issuance resumes without a
+    restart. Emits an audit event with the chosen branch and the
+    kids involved.
+
+    Follow-up #287 tracks the full dashboard UI (Court-pin preview
+    banner, 2-button flow); this endpoint is the backend plumbing
+    reachable from that UI and from ``curl`` for the current
+    emergency path.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    form = await request.form()
+    decision = (form.get("decision") or "").strip()
+    if decision not in ("activate", "drop"):
+        raise HTTPException(
+            status_code=400,
+            detail="decision must be 'activate' or 'drop'",
+        )
+    expected_confirm = "ACTIVATE" if decision == "activate" else "DROP"
+    if form.get("confirm_text") != expected_confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Confirmation text mismatch — type {expected_confirm} "
+                f"to complete the {decision} branch"
+            ),
+        )
+
+    from mcp_proxy.db import log_audit
+
+    agent_mgr = getattr(request.app.state, "agent_manager", None)
+    if agent_mgr is None:
+        raise HTTPException(
+            status_code=409,
+            detail="AgentManager not initialized",
+        )
+
+    try:
+        result = await agent_mgr.complete_staged_rotation(decision)
+    except RuntimeError as exc:
+        await log_audit(
+            agent_id="admin",
+            action="mastio_key.complete_staged",
+            status="failure",
+            detail=f"decision={decision}, reason={exc}",
+        )
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Rebuild LocalIssuer so local-token issuance resumes. Mirrors the
+    # rebuild that runs at the end of the rotate endpoint above — the
+    # halt flag has just been cleared by ``complete_staged_rotation``.
+    try:
+        from mcp_proxy.auth.local_issuer import build_from_keystore
+        from mcp_proxy.auth.local_keystore import LocalKeyStore
+        ks = getattr(request.app.state, "local_keystore", None) or LocalKeyStore()
+        request.app.state.local_keystore = ks
+        org_id = getattr(request.app.state, "org_id", None)
+        if org_id:
+            request.app.state.local_issuer = await build_from_keystore(org_id, ks)
+    except Exception as exc:
+        _log.warning(
+            "LocalIssuer rebuild after complete-staged failed: %s", exc,
+        )
+
+    await log_audit(
+        agent_id="admin",
+        action="mastio_key.complete_staged",
+        status="success",
+        detail=(
+            f"decision={result['decision']}, kid={result.get('kid', '')}, "
+            f"old_kid={result.get('old_kid', '')}"
+        ),
+    )
+    return RedirectResponse(
+        url=(
+            f"/proxy/mastio-key?completed={result['decision']}"
+            f"&kid={result.get('kid', '')}"
+        ),
+        status_code=303,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Vault Settings
 # ─────────────────────────────────────────────────────────────────────────────

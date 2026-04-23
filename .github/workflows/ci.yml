@@ -54,7 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff
+          pip install ruff pytest-repeat
 
       - name: Build TypeScript SDK (for cross-language interop test)
         working-directory: sdk-ts
@@ -80,6 +80,20 @@ jobs:
           DATABASE_URL: "sqlite+aiosqlite://"
         run: |
           pytest tests/ --tb=short --ignore=tests/test_postgres_integration.py
+
+      - name: Anti-flaky concurrency gate (10× rotation race tests)
+        env:
+          OTEL_ENABLED: "false"
+          DATABASE_URL: "sqlite+aiosqlite://"
+        # Issue #281 — the rotation concurrency tests exercise asyncio.Lock
+        # + stage-before-propagate ordering + crash-liveness fault injection.
+        # Running them 10× consecutively catches order-of-coroutine flakes
+        # that a single run would mask. Keep the count tight — the full
+        # file is ~10s per run, so 10× ≈ 100s, which is acceptable CI cost
+        # for the blast-radius of this code path.
+        run: |
+          pytest tests/test_proxy_mastio_rotation_concurrency.py \
+              --count=10 -n auto --dist=loadfile --tb=short -q
 
   security:
     runs-on: ubuntu-latest

@@ -77,7 +77,18 @@ class BrokerBridge:
 
         Lazy init: first call creates client and calls login_from_pem().
         Subsequent calls return cached client.
-        On auth failure, evict and retry once.
+
+        Issue #281 — one-shot retry on auth error during the *initial*
+        login. The TOCTOU window between a successful rotation's
+        Court-ACK and the local ``refresh_active_key`` is narrow but
+        real: a caller entering this path in that window uses the
+        still-cached ``self._active_key`` (old) while the Court
+        already expects the new counter-sig. The retry re-runs
+        ``_create_client`` once, by which point ``refresh_active_key``
+        has completed and the second attempt succeeds. Capped at one
+        retry to avoid burning CPU on genuine credential failures,
+        and gated on ``_is_auth_error`` so non-auth errors (network,
+        TLS, server 500s) still surface immediately.
         """
         # Fast path: client already cached
         if agent_id in self._clients:
@@ -88,7 +99,17 @@ class BrokerBridge:
             if agent_id in self._clients:
                 return self._clients[agent_id]
 
-            client = await self._create_client(agent_id)
+            try:
+                client = await self._create_client(agent_id)
+            except Exception as exc:
+                if not _is_auth_error(exc):
+                    raise
+                logger.warning(
+                    "Initial login auth error for %s — retrying once "
+                    "(likely rotation TOCTOU, issue #281): %s",
+                    agent_id, exc,
+                )
+                client = await self._create_client(agent_id)
             self._clients[agent_id] = client
             return client
 

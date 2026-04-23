@@ -582,6 +582,137 @@ async def get_mastio_keys_valid() -> list[dict]:
         return [dict(row) for row in result.mappings().all()]
 
 
+async def get_mastio_keys_staged() -> list[dict]:
+    """Staged rotation rows — inserted by ``rotate_mastio_key`` before
+    the Court ACK and carrying ``activated_at IS NULL``.
+
+    Empty list is the common case. Exactly one row is expected when a
+    rotation is in flight or crashed mid-rotation (ADR-012 Phase 2.1
+    race-safe flow, issue #281). The caller enforces the invariant.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                SELECT * FROM mastio_keys
+                 WHERE activated_at IS NULL
+                 ORDER BY created_at ASC
+                """
+            )
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def delete_staged_mastio_key(kid: str) -> int:
+    """Delete a staged row (``activated_at IS NULL``) by kid.
+
+    Used by ``rotate_mastio_key`` to clean up after a propagator
+    failure, and by ``complete_staged_rotation(decision='drop')`` to
+    roll back an orphaned staged row the operator has inspected.
+
+    The ``activated_at IS NULL`` predicate guarantees we cannot
+    accidentally delete an activated key even if the caller passes
+    the wrong kid. Returns the number of rows deleted (0 or 1).
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """
+                DELETE FROM mastio_keys
+                 WHERE kid = :kid
+                   AND activated_at IS NULL
+                """
+            ),
+            {"kid": kid},
+        )
+        return result.rowcount
+
+
+async def activate_staged_and_deprecate_old(
+    *,
+    new_kid: str,
+    new_activated_at: str,
+    old_kid: str,
+    old_deprecated_at: str,
+    old_expires_at: str,
+) -> None:
+    """Atomically activate a staged row and deprecate the current active.
+
+    Phase 2.1 rotation commit step (issue #281). The staged row was
+    inserted (``activated_at IS NULL``) before the Court was told, so
+    the pubkey is durable on disk; this call is what flips the live
+    signer *after* Court has ACK-ed the rotation.
+
+    On Postgres we take a transaction-scoped advisory lock keyed off
+    ``'mastio-rotate'`` so two proxy processes that raced past the
+    in-process ``asyncio.Lock`` still serialize here. SQLite has a
+    global writer lock so no extra primitive is needed.
+
+    Both UPDATEs must touch exactly one row:
+
+    - staged row transitions ``activated_at NULL → now()``
+    - previous active row transitions ``deprecated_at NULL → now()``
+      with ``expires_at`` set for the grace window
+
+    Any rowcount mismatch raises RuntimeError *and* rolls the
+    transaction back (the surrounding ``get_db`` context handles it),
+    leaving the caller to decide recovery. A rowcount-0 on the
+    deprecate UPDATE typically means a racing rotation got here first
+    — the caller should not retry.
+    """
+    async with get_db() as conn:
+        # Postgres: advisory lock in this transaction so a second rotate
+        # that made it past ``AgentManager._rotation_lock`` (different
+        # process) serializes behind us instead of interleaving. SQLite
+        # already holds a global writer lock for the duration of the tx.
+        if conn.dialect.name == "postgresql":
+            await conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('mastio-rotate'))")
+            )
+
+        activate = await conn.execute(
+            text(
+                """
+                UPDATE mastio_keys
+                   SET activated_at = :activated
+                 WHERE kid = :kid
+                   AND activated_at IS NULL
+                """
+            ),
+            {"kid": new_kid, "activated": new_activated_at},
+        )
+        if activate.rowcount != 1:
+            raise RuntimeError(
+                f"failed to activate staged mastio key {new_kid!r}: "
+                f"UPDATE touched {activate.rowcount} rows (expected 1 — "
+                f"staged row missing or already activated)"
+            )
+
+        deprecate = await conn.execute(
+            text(
+                """
+                UPDATE mastio_keys
+                   SET deprecated_at = :deprecated,
+                       expires_at    = :expires
+                 WHERE kid = :kid
+                   AND activated_at IS NOT NULL
+                   AND deprecated_at IS NULL
+                """
+            ),
+            {
+                "kid": old_kid,
+                "deprecated": old_deprecated_at,
+                "expires": old_expires_at,
+            },
+        )
+        if deprecate.rowcount != 1:
+            raise RuntimeError(
+                f"failed to deprecate old mastio key {old_kid!r}: "
+                f"UPDATE touched {deprecate.rowcount} rows (expected 1 — "
+                f"racing rotation may have already deprecated it)"
+            )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────

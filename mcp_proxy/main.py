@@ -172,17 +172,31 @@ async def lifespan(app: FastAPI):
     app.state.local_keystore = LocalKeyStore()
     app.state.local_issuer = None
     if getattr(agent_mgr, "mastio_loaded", False) and org_id:
-        try:
-            from mcp_proxy.auth.local_issuer import build_from_keystore
-            app.state.local_issuer = await build_from_keystore(
-                org_id, app.state.local_keystore,
+        if getattr(agent_mgr, "is_sign_halted", False):
+            # Issue #281 — a staged rotation row blocks signing until
+            # the operator resolves via POST /proxy/mastio-key/
+            # complete-staged. Leaving ``local_issuer`` as None causes
+            # the ``_maybe_local_token`` dep to short-circuit with
+            # ``return None`` and fall through to DPoP, keeping the
+            # failure surface consistent with the counter-sign halt
+            # that ``AgentManager.countersign`` emits.
+            _log.error(
+                "LocalIssuer NOT initialized — sign-halted, staged_kid=%s. "
+                "Resolve via POST /proxy/mastio-key/complete-staged.",
+                getattr(agent_mgr, "staged_kid", None),
             )
-            _log.info(
-                "LocalIssuer initialized (kid=%s, iss=%s)",
-                app.state.local_issuer.kid, app.state.local_issuer.issuer,
-            )
-        except Exception as exc:
-            _log.warning("LocalIssuer init failed: %s", exc)
+        else:
+            try:
+                from mcp_proxy.auth.local_issuer import build_from_keystore
+                app.state.local_issuer = await build_from_keystore(
+                    org_id, app.state.local_keystore,
+                )
+                _log.info(
+                    "LocalIssuer initialized (kid=%s, iss=%s)",
+                    app.state.local_issuer.kid, app.state.local_issuer.issuer,
+                )
+            except Exception as exc:
+                _log.warning("LocalIssuer init failed: %s", exc)
 
     # ADR-007 Phase 1 PR #3 — SecretProvider is consumed by the MCP
     # resource forwarder (env:// / vault:// refs). Same instance used by

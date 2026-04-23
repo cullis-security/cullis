@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from mcp_proxy.db import (
     get_mastio_key_by_kid,
     get_mastio_keys_active,
+    get_mastio_keys_staged,
     get_mastio_keys_valid,
 )
 
@@ -160,6 +161,35 @@ class LocalKeyStore:
         """
         rows = await get_mastio_keys_valid()
         return [_row_to_key(row) for row in rows]
+
+    async def find_staged(self) -> MastioKey | None:
+        """Return the in-flight staged rotation row, if any.
+
+        A staged row is an INSERT made by ``rotate_mastio_key`` *before*
+        the Court ACK; it carries ``activated_at IS NULL`` and is
+        invisible to ``current_signer`` / ``all_valid_keys`` /
+        ``find_by_kid``-with-verification checks.
+
+        Exactly one staged row is expected at a time (rotation is
+        serialized by ``AgentManager._rotation_lock``). A crashed
+        rotation leaves the staged row on disk so that boot detection
+        can flag it and halt signing until the admin resolves via
+        ``POST /proxy/mastio-key/complete-staged``.
+
+        Returns None if no staged row exists (the common case).
+        Raises RuntimeError if more than one is found — an invariant
+        violation that needs manual intervention.
+        """
+        rows = await get_mastio_keys_staged()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            kids = ", ".join(row["kid"] for row in rows)
+            raise RuntimeError(
+                f"{len(rows)} staged mastio keys ({kids}) — "
+                "rotation invariant violated; manual DB cleanup required"
+            )
+        return _row_to_key(rows[0])
 
 
 def _row_to_key(row: dict[str, Any]) -> MastioKey:

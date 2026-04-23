@@ -7,6 +7,7 @@ Each internal agent gets:
   - A private key stored in Vault (or DB fallback)
   - A local API key (sk_local_{name}_{hex}) for authenticating to the proxy
 """
+import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
@@ -26,14 +27,16 @@ from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
 from mcp_proxy.auth.mastio_rotation import ContinuityProof, build_proof
 from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
+    activate_staged_and_deprecate_old,
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,
+    delete_staged_mastio_key,
     get_agent as db_get_agent,
     get_config,
     insert_mastio_key,
     set_config,
-    swap_active_mastio_key,
 )
+from mcp_proxy.telemetry_metrics import MASTIO_ROTATION_STAGED
 
 from typing import Awaitable, Callable
 
@@ -78,6 +81,22 @@ class AgentManager:
         # up the new row.
         self._keystore = LocalKeyStore()
         self._active_key: MastioKey | None = None
+        # Issue #281 — serialize rotations in-process so a dashboard
+        # double-click or admin+scheduler collision can't interleave
+        # two rotate flows. Multi-process/replica serialization lives
+        # in ``db.activate_staged_and_deprecate_old`` via a Postgres
+        # advisory lock on the same tx.
+        self._rotation_lock = asyncio.Lock()
+        # Issue #281 — sign-halt state. Set when boot detects a staged
+        # row (``activated_at IS NULL``) left behind by a crashed
+        # rotation, or when ``rotate_mastio_key`` observes a
+        # post-Court-ACK local-activation failure. While halted,
+        # ``countersign`` raises and ``main.py`` declines to build
+        # ``LocalIssuer``, so both intra-org local tokens and
+        # cross-org counter-sigs error out cleanly instead of
+        # producing signatures the Court would reject.
+        self._sign_halted = False
+        self._staged_kid: str | None = None
 
     # ── CA loading ──────────────────────────────────────────────────
 
@@ -510,10 +529,74 @@ class AgentManager:
                 self._active_key = None
 
         if self.mastio_loaded:
+            # Issue #281 — detect staged rotation rows left behind by a
+            # crash between propagator-ACK and local activation. Court
+            # does hard-swap (no grace window on mastio_pubkey — see
+            # #286), so if the crash happened *after* the Court ACK, the
+            # old local key can no longer counter-sign successfully.
+            # The safe recovery is to refuse to sign at all until the
+            # admin resolves via POST /proxy/mastio-key/complete-staged,
+            # rather than emit signatures the Court would 403.
+            await self._detect_staged_and_maybe_halt()
             logger.info("Mastio identity loaded (ca + active key)")
             return
 
         await self._generate_mastio_identity()
+
+    async def _detect_staged_and_maybe_halt(self) -> None:
+        """Boot-time check for an orphaned staged rotation row.
+
+        Sets ``self._sign_halted = True`` and records the staged kid
+        when found. Caller (``main.py``) inspects ``is_sign_halted``
+        after ``ensure_mastio_identity`` returns and skips
+        ``LocalIssuer`` construction so local-token issuance is
+        disabled until the operator calls
+        ``complete_staged_rotation``.
+        """
+        try:
+            staged = await self._keystore.find_staged()
+        except RuntimeError as exc:
+            # Multiple staged rows — invariant violation, halt loudly.
+            self._sign_halted = True
+            MASTIO_ROTATION_STAGED.set(1)
+            logger.error(
+                "rotation state corrupt at boot: %s; refusing to sign "
+                "until manual DB cleanup + POST /proxy/mastio-key/"
+                "complete-staged",
+                exc,
+            )
+            return
+
+        if staged is None:
+            MASTIO_ROTATION_STAGED.set(0)
+            return
+
+        self._sign_halted = True
+        self._staged_kid = staged.kid
+        MASTIO_ROTATION_STAGED.set(1)
+        logger.error(
+            "rotation state inconsistent at boot: staged kid=%s found "
+            "without activation. LocalIssuer disabled and countersign "
+            "halted. Resolve via POST /proxy/mastio-key/complete-staged "
+            "(activate if Court already pinned new, drop if still on old).",
+            staged.kid,
+        )
+
+    @property
+    def is_sign_halted(self) -> bool:
+        """True while a staged row blocks signing (issue #281).
+
+        Callers:
+          - ``main.py`` — skips ``LocalIssuer`` construction when True.
+          - ``countersign`` — raises RuntimeError when True.
+          - Dashboard (future #287) — renders the recovery banner.
+        """
+        return self._sign_halted
+
+    @property
+    def staged_kid(self) -> str | None:
+        """Kid of the blocking staged row, or None."""
+        return self._staged_kid
 
     async def _migrate_legacy_leaf_to_keystore(self) -> None:
         """Seed ``mastio_keys`` from ``proxy_config.mastio_leaf_{key,cert}``.
@@ -718,38 +801,80 @@ class AgentManager:
     ) -> MastioKey:
         """Rotate the Mastio leaf key (ADR-012 Phase 2.1, issue #261).
 
-        Mints a fresh EC P-256 leaf under the existing intermediate CA,
-        signs a continuity proof with the current (old) key, propagates
-        the new pubkey + proof to the Court via ``propagator``, and then
-        atomically swaps the active row in ``mastio_keys``.
+        Race-safe, crash-safe flow (issue #281):
+
+        1. Serialize on ``self._rotation_lock`` — kills double-click and
+           dashboard+cron collisions in the same process.
+        2. Under the lock, re-read the current signer and refuse to
+           start if (a) the active signer changed since ``__init__``
+           handed us ``old``, or (b) a staged row is already present
+           (incomplete prior rotation — admin must resolve first).
+        3. Mint the new leaf and build the continuity proof with the
+           *old* private key.
+        4. INSERT the new row as **staged** (``activated_at IS NULL``)
+           so ``new_privkey_pem`` is durable on disk before we tell the
+           Court anything — a crash between here and step 6 leaves the
+           staged row visible to the next boot's recovery.
+        5. Call the propagator. On raise, delete the staged row so the
+           next rotation can start clean.
+        6. Atomically activate the staged row and deprecate the old one
+           (``activate_staged_and_deprecate_old`` takes a pg advisory
+           lock on Postgres to serialize across replicas). On raise,
+           leave the staged row intact and sign-halt — the Court has
+           pinned the new pubkey at this point, so the admin must
+           reconcile via ``complete_staged_rotation``.
+        7. Refresh the cached active key and return it.
 
         ``grace_days`` controls how long the old kid stays
-        verifier-accepted after deprecation. Callers that want a
-        different cadence override it; the default of 7 is the
-        repository-wide baseline for signing-key rotations.
+        verifier-accepted after deprecation. Default 7.
 
         ``propagator`` receives the built ``ContinuityProof`` plus the
-        new cert PEM and is expected to call the Court. If it raises,
-        no DB mutation happens (Court-first ordering). If it is
-        ``None`` (tests / offline bootstrap), the Court step is
-        skipped entirely — the resulting rotation is purely local and
-        will leave the Court out of sync; callers **must** pass a real
-        propagator in production.
+        new cert PEM and is expected to call the Court. When ``None``
+        (tests / offline bootstrap) the Court step is skipped and a
+        warning logged — useful for unit tests, never safe in
+        production.
 
-        Returns the freshly-activated :class:`MastioKey` (already
-        cached as ``self._active_key``).
-
-        Raises:
-            RuntimeError: if identity is not loaded (gate on
-                :attr:`mastio_loaded`), if ``grace_days`` is not
-                positive, or if the DB swap finds an inconsistent
-                state.
+        Returns the freshly-activated :class:`MastioKey` (also cached
+        as ``self._active_key``).
         """
         if grace_days <= 0:
             raise ValueError("grace_days must be a positive integer")
         old = self._require_active()
         if self._mastio_ca_key is None or self._mastio_ca_cert is None:
             raise RuntimeError("Mastio intermediate CA not loaded")
+
+        async with self._rotation_lock:
+            return await self._rotate_locked(old, grace_days, propagator)
+
+    async def _rotate_locked(
+        self,
+        old: MastioKey,
+        grace_days: int,
+        propagator: "Callable[[ContinuityProof, str], Awaitable[None]] | None",
+    ) -> MastioKey:
+        """Body of :meth:`rotate_mastio_key`, executed under the
+        rotation lock. Split out so the test suite can drive the
+        individual steps without re-acquiring the lock in
+        fault-injection scenarios.
+        """
+        # Re-check state under the lock: a concurrent rotation may
+        # have completed between ``_require_active`` above and us
+        # acquiring the lock. Refuse to start if the active signer
+        # has changed.
+        current_active = await self._keystore.current_signer()
+        if current_active.kid != old.kid:
+            raise RuntimeError(
+                f"rotation aborted: active signer changed under us "
+                f"({old.kid!r} → {current_active.kid!r}); a concurrent "
+                f"rotation succeeded"
+            )
+        existing_staged = await self._keystore.find_staged()
+        if existing_staged is not None:
+            raise RuntimeError(
+                f"rotation aborted: a staged row (kid={existing_staged.kid!r}) "
+                f"is already present from a prior rotation; resolve it via "
+                f"POST /proxy/mastio-key/complete-staged before retrying"
+            )
 
         now = datetime.now(timezone.utc)
         new_leaf_key = ec.generate_private_key(ec.SECP256R1())
@@ -793,9 +918,43 @@ class AgentManager:
             issued_at=now,
         )
 
-        # Court-first: if propagation fails, no local state change.
+        now_iso = now.isoformat()
+        grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
+
+        # Step 4 — stage the new row on disk *before* telling the Court.
+        # If the process dies after this INSERT, the next boot's
+        # ``_detect_staged_and_maybe_halt`` picks it up and sign-halts
+        # until the operator resolves.
+        await insert_mastio_key(
+            kid=new_kid,
+            pubkey_pem=new_pub_pem,
+            privkey_pem=new_priv_pem,
+            cert_pem=new_cert_pem,
+            created_at=now_iso,
+            activated_at=None,
+            deprecated_at=None,
+            expires_at=None,
+        )
+
+        # Step 5 — propagate to Court.
         if propagator is not None:
-            await propagator(proof, new_cert_pem)
+            try:
+                await propagator(proof, new_cert_pem)
+            except BaseException:
+                # Court rejected or unreachable → nothing is pinned on
+                # their side yet, so the staged row is safe to drop.
+                # BaseException catches asyncio.CancelledError too.
+                try:
+                    await delete_staged_mastio_key(new_kid)
+                except Exception as cleanup_exc:
+                    # Cleanup is best-effort; failure here means boot
+                    # recovery will pick it up as a staged row.
+                    logger.warning(
+                        "staged row cleanup failed after propagator error "
+                        "(kid=%s): %s — boot recovery will handle it",
+                        new_kid, cleanup_exc,
+                    )
+                raise
         else:
             logger.warning(
                 "rotate_mastio_key: no propagator provided — Court will "
@@ -803,27 +962,140 @@ class AgentManager:
                 "supply one",
             )
 
-        now_iso = now.isoformat()
-        grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
-        await swap_active_mastio_key(
-            new_kid=new_kid,
-            new_pubkey_pem=new_pub_pem,
-            new_privkey_pem=new_priv_pem,
-            new_cert_pem=new_cert_pem,
-            new_activated_at=now_iso,
-            new_created_at=now_iso,
-            old_kid=old.kid,
-            old_deprecated_at=now_iso,
-            old_expires_at=grace_end_iso,
-        )
+        # Step 6 — atomic commit. On Postgres, this takes
+        # ``pg_advisory_xact_lock`` so a concurrent rotation from
+        # another replica (which passed our in-process asyncio.Lock but
+        # not this one) serializes instead of interleaving.
+        try:
+            await activate_staged_and_deprecate_old(
+                new_kid=new_kid,
+                new_activated_at=now_iso,
+                old_kid=old.kid,
+                old_deprecated_at=now_iso,
+                old_expires_at=grace_end_iso,
+            )
+        except BaseException:
+            # Court has already pinned ``new_pub_pem``. Any token we
+            # countersign right now uses the old key — Court 403s.
+            # Sign-halt so downstream callers get a clear error and the
+            # admin resolves via ``complete_staged_rotation``. Do *not*
+            # drop the staged row: ``complete_staged_rotation`` needs
+            # it to offer the activate branch.
+            self._sign_halted = True
+            self._staged_kid = new_kid
+            MASTIO_ROTATION_STAGED.set(1)
+            logger.error(
+                "rotation mid-flight failure after Court ACK: local "
+                "activation failed for kid=%s. Sign-halted. Admin must "
+                "resolve via POST /proxy/mastio-key/complete-staged.",
+                new_kid,
+            )
+            raise
 
         await self.refresh_active_key()
+        # Clear any prior halt state — we completed a clean rotation.
+        self._sign_halted = False
+        self._staged_kid = None
+        MASTIO_ROTATION_STAGED.set(0)
         logger.info(
             "Mastio key rotated — old_kid=%s, new_kid=%s, grace_days=%d",
             old.kid, new_kid, grace_days,
         )
         assert self._active_key is not None
         return self._active_key
+
+    async def complete_staged_rotation(self, decision: str) -> dict:
+        """Resolve an orphaned staged row (issue #281 recovery path).
+
+        Serialized on ``self._rotation_lock`` — the same primitive that
+        serializes fresh rotations, so a racing rotation cannot overlap
+        with recovery.
+
+        ``decision`` must be ``"activate"`` or ``"drop"``. The operator
+        chooses based on Court state:
+
+        - ``"activate"`` when the Court has already pinned the staged
+          pubkey (propagator had succeeded, only local activation
+          failed). Activates the staged row and deprecates the current
+          active, using the configured ``grace_days``.
+        - ``"drop"`` when the Court is still on the current active
+          (propagator had not succeeded or rotated back). Deletes the
+          staged row.
+
+        Returns a dict with ``{"decision", "kid", "old_kid"?,
+        "grace_days"?}`` so the caller (dashboard / CLI) can surface
+        the outcome to the operator. On success, clears the sign-halt
+        flag.
+
+        Raises RuntimeError if no staged row exists or if the current
+        active signer has somehow gone missing (malformed state).
+        """
+        if decision not in ("activate", "drop"):
+            raise ValueError(
+                f"decision must be 'activate' or 'drop', got {decision!r}"
+            )
+
+        async with self._rotation_lock:
+            staged = await self._keystore.find_staged()
+            if staged is None:
+                raise RuntimeError(
+                    "no staged row present — nothing to complete. The "
+                    "halt state may be stale; restart the proxy or "
+                    "re-run rotation."
+                )
+
+            if decision == "drop":
+                deleted = await delete_staged_mastio_key(staged.kid)
+                if deleted != 1:
+                    raise RuntimeError(
+                        f"staged row {staged.kid!r} vanished during drop "
+                        f"(rowcount={deleted}); likely a concurrent "
+                        f"recovery call"
+                    )
+                self._sign_halted = False
+                self._staged_kid = None
+                MASTIO_ROTATION_STAGED.set(0)
+                logger.info(
+                    "complete_staged_rotation(drop): staged kid=%s deleted; "
+                    "signing resumed with prior active",
+                    staged.kid,
+                )
+                return {"decision": "drop", "kid": staged.kid}
+
+            # decision == "activate"
+            current = await self._keystore.current_signer()
+            # Default grace_days matches rotate_mastio_key default (7);
+            # keeping a fixed value here because the original caller's
+            # choice is already lost to the crash — the operator is
+            # resolving from a standing start. Callers that want a
+            # different cadence can drop + re-rotate.
+            grace_days = 7
+            now = datetime.now(timezone.utc)
+            now_iso = now.isoformat()
+            grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
+
+            await activate_staged_and_deprecate_old(
+                new_kid=staged.kid,
+                new_activated_at=now_iso,
+                old_kid=current.kid,
+                old_deprecated_at=now_iso,
+                old_expires_at=grace_end_iso,
+            )
+            await self.refresh_active_key()
+            self._sign_halted = False
+            self._staged_kid = None
+            MASTIO_ROTATION_STAGED.set(0)
+            logger.info(
+                "complete_staged_rotation(activate): old_kid=%s → new_kid=%s "
+                "(grace_days=%d); signing resumed",
+                current.kid, staged.kid, grace_days,
+            )
+            return {
+                "decision": "activate",
+                "kid": staged.kid,
+                "old_kid": current.kid,
+                "grace_days": grace_days,
+            }
 
     def countersign(self, data: bytes) -> str:
         """ES256 counter-signature over ``data``, base64url no-pad.
@@ -834,12 +1106,25 @@ class AgentManager:
         against the PEM pinned at onboarding in
         ``organizations.mastio_pubkey``.
 
-        Raises ``RuntimeError`` if :meth:`ensure_mastio_identity` has not run.
+        Raises:
+            RuntimeError: if :meth:`ensure_mastio_identity` has not run,
+                or if signing is halted (issue #281: a staged rotation
+                row is present and needs admin resolution via
+                ``complete_staged_rotation`` — producing a signature
+                with the old key while Court may have pinned the new
+                one would 403 anyway, and surfacing a clear local error
+                is strictly better than an opaque Court rejection).
         """
         import base64
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec as _ec
 
+        if self._sign_halted:
+            raise RuntimeError(
+                "mastio signing halted — staged rotation row "
+                f"(kid={self._staged_kid!r}) awaiting resolution. "
+                "POST /proxy/mastio-key/complete-staged to recover."
+            )
         active = self._require_active()
         priv_key = active.load_private_key()
         sig = priv_key.sign(data, _ec.ECDSA(hashes.SHA256()))
