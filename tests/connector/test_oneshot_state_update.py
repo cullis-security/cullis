@@ -44,20 +44,19 @@ class _FakeClient:
     def receive_oneshot(self) -> list[dict]:
         return list(self._rows)
 
-    def decrypt_oneshot(self, row: dict) -> dict:
+    def decrypt_oneshot(self, row: dict, *, pubkey_fetcher=None) -> dict:
+        # The real SDK accepts the fetcher kwarg; the fake swallows it.
+        # These tests exercise state-cursor bookkeeping, not pubkey
+        # lookup — the fetcher just needs to be a no-op.
         return self._decoder(row)
 
-    def _egress_http(self, *args, **kwargs):
-        # Fallback for rows whose sender wasn't pre-seeded in the cache
-        # (e.g. bare names that canonicalise into a different key).
-        # Returns a valid-looking resolve response so prime succeeds
-        # rather than raising PubkeyPrimeError — unrelated to the state
-        # cursor logic these tests are exercising.
-        class _R:
-            status_code = 200
-            def raise_for_status(self): pass
-            def json(self): return {"target_cert_pem": "PEM"}
-        return _R()
+    def get_agent_public_key_via_egress(
+        self, agent_id: str, force_refresh: bool = False,
+    ) -> str:
+        """Stub fetcher — the real one hits the proxy; for these
+        cursor-bookkeeping tests we just need a value the caller can
+        pass around."""
+        return "PEM"
 
 
 @pytest.fixture(autouse=True)

@@ -12,11 +12,18 @@ from cullis_connector.inbox_poller import (
     DashboardInboxPoller,
     InboxEvent,
 )
+from cullis_sdk import PubkeyFetchError
 
 
 class _FakeClient:
     """Drives the poller with scripted ``receive_oneshot`` outputs and a
-    deterministic ``decrypt_oneshot`` mock."""
+    deterministic ``decrypt_oneshot`` mock.
+
+    ``decrypt_oneshot`` accepts the ``pubkey_fetcher`` kwarg the real
+    SDK now exposes — the poller always passes it, so the fake must
+    swallow the keyword. The fetcher itself isn't invoked by this
+    fake unless an individual test wires it up.
+    """
 
     def __init__(
         self,
@@ -30,26 +37,15 @@ class _FakeClient:
             lambda r: {"payload": {"text": r.get("text", "decoded")}}
         )
         self.calls = 0
-        # Pre-seeded pubkey cache so prime_sender_pubkey_cache hits the
-        # TTL-fresh short-circuit instead of trying to call _egress_http.
-        # Real poller installs this attribute in production.
-        self._pubkey_cache: dict = {}
+        self.pubkey_fetch_calls: list[str] = []
 
-    def _egress_http(self, method, path, *, json=None, **kw):
-        """Stand-in resolve endpoint — any row whose sender wasn't
-        preseeded above would otherwise trigger PubkeyPrimeError when
-        prime_sender_pubkey_cache can't find a cached cert. Returning
-        a non-empty PEM here is enough to satisfy the prime step."""
-        class _R:
-            status_code = 200
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return {"target_cert_pem": "PEM"}
-
-        return _R()
+    def get_agent_public_key_via_egress(
+        self, agent_id: str, force_refresh: bool = False,
+    ) -> str:
+        """Default fetcher — returns a stub PEM. Tests that want to
+        exercise the failure branch override this on the instance."""
+        self.pubkey_fetch_calls.append(agent_id)
+        return "-----BEGIN CERTIFICATE-----\nSTUB\n-----END CERTIFICATE-----"
 
     def receive_oneshot(self) -> list[dict]:
         self.calls += 1
@@ -62,7 +58,11 @@ class _FakeClient:
             raise (nxt() if isinstance(nxt, type) else nxt)
         return list(nxt)
 
-    def decrypt_oneshot(self, row: dict) -> dict:
+    def decrypt_oneshot(self, row: dict, *, pubkey_fetcher=None) -> dict:
+        # Mirror the real SDK contract: when a fetcher is provided, call
+        # it so tests can observe / inject failures via that surface.
+        if pubkey_fetcher is not None:
+            pubkey_fetcher(row.get("sender_agent_id", ""))
         return self._decoder(row)
 
 
@@ -213,43 +213,36 @@ async def test_stop_releases_blocked_consumer_via_sentinel():
 
 
 @pytest.mark.asyncio
-async def test_pubkey_prime_failure_skips_message_does_not_crash_loop():
-    """Security audit NEW #4 — if ``prime_sender_pubkey_cache`` raises
-    (empty target_cert_pem, network error, incompatible client), the
-    poller MUST log at ERROR and skip the row. The loop continues so
-    subsequent rounds still drain the inbox.
+async def test_pubkey_fetch_failure_skips_message_does_not_crash_loop():
+    """Security invariant — if the SDK pubkey fetcher raises
+    ``PubkeyFetchError`` (empty cert_pem, network error, peer not
+    found), the poller MUST log at ERROR and skip the row, NOT
+    surface unverified plaintext. Loop continues so subsequent rounds
+    still drain the inbox.
 
-    Exercise the recovery path by having the FIRST round prime-fail
-    and the SECOND round prime-succeed — then await the successful
-    event to pin the loop-survived invariant deterministically
-    (avoids flaky time-based asserts on 16-way xdist workers).
+    Exercise recovery: round 1 fetcher fails, round 2 succeeds —
+    we await the successful event to pin the survival invariant
+    deterministically (no flaky time-based asserts).
     """
     failure_rounds = {"left": 1}
-    resolve_calls = {"count": 0}
+    fetch_calls = {"count": 0}
     decode_attempts = {"count": 0}
 
     class _RecoverableClient(_FakeClient):
-        def _egress_http(self, method, path, *, json=None, **kw):
-            resolve_calls["count"] += 1
-            status = {"body": {"target_cert_pem": "PEM"}}
+        def get_agent_public_key_via_egress(
+            self, agent_id, force_refresh=False,
+        ):
+            fetch_calls["count"] += 1
             if failure_rounds["left"] > 0:
                 failure_rounds["left"] -= 1
-                status = {"body": {"target_cert_pem": ""}}
+                raise PubkeyFetchError(
+                    f"proxy returned no cert_pem for {agent_id}"
+                )
+            return "STUB-PEM"
 
-            class _R:
-                status_code = 200
-
-                def raise_for_status(self):
-                    pass
-
-                def json(self):
-                    return status["body"]
-
-            return _R()
-
-        def decrypt_oneshot(self, row: dict) -> dict:
+        def decrypt_oneshot(self, row, *, pubkey_fetcher=None):
             decode_attempts["count"] += 1
-            return super().decrypt_oneshot(row)
+            return super().decrypt_oneshot(row, pubkey_fetcher=pubkey_fetcher)
 
     rows_round1 = [{"msg_id": "skip-me", "sender_agent_id": "acme::alice", "correlation_id": "c", "reply_to": None, "text": "x"}]
     rows_round2 = [{"msg_id": "next-round", "sender_agent_id": "acme::alice", "correlation_id": "c2", "reply_to": None, "text": "ok"}]
@@ -264,14 +257,13 @@ async def test_pubkey_prime_failure_skips_message_does_not_crash_loop():
 
     # Loop kept running past the skip — the NEXT round produced.
     assert events[0].msg_id == "next-round"
-    # Resolve endpoint was hit twice (round 1 skip + round 2 success),
+    # Fetcher was hit twice (round 1 skip + round 2 success),
     # so the skip path actually ran — not a silent fallthrough.
-    assert resolve_calls["count"] == 2, resolve_calls
-    # decrypt_oneshot was invoked ONLY for round 2 — round 1 bailed
-    # out before decrypt because prime_sender_pubkey_cache raised.
-    # This is the security invariant: a sender whose cert we can't
-    # prime must NOT be decrypted / surfaced.
-    assert decode_attempts["count"] == 1, decode_attempts
+    assert fetch_calls["count"] == 2, fetch_calls
+    # decrypt_oneshot was entered for both rounds (the fetcher runs
+    # inside decrypt_oneshot in the real SDK; the fake mirrors that).
+    # Round 1 raised inside decrypt; round 2 succeeded.
+    assert decode_attempts["count"] == 2, decode_attempts
 
 
 @pytest.mark.asyncio

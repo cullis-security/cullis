@@ -43,6 +43,18 @@ from cullis_sdk._logging import log, RED
 _PUBKEY_CACHE_TTL = 300  # seconds
 
 
+class PubkeyFetchError(RuntimeError):
+    """Raised by pubkey-fetch helpers (broker or egress) when the
+    target agent's public key cannot be retrieved.
+
+    Distinct from generic HTTP/network errors so callers — notably
+    ``decrypt_oneshot`` consumers — can discriminate "couldn't verify
+    sender, must skip" from "decrypt itself failed". The Connector's
+    inbox poller catches this specifically and logs at ERROR (security
+    relevant: an unverifiable sender means the message is dropped).
+    """
+
+
 class InsecureTLSWarning(UserWarning):
     """Raised when the SDK is configured to skip TLS verification.
 
@@ -1091,6 +1103,131 @@ class CullisClient:
         self._pubkey_cache[agent_id] = (pubkey_pem, time.time())
         return pubkey_pem
 
+    def get_agent_public_key_via_egress(
+        self, agent_id: str, force_refresh: bool = False,
+    ) -> str:
+        """Fetch the target agent's PEM cert through the local proxy's
+        ``GET /v1/egress/agents/{id}/public-key`` endpoint.
+
+        Egress-only variant — no broker fallback. Intended for callers
+        that deliberately want to fail-fast when the proxy doesn't have
+        the cert (e.g. device-code-enrolled Connectors that hold no
+        broker JWT; falling back to the broker path would just
+        surface a less-informative auth error). SDK consumers that
+        want the broker fallback should leave ``decrypt_oneshot``'s
+        ``pubkey_fetcher`` unset — the default chain covers both paths.
+
+        Returns the PEM cert (not a bare key — the proxy hands back the
+        full x509, the verify helpers in :mod:`cullis_sdk.crypto` accept
+        either form). Reuses :attr:`_pubkey_cache` with the same TTL as
+        the broker path so successive calls don't burn the per-agent
+        egress rate-limit budget.
+
+        Raises :class:`PubkeyFetchError` on any failure: 404/501 (route
+        missing), 401/403 (auth broken), transport errors, or a 200
+        response whose ``cert_pem`` is null/missing.
+        """
+        if not force_refresh and agent_id in self._pubkey_cache:
+            pem, fetched_at = self._pubkey_cache[agent_id]
+            if time.time() - fetched_at < _PUBKEY_CACHE_TTL:
+                return pem
+        path = f"/v1/egress/agents/{agent_id}/public-key"
+        try:
+            resp = self._egress_http("get", path)
+            resp.raise_for_status()
+            pem = resp.json().get("cert_pem")
+        except PubkeyFetchError:
+            raise
+        except Exception as exc:
+            raise PubkeyFetchError(
+                f"GET {path} failed: {exc} ({type(exc).__name__})"
+            ) from exc
+        if not pem:
+            raise PubkeyFetchError(
+                f"proxy returned no cert_pem for {agent_id} "
+                "(target may be cross-org with no broker bridge "
+                "configured, or the agent does not exist)"
+            )
+        self._pubkey_cache[agent_id] = (pem, time.time())
+        return pem
+
+    def _fetch_pubkey_proxy_then_broker(self, agent_id: str) -> str:
+        """Default pubkey lookup used by :meth:`decrypt_oneshot`.
+
+        Order of operations:
+          1. Ask the local Mastio's ``/v1/egress/agents/<id>/public-key``
+             (auth'd via X-API-Key + DPoP — every SDK consumer has this).
+          2. If the proxy returns 404 / 501 / cert_pem=null — conditions
+             that mean "the proxy doesn't know this agent" rather than
+             "the call itself failed" — fall back to the Court's
+             ``/v1/federation/agents/<id>/public-key`` (requires a broker
+             JWT).
+          3. Genuine failures — 401 / 403 (auth broken), transport
+             errors — propagate as :class:`PubkeyFetchError` WITHOUT a
+             fallback: falling back would just mask a broken setup
+             with a second, less-informative auth error.
+
+        TTL-cached on :attr:`_pubkey_cache` so successive calls don't
+        re-hit either path within the 300s window.
+        """
+        if agent_id in self._pubkey_cache:
+            pem, fetched_at = self._pubkey_cache[agent_id]
+            if time.time() - fetched_at < _PUBKEY_CACHE_TTL:
+                return pem
+
+        proxy_path = f"/v1/egress/agents/{agent_id}/public-key"
+        should_fallback = False
+        proxy_diag = ""
+        try:
+            resp = self._egress_http("get", proxy_path)
+            if resp.status_code in (404, 501):
+                should_fallback = True
+                proxy_diag = f"proxy endpoint returned {resp.status_code}"
+            else:
+                resp.raise_for_status()
+                pem = resp.json().get("cert_pem")
+                if pem:
+                    self._pubkey_cache[agent_id] = (pem, time.time())
+                    return pem
+                should_fallback = True
+                proxy_diag = (
+                    "proxy returned 200 but cert_pem was null "
+                    "(cross-org target with no broker bridge configured "
+                    "on the proxy — falling back to broker)"
+                )
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code if exc.response is not None else 0
+            if code in (404, 501):
+                should_fallback = True
+                proxy_diag = f"proxy endpoint returned {code}"
+            else:
+                raise PubkeyFetchError(
+                    f"proxy {proxy_path} failed with HTTP {code} — "
+                    "auth broken or proxy misconfigured, not retrying "
+                    "via broker"
+                ) from exc
+        except Exception as exc:
+            raise PubkeyFetchError(
+                f"proxy {proxy_path} transport failure: "
+                f"{exc} ({type(exc).__name__}) — not retrying via broker"
+            ) from exc
+
+        if not should_fallback:
+            # Defensive: every branch above either returned, set the
+            # flag, or raised. Reaching here is a programmer error.
+            raise PubkeyFetchError(
+                f"proxy lookup for {agent_id} ended in an unexpected state"
+            )
+
+        try:
+            return self.get_agent_public_key(agent_id)
+        except Exception as broker_exc:
+            raise PubkeyFetchError(
+                f"both pubkey lookups failed: {proxy_diag}; "
+                f"broker fallback: {broker_exc} "
+                f"({type(broker_exc).__name__})"
+            ) from broker_exc
+
     # ── Sessions ────────────────────────────────────────────────────
 
     def open_session(self, target_agent_id: str, target_org_id: str,
@@ -1559,7 +1696,12 @@ class CullisClient:
         resp.raise_for_status()
         return resp.json().get("messages", [])
 
-    def decrypt_oneshot(self, inbox_row: dict) -> dict:
+    def decrypt_oneshot(
+        self,
+        inbox_row: dict,
+        *,
+        pubkey_fetcher: Callable[[str], str] | None = None,
+    ) -> dict:
         """Decrypt and authenticate a one-shot envelope row returned by
         :meth:`receive_oneshot`.
 
@@ -1579,6 +1721,15 @@ class CullisClient:
         private key and verify the inner signature against the sender's
         cert from the broker registry. Raises ``ValueError`` on any
         cryptographic failure.
+
+        :param pubkey_fetcher: optional callable ``(sender_agent_id) -> pem``
+            used to look up the sender's cert. When ``None`` (default),
+            uses :meth:`_fetch_pubkey_proxy_then_broker` — proxy first,
+            broker as fallback only on 404 / 501 / cert_pem=null (see
+            that method's docstring). Callers that want to pin a single
+            path (Connector device-code: proxy only; debug: broker only)
+            pass the explicit helper (:meth:`get_agent_public_key_via_egress`
+            or :meth:`get_agent_public_key`) here.
 
         Returns ``{"payload": <plaintext_dict>, "sender_verified": True,
         "mode": "mtls-only" | "envelope"}``.
@@ -1624,7 +1775,11 @@ class CullisClient:
             )
 
         # Verify the v2 outer envelope signature against the sender's cert.
-        sender_cert_pem = self.get_agent_public_key(sender)
+        fetch = (
+            pubkey_fetcher if pubkey_fetcher is not None
+            else self._fetch_pubkey_proxy_then_broker
+        )
+        sender_cert_pem = fetch(sender)
         ok = verify_oneshot_envelope_signature(
             sender_cert_pem,
             envelope["signature"],

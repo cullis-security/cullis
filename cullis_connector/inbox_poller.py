@@ -26,11 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from cullis_connector.tools._identity import (
-    PubkeyPrimeError,
-    canonical_recipient,
-    prime_sender_pubkey_cache,
-)
+from cullis_connector.tools._identity import canonical_recipient
+from cullis_sdk import PubkeyFetchError
 
 if TYPE_CHECKING:
     from cullis_sdk import CullisClient
@@ -198,23 +195,25 @@ class DashboardInboxPoller:
         msg_id = row.get("msg_id")
         if not msg_id:
             return None
-        # Pre-populate the SDK pubkey cache so decrypt_oneshot doesn't
-        # try to fetch the sender's cert from the broker (no JWT here).
-        # Same workaround the MCP receive_oneshot tool uses. On failure
-        # the message is security-relevant: we can't verify the sender,
-        # so the poller MUST skip it (not crash, not silently downgrade
-        # to the broker JWT path). Log at ERROR so the operator sees
-        # the skip in the dashboard log without having to turn on DEBUG.
+        # decrypt_oneshot needs the sender's cert to verify the envelope
+        # signature. Device-code-enrolled Connectors can't spend a
+        # broker JWT on the Court's federation API, so we hand the SDK
+        # the proxy-backed fetcher that auths with X-API-Key + DPoP.
+        # Pubkey-lookup failures are security-relevant (the message is
+        # dropped so no unverified plaintext surfaces) — log at ERROR
+        # so operators see the skip without toggling DEBUG. Other decrypt
+        # errors (malformed envelope, signature mismatch) stay at WARNING.
         try:
-            prime_sender_pubkey_cache(self._client, sender_raw)
-        except PubkeyPrimeError as exc:
+            decoded = self._client.decrypt_oneshot(
+                row,
+                pubkey_fetcher=self._client.get_agent_public_key_via_egress,
+            )
+        except PubkeyFetchError as exc:
             _log.error(
-                "skipping msg %s from %s — pubkey prime failed: %s",
+                "skipping msg %s from %s — pubkey fetch failed: %s",
                 msg_id, sender, exc,
             )
             return None
-        try:
-            decoded = self._client.decrypt_oneshot(row)
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "decrypt_oneshot failed for msg %s from %s: %s",

@@ -137,6 +137,19 @@ class PeersResponse(BaseModel):
     count: int
 
 
+class AgentPublicKeyResponse(BaseModel):
+    """Body of ``GET /v1/egress/agents/{agent_id}/public-key``.
+
+    ``cert_pem`` is the full x509 PEM — the SDK's pubkey cache stores
+    certs (not bare keys) because the crypto verifiers accept either
+    form, and the cert carries the subject binding the key to an agent
+    identity. Schema is intentionally aligned with ``/v1/egress/resolve``
+    which also returns ``target_cert_pem`` rather than a raw public key.
+    """
+    agent_id: str
+    cert_pem: str | None = None
+
+
 class InvokeToolRequest(BaseModel):
     """Cross-org tool invocation via broker session."""
     session_id: str
@@ -981,6 +994,118 @@ async def resolve_recipient(
         transport="envelope",
         egress_inspection=settings.egress_inspection_enabled,
         target_cert_pem=target_cert_pem,
+    )
+
+
+@router.get(
+    "/agents/{agent_id:path}/public-key",
+    response_model=AgentPublicKeyResponse,
+)
+async def get_agent_public_key(
+    agent_id: str,
+    request: Request,
+    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+):
+    """Return the target agent's x509 certificate PEM.
+
+    Companion endpoint to ``/v1/egress/resolve``: the SDK's
+    ``decrypt_oneshot`` needs the sender's cert to verify envelope
+    signatures, but device-code-enrolled Connectors don't hold a broker
+    JWT and so can't call the Court's ``/v1/federation/agents/{id}/public-key``
+    path. This endpoint exposes the same data behind the egress
+    ``X-API-Key`` + DPoP auth profile every ``/v1/egress/*`` handler
+    already uses.
+
+    Routing follows ``/resolve``:
+      - intra-org lookups hit ``internal_agents.cert_pem`` directly;
+      - cross-org lookups delegate to ``broker_bridge.get_peer_public_key``
+        (and fall back to ``cert_pem=None`` when the bridge is absent,
+        mirroring ``/resolve``'s standalone behaviour).
+
+    Rate-limit: inherited from ``get_agent_from_dpop_api_key`` →
+    ``get_agent_from_api_key``, which enforces the shared
+    ``rate_limit_per_minute`` (default 60/min/agent) against every
+    ``/v1/egress/*`` call. No per-route override — keeping this aligned
+    with ``/resolve`` + ``/peers`` means an enumeration-probing caller
+    burns their global egress budget, not a separate one.
+
+    Accepts both the canonical ``org::agent`` form and a SPIFFE URI;
+    bare agent names are rejected (the caller knows its own org and
+    should canonicalise before calling — keeps the server free of the
+    ambiguity intra vs cross carries for bare handles).
+    """
+    from mcp_proxy.db import get_db
+    from mcp_proxy.spiffe import InvalidRecipient, parse_recipient
+    from sqlalchemy import text
+
+    try:
+        _, target_org, target_agent = parse_recipient(agent_id)
+    except InvalidRecipient as exc:
+        # Bare agent names (no ``::`` and not a SPIFFE URI) land here
+        # too — ``parse_internal`` rejects them. The caller has to
+        # canonicalise to ``org::agent`` since the server cannot
+        # safely guess which org the caller meant.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    settings = get_settings()
+    route = decide_route(
+        agent_id,
+        local_org=settings.org_id,
+        local_trust_domain=settings.trust_domain,
+    )
+
+    if route == "intra":
+        # ``internal_agents.agent_id`` is ``<org>::<name>`` in production
+        # (ADR-010) but legacy rows + some test fixtures still use the
+        # bare ``<name>`` form; match the double-lookup ``/resolve``
+        # uses so both shapes resolve consistently.
+        full_agent_id = f"{target_org}::{target_agent}"
+        async with get_db() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT cert_pem, is_active FROM internal_agents "
+                    "WHERE agent_id IN (:full_id, :bare_id) "
+                    "ORDER BY CASE WHEN agent_id = :full_id "
+                    "THEN 0 ELSE 1 END LIMIT 1"
+                ),
+                {"full_id": full_agent_id, "bare_id": target_agent},
+            )
+            row = result.mappings().first()
+        if row is None or not row["is_active"]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"intra-org agent not found: {full_agent_id}",
+            )
+        return AgentPublicKeyResponse(
+            agent_id=full_agent_id,
+            cert_pem=row["cert_pem"],
+        )
+
+    # Cross-org: mirror ``/resolve``'s contract — when no bridge is
+    # configured (pure standalone proxy) return cert_pem=None rather
+    # than 400, so callers that tolerate a missing cert (e.g. mtls-only
+    # intra-only deploys) don't need to special-case the standalone
+    # mode detection. When the bridge IS present but the fetch errors,
+    # surface a 502 so the caller can retry.
+    target_cert_pem: str | None = None
+    bridge = getattr(request.app.state, "broker_bridge", None)
+    if bridge is not None:
+        broker_peer_id = f"{target_org}::{target_agent}"
+        try:
+            target_cert_pem = await bridge.get_peer_public_key(
+                agent.agent_id, broker_peer_id,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"unable to resolve peer public key: {exc}",
+            ) from exc
+
+    return AgentPublicKeyResponse(
+        agent_id=f"{target_org}::{target_agent}",
+        cert_pem=target_cert_pem,
     )
 
 

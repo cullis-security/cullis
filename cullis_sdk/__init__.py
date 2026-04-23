@@ -15,7 +15,7 @@ Usage::
         client.send(session_id, "myorg::agent", {"text": "Hello"}, agents[0].agent_id)
 """
 
-from cullis_sdk.client import CullisClient, WebSocketConnection
+from cullis_sdk.client import CullisClient, PubkeyFetchError, WebSocketConnection
 from cullis_sdk.dpop import DpopKey
 from cullis_sdk.types import AgentInfo, SessionInfo, InboxMessage, RfqResult, RfqQuote
 from cullis_sdk._logging import log, log_msg
@@ -23,6 +23,7 @@ from cullis_sdk._env import load_env_file, cfg
 
 __all__ = [
     "CullisClient",
+    "PubkeyFetchError",
     "WebSocketConnection",
     "DpopKey",
     "AgentInfo",

@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING
 
 from cullis_connector._logging import get_logger
 from cullis_connector.state import get_state
-from cullis_connector.tools._identity import (
-    canonical_recipient,
-    prime_sender_pubkey_cache,
-)
+from cullis_connector.tools._identity import canonical_recipient
 from cullis_connector.tools.session import _require_oneshot_client
 
 if TYPE_CHECKING:
@@ -114,8 +111,9 @@ def register(mcp: "FastMCP") -> None:
             reply_to = row.get("reply_to") or "—"
             msg_id = row.get("msg_id")
             try:
-                prime_sender_pubkey_cache(client, sender)
-                decoded = client.decrypt_oneshot(row)
+                decoded = client.decrypt_oneshot(
+                    row, pubkey_fetcher=client.get_agent_public_key_via_egress,
+                )
                 payload = decoded.get("payload", {})
                 if isinstance(payload, dict) and "text" in payload:
                     text = payload["text"]
@@ -145,7 +143,3 @@ def register(mcp: "FastMCP") -> None:
             state.last_reply_to = last_decoded_msg_id
 
         return f"{len(rows)} one-shot message(s):\n" + "\n".join(lines)
-
-
-# ``prime_sender_pubkey_cache`` lives in tools/_identity.py since
-# both this module and the dashboard inbox poller need it.
