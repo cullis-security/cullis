@@ -78,6 +78,13 @@ def _fixture_cls(
     # Pin the class to the fake migrations package so ``discover``
     # picks it up via the module-name filter.
     cls.__module__ = fake_pkg_mod.__name__
+    # Keep a strong reference on the package so ``Migration.__subclasses__``
+    # (which holds weakrefs) doesn't lose the class to GC before the
+    # test runs ``discover()``. Caller-side ``_fixture_cls("X", ...)``
+    # expressions that ignore the return value would otherwise create
+    # orphan classes that the CI runner's more-aggressive GC collects
+    # before the assertion — the test passes locally, fails in CI.
+    setattr(fake_pkg_mod, name, cls)
     return cls
 
 
@@ -166,14 +173,26 @@ def test_imports_modules_from_migrations_package(monkeypatch, tmp_path):
     Builds an ad-hoc single-file package on disk, points the registry
     at it, and asserts the module was imported and its ``Migration``
     subclass picked up.
+
+    Uses a per-test unique ``migration_id`` and a per-test unique
+    package name: once a test imports ``fake_migrations_pkg.m1``, the
+    ``M1`` class sticks around in ``Migration.__subclasses__`` for
+    the lifetime of the process (sys.modules pop doesn't evict it, and
+    the weakref can be kept alive by any stray reference). A repeated
+    test run with a static id would raise a duplicate-id error on the
+    second iteration — not a bug in ``discover``, but a fixture cost.
     """
+    unique = tmp_path.name  # pytest injects a fresh dir for every run
+    pkg_name = f"fake_migrations_pkg_{unique}".replace("-", "_")
+    migration_id = f"2099-03-03-scan-{unique}"
+
     pkg_dir = tmp_path / "fake_migrations"
     pkg_dir.mkdir()
     (pkg_dir / "__init__.py").write_text("")
     (pkg_dir / "m1.py").write_text(
         "from mcp_proxy.updates.base import Migration\n"
         "class M1(Migration):\n"
-        "    migration_id = '2099-03-03-scan'\n"
+        f"    migration_id = '{migration_id}'\n"
         "    migration_type = 'new-feature'\n"
         "    criticality = 'info'\n"
         "    description = 'scanned from disk'\n"
@@ -184,19 +203,17 @@ def test_imports_modules_from_migrations_package(monkeypatch, tmp_path):
         "    async def rollback(self): return None\n"
     )
 
-    fake_pkg = types.ModuleType("fake_migrations_pkg")
+    fake_pkg = types.ModuleType(pkg_name)
     fake_pkg.__path__ = [str(pkg_dir)]  # type: ignore[attr-defined]
-    fake_pkg.__name__ = "fake_migrations_pkg"
-    sys.modules["fake_migrations_pkg"] = fake_pkg
+    fake_pkg.__name__ = pkg_name
+    sys.modules[pkg_name] = fake_pkg
     monkeypatch.setattr(registry_mod, "_migrations_pkg", fake_pkg)
     monkeypatch.syspath_prepend(str(tmp_path / "fake_migrations"))
-    # pkgutil.iter_modules needs the package's directory on sys.path-like
-    # resolution; fake_pkg.__path__ already points at it.
 
     try:
         result = registry_mod.discover()
         ids = [m.migration_id for m in result]
-        assert "2099-03-03-scan" in ids
+        assert migration_id in ids
     finally:
-        sys.modules.pop("fake_migrations_pkg", None)
-        sys.modules.pop("fake_migrations_pkg.m1", None)
+        sys.modules.pop(pkg_name, None)
+        sys.modules.pop(f"{pkg_name}.m1", None)

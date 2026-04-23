@@ -114,6 +114,14 @@ class AgentManager:
         # producing signatures the Court would reject.
         self._sign_halted = False
         self._staged_kid: str | None = None
+        # PR 2 federation updates — reason string populated by
+        # ``mark_sign_halted`` so the boot detector and the (future)
+        # dashboard recovery page can explain *why* signing stopped
+        # beyond the #281 staged-row case. None when the halt was set
+        # by legacy paths that pre-date the reason field (#281 branches
+        # above still set ``_sign_halted`` directly and leave this None;
+        # the dashboard treats None as "staged rotation recovery").
+        self._sign_halt_reason: str | None = None
         # Issue #285 — diagnostic flag set at boot when the Org CA in
         # ``proxy_config.org_ca_cert`` has ``BasicConstraints(pathLen=0)``
         # but the proxy mints a Mastio intermediate CA underneath it at
@@ -719,6 +727,35 @@ class AgentManager:
     def staged_kid(self) -> str | None:
         """Kid of the blocking staged row, or None."""
         return self._staged_kid
+
+    @property
+    def sign_halt_reason(self) -> str | None:
+        """Human-readable reason the halt was engaged, or None.
+
+        Set by ``mark_sign_halted``; the #281 legacy branches leave it
+        None because their state is fully captured by ``staged_kid``.
+        """
+        return self._sign_halt_reason
+
+    def mark_sign_halted(self, reason: str) -> None:
+        """Engage the sign-halt degraded mode with a structured reason.
+
+        Used by callers outside the rotation-race path (PR 2 federation
+        update boot detector) that need to declare "signing is unsafe
+        until the operator intervenes" without touching ``_staged_kid``.
+        Idempotent: re-marking with a new reason overwrites the reason
+        but leaves the halt engaged, so callers composed on top of the
+        #281 halt path don't accidentally clear state.
+
+        Logs ERROR so the operator finds the trigger in logs immediately
+        — the dashboard banner (PR 5) is the user-friendly surface, but
+        logs are the baseline.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("mark_sign_halted requires a non-empty reason")
+        self._sign_halted = True
+        self._sign_halt_reason = reason
+        logger.error("sign-halt engaged: %s", reason)
 
     async def _migrate_legacy_leaf_to_keystore(self) -> None:
         """Seed ``mastio_keys`` from ``proxy_config.mastio_leaf_{key,cert}``.
