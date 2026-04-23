@@ -739,9 +739,28 @@ if _static_dir.is_dir():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/health", tags=["infra"])
-async def health():
-    """Basic health check — always 200 if the process is running."""
-    return {"status": "ok", "version": "0.1.0"}
+async def health(request: Request):
+    """Basic health check — always 200 if the process is running.
+
+    Surfaces operator-visible warnings in a ``warnings`` array when
+    present (omitted entirely when clean so existing consumers that
+    just assert ``status == "ok"`` stay green). Current warnings:
+
+      - ``org_ca_legacy_pathlen_zero`` — #285, the proxy booted with
+        an Org CA that has pathLen=0 but mints a Mastio intermediate
+        underneath. Stdlib-verifier cross-org federation silently
+        401s; remediation is ``POST /pki/rotate-ca``.
+    """
+    body: dict = {"status": "ok", "version": "0.1.0"}
+    warnings: list[str] = []
+    agent_mgr = getattr(request.app.state, "agent_manager", None)
+    if agent_mgr is not None and getattr(
+        agent_mgr, "has_legacy_ca_pathlen_zero", False,
+    ):
+        warnings.append("org_ca_legacy_pathlen_zero")
+    if warnings:
+        body["warnings"] = warnings
+    return body
 
 
 @app.get("/healthz", tags=["infra"])

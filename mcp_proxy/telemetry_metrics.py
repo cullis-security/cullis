@@ -38,5 +38,13 @@ try:
         "0 otherwise. Non-zero means admin intervention is required via "
         "POST /proxy/mastio-key/complete-staged.",
     )
+    LEGACY_CA_PATHLEN_ZERO = Gauge(
+        "cullis_proxy_legacy_ca_pathlen_zero",
+        "1 when the proxy booted with an Org CA that has pathLen=0 and "
+        "therefore cannot accommodate the Mastio intermediate CA without "
+        "breaking RFC 5280 §4.2.1.9. Remediation: POST /pki/rotate-ca. "
+        "See issues #280 and #285.",
+    )
 except ImportError:  # pragma: no cover — exercised only in slim envs
     MASTIO_ROTATION_STAGED = _NoopMetric()  # type: ignore[assignment]
+    LEGACY_CA_PATHLEN_ZERO = _NoopMetric()  # type: ignore[assignment]

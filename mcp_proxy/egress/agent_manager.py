@@ -36,11 +36,28 @@ from mcp_proxy.db import (
     insert_mastio_key,
     set_config,
 )
-from mcp_proxy.telemetry_metrics import MASTIO_ROTATION_STAGED
+from mcp_proxy.telemetry_metrics import (
+    LEGACY_CA_PATHLEN_ZERO,
+    MASTIO_ROTATION_STAGED,
+)
 
 from typing import Awaitable, Callable
 
 logger = logging.getLogger("mcp_proxy.egress.agent_manager")
+
+
+def _strict_pki_enabled() -> bool:
+    """Issue #285 — ``MCP_PROXY_STRICT_PKI=1`` opts the proxy into
+    refuse-to-boot-on-legacy-PKI semantics. Default OFF; flipping it
+    ON as the default would brick legacy proxies that ``docker pull``
+    a newer image before an operator has a chance to rotate their
+    Org CA. Accept only the exact strings ``1``, ``true``, ``yes``
+    (case-insensitive) so a stray empty / malformed value cannot
+    surprise an operator.
+    """
+    import os
+    raw = os.environ.get("MCP_PROXY_STRICT_PKI", "").strip().lower()
+    return raw in ("1", "true", "yes")
 
 
 def _priv_to_pem(key) -> str:
@@ -97,6 +114,18 @@ class AgentManager:
         # producing signatures the Court would reject.
         self._sign_halted = False
         self._staged_kid: str | None = None
+        # Issue #285 — diagnostic flag set at boot when the Org CA in
+        # ``proxy_config.org_ca_cert`` has ``BasicConstraints(pathLen=0)``
+        # but the proxy mints a Mastio intermediate CA underneath it at
+        # runtime (``_mint_mastio_ca``). That chain violates RFC 5280
+        # §4.2.1.9 — stdlib verifiers (OpenSSL, Go crypto/x509, webpki,
+        # browser, kubectl mTLS) reject it during cross-org federation,
+        # even though #280's verifier fix now catches it locally too.
+        # The flag surfaces in ``/health`` warnings and on the
+        # ``cullis_proxy_legacy_ca_pathlen_zero`` Prometheus gauge so
+        # operators see a clear signal before a design partner trips
+        # over silent federation failures.
+        self._legacy_ca_pathlen_zero = False
 
     # ── CA loading ──────────────────────────────────────────────────
 
@@ -528,6 +557,12 @@ class AgentManager:
             except RuntimeError:
                 self._active_key = None
 
+        # Issue #285 — legacy-CA detection runs before identity check so
+        # the flag is set even when the proxy generates a fresh Mastio
+        # identity on first boot with a legacy Org CA inherited from
+        # pre-#280 bootstrap.
+        self._detect_legacy_ca_pathlen_zero()
+
         if self.mastio_loaded:
             # Issue #281 — detect staged rotation rows left behind by a
             # crash between propagator-ACK and local activation. Court
@@ -542,6 +577,93 @@ class AgentManager:
             return
 
         await self._generate_mastio_identity()
+
+    def _detect_legacy_ca_pathlen_zero(self) -> None:
+        """Issue #285 — flag a pre-#280 bootstrap Org CA.
+
+        Before PR #284 (closes #280), the dashboard setup wizard and
+        the Court admin-generated CA flow emitted Org CAs with
+        ``BasicConstraints(pathLen=0)``. Proxies that bootstrapped
+        during that window still carry that CA in
+        ``proxy_config.org_ca_cert`` and cannot produce a chain that
+        stdlib verifiers accept — the Mastio intermediate CA minted
+        under the Org CA violates the pathLen constraint, and every
+        cross-org federation handshake that terminates at a peer
+        running OpenSSL / Go / webpki silently 401s.
+
+        This method inspects the loaded Org CA, raises ``RuntimeError``
+        when ``MCP_PROXY_STRICT_PKI=1`` is set (opt-in for sandbox /
+        CI / strict-enforcement deployments — not the default, because
+        a legacy proxy that ``docker pull``s a new image would then
+        refuse to boot without a remediation framework in place), and
+        otherwise just records the state for ``/health`` + the
+        Prometheus gauge to surface. Remediation is operator action:
+        ``POST /pki/rotate-ca`` rotates the Org CA in place.
+        """
+        if self._org_ca_cert is None:
+            return
+        try:
+            bc = self._org_ca_cert.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            ).value
+        except x509.ExtensionNotFound:
+            # Unusual — a CA that skipped BasicConstraints. Leave
+            # without flagging; other validation will reject it.
+            return
+        if bc.path_length != 0:
+            # pathLen=1 (post-#280) or pathLen=None (unbounded). Either
+            # is OK for the current 3-tier chain.
+            LEGACY_CA_PATHLEN_ZERO.set(0)
+            return
+
+        self._legacy_ca_pathlen_zero = True
+        LEGACY_CA_PATHLEN_ZERO.set(1)
+
+        # Pull the subject CN for the log. Fall back to empty string
+        # if the CA lacks CN — the serial + org_id alone are enough
+        # to identify the CA.
+        cn = ""
+        try:
+            cn_attrs = self._org_ca_cert.subject.get_attributes_for_oid(
+                NameOID.COMMON_NAME
+            )
+            if cn_attrs:
+                cn = cn_attrs[0].value
+        except Exception:
+            pass
+
+        logger.warning(
+            "org_ca_legacy_pathlen_zero: Org CA has pathLen=0 but the "
+            "proxy mints a Mastio intermediate under it. Stdlib "
+            "verifiers (OpenSSL, Go crypto/x509, webpki) reject the "
+            "chain during cross-org federation. Remediation: POST "
+            "/pki/rotate-ca. (org_id=%s ca_serial=%s cn=%s)",
+            self._org_id,
+            self._org_ca_cert.serial_number,
+            cn,
+        )
+
+        if _strict_pki_enabled():
+            raise RuntimeError(
+                "MCP_PROXY_STRICT_PKI=1 refuses boot on legacy Org CA "
+                "with pathLen=0 — run POST /pki/rotate-ca and restart, "
+                "or unset MCP_PROXY_STRICT_PKI to boot with a warning "
+                f"(org_id={self._org_id!r}, "
+                f"ca_serial={self._org_ca_cert.serial_number})"
+            )
+
+    @property
+    def has_legacy_ca_pathlen_zero(self) -> bool:
+        """True when the loaded Org CA has ``BasicConstraints(pathLen=0)``.
+
+        Set at boot by ``_detect_legacy_ca_pathlen_zero``. Consumers:
+          - ``/health`` — surfaces ``"org_ca_legacy_pathlen_zero"``
+            in the ``warnings`` array.
+          - ``cullis_proxy_legacy_ca_pathlen_zero`` Prometheus gauge
+            (via the ``LEGACY_CA_PATHLEN_ZERO`` metric in
+            ``telemetry_metrics``).
+        """
+        return self._legacy_ca_pathlen_zero
 
     async def _detect_staged_and_maybe_halt(self) -> None:
         """Boot-time check for an orphaned staged rotation row.
