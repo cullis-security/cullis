@@ -776,7 +776,17 @@ class CullisClient:
         instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
         instance.token = None
         instance._label = agent_id
-        instance._signing_key_pem = None
+        # Load the on-disk signing key + cert eagerly so ``decrypt_oneshot``,
+        # ``send_oneshot``, and ``login_via_proxy_with_local_key`` all
+        # work out of the box without every caller having to read
+        # ``identity/agent.key`` + ``identity/agent.crt`` themselves.
+        # Absent key/cert (legacy layout or a Connector that never
+        # completed enrollment) is not fatal — tools that need them
+        # surface a clear error at call time.
+        key_path = identity_dir / "agent.key"
+        cert_path = identity_dir / "agent.crt"
+        instance._signing_key_pem = key_path.read_text() if key_path.exists() else None
+        instance._cert_pem = cert_path.read_text() if cert_path.exists() else None
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None
@@ -1037,6 +1047,123 @@ class CullisClient:
         except httpx.HTTPStatusError as e:
             raise PermissionError(
                 f"[{agent_id}] login_via_proxy failed "
+                f"(HTTP {e.response.status_code}): {e.response.text}"
+            ) from e
+
+    def login_via_proxy_with_local_key(self) -> None:
+        """Tech-debt #2 — authenticate an enrolled agent to the broker
+        using a client_assertion signed **locally** with the on-device
+        private key.
+
+        Companion to :meth:`login_via_proxy`. That method has the Mastio
+        sign on the agent's behalf (requires the key to live server-side
+        in Vault / ``proxy_config``). Device-code-enrolled Connectors
+        hold the key on the user's machine — this method instead has
+        the proxy issue a short-lived nonce, the client signs the
+        assertion locally, and the proxy verifies + counter-signs it.
+
+        Flow:
+          1. ``POST /v1/auth/login-challenge`` → nonce + expires_in.
+          2. Build ``client_assertion`` with :func:`build_client_assertion`
+             using ``self._signing_key_pem``; embed the nonce as a claim.
+          3. ``POST /v1/auth/sign-challenged-assertion`` → echoed
+             assertion + optional ``mastio_signature`` (ADR-009 Phase 2).
+          4. ``POST /v1/auth/token`` with assertion + DPoP proof + the
+             mastio counter-sig header — identical to the legacy path
+             from this point on.
+
+        Requires :attr:`_proxy_api_key`, :attr:`_proxy_agent_id`,
+        :attr:`_signing_key_pem`, and :attr:`_cert_pem` to have been
+        populated via :meth:`from_connector` (or set manually). No
+        fallback to :meth:`login_via_proxy` — if the new endpoint is
+        absent the caller sees a clear error rather than a silent
+        downgrade.
+        """
+        api_key = getattr(self, "_proxy_api_key", None)
+        agent_id = getattr(self, "_proxy_agent_id", None)
+        if not api_key or not agent_id:
+            raise RuntimeError(
+                "login_via_proxy_with_local_key() requires proxy enrollment "
+                "— use CullisClient.from_connector() or from_enrollment() first",
+            )
+        if not self._signing_key_pem:
+            raise RuntimeError(
+                "login_via_proxy_with_local_key() requires a local signing "
+                "key — set CullisClient._signing_key_pem from identity/agent.key, "
+                "or use login_via_proxy() for Mastio-held keys.",
+            )
+        cert_pem = getattr(self, "_cert_pem", None)
+        if not cert_pem:
+            raise RuntimeError(
+                "login_via_proxy_with_local_key() requires the agent "
+                "certificate PEM — set CullisClient._cert_pem explicitly "
+                "or construct the client via from_connector() which loads "
+                "identity/agent.crt automatically.",
+            )
+
+        self._label = agent_id
+
+        try:
+            # Step 1 — fetch nonce.
+            ch_resp = self._http.post(
+                f"{self.base}/v1/auth/login-challenge",
+                headers={"X-API-Key": api_key},
+            )
+            ch_resp.raise_for_status()
+            self._update_nonce(ch_resp)
+            ch_body = ch_resp.json()
+            nonce = ch_body["nonce"]
+
+            # Step 2 — build + sign client_assertion locally.
+            from cullis_sdk.auth import build_client_assertion
+            assertion, _alg = build_client_assertion(
+                agent_id, cert_pem, self._signing_key_pem, nonce=nonce,
+            )
+
+            # Step 3 — ask Mastio to endorse it.
+            sign_resp = self._http.post(
+                f"{self.base}/v1/auth/sign-challenged-assertion",
+                headers={"X-API-Key": api_key},
+                json={"client_assertion": assertion, "nonce": nonce},
+            )
+            sign_resp.raise_for_status()
+            self._update_nonce(sign_resp)
+            sign_body = sign_resp.json()
+            # The endpoint echoes the assertion; use the echoed value so
+            # any future server-side transformation (none today) is
+            # honoured.
+            endorsed_assertion = sign_body["client_assertion"]
+
+            # Step 4 — exchange for a DPoP-bound access token (Court).
+            mastio_headers: dict[str, str] = {}
+            mastio_signature = sign_body.get("mastio_signature")
+            if mastio_signature:
+                mastio_headers["X-Cullis-Mastio-Signature"] = mastio_signature
+
+            self._dpop_privkey, self._dpop_pubkey_jwk = generate_dpop_keypair()
+            token_url = f"{self.base}/v1/auth/token"
+            dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+            resp = self._http.post(
+                token_url,
+                json={"client_assertion": endorsed_assertion},
+                headers={"DPoP": dpop_proof, **mastio_headers},
+            )
+            if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
+                self._update_nonce(resp)
+                dpop_proof = self._dpop_proof("POST", token_url, access_token=None)
+                resp = self._http.post(
+                    token_url,
+                    json={"client_assertion": endorsed_assertion},
+                    headers={"DPoP": dpop_proof, **mastio_headers},
+                )
+            resp.raise_for_status()
+            self._update_nonce(resp)
+            self.token = resp.json()["access_token"]
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            raise ConnectionError(f"[{agent_id}] Proxy unreachable: {e}") from e
+        except httpx.HTTPStatusError as e:
+            raise PermissionError(
+                f"[{agent_id}] login_via_proxy_with_local_key failed "
                 f"(HTTP {e.response.status_code}): {e.response.text}"
             ) from e
 

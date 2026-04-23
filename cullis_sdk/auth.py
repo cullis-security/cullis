@@ -87,6 +87,8 @@ def build_client_assertion(
     agent_id: str,
     cert_pem: str,
     key_pem: str,
+    *,
+    nonce: str | None = None,
 ) -> tuple[str, str]:
     """
     Build an x509 client assertion JWT for /v1/auth/token.
@@ -95,6 +97,10 @@ def build_client_assertion(
         agent_id: The agent's identifier (e.g. "org::agent").
         cert_pem: PEM-encoded agent certificate.
         key_pem: PEM-encoded agent private key.
+        nonce: Optional server-issued challenge nonce — when present,
+            it's embedded as a ``nonce`` claim so the JWT signature
+            covers it. Used by the challenge-response login flow
+            (tech-debt #2) to tie the assertion to a fresh challenge.
 
     Returns:
         (assertion_jwt, jwt_algorithm) tuple.
@@ -123,6 +129,8 @@ def build_client_assertion(
         "exp": int((now + datetime.timedelta(minutes=5)).timestamp()),
         "jti": str(uuid.uuid4()),
     }
+    if nonce is not None:
+        payload["nonce"] = nonce
 
     # Detect key type for JWT algorithm selection
     key_bytes = key_pem.encode() if isinstance(key_pem, str) else key_pem

@@ -189,9 +189,8 @@ def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
 
         client = CullisClient.from_connector(config.config_dir)
         client.identity = identity
-        key_path = config.config_dir / "identity" / "agent.key"
-        if key_path.exists():
-            client._signing_key_pem = key_path.read_text()
+        # ``from_connector`` now loads ``identity/agent.key`` itself —
+        # no need to re-read here.
     except Exception as exc:  # noqa: BLE001
         _log.warning("inbox poller bootstrap failed: %s", exc)
         return None

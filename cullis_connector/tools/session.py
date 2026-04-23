@@ -17,12 +17,12 @@ _log = get_logger("tools.session")
 def _require_client():
     """Return a client with a valid broker JWT, minting one if absent.
 
-    Device-code enrollment leaves the agent private key on the user's
-    machine, so ``login_via_proxy()`` 404s ("agent credentials not
-    available on proxy") when the Mastio tries to sign the assertion
-    on the agent's behalf. We still call it because BYOCA/Mastio-held-key
-    deployments work fine and we don't want to hard-code that split;
-    callers see the same user-visible error regardless.
+    Uses the challenge-response login (tech-debt #2): the Connector
+    signs the client_assertion locally with its on-device key, the
+    Mastio counter-signs. Works regardless of whether enrollment was
+    device-code (key on user's machine) or BYOCA (key on Mastio) — the
+    Connector always holds a local copy for intra-/cross-org signing
+    anyway.
     """
     state = get_state()
     if state.client is None:
@@ -32,14 +32,12 @@ def _require_client():
         )
     if state.client.token is None:
         try:
-            state.client.login_via_proxy()
+            state.client.login_via_proxy_with_local_key()
         except Exception as exc:  # noqa: BLE001
-            _log.warning("lazy login_via_proxy failed: %s", exc)
+            _log.warning("lazy login_via_proxy_with_local_key failed: %s", exc)
             raise RuntimeError(
-                f"Session tools require a broker JWT, but login_via_proxy failed: "
-                f"{exc}. If you enrolled via the dashboard (device-code), the "
-                f"Mastio doesn't hold your private key so this path 404s — use "
-                f"send_oneshot for fire-and-forget messages instead."
+                f"Session tools require a broker JWT, but login failed: "
+                f"{exc}. send_oneshot still works for fire-and-forget messages."
             ) from exc
     return state.client
 

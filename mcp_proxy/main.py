@@ -623,6 +623,12 @@ async def pdp_health():
 from mcp_proxy.auth.sign_assertion import router as sign_assertion_router
 app.include_router(sign_assertion_router)
 
+# Tech-debt #2 — /v1/auth/login-challenge + /v1/auth/sign-challenged-assertion,
+# the client-holds-the-key counterpart to sign-assertion. Routed here for
+# the same reason: before the reverse-proxy catch-all.
+from mcp_proxy.auth.challenge_response import router as challenge_response_router
+app.include_router(challenge_response_router)
+
 # ADR-012 Phase 1 — JWKS for the Mastio local issuer. Published at
 # /.well-known/jwks-local.json; paths under /.well-known are not
 # reverse-proxied so the registration order vs forwarder is moot.

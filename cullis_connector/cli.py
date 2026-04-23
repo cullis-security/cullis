@@ -347,20 +347,19 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
 
     # Build the CullisClient from the on-disk enrollment bundle.
     #
-    # The Phase 1 ``connect`` tool went away with enrollment but the
-    # wiring was never completed: every tool reached for a client that
-    # nobody constructed. We build it here and load the signing key so
-    # ``send_oneshot`` (API-key + DPoP + inner/outer signatures, no
-    # broker JWT) works out of the box.
+    # ``from_connector`` loads ``identity/agent.key`` + ``identity/agent.crt``
+    # eagerly so send_oneshot (API-key + DPoP + inner/outer signatures)
+    # and session tools (broker JWT via challenge-response login) both
+    # work out of the box.
     #
-    # We deliberately *do not* call ``login_via_proxy()`` eagerly:
-    # it asks the Mastio to sign a client_assertion with the agent's
-    # private key, but device-code enrollment leaves that key on the
-    # user's machine, not on the Mastio — so the call 404s with
-    # "agent credentials not available on proxy". Session-based tools
-    # mint the token lazily via ``ensure_broker_token`` and surface a
-    # clear error if it can't be obtained; one-shot tools don't need
-    # a token at all.
+    # Tech-debt #2 closed: we now call ``login_via_proxy_with_local_key``
+    # eagerly. The Mastio issues a short-lived nonce, the Connector
+    # signs the client_assertion locally (the key never leaves this
+    # machine), and the Mastio verifies + counter-signs. Previously
+    # this step was skipped because the legacy ``login_via_proxy`` path
+    # asks the Mastio to sign on our behalf — which 404s when the key
+    # lives on-device. Failure here is non-fatal: one-shot tools work
+    # without a broker JWT, and ``_require_client`` retries lazily.
     try:
         from cullis_sdk import CullisClient
 
@@ -369,10 +368,18 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
         # (canonical_recipient, etc.) can derive the sender's org from
         # the cert subject without reaching into process-global state.
         client.identity = identity
-        key_path = cfg.config_dir / "identity" / "agent.key"
-        if key_path.exists():
-            client._signing_key_pem = key_path.read_text()
         state.client = client
+
+        try:
+            client.login_via_proxy_with_local_key()
+            _log.info("broker JWT obtained via challenge-response login")
+        except Exception as login_exc:  # noqa: BLE001
+            _log.warning(
+                "eager login_via_proxy_with_local_key failed: %s. "
+                "Session tools will retry lazily; send_oneshot works "
+                "regardless.",
+                login_exc,
+            )
     except Exception as exc:
         _log.error(
             "Failed to initialize CullisClient from %s: %s. "
