@@ -163,6 +163,21 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
 
+    # Federation update framework (imp/federation_hardening_plan.md
+    # Parte 1, PR 2). Must run BEFORE ``LocalIssuer`` construction so a
+    # critical-pending migration affecting this proxy's enrollments can
+    # engage sign-halt and the issuer-skip branch below picks it up.
+    # Defensive try/except so a malformed migration never blocks boot.
+    try:
+        from mcp_proxy.updates.boot import detect_pending_migrations
+        await detect_pending_migrations(agent_mgr)
+    except Exception as exc:
+        _log.warning(
+            "updates.boot: detect_pending_migrations raised at startup: %s "
+            "— continuing without a fresh scan (dashboard may show stale "
+            "state until next restart)", exc,
+        )
+
     # ADR-012 Phase 2.0 — keystore + issuer. The keystore is always
     # available (pure DB read view), the issuer requires that the Mastio
     # identity has loaded a current signer. The validator dependency
@@ -173,17 +188,17 @@ async def lifespan(app: FastAPI):
     app.state.local_issuer = None
     if getattr(agent_mgr, "mastio_loaded", False) and org_id:
         if getattr(agent_mgr, "is_sign_halted", False):
-            # Issue #281 — a staged rotation row blocks signing until
-            # the operator resolves via POST /proxy/mastio-key/
-            # complete-staged. Leaving ``local_issuer`` as None causes
-            # the ``_maybe_local_token`` dep to short-circuit with
-            # ``return None`` and fall through to DPoP, keeping the
-            # failure surface consistent with the counter-sign halt
-            # that ``AgentManager.countersign`` emits.
+            # Sign-halt engaged — either #281 staged rotation row or a
+            # PR 2 federation-update critical migration. Leaving
+            # ``local_issuer`` as None causes the ``_maybe_local_token``
+            # dep to short-circuit with ``return None`` and fall through
+            # to DPoP, keeping the failure surface consistent with the
+            # counter-sign halt that ``AgentManager.countersign`` emits.
             _log.error(
-                "LocalIssuer NOT initialized — sign-halted, staged_kid=%s. "
-                "Resolve via POST /proxy/mastio-key/complete-staged.",
+                "LocalIssuer NOT initialized — sign-halted. staged_kid=%s, "
+                "reason=%s",
                 getattr(agent_mgr, "staged_kid", None),
+                getattr(agent_mgr, "sign_halt_reason", None),
             )
         else:
             try:
