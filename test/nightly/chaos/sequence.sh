@@ -5,7 +5,12 @@
 #
 # Profiles:
 #   light  — 1 Mastio kill + 1 partition, ~2 minutes total
-#   heavy  — both Mastio killed in sequence + court partition, ~5 minutes
+#   heavy  — both Mastio killed + court partition + court kill + DB
+#            latency injection on both proxies, ~6-7 minutes total. The
+#            DB latency step is the one that exercises ADR-013 Phase 3
+#            (circuit breaker); without it, heavy only validates the
+#            proxy's resilience to Court/broker faults, not to its
+#            OWN DB saturation.
 #
 # Usage: sequence.sh [--profile light|heavy]
 set -euo pipefail
@@ -43,6 +48,15 @@ case "$profile" in
         "$SCRIPT_DIR/partition.sh" broker --duration 30
         sleep 30
         "$SCRIPT_DIR/kill.sh" broker --down-seconds 15
+        sleep 30
+        # ADR-013 Phase 3 end-to-end: saturate the proxy's SQLite volume
+        # so the passive sampler sees real query p99 rise. Tune the
+        # breaker thresholds in .env.chaos (see .env.chaos.example) so
+        # the modest latency injected here actually crosses activation
+        # — default 500 ms is usually above the spike this produces.
+        "$SCRIPT_DIR/db-latency.sh" proxy-a --duration 30
+        sleep 15
+        "$SCRIPT_DIR/db-latency.sh" proxy-b --duration 30
         sleep 30
         ;;
     *)

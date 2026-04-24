@@ -2,3 +2,6 @@ state/
 logs/
 reports/
 *.pid
+# Operator-local chaos tuning; .env.chaos.example tracked in-repo as
+# template.
+.env.chaos

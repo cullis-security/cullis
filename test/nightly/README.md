@@ -66,9 +66,21 @@ in `logs/<run-ts>/chaos.jsonl` so `report` can correlate them with
 workload latency/failures.
 
 - `chaos light` — warm-up, 1 Mastio kill, 1 Court partition (~2 min).
-- `chaos heavy` — both Mastio killed, Court partition + kill (~5 min).
+- `chaos heavy` — both Mastio killed, Court partition + kill, DB latency injection on both proxies (~6-7 min). The DB latency step is what exercises ADR-013 Phase 3 (circuit breaker); kill/partition alone do not cause the Mastio's own SQLite to slow down.
 - `chaos kill <service> [--down-seconds N]` — one-off.
 - `chaos partition <service> [--duration N]` — one-off.
+- `chaos db-latency <service> [--duration N] [--size-mb N]` — saturate a Mastio's SQLite volume with disk I/O so the circuit breaker's passive sampler sees real query p99 rise.
+
+### Tuning via `.env.chaos`
+
+Chaos steps recreate containers (`compose up -d --no-deps` after a `kill`), which drops shell env vars set at the `nightly.sh go` terminal. To propagate overrides across chaos steps, copy `.env.chaos.example` to `.env.chaos` and edit. Every chaos script passes that file to `docker compose --env-file` when it exists. Typical use during a Phase 3 validation run:
+
+```
+MCP_PROXY_CB_DB_LATENCY_ACTIVATION_MS=50
+MCP_PROXY_CB_DB_LATENCY_DEACTIVATION_MS=20
+```
+
+→ lowers the breaker threshold so the moderate latency `db-latency.sh` produces actually crosses activation.
 
 ## Report (`report`)
 

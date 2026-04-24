@@ -132,8 +132,12 @@ cmd_chaos() {
             shift
             "$SCRIPT_DIR/chaos/partition.sh" "$@"
             ;;
+        db-latency)
+            shift
+            "$SCRIPT_DIR/chaos/db-latency.sh" "$@"
+            ;;
         *)
-            echo "usage: nightly.sh chaos [light|heavy|kill <svc>|partition <svc>]" >&2
+            echo "usage: nightly.sh chaos [light|heavy|kill <svc>|partition <svc>|db-latency <svc>]" >&2
             exit 1
             ;;
     esac

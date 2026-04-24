@@ -5,6 +5,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NIGHTLY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── Env propagation (cullis-enterprise#12) ──────────────────────────────────
+#
+# Chaos scripts call ``docker compose up -d --no-deps <svc>`` after a kill.
+# Compose does variable substitution on the yml using its own environment
+# lookup: any ``${MCP_PROXY_CB_...}`` that was exported into the shell that
+# ran ``nightly.sh go`` is NOT automatically visible to the chaos shell
+# a few minutes later. The recreated container then boots with defaults.
+#
+# The fix is a local ``.env.chaos`` file: the operator writes it once, the
+# ``compose()`` wrapper below points every docker invocation at it via
+# ``--env-file``. Takes precedence over the default ``.env`` if both exist.
+_CHAOS_ENV_FILE="$NIGHTLY_DIR/.env.chaos"
+
 # Resolve the current run's log directory. Prefer NIGHTLY_RUN_TS env (set
 # by the operator when coordinating with a specific go invocation);
 # otherwise pick the newest logs/<ts>/ subdir. Fail fast if no run.
@@ -44,5 +57,9 @@ chaos_log() {
 }
 
 compose() {
-    (cd "$NIGHTLY_DIR" && docker compose "$@")
+    local env_args=()
+    if [[ -f "$_CHAOS_ENV_FILE" ]]; then
+        env_args=(--env-file "$_CHAOS_ENV_FILE")
+    fi
+    (cd "$NIGHTLY_DIR" && docker compose "${env_args[@]}" "$@")
 }
