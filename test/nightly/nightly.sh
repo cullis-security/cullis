@@ -113,6 +113,71 @@ cmd_not_implemented() {
     exit 2
 }
 
+# Workload orchestration. Starts spammer + chatter + sessionator drivers as
+# background children; wait blocks until SIGINT/SIGTERM, then propagates to
+# every child so JSONL logs flush cleanly.
+cmd_go() {
+    if [[ ! -f state/bootstrap.done ]]; then
+        echo "[nightly] state/bootstrap.done missing — run './nightly.sh full' first" >&2
+        exit 1
+    fi
+
+    local run_ts
+    run_ts="$(date -u +%Y%m%d-%H%M%S)"
+    export NIGHTLY_RUN_TS="$run_ts"
+    local log_dir="logs/$run_ts"
+    mkdir -p "$log_dir"
+
+    echo "[nightly] run_ts=$run_ts  logs=$log_dir"
+    echo "[nightly] starting workload drivers — Ctrl-C to stop"
+
+    local pids=()
+    shutdown() {
+        echo
+        echo "[nightly] stopping workload ($(date -u +%H:%M:%S))"
+        kill -TERM "${pids[@]}" 2>/dev/null || true
+        wait "${pids[@]}" 2>/dev/null || true
+        echo "[nightly] logs: $log_dir"
+    }
+    trap shutdown INT TERM
+
+    # Spammer: burst every 30s, parallel=3 (below the Mastio DPoP stall
+    # threshold surfaced during PR1 smoke — we want steady pressure here,
+    # not to DoS the event loop in the first 5 minutes).
+    "$PY" "$SCRIPT_DIR/workload/spammer.py" "orga::nightly-a-04" \
+        --burst-interval 30 --parallel 3 &
+    pids+=($!)
+
+    # Chatter: 2 per org, low-rate oneshot noise. Stagger startup slightly
+    # so they don't all hit /v1/auth/login at the same tick.
+    local chatter_pairs=(
+        "orga::nightly-a-05"
+        "orga::nightly-a-06"
+        "orgb::nightly-b-05"
+        "orgb::nightly-b-06"
+    )
+    for aid in "${chatter_pairs[@]}"; do
+        "$PY" "$SCRIPT_DIR/workload/chatter.py" "$aid" \
+            --interval 3 --jitter 2 &
+        pids+=($!)
+        sleep 0.5
+    done
+
+    # Sessionator: one intra-org pair (responder started first so the
+    # initiator's open_session finds it ready to list_sessions).
+    "$PY" "$SCRIPT_DIR/workload/sessionator.py" responder \
+        "orga::nightly-a-02" --expect "orga::nightly-a-01" &
+    pids+=($!)
+    sleep 1
+    "$PY" "$SCRIPT_DIR/workload/sessionator.py" initiator \
+        "orga::nightly-a-01" --target "orga::nightly-a-02" &
+    pids+=($!)
+
+    echo "[nightly] ${#pids[@]} drivers running — pids=${pids[*]}"
+    wait "${pids[@]}"
+    trap - INT TERM
+}
+
 if [[ $# -eq 0 ]]; then
     usage
     exit 0
@@ -125,7 +190,7 @@ case "$sub" in
     status)    cmd_status "$@" ;;
     smoke)     cmd_smoke "$@" ;;
     logs)      cmd_logs "$@" ;;
-    go)        cmd_not_implemented "go" "$@" ;;
+    go)        cmd_go "$@" ;;
     chaos)     cmd_not_implemented "chaos" "$@" ;;
     report)    cmd_not_implemented "report" "$@" ;;
     -h|--help|help) usage ;;
