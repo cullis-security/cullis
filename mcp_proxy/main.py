@@ -358,6 +358,38 @@ async def lifespan(app: FastAPI):
         app.state.federation_stats_task = stats_task
         _log.info("federation stats publisher started (org=%s)", org_id)
 
+    # ADR-013 layer 6 — DB latency tracker + circuit breaker state.
+    # Started after init_db (need the engine) and after the federation
+    # task, so the probe's first ``SELECT 1`` runs against a fully
+    # initialized pool. The middleware reads these off app.state at
+    # request time; see mcp_proxy.middleware.db_latency_circuit_breaker.
+    from mcp_proxy.db import _require_engine
+    from mcp_proxy.middleware.db_latency_circuit_breaker import (
+        CircuitBreakerState,
+    )
+    from mcp_proxy.observability.db_latency import DbLatencyTracker
+
+    db_latency_tracker = DbLatencyTracker(
+        _require_engine(),
+        window_s=settings.cb_db_latency_window_s,
+        probe_interval_s=settings.cb_db_latency_probe_interval_s,
+        probe_timeout_s=settings.cb_db_latency_probe_timeout_s,
+    )
+    await db_latency_tracker.start()
+    app.state.db_latency_tracker = db_latency_tracker
+    app.state.db_latency_cb_state = CircuitBreakerState(
+        activation_ms=settings.cb_db_latency_activation_ms,
+        deactivation_ms=settings.cb_db_latency_deactivation_ms,
+        max_shed_fraction=settings.cb_db_latency_max_shed_fraction,
+    )
+    _log.info(
+        "DB latency circuit breaker: activation=%.0fms deactivation=%.0fms "
+        "max_shed=%.2f (ADR-013 layer 6)",
+        settings.cb_db_latency_activation_ms,
+        settings.cb_db_latency_deactivation_ms,
+        settings.cb_db_latency_max_shed_fraction,
+    )
+
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
         settings.host, settings.port, settings.environment,
@@ -365,7 +397,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup
+    # Cleanup — stop the latency tracker first so the background probe
+    # doesn't race with engine dispose.
+    tracker = getattr(app.state, "db_latency_tracker", None)
+    if tracker is not None:
+        try:
+            await tracker.stop()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("db_latency_tracker.stop raised: %s", exc)
+
     stop_event = getattr(app.state, "local_sweeper_stop", None)
     sweeper_task = getattr(app.state, "local_sweeper_task", None)
     if stop_event is not None:
@@ -545,6 +585,28 @@ async def security_headers(request: Request, call_next):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DB latency circuit breaker (ADR-013 layer 6)
+#
+# Registered *before* the global rate limit in the code, so Starlette's LIFO
+# execution order runs the circuit breaker AFTER the global bucket: a burst
+# big enough to saturate the DB gets shed by the global bucket first,
+# leaving only the residue for the breaker to evaluate. Reads its tracker +
+# state off app.state at request time (wired by the lifespan hook above)
+# so the middleware can be registered at module-import time before the
+# engine exists.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from mcp_proxy.middleware.db_latency_circuit_breaker import (
+    DbLatencyCircuitBreakerMiddleware,
+)
+
+app.add_middleware(DbLatencyCircuitBreakerMiddleware)
+_log.info(
+    "DB latency circuit breaker middleware registered (ADR-013 layer 6)"
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Global rate limit (ADR-013 layer 2)
 #
 # Registered last among the middlewares so Starlette's LIFO execution order
@@ -678,6 +740,10 @@ if get_settings().local_auth_enabled:
 # ADR-009 Phase 2 — /v1/admin/mastio-pubkey for bootstrap automation.
 from mcp_proxy.admin.info import router as admin_info_router
 app.include_router(admin_info_router)
+
+# ADR-013 layer 6 — /v1/admin/observability/circuit-breaker.
+from mcp_proxy.admin.observability import router as admin_observability_router
+app.include_router(admin_observability_router)
 
 # ADR-009 sandbox — Connector JSON API for MCP resources + bindings.
 from mcp_proxy.admin.mcp_resources import router as admin_mcp_resources_router

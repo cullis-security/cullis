@@ -171,6 +171,12 @@ services:
       # match the Settings defaults in mcp_proxy/config.py.
       MCP_PROXY_GLOBAL_RATE_LIMIT_RPS:   "${MCP_PROXY_GLOBAL_RATE_LIMIT_RPS:-500}"
       MCP_PROXY_GLOBAL_RATE_LIMIT_BURST: "${MCP_PROXY_GLOBAL_RATE_LIMIT_BURST:-1000}"
+      # ADR-013 layer 6 — DB latency circuit breaker. Exposed so chaos
+      # scenarios can tighten the activation threshold enough to make
+      # the breaker fire during a reasonable test window.
+      MCP_PROXY_CB_DB_LATENCY_ACTIVATION_MS:      "${MCP_PROXY_CB_DB_LATENCY_ACTIVATION_MS:-500}"
+      MCP_PROXY_CB_DB_LATENCY_DEACTIVATION_MS:    "${MCP_PROXY_CB_DB_LATENCY_DEACTIVATION_MS:-350}"
+      MCP_PROXY_CB_DB_LATENCY_MAX_SHED_FRACTION:  "${MCP_PROXY_CB_DB_LATENCY_MAX_SHED_FRACTION:-0.95}"
     volumes:
       - proxy-a-data:/data
     networks:
@@ -229,6 +235,9 @@ services:
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
       MCP_PROXY_GLOBAL_RATE_LIMIT_RPS:   "${MCP_PROXY_GLOBAL_RATE_LIMIT_RPS:-500}"
       MCP_PROXY_GLOBAL_RATE_LIMIT_BURST: "${MCP_PROXY_GLOBAL_RATE_LIMIT_BURST:-1000}"
+      MCP_PROXY_CB_DB_LATENCY_ACTIVATION_MS:      "${MCP_PROXY_CB_DB_LATENCY_ACTIVATION_MS:-500}"
+      MCP_PROXY_CB_DB_LATENCY_DEACTIVATION_MS:    "${MCP_PROXY_CB_DB_LATENCY_DEACTIVATION_MS:-350}"
+      MCP_PROXY_CB_DB_LATENCY_MAX_SHED_FRACTION:  "${MCP_PROXY_CB_DB_LATENCY_MAX_SHED_FRACTION:-0.95}"
     volumes:
       - proxy-b-data:/data
     networks:

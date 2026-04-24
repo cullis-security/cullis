@@ -185,19 +185,27 @@ class CircuitBreakerState:
 
 
 class DbLatencyCircuitBreakerMiddleware:
-    """Pure ASGI middleware that sheds when DB p99 sits above threshold."""
+    """Pure ASGI middleware that sheds when DB p99 sits above threshold.
+
+    Reads the ``DbLatencyTracker`` and ``CircuitBreakerState`` from
+    ``scope["app"].state`` at request time rather than taking them as
+    constructor arguments. Reason: ``app.add_middleware`` runs at
+    module import, but the tracker needs a live DB engine and is
+    created inside the lifespan — the state-lookup pattern lets the
+    middleware be registered early and picked up later once the
+    lifespan has wired ``app.state.db_latency_tracker`` and
+    ``app.state.db_latency_cb_state``. When either attribute is
+    missing (warmup, standalone test harness) the middleware
+    pass-through-s: fail-open.
+    """
 
     def __init__(
         self,
         app,
-        tracker: "DbLatencyTracker",
-        state: CircuitBreakerState,
         bypass_prefixes: tuple[str, ...] = _BYPASS_PREFIXES,
         rng: "random.Random | None" = None,
     ) -> None:
         self.app = app
-        self._tracker = tracker
-        self._state = state
         self._bypass_prefixes = bypass_prefixes
         # Injectable RNG so tests can run with a deterministic seed
         # when they need exact shed/pass counts per fraction.
@@ -213,7 +221,16 @@ class DbLatencyCircuitBreakerMiddleware:
             await self.app(scope, receive, send)
             return
 
-        _, _, p99 = self._tracker.p99_ms()
+        app_state = scope["app"].state
+        tracker = getattr(app_state, "db_latency_tracker", None)
+        state = getattr(app_state, "db_latency_cb_state", None)
+        if tracker is None or state is None:
+            # Lifespan hasn't wired us yet (or the standalone test
+            # harness omitted the tracker on purpose): fail-open.
+            await self.app(scope, receive, send)
+            return
+
+        _, _, p99 = tracker.p99_ms()
         if p99 is None:
             # Warmup or both sources quiet: fail-open. Phase 1/2/6 all
             # cooperate — the global bucket + DB pool cap still protect
@@ -221,12 +238,12 @@ class DbLatencyCircuitBreakerMiddleware:
             await self.app(scope, receive, send)
             return
 
-        self._state.update_state(p99)
-        if not self._state.is_shedding:
+        state.update_state(p99)
+        if not state.is_shedding:
             await self.app(scope, receive, send)
             return
 
-        fraction = self._state.shed_fraction(p99)
+        fraction = state.shed_fraction(p99)
         if self._rng.random() >= fraction:
             # Pass-through within the shedding state — keeps a trickle
             # of real traffic flowing so operators can tell recovering
@@ -235,9 +252,9 @@ class DbLatencyCircuitBreakerMiddleware:
             await self.app(scope, receive, send)
             return
 
-        self._state.record_shed()
+        state.record_shed()
         method = scope.get("method", "?")
-        _emit_shed_log(path, method, p99, fraction, self._state.shed_total)
+        _emit_shed_log(path, method, p99, fraction, state.shed_total)
         await send({
             "type": "http.response.start",
             "status": 503,

@@ -122,6 +122,20 @@ class ProxySettings(BaseSettings):
     global_rate_limit_rps: float = 500.0
     global_rate_limit_burst: int = 1000
 
+    # ADR-013 layer 6 — DB latency circuit breaker. Sheds a fraction
+    # of requests while DB p99 sits above the activation threshold,
+    # so the Mastio stays responsive as the pool recovers rather
+    # than piling new work onto connections that never free up.
+    # Hysteresis between activation and deactivation prevents
+    # flapping at the boundary. Lerp from 10 % at activation up to
+    # max_shed_fraction at 3× activation. See ADR-013 §Phase 3.
+    cb_db_latency_activation_ms: float = 500.0
+    cb_db_latency_deactivation_ms: float = 350.0
+    cb_db_latency_max_shed_fraction: float = 0.95
+    cb_db_latency_probe_interval_s: float = 1.0
+    cb_db_latency_probe_timeout_s: float = 2.0
+    cb_db_latency_window_s: float = 5.0
+
     # Redis — optional. Empty = in-memory JTI store + rate limiter (single-
     # instance Mastio is fine without Redis). Multi-worker / HA deploys MUST
     # set this so the DPoP JTI store is shared across workers (audit F-B-12).

@@ -96,10 +96,10 @@ def test_state_shed_count_last_60s_trims():
 def _build_app(tracker: _FakeTracker, state: CircuitBreakerState,
                rng: random.Random | None = None) -> FastAPI:
     app = FastAPI()
-    app.add_middleware(
-        DbLatencyCircuitBreakerMiddleware,
-        tracker=tracker, state=state, rng=rng,
-    )
+    app.add_middleware(DbLatencyCircuitBreakerMiddleware, rng=rng)
+    # Wire via app.state the way the lifespan does in main.py.
+    app.state.db_latency_tracker = tracker
+    app.state.db_latency_cb_state = state
 
     @app.get("/v1/egress/peers")
     async def peers():
