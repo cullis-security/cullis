@@ -11,6 +11,17 @@ source ./config.env
 
 COMPOSE="docker compose"
 
+# Operator-local chaos overrides (see .env.chaos.example). The chaos
+# scripts already thread --env-file into their compose invocations via
+# chaos/_common.sh; do the same at this top level so `nightly.sh full`
+# applies the overrides at container-create time instead of waiting for
+# the first chaos-triggered recreate. Typical use: set tighter circuit-
+# breaker thresholds in .env.chaos, then `nightly.sh full` brings up the
+# stack already tuned for a Phase 3 validation run.
+if [[ -f "$SCRIPT_DIR/.env.chaos" ]]; then
+    COMPOSE="$COMPOSE --env-file $SCRIPT_DIR/.env.chaos"
+fi
+
 # Host-side Python used by smoke.py / workload drivers. Prefer the repo's
 # .venv (where cullis_sdk is installed in editable mode) over the system
 # python3/python.
