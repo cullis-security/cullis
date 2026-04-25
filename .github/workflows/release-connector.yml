@@ -270,26 +270,34 @@ jobs:
 
   # ── 6. PyPI upload (opt-in via PYPI_TOKEN secret) ────────────────────
   #
-  # TODO: once PYPI_TOKEN is provisioned in repository secrets, remove
-  # the `if:` guard below. Until then this job is a no-op on releases.
+  # Step-level `if:` on `secrets.PYPI_TOKEN` instead of job-level: when
+  # the workflow is invoked via `workflow_dispatch`, GitHub refuses to
+  # parse a job-level `if:` that references the `secrets` context
+  # ("Unrecognized named-value: 'secrets'"). Step-level `if:` works in
+  # both push-tag and workflow_dispatch invocations.
   publish-pypi:
     name: Publish to PyPI
     needs: build-python
     runs-on: ubuntu-latest
-    if: ${{ secrets.PYPI_TOKEN != '' }}
     environment:
       name: pypi
       url: https://pypi.org/p/cullis-connector
     permissions:
       id-token: write  # for PyPI trusted publishing once configured
     steps:
+      - name: Skip notice when PYPI_TOKEN unset
+        if: ${{ secrets.PYPI_TOKEN == '' }}
+        run: echo "PYPI_TOKEN secret is not configured — skipping PyPI publish."
+
       - name: Download wheel + sdist
+        if: ${{ secrets.PYPI_TOKEN != '' }}
         uses: actions/download-artifact@v4
         with:
           name: python-dist
           path: dist
 
       - name: Publish to PyPI
+        if: ${{ secrets.PYPI_TOKEN != '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
