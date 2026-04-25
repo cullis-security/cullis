@@ -18,6 +18,10 @@ on:
   push:
     tags:
       - "connector-v*"
+  # Manual retrigger escape hatch: `gh workflow run release-connector.yml --ref connector-vX.Y.Z`.
+  # Useful when GHA dedupes a tag-push trigger (we hit this on connector-v0.3.1)
+  # or when re-running a release on the same SHA without a force-push.
+  workflow_dispatch:
 
 # Minimal default permissions; individual jobs grant what they need.
 permissions:
