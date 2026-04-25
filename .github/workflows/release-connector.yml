@@ -268,13 +268,15 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
 
-  # ── 6. PyPI upload (opt-in via PYPI_TOKEN secret) ────────────────────
+  # ── 6. PyPI upload ──────────────────────────────────────────────────
   #
-  # Step-level `if:` on `secrets.PYPI_TOKEN` instead of job-level: when
-  # the workflow is invoked via `workflow_dispatch`, GitHub refuses to
-  # parse a job-level `if:` that references the `secrets` context
-  # ("Unrecognized named-value: 'secrets'"). Step-level `if:` works in
-  # both push-tag and workflow_dispatch invocations.
+  # No `if:` on `secrets.PYPI_TOKEN`: the `secrets` context cannot be
+  # referenced in any `if:` expression when the workflow is invoked via
+  # `workflow_dispatch` (parser error: "Unrecognized named-value:
+  # 'secrets'"). The token is still consumed only via `with: password:
+  # ${{ secrets.PYPI_TOKEN }}` below — that form is always valid. If
+  # the secret is unset, the publish action fails with a clear error;
+  # provision PYPI_TOKEN as a repo secret to enable publishing.
   publish-pypi:
     name: Publish to PyPI
     needs: build-python
@@ -285,19 +287,13 @@ jobs:
     permissions:
       id-token: write  # for PyPI trusted publishing once configured
     steps:
-      - name: Skip notice when PYPI_TOKEN unset
-        if: ${{ secrets.PYPI_TOKEN == '' }}
-        run: echo "PYPI_TOKEN secret is not configured — skipping PyPI publish."
-
       - name: Download wheel + sdist
-        if: ${{ secrets.PYPI_TOKEN != '' }}
         uses: actions/download-artifact@v4
         with:
           name: python-dist
           path: dist
 
       - name: Publish to PyPI
-        if: ${{ secrets.PYPI_TOKEN != '' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_TOKEN }}
