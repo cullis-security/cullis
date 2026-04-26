@@ -61,45 +61,13 @@ What to point at, panel by panel:
 If the dashboard goes flat and you need a fresh burst:
 
 ```bash
-docker compose -f reference/docker-compose.yml --profile full exec -T alice-byoca python <<'PY'
-import pathlib
-from cullis_sdk import CullisClient
-ID = pathlib.Path("/state/orga/agents/alice-byoca")
-c = CullisClient.from_api_key_file(
-    "http://proxy-a:9100",
-    api_key_path=ID/"api-key", dpop_key_path=ID/"dpop.jwk",
-    agent_id="orga::alice-byoca", org_id="orga",
-)
-c.login_via_proxy()
-c._signing_key_pem = (ID/"agent-key.pem").read_text()
-
-for sku in ["gear-Y", "bolt-Z", "widget-X"]:
-    r = c.send_oneshot("orga::alice-spiffe",
-        {"content": f"do you have {sku}?", "from": "orga::alice-byoca", "hops": 1})
-    print(f"injected {sku}: {r.get('msg_id', '?')[:12]}")
-PY
+bash reference/scenarios/inject.sh           # one mixed burst (intra+cross)
+bash reference/scenarios/inject.sh -n 5      # five bursts back-to-back
+bash reference/scenarios/inject.sh --loop    # continuous, ~every 8s (Ctrl-C to stop)
+bash reference/scenarios/inject.sh -c        # only cross-org (ADR-009 + ECDH E2E)
 ```
 
-For a cross-org burst (exercises ADR-009 counter-sig + ECDH E2E):
-
-```bash
-docker compose -f reference/docker-compose.yml --profile full exec -T alice-connector python <<'PY'
-import pathlib
-from cullis_sdk import CullisClient
-ID = pathlib.Path("/state/orga/agents/alice-connector")
-c = CullisClient.from_api_key_file(
-    "http://proxy-a:9100",
-    api_key_path=ID/"api-key", dpop_key_path=ID/"dpop.jwk",
-    agent_id="orga::alice-connector", org_id="orga",
-)
-c.login_via_proxy()
-c._signing_key_pem = (ID/"agent-key.pem").read_text()
-r = c.send_oneshot("orgb::bob-connector",
-    {"content": "request from orga: source 50 widget-X cross-org",
-     "from": "orga::alice-connector", "hops": 1})
-print(f"cross-org: {r.get('msg_id', '?')[:12]}")
-PY
-```
+The script picks a random SKU from `widget-X`, `gear-Y`, `bolt-Z` per burst, and rolls a dice on whether to send intra-orga (60%), intra-orgb (25%), or cross-org (15%). Each send shows up in Grafana within 5 seconds.
 
 ### 5. Tear down when done
 
