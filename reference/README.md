@@ -16,49 +16,112 @@ This is the bigger sibling of `sandbox/`. The sandbox is a didactic playground (
 - **Ollama running on the host** with a small chat model loaded (e.g. `gemma3:1b` or `qwen3.5:2b`). The agent containers reach Ollama via `host.docker.internal:11434`.
 - Ollama tuned for concurrency: `OLLAMA_HOST=0.0.0.0:11434` + `OLLAMA_NUM_PARALLEL=6`. See the host setup section below.
 
-## Quickstart
+## Demo runbook — copy/paste in order
+
+Five steps, ~2 minutes from cold start to live dashboard. Run from the repo root.
+
+### 1. Pre-flight (only first time, or if you changed Ollama config)
 
 ```bash
-# Make sure the sibling sandbox is down (mutually exclusive)
+# Verify Ollama is up on the host with gemma3:1b
+curl -s http://172.17.0.1:11434/api/tags | python3 -c "import sys,json; print([m['name'] for m in json.load(sys.stdin)['models']])"
+# Expected: ['gemma3:1b', ...]   (the model name list must include gemma3:1b)
+
+# If the sandbox is running, bring it down first (mutually exclusive — same ports)
 bash sandbox/down.sh 2>/dev/null || true
-
-# Bring up the reference deployment
-bash reference/up.sh
-
-# Inject the kick-off prompt into alice-byoca
-bash reference/scenarios/widget-hunt.sh
-
-# Watch everything live in one place: http://localhost:3000
-# (anonymous viewer access enabled; admin/admin if you need to edit)
 ```
 
-When you're done:
+### 2. Bring up the stack with the kick-off prompt baked in
+
+```bash
+bash reference/scenarios/widget-hunt.sh
+```
+
+This script is the canonical demo entry point — it tears down any previous reference run, builds + starts all 19 containers with `BOOTSTRAP_SCOPE=full` and `ALICE_BYOCA_INITIAL_PROMPT=...`, then tails the multi-hop conversation in the terminal. Wait until the script prints "stack ready".
+
+### 3. Open Grafana — the single demo URL
+
+```
+http://localhost:3000
+```
+
+Anonymous Viewer access is enabled (no login click). Navigate: **Dashboards → Cullis Reference → "Cullis Reference — Widget-hunt Live"**.
+
+What to point at, panel by panel:
+
+| Panel | Pitch line |
+|---|---|
+| **🤖 Live LLM agent decisions** | "Each row is a real LLM decision from gemma3:1b. Same `msg_id` appears twice — once at the sender as `tool.cullis_send`, once at the receiver as `inbox.recv`. The hop counter caps loose chains at 8." |
+| **🔐 Enrollment events (3 paths)** | "Six rows, one per agent. Two via BYOCA, two via SPIFFE (with real `spiffe_id=spiffe://...`), two via Connector device-code (simulated). All three paths land on the same API-key + DPoP runtime auth — ADR-011 unified enrollment." |
+| **🏛️ Mastio + Court infrastructure** | "Underneath the LLM noise, this is the Cullis wire: federation publish, mTLS authentication, token issuance, policy decisions. JSON-structured, parsed live by Promtail." |
+| **📈 Per-agent message rate** | "Stacked bars showing how many `cullis_send` + `inbox.recv` events each agent generated per minute. Spikes correspond to scenario kicks; flat tails between are the agents idle on their inbox poll." |
+
+### 4. Add traffic during the demo (optional)
+
+If the dashboard goes flat and you need a fresh burst:
+
+```bash
+docker compose -f reference/docker-compose.yml --profile full exec -T alice-byoca python <<'PY'
+import pathlib
+from cullis_sdk import CullisClient
+ID = pathlib.Path("/state/orga/agents/alice-byoca")
+c = CullisClient.from_api_key_file(
+    "http://proxy-a:9100",
+    api_key_path=ID/"api-key", dpop_key_path=ID/"dpop.jwk",
+    agent_id="orga::alice-byoca", org_id="orga",
+)
+c.login_via_proxy()
+c._signing_key_pem = (ID/"agent-key.pem").read_text()
+
+for sku in ["gear-Y", "bolt-Z", "widget-X"]:
+    r = c.send_oneshot("orga::alice-spiffe",
+        {"content": f"do you have {sku}?", "from": "orga::alice-byoca", "hops": 1})
+    print(f"injected {sku}: {r.get('msg_id', '?')[:12]}")
+PY
+```
+
+For a cross-org burst (exercises ADR-009 counter-sig + ECDH E2E):
+
+```bash
+docker compose -f reference/docker-compose.yml --profile full exec -T alice-connector python <<'PY'
+import pathlib
+from cullis_sdk import CullisClient
+ID = pathlib.Path("/state/orga/agents/alice-connector")
+c = CullisClient.from_api_key_file(
+    "http://proxy-a:9100",
+    api_key_path=ID/"api-key", dpop_key_path=ID/"dpop.jwk",
+    agent_id="orga::alice-connector", org_id="orga",
+)
+c.login_via_proxy()
+c._signing_key_pem = (ID/"agent-key.pem").read_text()
+r = c.send_oneshot("orgb::bob-connector",
+    {"content": "request from orga: source 50 widget-X cross-org",
+     "from": "orga::alice-connector", "hops": 1})
+print(f"cross-org: {r.get('msg_id', '?')[:12]}")
+PY
+```
+
+### 5. Tear down when done
 
 ```bash
 bash reference/down.sh
 ```
 
-## The single demo URL — Grafana
+This removes containers + volumes (clean state for next run).
 
-Open **<http://localhost:3000>** to see:
+---
 
-- **Live LLM agent decisions** — every `cullis_send`, `inbox.recv`, `kick-off`, and `tool.done` across the six agents, in real time
-- **Enrollment events** — three coloured rows showing BYOCA, SPIFFE, and Connector device-code (simulated) firing during boot
-- **Mastio + Court infrastructure events** — `federation publish`, `Authenticated CullisClient`, token issuance, policy decisions
-- **Per-agent message rate** — stacked bars showing which agents are talking when
+## Other URLs (for deep dives, not for the live demo)
 
-The dashboard uses Loki (logs) and Prometheus (metrics) datasources, both auto-provisioned on first boot. Loki ingests from Promtail, which tails every container in the cullis-reference compose project via the host Docker socket.
-
-Other surfaces still available, but Grafana is the one to demo:
-
-| URL | Service |
-|---|---|
-| <http://localhost:3000> | **Grafana** — single-pane live view |
-| <http://localhost:9100/proxy/dashboard> | Mastio A admin (orga) |
-| <http://localhost:9200/proxy/dashboard> | Mastio B admin (orgb) |
-| <http://localhost:9090> | Prometheus (raw metrics + alert rules) |
-| <http://localhost:8180> | Keycloak orga (admin/admin-sandbox) |
-| <http://localhost:8280> | Keycloak orgb (admin/admin-sandbox) |
+| URL | Service | Login |
+|---|---|---|
+| <http://localhost:3000> | **Grafana — single-pane live view** | anonymous viewer (admin/admin to edit) |
+| <http://localhost:9100/proxy/dashboard> | Mastio A admin (orga) | first-boot wizard |
+| <http://localhost:9200/proxy/dashboard> | Mastio B admin (orgb) | first-boot wizard |
+| <http://localhost:9090> | Prometheus raw + alert rules | none |
+| <http://localhost:9090/alerts> | `cullis_security_critical` + `cullis_operational` + `cullis_liveness` rules | none |
+| <http://localhost:8180> | Keycloak orga | admin / admin-sandbox |
+| <http://localhost:8280> | Keycloak orgb | admin / admin-sandbox |
 
 ## What's running
 

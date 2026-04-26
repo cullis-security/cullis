@@ -130,13 +130,13 @@
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
       "id": 4,
       "options": {
-        "legend": {"calcs": ["sum"], "displayMode": "table", "placement": "right", "showLegend": true},
+        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "right", "showLegend": true},
         "tooltip": {"mode": "multi", "sort": "desc"}
       },
       "targets": [
         {
           "datasource": {"type": "loki", "uid": "loki"},
-          "expr": "sum by (service) (count_over_time({service=~\"alice-.+|bob-.+\"} |~ \"tool\\\\.cullis_send|inbox\\\\.recv\" [1m]))",
+          "expr": "sum by (service) (rate({service=~\"alice-.+|bob-.+\"} |~ \"tool\\\\.cullis_send|inbox\\\\.recv\" [1m]) * 60)",
           "queryType": "range",
           "legendFormat": "{{service}}",
           "refId": "A"
