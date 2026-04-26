@@ -25,8 +25,11 @@ bash sandbox/down.sh 2>/dev/null || true
 # Bring up the reference deployment
 bash reference/up.sh
 
-# Inject the kick-off prompt into alice-byoca and watch the multi-hop trace
+# Inject the kick-off prompt into alice-byoca
 bash reference/scenarios/widget-hunt.sh
+
+# Watch everything live in one place: http://localhost:3000
+# (anonymous viewer access enabled; admin/admin if you need to edit)
 ```
 
 When you're done:
@@ -34,6 +37,28 @@ When you're done:
 ```bash
 bash reference/down.sh
 ```
+
+## The single demo URL — Grafana
+
+Open **<http://localhost:3000>** to see:
+
+- **Live LLM agent decisions** — every `cullis_send`, `inbox.recv`, `kick-off`, and `tool.done` across the six agents, in real time
+- **Enrollment events** — three coloured rows showing BYOCA, SPIFFE, and Connector device-code (simulated) firing during boot
+- **Mastio + Court infrastructure events** — `federation publish`, `Authenticated CullisClient`, token issuance, policy decisions
+- **Per-agent message rate** — stacked bars showing which agents are talking when
+
+The dashboard uses Loki (logs) and Prometheus (metrics) datasources, both auto-provisioned on first boot. Loki ingests from Promtail, which tails every container in the cullis-reference compose project via the host Docker socket.
+
+Other surfaces still available, but Grafana is the one to demo:
+
+| URL | Service |
+|---|---|
+| <http://localhost:3000> | **Grafana** — single-pane live view |
+| <http://localhost:9100/proxy/dashboard> | Mastio A admin (orga) |
+| <http://localhost:9200/proxy/dashboard> | Mastio B admin (orgb) |
+| <http://localhost:9090> | Prometheus (raw metrics + alert rules) |
+| <http://localhost:8180> | Keycloak orga (admin/admin-sandbox) |
+| <http://localhost:8280> | Keycloak orgb (admin/admin-sandbox) |
 
 ## What's running
 

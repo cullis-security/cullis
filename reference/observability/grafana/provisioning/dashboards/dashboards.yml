@@ -1,0 +1,15 @@
+# Grafana auto-provisioning: load every JSON in /etc/grafana/dashboards
+# at boot. Files in this directory ship with the reference deployment.
+
+apiVersion: 1
+
+providers:
+  - name: 'cullis-reference'
+    orgId: 1
+    folder: 'Cullis Reference'
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

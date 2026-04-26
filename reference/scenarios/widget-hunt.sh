@@ -44,10 +44,22 @@ docker compose --profile full down -v --remove-orphans >/dev/null 2>&1 || true
 
 _note "Bringing reference stack up with INITIAL_PROMPT on alice-byoca"
 echo "  ${GRAY}prompt:${RESET} ${PROMPT}"
+# BOOTSTRAP_SCOPE=full forces the outer bootstrap to register orga too
+# (its default in the compose file is "up", which leaves orga out for
+# the sandbox's guided onboarding flow). The reference deployment needs
+# both orgs because the cross-org demo is the whole point.
+BOOTSTRAP_SCOPE=full \
 ALICE_BYOCA_INITIAL_PROMPT="${PROMPT}" \
   docker compose --profile full up -d --build --wait --quiet-pull >/dev/null
 
 _ok "stack ready"
+
+echo
+echo "  ${BOLD}${CYAN}┌─────────────────────────────────────────────────────────┐${RESET}"
+echo "  ${BOLD}${CYAN}│  📊 Grafana dashboard:  http://localhost:3000           │${RESET}"
+echo "  ${BOLD}${CYAN}│      → Live LLM decisions + enrollment + audit events   │${RESET}"
+echo "  ${BOLD}${CYAN}└─────────────────────────────────────────────────────────┘${RESET}"
+echo
 
 _note "Tail the conversation across all six agents (Ctrl-C to stop)"
 echo

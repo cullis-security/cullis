@@ -1,0 +1,85 @@
+# Promtail config for the Cullis reference deployment.
+#
+# Tails every container in the cullis-reference compose project and
+# ships the lines to Loki with these labels per stream:
+#
+#   service       — the compose service name (alice-byoca, broker, ...)
+#   container     — the full container name (cullis-reference-...-1)
+#   level, logger — extracted from JSON for proxy-* and broker
+#   agent_id, role — extracted from `[org::name|role]` prefix on alice-* / bob-*
+#
+# We use the "docker_sd_configs" service discovery, then RELABEL the
+# Promtail-discovered metadata into stable Loki labels. The
+# Promtail-discovered metadata names start with `__meta_docker_*` and
+# get stripped before reaching Loki — that's why the relabel step is
+# mandatory; without it, every stream ships with the Loki-default
+# `service_name=unknown_service` and dashboards become useless.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: cullis-reference
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          # Server-side filter: only see containers in the
+          # cullis-reference compose project. Cuts noise and prevents
+          # accidentally tailing other Docker stacks on the same host.
+          - name: label
+            values: ["com.docker.compose.project=cullis-reference"]
+
+    relabel_configs:
+      # Promote container metadata to actual labels. The leading dunder
+      # in source_labels marks them as discovery-time temporary labels
+      # that Promtail strips before shipping; the relabel step copies
+      # them onto the stream as proper labels.
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: service
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: container
+
+    pipeline_stages:
+      # Mastio (proxy-a/b) and Court (broker) emit JSON since LOG_FORMAT=json.
+      # Parse the structured fields and promote level + logger to labels.
+      - match:
+          selector: '{service=~"proxy-.+|broker"}'
+          stages:
+            - json:
+                expressions:
+                  ts: timestamp
+                  level: level
+                  logger: logger
+                  message: message
+                  request_id: request_id
+            - labels:
+                level:
+                logger:
+            - timestamp:
+                source: ts
+                format: RFC3339Nano
+                fallback_formats: ["RFC3339"]
+            - output:
+                source: message
+
+      # LLM agents prefix lines with `2026-... [org::name|role] msg`.
+      # Extract agent_id + role into labels.
+      - match:
+          selector: '{service=~"alice-.+|bob-.+"}'
+          stages:
+            - regex:
+                expression: '^(?P<ts>\S+ \S+) \[(?P<agent_id>[^\|]+)\|(?P<role>[^\]]+)\] (?P<msg>.*)$'
+            - labels:
+                agent_id:
+                role:
+            - output:
+                source: msg

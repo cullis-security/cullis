@@ -1,0 +1,39 @@
+# Prometheus config for the Cullis reference deployment.
+#
+# Scrapes /metrics from both Mastios and the Court. Each Cullis service
+# exposes the standard ATN metrics documented at
+# enterprise-kit/monitoring/README.md.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  # Reuse the maintained alert rules from enterprise-kit. Mounted
+  # read-only by docker-compose so changes to the canonical file
+  # propagate without copy-paste drift.
+  - /etc/prometheus/cullis-alerts.yml
+
+scrape_configs:
+  - job_name: cullis-mastio-orga
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['proxy-a:9100']
+        labels:
+          org: orga
+          role: mastio
+
+  - job_name: cullis-mastio-orgb
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['proxy-b:9100']
+        labels:
+          org: orgb
+          role: mastio
+
+  - job_name: cullis-court
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['broker:8000']
+        labels:
+          role: court

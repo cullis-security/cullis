@@ -42,6 +42,10 @@ volumes:
   bootstrap-state:
   proxy-a-data:
   proxy-b-data:
+  # Phase 6 observability stack
+  loki-data:
+  prometheus-data:
+  grafana-data:
   # Blocco 4 — SPIRE stacks per org
   spire-a-server-api:
   spire-a-server-data:
@@ -102,6 +106,11 @@ services:
         condition: service_healthy
     environment:
       ADMIN_SECRET: "sandbox-admin-secret-change-me"
+      # Phase 6 observability — JSON logs (so Promtail can parse fields
+      # cleanly into Loki labels) and Prometheus /metrics endpoint
+      # exposed for the in-stack Prometheus to scrape.
+      LOG_FORMAT: "json"
+      PROMETHEUS_ENABLED: "true"
       # Intentionally unset — the broker auto-generates a signing key at
       # first boot and persists it under /app/certs/ (tmpfs). Each
       # ``demo.sh down && demo.sh full`` cycle therefore rotates the key,
@@ -904,4 +913,84 @@ services:
     # Needs all three networks: Court via public-wan, Mastio A via
     # orga-internal, Mastio B via orgb-internal (per-org isolation).
     networks: [public-wan, orga-internal, orgb-internal]
-    restart: "no"
+
+  # ── Phase 6 observability — Loki + Promtail + Prometheus + Grafana ─────────
+  #
+  # Single URL for the demo: http://localhost:3000 (Grafana). The
+  # widget-hunt dashboard is auto-provisioned and tails the LLM agent
+  # logs + bootstrap-mastio enrollment events + Mastio/Court structured
+  # JSON in real time. Stack adds ~500 MB RAM on top of the rest.
+  #
+  # All four services live on `public-wan` so they can reach the broker
+  # for Prometheus scrapes, and on `orga-internal` + `orgb-internal` so
+  # Prometheus can scrape both Mastios. Grafana is the only one with a
+  # host port mapping.
+
+  loki:
+    image: grafana/loki:3.2.1
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks: [public-wan]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 30s
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    command: ["-config.file=/etc/promtail/config.yml"]
+    depends_on:
+      loki:
+        condition: service_healthy
+    volumes:
+      - ./observability/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [public-wan]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../enterprise-kit/monitoring/cullis-alerts.yml:/etc/prometheus/cullis-alerts.yml:ro
+      - prometheus-data:/prometheus
+    networks: [public-wan, orga-internal, orgb-internal]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy | grep -q 'Healthy'"]
+      interval: 5s
+      timeout: 2s
+      retries: 30
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    depends_on:
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_USERS_DEFAULT_THEME: "dark"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks: [public-wan]
+    restart: unless-stopped

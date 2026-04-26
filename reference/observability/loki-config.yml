@@ -1,0 +1,57 @@
+# Loki config for the Cullis reference deployment.
+#
+# Default Loki rejects samples older than 7 days. The Docker daemon
+# persists container logs across compose down/up cycles, so a long-
+# running dev environment accumulates weeks of old log entries that
+# Promtail tries to ship on every restart. Without a more permissive
+# window, Loki 400s the entire batch and no fresh logs land either.
+#
+# This config widens the window to 30 days, lifts ingestion rate caps
+# so a dense widget-hunt run isn't throttled, and keeps everything
+# else at single-binary defaults.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2026-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Accept 30 days of backlog so Docker's persisted container logs
+  # (left over from previous compose runs) don't poison ingestion.
+  reject_old_samples: true
+  reject_old_samples_max_age: 720h
+  # Lift per-stream and per-tenant ingestion caps so a dense
+  # widget-hunt run with six chatty agents + Mastio + Court can land
+  # without 429s.
+  ingestion_rate_mb: 32
+  ingestion_burst_size_mb: 64
+  per_stream_rate_limit: 16MB
+  per_stream_rate_limit_burst: 32MB
+  max_streams_per_user: 0
+  allow_structured_metadata: true
+
+ruler:
+  alertmanager_url: ""
