@@ -105,9 +105,30 @@ jobs:
         run: bash packaging/pypi/build.sh
 
       - name: Smoke test wheel
+        # Yesterday (connector-v0.3.1) this step was just `pip install
+        # <wheel> && cullis-connector --version`. It passed even though
+        # the wheel ImportError'd at runtime: `--version` only reads
+        # `__version__` and never touches `cullis_sdk` or any extras
+        # dep. End-user `pipx install cullis-connector` then died on
+        # `ModuleNotFoundError: cullis_sdk` because `cullis-sdk` wasn't
+        # declared and (worse) wasn't even on PyPI.
+        #
+        # The new smoke installs WITH the extras a real user would
+        # request, runs `import cullis_connector` from a directory that
+        # does NOT contain the source tree (so the import resolves from
+        # site-packages, not the repo checkout), and explicitly imports
+        # each extras-only module. Anything missing from `dependencies`
+        # or from an `optional-dependencies` group blows up here, before
+        # publish.
         run: |
           python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install dist/cullis_connector-*.whl
+          /tmp/smoke/bin/pip install "$(ls dist/cullis_connector-*.whl)[dashboard,desktop]"
+          cd /tmp
+          /tmp/smoke/bin/python -c "import cullis_connector; print('cullis-connector', cullis_connector.__version__); assert '/site-packages/' in cullis_connector.__file__, cullis_connector.__file__"
+          /tmp/smoke/bin/python -c "from cullis_connector.cli import main; print('cli main importable')"
+          /tmp/smoke/bin/python -c "import cullis_sdk; assert '/site-packages/' in cullis_sdk.__file__, cullis_sdk.__file__; print('cullis-sdk dep resolved:', cullis_sdk.__version__)"
+          /tmp/smoke/bin/python -c "import fastapi, uvicorn, jinja2, plyer; print('dashboard extras present')"
+          /tmp/smoke/bin/python -c "import pystray, webview, PIL; print('desktop extras present')"
           /tmp/smoke/bin/cullis-connector --version
 
       - uses: actions/upload-artifact@v4

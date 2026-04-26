@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cullis-connector"
-version = "0.3.1"
+version = "0.3.2"
 description = "MCP server bridging local MCP clients (Claude Code, Cursor, Claude Desktop, ToolHive) to the Cullis federated agent-trust network."
 readme = "README_PKG.md"
 requires-python = ">=3.10"
@@ -54,6 +54,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    # The Cullis SDK is the in-process client the connector uses to talk to
+    # the broker (enrollment, sessions, send/receive, DPoP/mTLS). It lives
+    # in its own PyPI distribution so other Python agents can depend on it
+    # without dragging in the connector's MCP server stack. 0.3.1 shipped
+    # without this line; `pip install cullis-connector` succeeded but every
+    # subcommand died on `ModuleNotFoundError: cullis_sdk`.
+    "cullis-sdk>=0.1.0",
     "mcp>=1.0",
     "httpx>=0.24.0",
     "cryptography>=41.0.0",
@@ -67,6 +74,29 @@ dashboard = [
     "uvicorn[standard]>=0.27",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
+    # OS-native desktop notifications for the inbox poller (libnotify on
+    # Linux, NSUserNotification on macOS, Toast on Windows). Falls back to
+    # stderr when missing so a plain `connector` install without
+    # `dashboard` keeps working.
+    "plyer>=2.1",
+]
+# Native desktop shell: tray icon + system webview wrapping the dashboard
+# so non-technical users never see a terminal. Builds on top of
+# `dashboard` — keep both installed together.
+#   pywebview: embeds the OS-native webview (Cocoa WebKit, WebView2,
+#              GTK WebKit) pointed at http://127.0.0.1:7777.
+#   pystray : system-tray icon with a minimal menu (Open / Quit).
+#   Pillow  : drawing surface for the tray glyph (we render the
+#             portcullis mark at runtime, no PNG assets to ship).
+# Platform prerequisites NOT installable via pip: on Linux the user still
+# needs `gtk3` + `webkit2gtk` (present by default on mainstream distros);
+# macOS and Windows 10+ ship the webview in the OS. These cannot be
+# expressed as pip dependencies, so they are documented in install/desktop
+# rather than enforced here.
+desktop = [
+    "pywebview>=5.0",
+    "pystray>=0.19",
+    "Pillow>=10.0",
 ]
 dev = [
     "pytest>=8.0",
