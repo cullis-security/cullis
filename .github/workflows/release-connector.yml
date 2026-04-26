@@ -128,7 +128,22 @@ jobs:
           /tmp/smoke/bin/python -c "from cullis_connector.cli import main; print('cli main importable')"
           /tmp/smoke/bin/python -c "import cullis_sdk; assert '/site-packages/' in cullis_sdk.__file__, cullis_sdk.__file__; print('cullis-sdk dep resolved:', cullis_sdk.__version__)"
           /tmp/smoke/bin/python -c "import fastapi, uvicorn, jinja2, plyer; print('dashboard extras present')"
-          /tmp/smoke/bin/python -c "import pystray, webview, PIL; print('desktop extras present')"
+          # `[desktop]` extras are GUI libraries: pystray probes X11 at
+          # import time (Xlib.display.Display()), pywebview initialises
+          # GTK at import time on Linux. On a headless GHA runner with
+          # no DISPLAY, both crash before the smoke can verify they are
+          # actually installed. We check via importlib.metadata instead
+          # — same coverage against the "extras dep missing from
+          # pyproject" failure mode (PackageNotFoundError if pip never
+          # installed it), no GUI initialisation. The ZIP/PyInstaller
+          # bundles run on real user desktops where GUI init works.
+          /tmp/smoke/bin/python -c "
+          import importlib.metadata as m
+          for pkg in ['pystray', 'pywebview', 'Pillow']:
+              v = m.version(pkg)
+              print(f'  {pkg} {v}')
+          print('desktop extras present')
+          "
           /tmp/smoke/bin/cullis-connector --version
 
       - uses: actions/upload-artifact@v4
