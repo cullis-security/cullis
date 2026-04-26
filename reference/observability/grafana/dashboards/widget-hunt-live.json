@@ -152,7 +152,7 @@
   "templating": {
     "list": []
   },
-  "time": {"from": "now-15m", "to": "now"},
+  "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
   "title": "Cullis Reference — Widget-hunt Live",
