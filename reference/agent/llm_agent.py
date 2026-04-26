@@ -79,14 +79,18 @@ TOOL_SCHEMA = {
     "properties": {
         "tool": {
             "type": "string",
-            "enum": ["cullis_send", "cullis_discover", "done"],
+            # cullis_discover removed — it hits /v1/federation/agents/search
+            # which requires a Court-issued JWT; under ADR-012 local-first
+            # auth, login_via_proxy issues a local Mastio JWT that the Court
+            # rejects with 401. The reference scenario doesn't need real
+            # discovery: every prompt names its target peer explicitly.
+            "enum": ["cullis_send", "done"],
         },
         "args": {
             "type": "object",
             "properties": {
                 "to": {"type": "string"},
                 "content": {"type": "string"},
-                "capability": {"type": "string"},
                 "reason": {"type": "string"},
             },
         },
@@ -157,22 +161,6 @@ def _exec_tool(client: CullisClient, decision: dict, hops: int) -> None:
             log.error(f"tool.cullis_send FAILED to={to} err={exc!r}")
         return
 
-    if tool == "cullis_discover":
-        capability = args.get("capability", "").strip()
-        if not capability:
-            log.warning(f"tool.cullis_discover missing capability arg")
-            return
-        try:
-            agents = client.discover(capabilities=[capability])
-            ids = [a.agent_id for a in agents]
-            log.info(
-                f"tool.cullis_discover capability={capability!r} → {ids} "
-                f"reason={reason!r}"
-            )
-        except Exception as exc:
-            log.error(f"tool.cullis_discover FAILED capability={capability!r} err={exc!r}")
-        return
-
     log.warning(f"tool.unknown {tool!r} args={args!r}")
 
 
@@ -212,16 +200,37 @@ def _load_client() -> CullisClient:
         org_id=ORG_ID,
     )
     client.login_via_proxy()
+    # send_oneshot signs each envelope with the agent's private key for
+    # end-to-end non-repudiation. from_api_key_file() doesn't load the
+    # PEM (api-key + dpop.jwk are sufficient for auth and DPoP-bound
+    # tokens), so we have to inject it manually — same pattern as the
+    # sandbox agent. Without this the first send_oneshot raises
+    # "one-shot send requires a signing key".
+    key_path = IDENTITY_DIR / "agent-key.pem"
+    if key_path.exists():
+        client._signing_key_pem = key_path.read_text()
+        log.info(f"signing key loaded ({key_path})")
+    else:
+        log.warning(f"no agent-key.pem at {key_path} — sends will fail")
     log.info(f"identity loaded; logged in via proxy ({BROKER_URL})")
     return client
 
 
 def _format_user_msg(sender: str, content: str, hops: int) -> str:
-    """Frame an inbound message for the LLM."""
+    """Frame an inbound message for the LLM.
+
+    gemma3:1b is small enough that placeholder text in the system prompt
+    (e.g. "<sender's agent_id>") sometimes gets copy-pasted verbatim into
+    the tool call instead of being substituted. We anchor the literal
+    values inline so the model can quote them directly.
+    """
     return (
-        f"You ({SELF_ID}) just received a message from {sender} "
-        f"(hop {hops}/{MAX_HOPS}):\n\n"
-        f"\"{content}\"\n\n"
+        f"You ARE the agent {SELF_ID}.\n"
+        f"You just received a message from sender_agent_id={sender!r} "
+        f"(hop {hops}/{MAX_HOPS}).\n\n"
+        f"Message content: {content!r}\n\n"
+        f"To reply to the sender, your tool call MUST use exactly:\n"
+        f"  \"to\": {sender!r}\n\n"
         f"Decide what to do next. Respond with one tool call as JSON."
     )
 

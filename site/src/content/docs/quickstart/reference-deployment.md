@@ -1,6 +1,6 @@
 ---
 title: "Reference deployment"
-description: "Operational-grade demo with six LLM-driven agents enrolled via three different methods (BYOCA, SPIFFE, Connector device-code) running a real multi-hop scenario across two organisations."
+description: "Infrastructure stress test with six real LLM-driven agents enrolled via three different methods (BYOCA, SPIFFE, Connector device-code), pumping real model-generated traffic through Cullis intra-org and cross-org."
 category: "Quickstart"
 order: 40
 updated: "2026-04-26"
@@ -8,9 +8,9 @@ updated: "2026-04-26"
 
 # Reference deployment
 
-**Who this is for**: someone who has read [Sandbox walkthrough](sandbox-walkthrough) and wants to see a deployment that's closer to what a real Cullis customer would actually run — three enrollment paths exercised in parallel, real LLMs reasoning behind each agent, multi-hop conversations across organisations.
+**Who this is for**: someone who has read [Sandbox walkthrough](sandbox-walkthrough) and wants to see Cullis carrying **real LLM traffic** — every agent in the deployment is its own container running Ollama-powered decisions, not a scripted ping-pong loop. The point is to verify that the infrastructure (enrollment, mTLS, DPoP, ECDH end-to-end, audit chain) carries the messy real-LLM traffic correctly, including loops that the hop counter has to cap.
 
-The sandbox is a didactic playground (hard-coded nonce ping-pong, BYOCA-only enrollment). The reference deployment shows what the same infrastructure looks like with realistic content sitting on top.
+The sandbox is a didactic playground (hard-coded nonce ping-pong, BYOCA-only enrollment). The reference deployment replaces the scripted agents with six real LLM containers and exercises all three enrollment paths in parallel.
 
 ## What's different from the sandbox
 
@@ -85,7 +85,11 @@ bash reference/down.sh
 
 ## Limitations (deliberate)
 
-The `connector_devicecode_simulated` enrollment posts to the BYOCA endpoint with a `(connector device-code, simulated)` suffix in the display name. Real Connector device-code requires a logged-in admin dashboard session + CSRF token (no `X-Admin-Secret` bypass), which is incompatible with a fully-automated reference deployment — there's no human in the loop to click "approve". The runtime credentials are identical; only the wire path during enrollment differs. A future auto-approver daemon (programmatic admin login + session cookie + CSRF) could fix this — tracked as Phase 2.5 follow-up.
+**`connector_devicecode_simulated` enrollment** posts to the BYOCA endpoint with a `(connector device-code, simulated)` suffix in the display name. Real Connector device-code requires a logged-in admin dashboard session + CSRF token (no `X-Admin-Secret` bypass), which is incompatible with a fully-automated reference deployment — there's no human in the loop to click "approve". The runtime credentials are identical; only the wire path during enrollment differs. A future auto-approver daemon (programmatic admin login + session cookie + CSRF) could fix this — tracked as Phase 2.5 follow-up.
+
+**The LLM may go off-script.** The default model `gemma3:1b` is excellent at single-turn structured output (the personal-agent stress test measured 100% valid JSON across 6 concurrent calls × 3 roles), but small enough that multi-hop conversational state — *"I already asked X, got reply Y, now I should escalate to Z"* — is unreliable. You will see chains where the BUYER pings the INVENTORY a few times before the hop counter caps it, or where the BROKER terminates without routing. **This is by design for this deployment.** The point isn't "smart agents" — it's that the **infrastructure** (enrollment, mTLS, DPoP, ECDH end-to-end, audit chain) carries real LLM traffic correctly even when the model produces messy decisions. Swap in `gemma3:4b` or `qwen3.5:2b` for better narrative coherence; the Cullis side is unaffected.
+
+**Production architecture would differ.** A real customer deploying Cullis would not run an LLM in the BROKER role — broker routing is deterministic. The reference deployment intentionally LLMs all six roles to maximise the surface area being stress-tested.
 
 ## Where to read more
 

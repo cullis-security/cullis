@@ -1,8 +1,10 @@
 # Cullis Reference Deployment
 
-**Operational-grade demo of Cullis** — six LLM-driven agents enrolled via three different methods (BYOCA, SPIFFE/SPIRE, Connector device-code), running real multi-hop conversations across two organizations.
+**Infrastructure stress test with six real LLM-driven agents.** Each agent is a separate container running its own LLM-powered decision loop (Ollama on the host). They are enrolled via three different methods (BYOCA, SPIFFE/SPIRE, Connector device-code), authenticated end-to-end with API-key + DPoP, and message each other through the Cullis broker — intra-org and cross-org.
 
-This is the bigger sibling of `sandbox/`. The sandbox is a didactic playground (hard-coded nonce ping-pong, BYOCA-only enrollment); this directory shows what a Cullis deployment looks like with realistic content and all three enrollment paths exercised in parallel.
+The point of this deployment is **not** "agents make smart decisions" — it's "six LLM processes use Cullis the way a real customer would, and the infrastructure carries the traffic correctly". The widget-hunt scenario kicks off real LLM inference on every hop; whether the model produces a coherent multi-hop story depends on how big the model is. With the default `gemma3:1b` you'll see real traffic, real signing, real cross-org envelopes — and the LLM may or may not chain the decisions sensibly. The hop counter caps loose chains. Either way, the **infrastructure** demonstrates correctly: identities, mTLS, DPoP, ECDH E2E, hash-chain audit. That's the demo.
+
+This is the bigger sibling of `sandbox/`. The sandbox is a didactic playground (hard-coded nonce ping-pong, BYOCA-only enrollment); this directory replaces those scripted agents with real LLM containers and exercises all three enrollment paths in parallel.
 
 > **Mutually exclusive with `sandbox/`** — both bind the same host ports (9100, 9200, 8000, …). Bring the sandbox down before this stack up: `bash sandbox/down.sh && bash reference/up.sh`.
 
@@ -118,10 +120,18 @@ ollama pull gemma3:1b      # or qwen3.5:2b
 
 | | `sandbox/` | `reference/` |
 |---|---|---|
-| Agent runtime | Hard-coded nonce ping-pong | LLM-driven via Ollama |
+| Agent runtime | Hard-coded nonce ping-pong | Real LLM containers (Ollama) |
 | Enrollment | All BYOCA | BYOCA + SPIFFE + Connector device-code |
-| Scenario | `oneshot-a-to-b` (single message) | `widget-hunt` (multi-hop conversation) |
+| Scenario | `oneshot-a-to-b` (single message) | `widget-hunt` (LLM-generated traffic, multi-hop) |
 | Setup time | ~30s | ~30s + Ollama warm-up |
-| Audience | Learning Cullis primitives | Pitch demo, integration reference, partner evaluation |
+| Audience | Learning Cullis primitives | Infrastructure stress test with real LLMs, integration reference |
 
-If you're trying to understand Cullis for the first time, start with `sandbox/`. If you want to see what a deployment looks like with realistic workload, you're in the right place.
+If you're trying to understand Cullis for the first time, start with `sandbox/`. If you want to verify the infrastructure carries real LLM-generated traffic — including the messy parts like agents looping or going off-script — you're in the right place.
+
+## On model size and "smart" agents
+
+The default model (`gemma3:1b`) is great at single-turn structured output (the personal-agent stress test measured 100% valid JSON across 6 concurrent calls × 3 roles), but small enough that multi-hop conversational state — *"I already asked X, got reply Y, now I should escalate to Z"* — is unreliable. You will see chains where the BUYER pings the INVENTORY a few times before the hop counter caps it, or where the BROKER `done`s without routing.
+
+That's by design for this deployment. The whole point is to show the **infrastructure** carrying real LLM traffic correctly: enrollment via three paths, mTLS, DPoP-bound tokens, ECDH end-to-end encryption on cross-org envelopes, hash-chain audit. Whether the LLM produces a coherent narrative is a function of the model you point Ollama at — swap in `gemma3:4b` or `qwen3.5:2b` for better reasoning, accepting the VRAM and concurrency cost. The Cullis side does not care.
+
+If you want a coherent narrative regardless of model, the right architecture is to make the BROKER + INVENTORY + SUPPLIER roles deterministic (rule-based) and only LLM the BUYER — that's how a production deployment would actually look (you don't want an AI making routing decisions). This deployment intentionally LLMs all six to stress-test the infrastructure with real model-driven traffic.
