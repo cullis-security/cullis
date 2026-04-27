@@ -190,6 +190,11 @@ def test_proxy_settings_flag_defaults_off(monkeypatch):
 
     monkeypatch.delenv("PROXY_INTRA_ORG", raising=False)
     monkeypatch.delenv("PROXY_TRUST_DOMAIN", raising=False)
+    # PR-D flipped the standalone default to True; standalone auto-enables
+    # intra_org_routing (config.py:_apply_routing_overrides). This test
+    # asserts the federated default for the flag, so opt out of standalone
+    # explicitly.
+    monkeypatch.setenv("MCP_PROXY_STANDALONE", "false")
     settings = ProxySettings()
     assert settings.intra_org_routing is False
     assert settings.trust_domain == "cullis.local"
