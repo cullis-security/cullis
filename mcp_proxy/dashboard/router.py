@@ -495,10 +495,20 @@ async def setup_page(request: Request):
     if isinstance(session, RedirectResponse):
         return session
 
+    from mcp_proxy.config import get_settings as _get_settings
     from mcp_proxy.db import get_config
+
+    _settings = _get_settings()
     broker_url    = await get_config("broker_url") or ""
     invite_token  = await get_config("invite_token") or ""
-    org_id        = await get_config("org_id") or ""
+    # ADR-006 §2.2 — derive org_id from the in-memory CA when available,
+    # fall back to proxy_config for legacy / pre-derive boots. The form
+    # never accepts org_id as input in standalone (PR-E1 closes #326).
+    agent_mgr = getattr(request.app.state, "agent_manager", None)
+    derived_org_id = None
+    if agent_mgr is not None and getattr(agent_mgr, "ca_loaded", False):
+        derived_org_id = agent_mgr.derive_org_id_from_ca()
+    org_id        = derived_org_id or (await get_config("org_id") or "")
     display_name  = await get_config("display_name") or ""
     contact_email = await get_config("contact_email") or ""
     webhook_url   = await get_config("webhook_url") or ""
@@ -509,9 +519,15 @@ async def setup_page(request: Request):
     return templates.TemplateResponse("setup.html", _ctx(
         request, session,
         active="setup",
+        # ADR-014 PR-D — standalone is the default; wizard can hide the
+        # broker section when this is true. PR-E2 will remove the
+        # broker fields from the template entirely; until then the
+        # template just shows them and the handler ignores them.
+        standalone=_settings.standalone,
         broker_url=broker_url,
         invite_token=invite_token,
         org_id=org_id,
+        derived_org_id=derived_org_id,
         display_name=display_name,
         contact_email=contact_email,
         webhook_url=webhook_url,
@@ -532,7 +548,10 @@ async def setup_submit(request: Request):
     import re as _re
     import secrets as _secrets
 
+    from mcp_proxy.config import get_settings as _get_settings
     from mcp_proxy.db import set_config, get_config, log_audit
+
+    _settings = _get_settings()
 
     form = await request.form()
     broker_url    = str(form.get("broker_url", "")).strip().rstrip("/")
@@ -547,6 +566,45 @@ async def setup_submit(request: Request):
     vault_enabled = bool(form.get("vault_enabled"))
     vault_addr    = str(form.get("vault_addr", "")).strip()
     vault_token   = str(form.get("vault_token", "")).strip()
+
+    # ── ADR-014 PR-E1 — standalone short-circuit (closes #326) ─────────────
+    # When the Mastio runs in standalone mode (default after PR-D), the
+    # wizard is configuring an org that owns its identity outright:
+    #   - org_id is derived from the Org CA pubkey (ADR-006 §2.2), NEVER
+    #     accepted as form input — derive it from the in-memory CA and
+    #     ignore whatever the form said. This is the fix for #326: the
+    #     previous handler called set_config("org_id", form_value) and
+    #     overwrote the derived value (often with empty string), leaving
+    #     ``/v1/egress/resolve`` with bare ``::agent-X`` recipients that
+    #     parse_internal() rejects.
+    #   - broker_url + invite_token are not collected; the federation flow
+    #     ("allaccio al Court") is post-setup, opt-in via /proxy/federation
+    #     (PR-E2). Skip the broker validation + /v1/onboarding/* call.
+    if _settings.standalone:
+        agent_mgr = getattr(request.app.state, "agent_manager", None)
+        derived: str | None = None
+        if agent_mgr is not None and getattr(agent_mgr, "ca_loaded", False):
+            derived = agent_mgr.derive_org_id_from_ca()
+        if not derived:
+            derived = (await get_config("org_id")) or ""
+        # Always override the form-supplied value. The derived value is
+        # the only one that satisfies the cert-chain invariants — any
+        # other value silently breaks resolve.
+        if derived:
+            org_id = derived
+        return await _setup_submit_standalone(
+            request, session,
+            org_id=org_id,
+            display_name=display_name,
+            contact_email=contact_email,
+            webhook_url=webhook_url,
+            org_ca_mode=org_ca_mode,
+            ca_key_pem=ca_key_pem,
+            ca_cert_pem=ca_cert_pem,
+            vault_enabled=vault_enabled,
+            vault_addr=vault_addr,
+            vault_token=vault_token,
+        )
 
     # If no webhook URL provided, fall back to env or auto-construct
     # this proxy's built-in PDP endpoint.
@@ -853,6 +911,158 @@ def _setup_error_response(
         vault_enabled=vault_enabled,
         errors=[error_msg],
     ))
+
+
+async def _setup_submit_standalone(
+    request: Request,
+    session: ProxyDashboardSession,
+    *,
+    org_id: str,
+    display_name: str,
+    contact_email: str,
+    webhook_url: str,
+    org_ca_mode: str,
+    ca_key_pem: str,
+    ca_cert_pem: str,
+    vault_enabled: bool,
+    vault_addr: str,
+    vault_token: str,
+):
+    """ADR-014 PR-E1 — wizard handler for the standalone case (closes #326).
+
+    The standalone Mastio owns its identity outright:
+      - ``org_id`` is the value derived by the caller from the in-memory
+        CA (or read from proxy_config when the in-memory CA isn't loaded).
+        We do not accept the form-supplied value.
+      - The federation flow (broker_url + invite_token + /onboarding) is
+        out of scope here. PR-E2 will move the corresponding controls
+        out of the wizard entirely; until then we just skip them.
+
+    Failure modes that still show in the form:
+      - missing display_name / contact_email
+      - CA import requested but PEMs missing or unparseable
+      - Vault enabled but addr/token missing or unreachable
+    """
+    from mcp_proxy.db import set_config, get_config, log_audit
+
+    errors: list[str] = []
+
+    if not org_id:
+        # Should be impossible in standalone after first-boot — flag
+        # loudly so the operator knows the boot path didn't run.
+        errors.append(
+            "Cannot derive org_id — the Mastio's Org CA isn't loaded yet. "
+            "Restart the container; first-boot derivation should populate it."
+        )
+    if not display_name:
+        errors.append("Display name is required.")
+    if not contact_email:
+        errors.append("Contact email is required.")
+
+    if org_ca_mode == "import":
+        if not ca_key_pem or not ca_cert_pem:
+            errors.append("Both CA certificate and CA private key PEM are required for import.")
+        else:
+            try:
+                serialization.load_pem_private_key(ca_key_pem.encode(), password=None)
+            except Exception:
+                errors.append("CA private key is not valid PEM.")
+            try:
+                x509.load_pem_x509_certificate(ca_cert_pem.encode())
+            except Exception:
+                errors.append("CA certificate is not valid PEM.")
+
+    if org_ca_mode == "skip" and not await get_config("org_ca_cert"):
+        errors.append("This proxy has no CA yet — choose 'Generate new' or 'Import existing'.")
+
+    if vault_enabled:
+        if not vault_addr:
+            errors.append("Vault address is required when Vault is enabled.")
+        if not vault_token:
+            errors.append("Vault token is required when Vault is enabled.")
+
+    if errors:
+        has_ca = bool(await get_config("org_ca_cert"))
+        return templates.TemplateResponse("setup.html", _ctx(
+            request, session,
+            active="setup",
+            broker_url="",
+            invite_token="",
+            org_id=org_id,
+            display_name=display_name,
+            contact_email=contact_email,
+            webhook_url=webhook_url,
+            has_ca=has_ca,
+            vault_addr=vault_addr,
+            vault_enabled=vault_enabled,
+            errors=errors,
+        ))
+
+    # Persist org-level config. Note: org_id is the derived value; we
+    # pass through ``set_config`` to keep proxy_config consistent (the
+    # in-memory derive is authoritative either way).
+    if org_id:
+        await set_config("org_id", org_id)
+    await set_config("display_name", display_name)
+    await set_config("contact_email", contact_email)
+    if webhook_url:
+        await set_config("webhook_url", webhook_url)
+
+    # CA: regenerate / import. The standalone Mastio normally has a CA
+    # already (auto-generated at first boot per ADR-006 §2.2); the
+    # ``import`` branch lets an operator BYOCA on top of that.
+    if org_ca_mode == "generate":
+        # ``generate_org_ca`` from the dashboard helpers wraps the same
+        # primitive the lifespan uses. We avoid touching it when the
+        # in-memory derivation already produced one — regenerate would
+        # change org_id and orphan every existing agent cert.
+        cert_pem, key_pem = generate_org_ca(org_id)
+        await set_config("org_ca_cert", cert_pem)
+        await set_config("org_ca_key", key_pem)
+        await log_audit(
+            agent_id="admin",
+            action="ca.generate",
+            status="success",
+            detail=f"org_id={org_id}, standalone wizard, RSA-4096, 10y",
+        )
+    elif org_ca_mode == "import":
+        await set_config("org_ca_cert", ca_cert_pem)
+        await set_config("org_ca_key", ca_key_pem)
+        await log_audit(
+            agent_id="admin",
+            action="ca.import",
+            status="success",
+            detail=f"org_id={org_id}, standalone wizard",
+        )
+
+    if vault_enabled and vault_addr and vault_token:
+        ok, msg = await _test_vault_connectivity(vault_addr, vault_token)
+        if ok:
+            await set_config("vault_addr", vault_addr)
+            await set_config("vault_token", vault_token)
+            await log_audit(
+                agent_id="admin",
+                action="vault.configure",
+                status="success",
+                detail=f"addr={vault_addr}",
+            )
+        else:
+            _log.warning("Vault connectivity test failed: %s", msg)
+    elif not vault_enabled:
+        await set_config("vault_addr", "")
+        await set_config("vault_token", "")
+
+    # Standalone Mastio is "active" the moment it has a CA + identity.
+    # No broker handshake to wait on.
+    await set_config("org_status", "active")
+    await log_audit(
+        agent_id="admin",
+        action="setup.standalone_save",
+        status="success",
+        detail=f"org_id={org_id}, ca_mode={org_ca_mode}, vault={'yes' if vault_enabled else 'no'}",
+    )
+
+    return RedirectResponse(url="/proxy/agents", status_code=303)
 
 
 @router.post("/setup/test-connection")
