@@ -18,6 +18,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 @pytest_asyncio.fixture
 async def standalone_proxy(tmp_path, monkeypatch):
@@ -47,18 +49,9 @@ async def standalone_proxy(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str) -> str:
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-
-    raw = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-    )
-    return raw
+async def _provision_agent(agent_id: str) -> dict[str, str]:
+    """Provision agent via the mTLS helper and return the nginx-shaped headers."""
+    return await provision_internal_agent(agent_id, capabilities=["cap.read"])
 
 
 @pytest.mark.asyncio
@@ -100,15 +93,15 @@ async def test_standalone_intra_org_full_roundtrip(standalone_proxy):
     """Two agents on the same standalone proxy complete a full session
     lifecycle: open → accept → send → poll → ack → close. Zero broker."""
     app, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
-    bob = await _provision_agent("bob-bot")
+    alice_headers = await _provision_agent("alice-bot")
+    bob_headers = await _provision_agent("bob-bot")
 
     # 1. Alice opens a session to Bob (same org).
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
-            "target_agent_id": "bob-bot",
+            "target_agent_id": "acme::bob-bot",
             "target_org_id": "acme",
             "capabilities": ["cap.read"],
         },
@@ -119,18 +112,18 @@ async def test_standalone_intra_org_full_roundtrip(standalone_proxy):
     # 2. Bob accepts.
     accept = await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     assert accept.status_code == 200, accept.text
 
     # 3. Alice sends an envelope-mode message (opaque ciphertext).
     send = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"hello": "bob"},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )
@@ -141,7 +134,7 @@ async def test_standalone_intra_org_full_roundtrip(standalone_proxy):
     # 4. Bob polls and sees the message.
     poll = await client.get(
         f"/v1/egress/messages/{session_id}",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     assert poll.status_code == 200, poll.text
     body = poll.json()
@@ -149,26 +142,26 @@ async def test_standalone_intra_org_full_roundtrip(standalone_proxy):
     assert body["count"] == 1
     msg = body["messages"][0]
     assert msg["msg_id"] == msg_id
-    assert msg["sender_agent_id"] == "alice-bot"
+    assert msg["sender_agent_id"] == "acme::alice-bot"
 
     # 5. Bob acks — queue row flips to delivered.
     ack = await client.post(
         f"/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     assert ack.status_code == 200, ack.text
 
     # 6. Subsequent poll returns empty (the row is no longer pending).
     poll2 = await client.get(
         f"/v1/egress/messages/{session_id}",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     assert poll2.json()["count"] == 0
 
     # 7. Alice closes.
     close = await client.post(
         f"/v1/egress/sessions/{session_id}/close",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
     )
     assert close.status_code == 200, close.text
 
@@ -180,11 +173,11 @@ async def test_standalone_cross_org_returns_400_not_503(standalone_proxy):
     initialized"). The distinction matters for SDK error handling —
     503 implies transient, 400 implies "this deployment can't do it"."""
     _, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
+    alice_headers = await _provision_agent("alice-bot")
 
     resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "target_agent_id": "stranger-bot",
             "target_org_id": "other-org",  # foreign org

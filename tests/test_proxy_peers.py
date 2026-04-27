@@ -1,8 +1,8 @@
 """Tests for /v1/egress/peers — Connector-friendly peer listing.
 
 The endpoint powers the Connector's intent-level ``contact("name")``
-flow. It must work under API-key + DPoP auth (no broker JWT) so that
-device-code-enrolled agents can use it on a standalone Mastio.
+flow. It must work under client-cert + DPoP auth (no broker JWT) so
+that device-code-enrolled agents can use it on a standalone Mastio.
 """
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+
+from tests._mtls_helpers import provision_internal_agent
 
 
 @pytest_asyncio.fixture
@@ -35,17 +37,9 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_caller(agent_id: str = "caller-bot") -> str:
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-    raw = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-    )
-    return raw
+async def _provision_caller(agent_id: str = "caller-bot") -> dict[str, str]:
+    """Insert a caller agent and return the mTLS headers nginx forwards."""
+    return await provision_internal_agent(agent_id, capabilities=["cap.read"])
 
 
 async def _provision_local_peer(agent_id: str, display_name: str = "", capabilities: str = "[]") -> None:
@@ -72,13 +66,13 @@ async def _provision_local_peer(agent_id: str, display_name: str = "", capabilit
 @pytest.mark.asyncio
 async def test_peers_lists_intra_org_excluding_caller(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     await _provision_local_peer("mario", "Mario Rossi")
     await _provision_local_peer("maria", "Maria Bianchi")
 
     resp = await client.get(
         "/v1/egress/peers",
-        headers={"X-API-Key": api_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -96,13 +90,13 @@ async def test_peers_lists_intra_org_excluding_caller(proxy_app):
 @pytest.mark.asyncio
 async def test_peers_substring_filter(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     await _provision_local_peer("mario", "Mario Rossi")
     await _provision_local_peer("salesbot", "Sales Bot")
 
     resp = await client.get(
         "/v1/egress/peers",
-        headers={"X-API-Key": api_key},
+        headers=caller_headers,
         params={"q": "mario"},
     )
     assert resp.status_code == 200
@@ -113,12 +107,12 @@ async def test_peers_substring_filter(proxy_app):
 @pytest.mark.asyncio
 async def test_peers_filter_matches_display_name(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     await _provision_local_peer("agent-x42", "Mario Rossi")
 
     resp = await client.get(
         "/v1/egress/peers",
-        headers={"X-API-Key": api_key},
+        headers=caller_headers,
         params={"q": "Mario"},
     )
     assert resp.status_code == 200
@@ -131,7 +125,7 @@ async def test_peers_filter_matches_display_name(proxy_app):
 @pytest.mark.asyncio
 async def test_peers_inactive_agents_excluded(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     await _provision_local_peer("active-one", "Active")
 
     # Mark a second agent inactive directly.
@@ -148,7 +142,7 @@ async def test_peers_inactive_agents_excluded(proxy_app):
 
     resp = await client.get(
         "/v1/egress/peers",
-        headers={"X-API-Key": api_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200
     handles = [p["agent_id"] for p in resp.json()["peers"]]
@@ -203,12 +197,12 @@ async def _seed_cross_org_peer(agent_id: str, org_id: str) -> None:
 @pytest.mark.asyncio
 async def test_peers_reach_intra_hides_cross_org(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
-    await _set_reach("caller-bot", "intra")
+    caller_headers = await _provision_caller("caller-bot")
+    await _set_reach("acme::caller-bot", "intra")
     await _provision_local_peer("mario", "Mario Rossi")
     await _seed_cross_org_peer("remote-bot", "orgb")
 
-    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    resp = await client.get("/v1/egress/peers", headers=caller_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     scopes = {p["scope"] for p in body["peers"]}
@@ -221,12 +215,12 @@ async def test_peers_reach_intra_hides_cross_org(proxy_app):
 @pytest.mark.asyncio
 async def test_peers_reach_cross_hides_intra_org(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
-    await _set_reach("caller-bot", "cross")
+    caller_headers = await _provision_caller("caller-bot")
+    await _set_reach("acme::caller-bot", "cross")
     await _provision_local_peer("mario", "Mario Rossi")
     await _seed_cross_org_peer("remote-bot", "orgb")
 
-    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    resp = await client.get("/v1/egress/peers", headers=caller_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     scopes = {p["scope"] for p in body["peers"]}
@@ -239,14 +233,14 @@ async def test_peers_reach_cross_hides_intra_org(proxy_app):
 @pytest.mark.asyncio
 async def test_peers_reach_both_returns_all(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     # ``both`` is the DB default but pin it explicitly so the test
     # documents the contract rather than relying on a server_default.
-    await _set_reach("caller-bot", "both")
+    await _set_reach("acme::caller-bot", "both")
     await _provision_local_peer("mario", "Mario Rossi")
     await _seed_cross_org_peer("remote-bot", "orgb")
 
-    resp = await client.get("/v1/egress/peers", headers={"X-API-Key": api_key})
+    resp = await client.get("/v1/egress/peers", headers=caller_headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     scopes = {p["scope"] for p in body["peers"]}
@@ -267,12 +261,12 @@ async def test_peers_writes_audit_entry(proxy_app):
     from mcp_proxy.db import get_db
 
     _, client = proxy_app
-    api_key = await _provision_caller("caller-bot")
+    caller_headers = await _provision_caller("caller-bot")
     await _provision_local_peer("mario", "Mario Rossi")
 
     resp = await client.get(
         "/v1/egress/peers",
-        headers={"X-API-Key": api_key},
+        headers=caller_headers,
         params={"q": "mar"},
     )
     assert resp.status_code == 200, resp.text
@@ -288,7 +282,7 @@ async def test_peers_writes_audit_entry(proxy_app):
             )
         ).first()
     assert row is not None, "expected an egress_peers_list audit row"
-    assert row[0] == "caller-bot"
+    assert row[0] == "acme::caller-bot"
     assert row[1] == "egress_peers_list"
     assert row[2] == "success"
     # detail should capture the query + result count so the audit is

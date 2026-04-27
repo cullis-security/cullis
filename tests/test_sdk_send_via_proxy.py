@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from cullis_sdk.client import CullisClient
 from tests.cert_factory import make_agent_cert
+from tests._mtls_helpers import mtls_headers
 
 
 @pytest_asyncio.fixture
@@ -41,9 +42,14 @@ async def proxy_app(tmp_path, monkeypatch):
 async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     app, http_client = proxy_app
 
-    # Provision signing agent with cert.
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
+    # Provision signing agent with EC cert (sign_message expects the EC
+    # private key the existing flow used; the mTLS dep only pins the
+    # leaf DER, so we still need to insert the same cert PEM that we
+    # will present in X-SSL-Client-Cert).
+    import urllib.parse
+    from datetime import datetime, timezone
+    from sqlalchemy import text
+    from mcp_proxy.db import get_db
 
     key, cert = make_agent_cert("acme::sender-bot", "acme", key_type="ec")
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
@@ -52,20 +58,30 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    raw = generate_api_key("sender-bot")
-    await create_agent(
-        agent_id="sender-bot",
-        display_name="sender-bot",
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-        cert_pem=cert_pem,
-    )
+
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO internal_agents "
+                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
+                " created_at, is_active) "
+                "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
+                " :api_key_hash, :created_at, :is_active)"
+            ),
+            {
+                "agent_id": "acme::sender-bot",
+                "display_name": "sender-bot",
+                "capabilities": '["cap.read"]',
+                "cert_pem": cert_pem,
+                "api_key_hash": "$2b$12$placeholder",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "is_active": 1,
+            },
+        )
+
+    sender_headers = mtls_headers(cert_pem)
 
     # Provision target peer-bot as an internal_agents row so resolve finds its cert.
-    from datetime import datetime, timezone
-    from sqlalchemy import text
-    from mcp_proxy.db import get_db
-
     async with get_db() as conn:
         await conn.execute(
             text(
@@ -89,7 +105,7 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     # Open a local session via the proxy API (sender is initiator).
     open_resp = await http_client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": raw},
+        headers=sender_headers,
         json={
             "target_agent_id": "acme::peer-bot",
             "target_org_id": "acme",
@@ -107,7 +123,7 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     # 1. Resolve
     resolve = await http_client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": raw},
+        headers=sender_headers,
         json={"recipient_id": "acme::peer-bot"},
     )
     assert resolve.status_code == 200
@@ -123,11 +139,11 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
     payload = {"note": "via send_via_proxy smoke"}
     nonce = str(uuid.uuid4())
     ts = int(time.time())
-    sig = sign_message(priv_pem, session_id, "sender-bot", nonce, ts, payload, client_seq=0)
+    sig = sign_message(priv_pem, session_id, "acme::sender-bot", nonce, ts, payload, client_seq=0)
 
     send_resp = await http_client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": raw},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": payload,

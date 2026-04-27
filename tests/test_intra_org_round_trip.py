@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 
 from cullis_sdk.crypto.message_signer import sign_message, verify_signature
 from tests.cert_factory import make_agent_cert
+from tests._mtls_helpers import mtls_headers
 
 
 @pytest_asyncio.fixture
@@ -40,12 +41,17 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, str, str]:
-    """Return (api_key, cert_pem, priv_pem) for a newly provisioned agent."""
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[dict[str, str], str, str]:
+    """Return ``(mtls_headers, cert_pem, priv_pem)`` for a fresh agent.
+
+    The DB row is keyed by the canonical ``<org>::<name>`` because the
+    client-cert dep extracts identity from the cert SAN/CN and looks
+    up that exact form.
+    """
     from mcp_proxy.db import create_agent
 
-    key, cert = make_agent_cert(f"{org_id}::{agent_id}", org_id, key_type="ec")
+    canonical = f"{org_id}::{agent_id}"
+    key, cert = make_agent_cert(canonical, org_id, key_type="ec")
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     priv_pem = key.private_bytes(
         serialization.Encoding.PEM,
@@ -53,15 +59,14 @@ async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, st
         serialization.NoEncryption(),
     ).decode()
 
-    raw = generate_api_key(agent_id)
     await create_agent(
-        agent_id=agent_id,
+        agent_id=canonical,
         display_name=agent_id,
         capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
+        api_key_hash="$2b$12$placeholder",
         cert_pem=cert_pem,
     )
-    return raw, cert_pem, priv_pem
+    return mtls_headers(cert_pem), cert_pem, priv_pem
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str) -> None:
@@ -89,17 +94,18 @@ async def test_alice_to_bob_intra_org_full_round_trip(proxy_app):
     """Alice signs → proxy verifies + enqueues → bob polls → SDK re-verifies."""
     _, client = proxy_app
 
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, bob_priv = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, bob_priv = await _provision_agent("bob")
+    # ``_provision_agent`` already inserted both rows with their certs
+    # under canonical ids; the legacy ``_provision_local_target`` UPDATE
+    # is a no-op now (no bare-name rows exist) and is dropped.
 
     # 1. Alice opens a session targeting bob.
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
-            "target_agent_id": "bob",
+            "target_agent_id": "acme::bob",
             "target_org_id": "acme",
             "capabilities": ["cap.read"],
         },
@@ -110,7 +116,7 @@ async def test_alice_to_bob_intra_org_full_round_trip(proxy_app):
     # 2. Alice resolves bob and learns the transport.
     resolve = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={"recipient_id": "acme::bob"},
     )
     assert resolve.status_code == 200
@@ -121,11 +127,11 @@ async def test_alice_to_bob_intra_org_full_round_trip(proxy_app):
     payload = {"greeting": "hello bob", "n": 42}
     nonce = str(uuid.uuid4())
     ts = int(time.time())
-    sig = sign_message(alice_priv, session_id, "alice", nonce, ts, payload, client_seq=0)
+    sig = sign_message(alice_priv, session_id, "acme::alice", nonce, ts, payload, client_seq=0)
 
     send_resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": payload,
@@ -142,7 +148,7 @@ async def test_alice_to_bob_intra_org_full_round_trip(proxy_app):
     # 4. Bob polls the proxy.
     poll = await client.get(
         f"/v1/egress/messages/{session_id}",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
     )
     assert poll.status_code == 200, poll.text
     body = poll.json()
@@ -151,7 +157,7 @@ async def test_alice_to_bob_intra_org_full_round_trip(proxy_app):
 
     # 5. Proxy returned a parsed mtls-only frame with sender cert bundled.
     assert frame["mode"] == "mtls-only"
-    assert frame["sender_agent_id"] == "alice"
+    assert frame["sender_agent_id"] == "acme::alice"
     assert frame["sender_cert_pem"] is not None
     assert frame["sender_cert_pem"] == alice_cert
     assert frame["payload"] == payload
@@ -176,15 +182,14 @@ async def test_receiver_rejects_tampered_frame(proxy_app):
     """If the stored blob gets tampered post-enqueue, SDK verify fails."""
     _, client = proxy_app
 
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
 
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
-            "target_agent_id": "bob",
+            "target_agent_id": "acme::bob",
             "target_org_id": "acme",
             "capabilities": [],
         },
@@ -194,11 +199,11 @@ async def test_receiver_rejects_tampered_frame(proxy_app):
     payload = {"text": "original"}
     nonce = str(uuid.uuid4())
     ts = int(time.time())
-    sig = sign_message(alice_priv, session_id, "alice", nonce, ts, payload, client_seq=0)
+    sig = sign_message(alice_priv, session_id, "acme::alice", nonce, ts, payload, client_seq=0)
 
     await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": payload,
@@ -231,7 +236,7 @@ async def test_receiver_rejects_tampered_frame(proxy_app):
     # Bob polls — proxy returns the tampered frame, SDK-side verify must fail.
     poll = await client.get(
         f"/v1/egress/messages/{session_id}",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
     )
     frame = poll.json()["messages"][0]
     ok = verify_signature(

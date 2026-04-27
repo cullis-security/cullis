@@ -23,6 +23,7 @@ from cullis_sdk.crypto.message_signer import (
     sign_oneshot_envelope,
 )
 from tests.cert_factory import make_agent_cert
+from tests._mtls_helpers import mtls_headers
 
 
 @pytest_asyncio.fixture
@@ -48,11 +49,23 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, str, str]:
+async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, dict[str, str], str, str]:
+    """Provision an agent with BOTH a real API key and a client cert.
+
+    All ``/v1/egress/*`` routes — sessions, send, and one-shot
+    message/{send,inbox} — authenticate via the mTLS client cert under
+    ADR-014. The raw api-key is still generated for legacy callers
+    (e.g. WS endpoints not yet migrated) but tests on this file no
+    longer need it.
+
+    Returns ``(raw_api_key, mtls_headers, cert_pem, priv_pem)`` keyed by
+    the canonical ``<org>::<agent_id>``.
+    """
     from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
     from mcp_proxy.db import create_agent
 
-    key, cert = make_agent_cert(f"{org_id}::{agent_id}", org_id, key_type="ec")
+    canonical = f"{org_id}::{agent_id}"
+    key, cert = make_agent_cert(canonical, org_id, key_type="ec")
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     priv_pem = key.private_bytes(
         serialization.Encoding.PEM,
@@ -61,13 +74,13 @@ async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, st
     ).decode()
     raw = generate_api_key(agent_id)
     await create_agent(
-        agent_id=agent_id,
+        agent_id=canonical,
         display_name=agent_id,
         capabilities=["cap.read"],
         api_key_hash=hash_api_key(raw),
         cert_pem=cert_pem,
     )
-    return raw, cert_pem, priv_pem
+    return raw, mtls_headers(cert_pem), cert_pem, priv_pem
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str) -> None:
@@ -132,10 +145,10 @@ def _build_send_body(
 async def test_oneshot_happy_path(proxy_app):
     """alice sends a one-shot → bob's inbox returns it with the correct corr_id."""
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     body, corr = _build_send_body(
         recipient_id="acme::bob",
@@ -145,7 +158,7 @@ async def test_oneshot_happy_path(proxy_app):
     )
     r = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
     assert r.status_code == 200, r.text
@@ -156,7 +169,7 @@ async def test_oneshot_happy_path(proxy_app):
 
     inbox = await client.get(
         "/v1/egress/message/inbox",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
     )
     assert inbox.status_code == 200
     data = inbox.json()
@@ -164,16 +177,16 @@ async def test_oneshot_happy_path(proxy_app):
     m = data["messages"][0]
     assert m["correlation_id"] == corr
     assert m["reply_to"] is None
-    assert m["sender_agent_id"] == "alice"
+    assert m["sender_agent_id"] == "acme::alice"
 
 
 @pytest.mark.asyncio
 async def test_correlation_id_auto_generated(proxy_app):
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     # Build a body without correlation_id; the server generates one and
     # echoes it in the response.
@@ -197,7 +210,7 @@ async def test_correlation_id_auto_generated(proxy_app):
     }
     r = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
     assert r.status_code == 200, r.text
@@ -209,10 +222,10 @@ async def test_correlation_id_auto_generated(proxy_app):
 @pytest.mark.asyncio
 async def test_reply_link_persisted(proxy_app):
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, bob_priv = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, bob_priv = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     # alice → bob
     req_body, req_corr = _build_send_body(
@@ -223,7 +236,7 @@ async def test_reply_link_persisted(proxy_app):
     )
     r1 = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=req_body,
     )
     assert r1.status_code == 200
@@ -238,7 +251,7 @@ async def test_reply_link_persisted(proxy_app):
     )
     r2 = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
         json=reply_body,
     )
     assert r2.status_code == 200
@@ -246,7 +259,7 @@ async def test_reply_link_persisted(proxy_app):
     # alice's inbox has the reply with reply_to set.
     inbox = await client.get(
         "/v1/egress/message/inbox",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
     )
     msgs = inbox.json()["messages"]
     assert len(msgs) == 1
@@ -257,10 +270,10 @@ async def test_reply_link_persisted(proxy_app):
 @pytest.mark.asyncio
 async def test_duplicate_correlation_id_idempotent(proxy_app):
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     body, corr = _build_send_body(
         recipient_id="acme::bob",
@@ -271,7 +284,7 @@ async def test_duplicate_correlation_id_idempotent(proxy_app):
     )
     r1 = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
     # Re-sign for a second attempt (new nonce; server dedups on
@@ -285,7 +298,7 @@ async def test_duplicate_correlation_id_idempotent(proxy_app):
     )
     r2 = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body2,
     )
     assert r1.status_code == 200
@@ -306,8 +319,8 @@ async def test_cross_org_without_broker_returns_503(proxy_app):
     Cross-org happy path is covered in tests/test_oneshot_cross.py.
     """
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    await _provision_local_target("acme::alice", alice_cert)
 
     body, _ = _build_send_body(
         recipient_id="other-org::stranger",
@@ -317,7 +330,7 @@ async def test_cross_org_without_broker_returns_503(proxy_app):
     )
     r = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
     assert r.status_code == 503
@@ -345,17 +358,19 @@ async def test_unauthorized_sender_is_rejected(proxy_app):
 async def test_inbox_filters_out_session_rows(proxy_app):
     """Inbox must return ONLY one-shot rows, not session /send rows."""
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
-    # Session-based send first.
+    # Session-based send first. All /v1/egress/* routes (sessions, send,
+    # and the one-shot message endpoints) authenticate via the mTLS
+    # client cert under ADR-014.
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
-            "target_agent_id": "bob",
+            "target_agent_id": "acme::bob",
             "target_org_id": "acme",
             "capabilities": ["cap.read"],
         },
@@ -364,11 +379,11 @@ async def test_inbox_filters_out_session_rows(proxy_app):
     nonce = str(uuid.uuid4())
     ts = int(time.time())
     sig = sign_message(
-        alice_priv, session_id, "alice", nonce, ts, {"x": 1}, client_seq=0
+        alice_priv, session_id, "acme::alice", nonce, ts, {"x": 1}, client_seq=0
     )
     await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"x": 1},
@@ -390,13 +405,13 @@ async def test_inbox_filters_out_session_rows(proxy_app):
     )
     await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
 
     inbox = await client.get(
         "/v1/egress/message/inbox",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
     )
     data = inbox.json()
     assert data["count"] == 1
@@ -406,10 +421,10 @@ async def test_inbox_filters_out_session_rows(proxy_app):
 @pytest.mark.asyncio
 async def test_audit_chain_integrity_after_3_oneshots(proxy_app):
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     for i in range(3):
         body, _ = _build_send_body(
@@ -420,7 +435,7 @@ async def test_audit_chain_integrity_after_3_oneshots(proxy_app):
         )
         r = await client.post(
             "/v1/egress/message/send",
-            headers={"X-API-Key": alice_key},
+            headers=alice_headers,
             json=body,
         )
         assert r.status_code == 200
@@ -434,10 +449,10 @@ async def test_audit_chain_integrity_after_3_oneshots(proxy_app):
 async def test_oneshot_row_is_discriminable_in_db(proxy_app):
     """DB-level invariant: the row flips is_oneshot=1 and session_id=NULL."""
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     body, corr = _build_send_body(
         recipient_id="acme::bob",
@@ -447,7 +462,7 @@ async def test_oneshot_row_is_discriminable_in_db(proxy_app):
     )
     await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
 
@@ -470,12 +485,12 @@ async def test_oneshot_row_is_discriminable_in_db(proxy_app):
 async def test_ttl_boundaries_validated(proxy_app):
     """ttl_seconds < 10 or > 3600 is rejected at pydantic level."""
     _, client = proxy_app
-    alice_key, alice_cert, _ = await _provision_agent("alice")
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, _ = await _provision_agent("alice")
+    await _provision_local_target("acme::alice", alice_cert)
 
     r = await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json={
             "recipient_id": "acme::bob",
             "payload": {"x": 1},
@@ -495,10 +510,10 @@ async def test_envelope_fields_included_in_stored_blob(proxy_app):
     recipient's verifier can reconstruct the canonical form.
     """
     _, client = proxy_app
-    alice_key, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_cert, _ = await _provision_agent("bob")
-    await _provision_local_target("bob", bob_cert)
-    await _provision_local_target("alice", alice_cert)
+    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    await _provision_local_target("acme::bob", bob_cert)
+    await _provision_local_target("acme::alice", alice_cert)
 
     body, corr = _build_send_body(
         recipient_id="acme::bob",
@@ -508,13 +523,13 @@ async def test_envelope_fields_included_in_stored_blob(proxy_app):
     )
     await client.post(
         "/v1/egress/message/send",
-        headers={"X-API-Key": alice_key},
+        headers=alice_headers,
         json=body,
     )
 
     inbox = await client.get(
         "/v1/egress/message/inbox",
-        headers={"X-API-Key": bob_key},
+        headers=bob_headers,
     )
     msg = inbox.json()["messages"][0]
     envelope = json.loads(msg["payload_ciphertext"])

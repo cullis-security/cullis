@@ -63,6 +63,37 @@ class InsecureTLSWarning(UserWarning):
     """
 
 
+def _build_proxy_http_client(
+    *,
+    verify_tls: bool,
+    timeout: float,
+    cert_path: "str | Path | None" = None,
+    key_path: "str | Path | None" = None,
+) -> httpx.Client:
+    """Build the proxy-facing ``httpx.Client``.
+
+    ADR-014: when ``cert_path`` + ``key_path`` are both supplied, the
+    client presents the agent's certificate at the TLS handshake so
+    nginx in front of the Mastio can verify it against the Org CA.
+    The Mastio's ``get_agent_from_client_cert`` dep then derives the
+    canonical agent_id from the cert SAN — no ``X-API-Key`` needed
+    on the wire.
+
+    When either path is missing the client falls back to plain TLS
+    server-auth (legacy / pre-mTLS deploys, dev fixtures, the
+    ``from_enrollment`` device-code shim that does not yet round-trip
+    the cert). Calls to ``/v1/egress/*`` and ``/v1/agents/search``
+    will then 401 from nginx because those locations require a client
+    cert — that is the correct ADR-014 behaviour, not a regression.
+    """
+    cert: "tuple[str, str] | None" = None
+    if cert_path is not None and key_path is not None:
+        cert = (str(cert_path), str(key_path))
+    return httpx.Client(
+        timeout=timeout, verify=verify_tls, cert=cert,
+    )
+
+
 def _check_insecure_tls(verify_tls: bool) -> None:
     """Warn (and optionally refuse) when TLS verification is disabled.
 
@@ -417,6 +448,8 @@ class CullisClient:
         *,
         api_key_path: "str | Path",
         dpop_key_path: "str | Path | None" = None,
+        cert_path: "str | Path | None" = None,
+        key_path: "str | Path | None" = None,
         agent_id: str | None = None,
         org_id: str | None = None,
         verify_tls: bool = True,
@@ -426,19 +459,26 @@ class CullisClient:
 
         Reads the API key + (optional) DPoP JWK the agent was enrolled
         with and returns a client pre-configured for the Mastio's egress
-        API. Authentication from here on is **API-key + DPoP**, never
-        a direct login to the Court. See ADR-011 for the enrollment
-        methods that produce these files (``enroll_via_byoca``,
+        API. Authentication is mTLS client cert + DPoP under ADR-014;
+        the API key file is still read for backward-compat headers
+        during the PR-B → PR-C transition window. See ADR-011 for the
+        enrollment methods that produce these files (``enroll_via_byoca``,
         ``enroll_via_spiffe``, or the Connector device-code flow — use
         ``from_connector(...)`` for the Connector case since it reads
         a different on-disk layout).
 
         Args:
-            mastio_url: base URL of the Mastio (``http://proxy-a:9100``).
+            mastio_url: base URL of the Mastio (``https://mastio.local:9443``).
             api_key_path: file that holds the plaintext API key.
             dpop_key_path: file holding the private DPoP JWK. Omit to
                 run without DPoP binding — only accepted while the
                 server's ``egress_dpop_mode`` is ``off`` or ``optional``.
+            cert_path, key_path: ADR-014 mTLS material. When supplied,
+                the client presents the cert at the TLS handshake so
+                nginx in front of the Mastio authenticates the agent
+                without an ``X-API-Key`` header. Required for any
+                deploy past PR-A — ``/v1/egress/*`` returns 401 from
+                nginx without them.
             agent_id, org_id: optional identity metadata. Populated on
                 the client instance; the Mastio doesn't require them on
                 egress calls but callers rely on them for logging.
@@ -446,9 +486,11 @@ class CullisClient:
         Example::
 
             client = CullisClient.from_api_key_file(
-                "http://proxy-a:9100",
+                "https://mastio.local:9443",
                 api_key_path="/etc/cullis/agent/api-key",
                 dpop_key_path="/etc/cullis/agent/dpop.jwk",
+                cert_path="/etc/cullis/agent/cert.pem",
+                key_path="/etc/cullis/agent/key.pem",
             )
             client.send_oneshot("orgb::agent-b", {"hello": "world"})
         """
@@ -460,7 +502,12 @@ class CullisClient:
         instance = cls.__new__(cls)
         instance.base = mastio_url.rstrip("/")
         instance._verify_tls = verify_tls
-        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance._http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            cert_path=cert_path,
+            key_path=key_path,
+        )
         instance.token = None
         instance._label = agent_id or "(api-key-auth)"
         instance._signing_key_pem = None
@@ -642,20 +689,42 @@ class CullisClient:
         agent_id = enrolled["agent_id"]
         org_id = agent_id.split("::", 1)[0] if "::" in agent_id else None
 
+        # ADR-014: BYOCA agents bring their own cert+key (already in
+        # ``body["cert_pem"]`` / ``body["private_key_pem"]``). SPIFFE
+        # agents bring an SVID under different keys. We persist the
+        # cert+key alongside the api_key when the caller asked for
+        # disk persistence so the runtime client can present them at
+        # the TLS handshake against nginx.
+        cert_pem_runtime = body.get("cert_pem") or body.get("svid_pem")
+        key_pem_runtime = body.get("private_key_pem") or body.get("svid_key_pem")
+
+        cert_path_runtime: "Path | None" = None
+        key_path_runtime: "Path | None" = None
         if persist_to is not None:
+            persist_dir = Path(persist_to)
             cls._persist_enrollment(
-                Path(persist_to),
+                persist_dir,
                 api_key=api_key,
                 agent_id=agent_id,
                 org_id=org_id,
                 mastio_url=mastio_url,
                 dpop_key=dpop_key,
+                cert_pem=cert_pem_runtime,
+                private_key_pem=key_pem_runtime,
             )
+            if cert_pem_runtime and key_pem_runtime:
+                cert_path_runtime = persist_dir / "cert.pem"
+                key_path_runtime = persist_dir / "key.pem"
 
         instance = cls.__new__(cls)
         instance.base = mastio_url.rstrip("/")
         instance._verify_tls = verify_tls
-        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
+        instance._http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            cert_path=cert_path_runtime,
+            key_path=key_path_runtime,
+        )
         instance.token = None
         instance._label = agent_id
         instance._signing_key_pem = None
@@ -684,6 +753,8 @@ class CullisClient:
         org_id: str | None,
         mastio_url: str,
         dpop_key,  # DpopKey | None
+        cert_pem: str | None = None,
+        private_key_pem: str | None = None,
     ) -> None:
         """Write enrollment credentials under ``persist_to/`` with 0600
         perms on secrets. Layout:
@@ -691,6 +762,8 @@ class CullisClient:
             persist_to/api-key        — plaintext API key
             persist_to/dpop.jwk       — private DPoP JWK (only if enabled)
             persist_to/agent.json     — {agent_id, org_id, mastio_url}
+            persist_to/cert.pem       — leaf cert (mTLS, ADR-014)
+            persist_to/key.pem        — private key (mTLS, ADR-014)
         """
         import json as _json
         import os as _os
@@ -708,6 +781,13 @@ class CullisClient:
 
         if dpop_key is not None:
             dpop_key.save(persist_to / "dpop.jwk")
+
+        if cert_pem:
+            (persist_to / "cert.pem").write_text(cert_pem)
+        if private_key_pem:
+            key_file = persist_to / "key.pem"
+            key_file.write_text(private_key_pem)
+            _os.chmod(key_file, 0o600)
 
     @classmethod
     def from_connector(
@@ -773,9 +853,9 @@ class CullisClient:
         instance = cls.__new__(cls)
         instance.base = site_url.rstrip("/")
         instance._verify_tls = verify_tls
-        instance._http = httpx.Client(timeout=timeout, verify=verify_tls)
         instance.token = None
         instance._label = agent_id
+        instance.server_role = None
         # Load the on-disk signing key + cert eagerly so ``decrypt_oneshot``,
         # ``send_oneshot``, and ``login_via_proxy_with_local_key`` all
         # work out of the box without every caller having to read
@@ -787,6 +867,20 @@ class CullisClient:
         cert_path = identity_dir / "agent.crt"
         instance._signing_key_pem = key_path.read_text() if key_path.exists() else None
         instance._cert_pem = cert_path.read_text() if cert_path.exists() else None
+        # ADR-014: present the agent cert at the TLS handshake when both
+        # files exist on disk. nginx in front of the Mastio verifies the
+        # cert chain to the Org CA and derives the agent identity for
+        # ``/v1/egress/*``. Connectors that completed enrollment after
+        # 0.3.x always have both files; the conditional only covers the
+        # transitional case where a legacy dump shipped only the cert.
+        _mtls_cert = cert_path if (cert_path.exists() and key_path.exists()) else None
+        _mtls_key = key_path if _mtls_cert is not None else None
+        instance._http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            cert_path=_mtls_cert,
+            key_path=_mtls_key,
+        )
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None

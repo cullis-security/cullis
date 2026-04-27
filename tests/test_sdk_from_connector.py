@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from cullis_sdk.client import CullisClient
+from tests._mtls_helpers import mint_agent_cert
 
 
 def _write_identity(
@@ -22,11 +23,25 @@ def _write_identity(
     agent_id: str = "demo-org::alice",
     site_url: str = "http://mastio.test",
     api_key: str = "sk_local_test_deadbeef",
-    cert_pem: str = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n",
-    key_pem: str = "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n",
+    cert_pem: str | None = None,
+    key_pem: str | None = None,
 ) -> Path:
     identity_dir = tmp_path / "identity"
     identity_dir.mkdir(parents=True, exist_ok=True)
+
+    # ADR-014: ``from_connector`` builds the runtime httpx.Client with
+    # ``cert=(cert_path, key_path)`` so the agent presents its cert at
+    # the TLS handshake to nginx. Hand a real cert+key pair signed by
+    # the test Org CA — the placeholder PEMs the fixture used pre-PR-B
+    # explode at httpx ssl context construction.
+    if cert_pem is None or key_pem is None:
+        org_id, _, agent_name = agent_id.partition("::")
+        if not agent_name:
+            org_id, agent_name = "demo-org", agent_id
+        cert_pem, key_pem = mint_agent_cert(
+            org_id=org_id, agent_name=agent_name,
+        )
+
     (identity_dir / "agent.crt").write_text(cert_pem)
     (identity_dir / "agent.key").write_text(key_pem)
     (identity_dir / "metadata.json").write_text(json.dumps({

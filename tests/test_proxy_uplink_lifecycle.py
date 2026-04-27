@@ -18,6 +18,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 @pytest_asyncio.fixture
 async def standalone_proxy(tmp_path, monkeypatch):
@@ -70,21 +72,13 @@ def _patch_httpx_client(handler):
     return original
 
 
-async def _provision_agent(agent_id: str) -> str:
-    """Mint an API key and seed the agent into ``internal_agents`` — the
-    sole Mastio-authoritative registry after ADR-010 Phase 6b."""
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-
-    raw = generate_api_key(agent_id)
-    api_hash = hash_api_key(raw)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read", "cap.write"],
-        api_key_hash=api_hash,
+async def _provision_agent(agent_id: str) -> dict[str, str]:
+    """Provision the agent via mTLS helper — the cert IS the credential
+    after ADR-014. Returns the nginx-shaped headers ready for the test
+    client to forward."""
+    return await provision_internal_agent(
+        agent_id, capabilities=["cap.read", "cap.write"],
     )
-    return raw
 
 
 async def _seed_cached_federated_agent(agent_id: str, org_id: str) -> None:
@@ -115,21 +109,21 @@ async def test_standalone_to_federated_to_standalone(standalone_proxy):
 
     # 1. Standalone baseline.
     assert getattr(app.state, "broker_bridge", None) is None
-    alice = await _provision_agent("alice-bot")
-    bob = await _provision_agent("bob-bot")
+    alice_headers = await _provision_agent("alice-bot")
+    bob_headers = await _provision_agent("bob-bot")
 
-    discover = await client.get("/v1/agents/search", headers={"X-API-Key": alice})
+    discover = await client.get("/v1/agents/search", headers=alice_headers)
     assert discover.status_code == 200
     ids = {a["agent_id"] for a in discover.json()["agents"]}
-    assert ids == {"alice-bot", "bob-bot"}
+    assert ids == {"acme::alice-bot", "acme::bob-bot"}
     assert all(a["scope"] == "local" for a in discover.json()["agents"])
 
     # Intra-org open/send/ack/close roundtrip succeeds (sanity).
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
-            "target_agent_id": "bob-bot",
+            "target_agent_id": "acme::bob-bot",
             "target_org_id": "acme",
             "capabilities": ["cap.read"],
         },
@@ -138,7 +132,7 @@ async def test_standalone_to_federated_to_standalone(standalone_proxy):
     session_id = open_resp.json()["session_id"]
     await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
 
     # 2. Link the proxy to a (mock) broker.
@@ -166,17 +160,17 @@ async def test_standalone_to_federated_to_standalone(standalone_proxy):
 
     # Agents survived the uplink: their API keys still authenticate.
     re_discover = await client.get(
-        "/v1/agents/search", headers={"X-API-Key": alice},
+        "/v1/agents/search", headers=alice_headers,
     )
     assert re_discover.status_code == 200, re_discover.text
-    assert "alice-bot" in {a["agent_id"] for a in re_discover.json()["agents"]}
+    assert "acme::alice-bot" in {a["agent_id"] for a in re_discover.json()["agents"]}
 
     # Cross-org peer visible once SSE subscriber populates the cache —
     # we simulate the subscriber by seeding cached_federated_agents.
     await _seed_cached_federated_agent("partner-bot", "contoso")
-    merged = await client.get("/v1/agents/search", headers={"X-API-Key": alice})
+    merged = await client.get("/v1/agents/search", headers=alice_headers)
     by_id = {a["agent_id"]: a for a in merged.json()["agents"]}
-    assert by_id["alice-bot"]["scope"] == "local"
+    assert by_id["acme::alice-bot"]["scope"] == "local"
     assert by_id["partner-bot"]["scope"] == "federated"
     assert by_id["partner-bot"]["org_id"] == "contoso"
 
@@ -190,22 +184,22 @@ async def test_standalone_to_federated_to_standalone(standalone_proxy):
 
     # Federation cache wiped: partner-bot disappears from discovery.
     post_unlink = await client.get(
-        "/v1/agents/search", headers={"X-API-Key": alice},
+        "/v1/agents/search", headers=alice_headers,
     )
     ids_after = {a["agent_id"] for a in post_unlink.json()["agents"]}
     assert "partner-bot" not in ids_after
     # Intra-org rows still there — that was always the invariant.
-    assert "alice-bot" in ids_after
-    assert "bob-bot" in ids_after
+    assert "acme::alice-bot" in ids_after
+    assert "acme::bob-bot" in ids_after
 
-    # Same API keys, same session: intra-org send still works.
+    # Same cert, same session: intra-org send still works.
     send = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"after": "unlink"},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )
@@ -249,10 +243,10 @@ async def test_agents_certs_survive_uplink_cycle(standalone_proxy):
     pre-uplink keep their creds after link *and* after unlink. No
     re-provisioning, no cert rotation, nothing."""
     app, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
+    alice_headers = await _provision_agent("alice-bot")
 
     from mcp_proxy.db import get_agent
-    before = await get_agent("alice-bot")
+    before = await get_agent("acme::alice-bot")
 
     async def attach_handler(method, url, json, kwargs):
         return Response(200, json={"org_id": "acme", "status": "attached"})
@@ -270,16 +264,16 @@ async def test_agents_certs_survive_uplink_cycle(standalone_proxy):
     finally:
         httpx.AsyncClient = original
 
-    after_link = await get_agent("alice-bot")
+    after_link = await get_agent("acme::alice-bot")
     assert before["api_key_hash"] == after_link["api_key_hash"]
     assert before["cert_pem"] == after_link["cert_pem"]
 
     await client.post("/v1/admin/unlink-broker", json={})
 
-    after_unlink = await get_agent("alice-bot")
+    after_unlink = await get_agent("acme::alice-bot")
     assert before["api_key_hash"] == after_unlink["api_key_hash"]
 
-    # And the raw key still authenticates — proof the cred survived both
+    # And the cert still authenticates — proof the cred survived both
     # state transitions end-to-end.
-    probe = await client.get("/v1/agents/search", headers={"X-API-Key": alice})
+    probe = await client.get("/v1/agents/search", headers=alice_headers)
     assert probe.status_code == 200

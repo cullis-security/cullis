@@ -18,9 +18,11 @@ Search semantics:
     Repeatable.
   - ``?active=1`` (default) skips disabled/revoked rows.
 
-The endpoint is auth'd the same as the rest of ``/v1/egress/*``: X-API-Key
-from an internal agent. Unauthenticated callers get 401 from the
-dependency, not from this router.
+The endpoint is auth'd by client cert (ADR-014): the cert presented at
+the TLS handshake identifies the caller, ``get_agent_from_client_cert``
+resolves the canonical agent_id from the cert's SPIFFE SAN and pins
+the leaf against ``internal_agents.cert_pem``. Unauthenticated callers
+get 401 from nginx (no cert) or from the dependency (cert mismatch).
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from mcp_proxy.auth.api_key import get_agent_from_api_key
+from mcp_proxy.auth.client_cert import get_agent_from_client_cert
 from mcp_proxy.db import cert_thumbprint_from_pem, get_db
 from mcp_proxy.models import InternalAgent
 
@@ -161,7 +163,7 @@ async def search_agents(
     capability: list[str] = Query(default_factory=list),
     scope: Literal["local", "federated", "all"] = Query(default="all"),
     active: bool = Query(default=True),
-    agent: InternalAgent = Depends(get_agent_from_api_key),
+    agent: InternalAgent = Depends(get_agent_from_client_cert),
 ) -> SearchResponse:
     """List agents matching the given filters.
 

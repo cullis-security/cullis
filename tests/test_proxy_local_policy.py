@@ -17,6 +17,8 @@ from sqlalchemy import text
 from mcp_proxy.db import dispose_db, get_db, init_db
 from mcp_proxy.policy.local_eval import evaluate_local_message
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 @pytest_asyncio.fixture
 async def fresh_db(tmp_path):
@@ -176,25 +178,16 @@ async def standalone_proxy(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str) -> str:
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-
-    raw = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-    )
-    return raw
+async def _provision_agent(agent_id: str) -> dict[str, str]:
+    """Provision via the mTLS helper and return nginx-shaped headers."""
+    return await provision_internal_agent(agent_id, capabilities=["cap.read"])
 
 
 @pytest.mark.asyncio
 async def test_send_blocked_by_policy_returns_403_and_logs_denial(standalone_proxy):
     app, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
-    bob = await _provision_agent("bob-bot")
+    alice_headers = await _provision_agent("alice-bot")
+    bob_headers = await _provision_agent("bob-bot")
 
     # Install a policy that blocks payloads carrying "admin_override".
     await _insert_policy(
@@ -205,23 +198,23 @@ async def test_send_blocked_by_policy_returns_403_and_logs_denial(standalone_pro
     # Open + accept a session so send reaches the local path.
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
-        json={"target_agent_id": "bob-bot", "target_org_id": "acme", "capabilities": []},
+        headers=alice_headers,
+        json={"target_agent_id": "acme::bob-bot", "target_org_id": "acme", "capabilities": []},
     )
     session_id = open_resp.json()["session_id"]
     await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
 
     # Forbidden payload
     send = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"hello": "bob", "admin_override": True},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )
@@ -233,11 +226,11 @@ async def test_send_blocked_by_policy_returns_403_and_logs_denial(standalone_pro
     # Allowed payload goes through.
     allowed = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"hello": "bob"},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )
@@ -261,37 +254,37 @@ async def test_send_blocked_by_policy_returns_403_and_logs_denial(standalone_pro
 @pytest.mark.asyncio
 async def test_local_audit_chain_integrity_after_full_roundtrip(standalone_proxy):
     _, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
-    bob = await _provision_agent("bob-bot")
+    alice_headers = await _provision_agent("alice-bot")
+    bob_headers = await _provision_agent("bob-bot")
 
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
-        json={"target_agent_id": "bob-bot", "target_org_id": "acme", "capabilities": []},
+        headers=alice_headers,
+        json={"target_agent_id": "acme::bob-bot", "target_org_id": "acme", "capabilities": []},
     )
     session_id = open_resp.json()["session_id"]
     await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     send = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"hi": 1},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )
     msg_id = send.json()["msg_id"]
     await client.post(
         f"/v1/egress/sessions/{session_id}/messages/{msg_id}/ack",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     await client.post(
         f"/v1/egress/sessions/{session_id}/close",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
     )
 
     from mcp_proxy.local.audit import verify_local_chain
@@ -302,27 +295,27 @@ async def test_local_audit_chain_integrity_after_full_roundtrip(standalone_proxy
 @pytest.mark.asyncio
 async def test_default_allow_when_no_policies(standalone_proxy):
     _, client = standalone_proxy
-    alice = await _provision_agent("alice-bot")
-    bob = await _provision_agent("bob-bot")
+    alice_headers = await _provision_agent("alice-bot")
+    bob_headers = await _provision_agent("bob-bot")
 
     # No policies inserted — send must succeed.
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": alice},
-        json={"target_agent_id": "bob-bot", "target_org_id": "acme", "capabilities": []},
+        headers=alice_headers,
+        json={"target_agent_id": "acme::bob-bot", "target_org_id": "acme", "capabilities": []},
     )
     session_id = open_resp.json()["session_id"]
     await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": bob},
+        headers=bob_headers,
     )
     send = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": alice},
+        headers=alice_headers,
         json={
             "session_id": session_id,
             "payload": {"x": "y"},
-            "recipient_agent_id": "bob-bot",
+            "recipient_agent_id": "acme::bob-bot",
             "mode": "envelope",
         },
     )

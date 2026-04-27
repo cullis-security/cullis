@@ -10,6 +10,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 @pytest_asyncio.fixture
 async def proxy_app(tmp_path, monkeypatch):
@@ -39,17 +41,9 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_internal_agent(agent_id: str = "sender-bot") -> str:
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-    raw = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-    )
-    return raw
+async def _provision_internal_agent(agent_id: str = "sender-bot") -> dict[str, str]:
+    """Insert a sender agent and return the mTLS headers nginx forwards."""
+    return await provision_internal_agent(agent_id, capabilities=["cap.read"])
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str | None = "DUMMY-CERT") -> None:
@@ -82,11 +76,11 @@ async def _provision_local_target(agent_id: str, cert_pem: str | None = "DUMMY-C
 @pytest.mark.asyncio
 async def test_resolve_cross_org(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
 
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "spiffe://cullis.local/other-org/bob"},
     )
     assert resp.status_code == 200, resp.text
@@ -101,7 +95,7 @@ async def test_resolve_cross_org(proxy_app):
 @pytest.mark.asyncio
 async def test_resolve_intra_default_stays_envelope(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
     # Provision the target too: after the reach-filter landing (PR #236)
     # the resolve endpoint returns 404 for intra-org targets that don't
     # exist in internal_agents. This test previously relied on the
@@ -111,7 +105,7 @@ async def test_resolve_intra_default_stays_envelope(proxy_app):
 
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "acme::peer-bot"},
     )
     assert resp.status_code == 200, resp.text
@@ -128,12 +122,12 @@ async def test_resolve_intra_mtls_only_returns_cert(proxy_app, monkeypatch):
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
     await _provision_local_target("peer-bot", cert_pem="-----BEGIN CERT-----\nX\n-----END CERT-----")
 
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "acme::peer-bot"},
     )
     assert resp.status_code == 200, resp.text
@@ -150,12 +144,12 @@ async def test_resolve_intra_mtls_only_missing_target(proxy_app, monkeypatch):
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
     # deliberately do NOT provision the target
 
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "acme::ghost-bot"},
     )
     assert resp.status_code == 404
@@ -164,11 +158,11 @@ async def test_resolve_intra_mtls_only_missing_target(proxy_app, monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_rejects_malformed_recipient(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
 
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "not-a-valid-id"},
     )
     assert resp.status_code == 400
@@ -181,10 +175,10 @@ async def test_resolve_reflects_egress_inspection_flag(proxy_app, monkeypatch):
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
     resp = await client.post(
         "/v1/egress/resolve",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={"recipient_id": "spiffe://cullis.local/other/bob"},
     )
     assert resp.status_code == 200

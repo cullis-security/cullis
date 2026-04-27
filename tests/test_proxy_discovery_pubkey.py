@@ -22,6 +22,8 @@ from sqlalchemy import text
 
 from mcp_proxy.db import get_db
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 def _real_cert_pem(cn: str = "test-agent") -> str:
     """Build a minimal but syntactically valid X.509 cert PEM.
@@ -73,21 +75,18 @@ async def standalone_proxy(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str, **extra) -> str:
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
+async def _provision_agent(agent_id: str, **extra) -> dict[str, str]:
+    """Provision an agent via mTLS helper and return the nginx-shaped headers.
 
-    raw = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
+    ADR-010 Phase 6b: caller-bot now surfaces in discovery results
+    (single ``internal_agents`` registry). Default to an empty
+    capability set so capability-filtered searches exclude it.
+    """
+    return await provision_internal_agent(
+        agent_id,
         display_name=extra.get("display_name", agent_id),
-        # ADR-010 Phase 6b: caller-bot now surfaces in discovery results
-        # (single ``internal_agents`` registry). Default to an empty
-        # capability set so capability-filtered searches exclude it.
         capabilities=extra.get("capabilities", []),
-        api_key_hash=hash_api_key(raw),
     )
-    return raw
 
 
 async def _insert_local_agent(
@@ -162,21 +161,21 @@ async def _insert_cached_federated_agent(
 @pytest.mark.asyncio
 async def test_search_returns_local_agents_only_in_standalone(standalone_proxy):
     _, client = standalone_proxy
-    caller_key = await _provision_agent("caller-bot")
+    caller_headers = await _provision_agent("caller-bot")
     await _insert_local_agent("alice-bot", capabilities=["cap.read"])
     await _insert_local_agent("bob-bot", capabilities=["cap.write"])
 
     resp = await client.get(
         "/v1/agents/search",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     ids = sorted(a["agent_id"] for a in body["agents"])
     # ADR-010 Phase 6b: discovery now reads the single ``internal_agents``
-    # table. ``caller-bot`` (provisioned via ``create_agent``) surfaces in
-    # the result set alongside the explicitly-inserted test rows.
-    assert "caller-bot" in ids
+    # table. The mTLS-provisioned caller surfaces under its canonical
+    # ``<org>::<name>`` id alongside the explicitly-inserted test rows.
+    assert "acme::caller-bot" in ids
     assert "alice-bot" in ids
     assert "bob-bot" in ids
     for entry in body["agents"]:
@@ -186,14 +185,14 @@ async def test_search_returns_local_agents_only_in_standalone(standalone_proxy):
 @pytest.mark.asyncio
 async def test_search_filters_by_capability(standalone_proxy):
     _, client = standalone_proxy
-    caller_key = await _provision_agent("caller-bot")
+    caller_headers = await _provision_agent("caller-bot")
     await _insert_local_agent("reader", capabilities=["cap.read"])
     await _insert_local_agent("writer", capabilities=["cap.write"])
     await _insert_local_agent("both", capabilities=["cap.read", "cap.write"])
 
     resp = await client.get(
         "/v1/agents/search?capability=cap.read",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200
     ids = sorted(a["agent_id"] for a in resp.json()["agents"])
@@ -203,13 +202,13 @@ async def test_search_filters_by_capability(standalone_proxy):
 @pytest.mark.asyncio
 async def test_search_q_substring_match(standalone_proxy):
     _, client = standalone_proxy
-    caller_key = await _provision_agent("caller-bot")
+    caller_headers = await _provision_agent("caller-bot")
     await _insert_local_agent("acme-kyc-1", display_name="KYC Service 1")
     await _insert_local_agent("acme-audit-1", display_name="Audit Service")
 
     resp = await client.get(
         "/v1/agents/search?q=kyc",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -222,7 +221,7 @@ async def test_search_local_and_federated_union_with_local_priority(standalone_p
     """When an agent_id appears in both local_agents and
     cached_federated_agents, the local row must win (ADR-006 §2.4)."""
     _, client = standalone_proxy
-    caller_key = await _provision_agent("caller-bot")
+    caller_headers = await _provision_agent("caller-bot")
     await _insert_local_agent("shared-bot", display_name="Local Version")
     await _insert_cached_federated_agent(
         "shared-bot", org_id="other", display_name="Federated Version",
@@ -233,7 +232,7 @@ async def test_search_local_and_federated_union_with_local_priority(standalone_p
 
     resp = await client.get(
         "/v1/agents/search",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200
     by_id = {a["agent_id"]: a for a in resp.json()["agents"]}
@@ -245,13 +244,13 @@ async def test_search_local_and_federated_union_with_local_priority(standalone_p
 @pytest.mark.asyncio
 async def test_search_inactive_agents_skipped_by_default(standalone_proxy):
     _, client = standalone_proxy
-    caller_key = await _provision_agent("caller-bot")
+    caller_headers = await _provision_agent("caller-bot")
     await _insert_local_agent("live", active=1)
     await _insert_local_agent("retired", active=0)
 
     resp = await client.get(
         "/v1/agents/search",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     assert resp.status_code == 200
     ids = [a["agent_id"] for a in resp.json()["agents"]]
@@ -260,7 +259,7 @@ async def test_search_inactive_agents_skipped_by_default(standalone_proxy):
 
     resp_all = await client.get(
         "/v1/agents/search?active=false",
-        headers={"X-API-Key": caller_key},
+        headers=caller_headers,
     )
     ids_all = [a["agent_id"] for a in resp_all.json()["agents"]]
     assert "retired" in ids_all

@@ -19,6 +19,7 @@ from httpx import ASGITransport, AsyncClient
 
 from cullis_sdk.crypto.message_signer import sign_message
 from tests.cert_factory import make_agent_cert
+from tests._mtls_helpers import mtls_headers
 
 
 @pytest_asyncio.fixture
@@ -43,17 +44,22 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_signing_agent(agent_id: str, org_id: str = "acme") -> tuple[str, str]:
+async def _provision_signing_agent(agent_id: str, org_id: str = "acme") -> tuple[dict[str, str], str]:
     """Provision an internal agent carrying an EC signing key.
 
-    Returns (api_key, private_key_pem) — caller signs messages with the
-    private key, the proxy verifies against the cert_pem stored on the
-    internal_agents row.
+    Returns (mtls_headers_dict, private_key_pem) — caller signs messages
+    with the private key, the proxy verifies against the cert_pem stored
+    on the internal_agents row, and authenticates the caller via the
+    X-SSL-Client-Cert / X-SSL-Client-Verify headers nginx forwards.
+
+    The DB row is keyed by the canonical ``<org>::<name>`` because the
+    client-cert dep extracts identity from the cert SAN/CN and looks up
+    that exact form.
     """
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
     from mcp_proxy.db import create_agent
 
-    key, cert = make_agent_cert(f"{org_id}::{agent_id}", org_id, key_type="ec")
+    canonical = f"{org_id}::{agent_id}"
+    key, cert = make_agent_cert(canonical, org_id, key_type="ec")
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     priv_pem = key.private_bytes(
         serialization.Encoding.PEM,
@@ -61,22 +67,21 @@ async def _provision_signing_agent(agent_id: str, org_id: str = "acme") -> tuple
         serialization.NoEncryption(),
     ).decode()
 
-    raw = generate_api_key(agent_id)
     await create_agent(
-        agent_id=agent_id,
+        agent_id=canonical,
         display_name=agent_id,
         capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
+        api_key_hash="$2b$12$placeholder",
         cert_pem=cert_pem,
     )
-    return raw, priv_pem
+    return mtls_headers(cert_pem), priv_pem
 
 
-async def _open_local_session(client, api_key, target: str = "acme::peer-bot") -> str:
+async def _open_local_session(client, sender_headers, target: str = "acme::peer-bot") -> str:
     """Open an intra-org local session via the proxy API."""
     resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "target_agent_id": target,
             "target_org_id": "acme",
@@ -103,15 +108,15 @@ def _sign_body(
 @pytest.mark.asyncio
 async def test_mtls_only_happy_path(proxy_app):
     app, client = proxy_app
-    api_key, priv = await _provision_signing_agent("sender-bot")
-    session_id = await _open_local_session(client, api_key)
+    sender_headers, priv = await _provision_signing_agent("sender-bot")
+    session_id = await _open_local_session(client, sender_headers)
 
     payload = {"text": "hello intra-org", "n": 1}
-    meta = _sign_body(priv, session_id, "sender-bot", payload)
+    meta = _sign_body(priv, session_id, "acme::sender-bot", payload)
 
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": payload,
@@ -129,16 +134,16 @@ async def test_mtls_only_happy_path(proxy_app):
 @pytest.mark.asyncio
 async def test_mtls_only_bad_signature_is_rejected(proxy_app):
     _, client = proxy_app
-    api_key, priv = await _provision_signing_agent("sender-bot")
-    session_id = await _open_local_session(client, api_key)
+    sender_headers, priv = await _provision_signing_agent("sender-bot")
+    session_id = await _open_local_session(client, sender_headers)
 
     payload = {"text": "hello"}
-    meta = _sign_body(priv, session_id, "sender-bot", payload)
+    meta = _sign_body(priv, session_id, "acme::sender-bot", payload)
     meta["signature"] = "AAAA" + meta["signature"][4:]  # tamper
 
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": payload,
@@ -153,16 +158,16 @@ async def test_mtls_only_bad_signature_is_rejected(proxy_app):
 @pytest.mark.asyncio
 async def test_mtls_only_missing_nonce_is_rejected(proxy_app):
     _, client = proxy_app
-    api_key, priv = await _provision_signing_agent("sender-bot")
-    session_id = await _open_local_session(client, api_key)
+    sender_headers, priv = await _provision_signing_agent("sender-bot")
+    session_id = await _open_local_session(client, sender_headers)
 
     payload = {"text": "hello"}
-    meta = _sign_body(priv, session_id, "sender-bot", payload)
+    meta = _sign_body(priv, session_id, "acme::sender-bot", payload)
     meta.pop("nonce")
 
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": payload,
@@ -177,25 +182,30 @@ async def test_mtls_only_missing_nonce_is_rejected(proxy_app):
 
 @pytest.mark.asyncio
 async def test_mtls_only_sender_without_cert_is_rejected(proxy_app):
+    """Post-ADR-014, an agent without ``cert_pem`` cannot authenticate
+    on /v1/egress/* in the first place — the client-cert dep pins the
+    presented leaf against the stored ``cert_pem`` digest, and a NULL
+    column makes that pin unparseable. The handler-side ``agent.cert_pem``
+    None branch in /send is therefore unreachable now; the layer above
+    rejects the request with 401 before /send's body validator runs."""
     _, client = proxy_app
-    # Provision an agent via create_agent without cert_pem — api key only.
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
+    sender_headers, priv = await _provision_signing_agent("sender-bot")
+    session_id = await _open_local_session(client, sender_headers)
 
-    raw = generate_api_key("sender-bot")
-    await create_agent(
-        agent_id="sender-bot",
-        display_name="sender-bot",
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
-        cert_pem=None,
-    )
-    session_id = await _open_local_session(client, raw)
+    # Now blank the sender's cert in the DB. The next request fails the
+    # cert pin and the auth layer returns 401 — same defensive shape as
+    # the legacy 400 path it replaces.
+    from sqlalchemy import text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            text("UPDATE internal_agents SET cert_pem = NULL WHERE agent_id = :aid"),
+            {"aid": "acme::sender-bot"},
+        )
 
-    # Signature payload doesn't matter — proxy rejects before verifying.
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": raw},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": {"text": "hi"},
@@ -206,7 +216,7 @@ async def test_mtls_only_sender_without_cert_is_rejected(proxy_app):
             "timestamp": int(time.time()),
         },
     )
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 401, resp.text
     assert "cert" in resp.json()["detail"].lower()
 
 
@@ -215,16 +225,16 @@ async def test_mtls_only_rejected_on_cross_org(proxy_app):
     """When the session_id is not in the local store (cross-org),
     mtls-only must be rejected with 400 — broker must never see plaintext."""
     _, client = proxy_app
-    api_key, priv = await _provision_signing_agent("sender-bot")
+    sender_headers, priv = await _provision_signing_agent("sender-bot")
 
     # Fabricate a valid-looking session_id that is NOT in the local store.
     fake_session = str(uuid.uuid4())
     payload = {"text": "hi"}
-    meta = _sign_body(priv, fake_session, "sender-bot", payload)
+    meta = _sign_body(priv, fake_session, "acme::sender-bot", payload)
 
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "session_id": fake_session,
             "payload": payload,
@@ -241,12 +251,12 @@ async def test_mtls_only_rejected_on_cross_org(proxy_app):
 async def test_legacy_envelope_mode_unchanged(proxy_app):
     """Omitting mode keeps the legacy opaque-ciphertext path working."""
     _, client = proxy_app
-    api_key, _ = await _provision_signing_agent("sender-bot")
-    session_id = await _open_local_session(client, api_key)
+    sender_headers, _ = await _provision_signing_agent("sender-bot")
+    session_id = await _open_local_session(client, sender_headers)
 
     resp = await client.post(
         "/v1/egress/send",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "session_id": session_id,
             "payload": {"ciphertext": "opaque-blob-base64=="},

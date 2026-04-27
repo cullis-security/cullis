@@ -576,8 +576,7 @@ def test_send_oneshot_and_wait_timeout():
 async def test_proxy_resolve_populates_target_cert_pem_cross_org(tmp_path, monkeypatch):
     """Proxy /resolve hits BrokerBridge.get_peer_public_key on cross-org."""
     from httpx import ASGITransport as _ASGIT, AsyncClient as _AC
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
+    from tests._mtls_helpers import provision_internal_agent
 
     db_file = tmp_path / "resolve.sqlite"
     monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
@@ -598,17 +597,13 @@ async def test_proxy_resolve_populates_target_cert_pem_cross_org(tmp_path, monke
     async with _AC(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
             app.state.broker_bridge = fake_bridge
-            raw = generate_api_key("alice")
-            await create_agent(
-                agent_id="alice",
-                display_name="alice",
+            alice_headers = await provision_internal_agent(
+                "alice", org_id="resolveorg",
                 capabilities=["oneshot.message"],
-                api_key_hash=hash_api_key(raw),
-                cert_pem="-----X-----",
             )
             r = await cli.post(
                 "/v1/egress/resolve",
-                headers={"X-API-Key": raw},
+                headers=alice_headers,
                 json={"recipient_id": "other::bob"},
             )
             assert r.status_code == 200, r.text
@@ -617,7 +612,7 @@ async def test_proxy_resolve_populates_target_cert_pem_cross_org(tmp_path, monke
             assert body["transport"] == "envelope"
             assert body["target_cert_pem"] == "-----FAKE CERT-----"
             fake_bridge.get_peer_public_key.assert_awaited_once_with(
-                "alice", "other::bob",
+                "resolveorg::alice", "other::bob",
             )
     get_settings.cache_clear()
 
@@ -625,8 +620,7 @@ async def test_proxy_resolve_populates_target_cert_pem_cross_org(tmp_path, monke
 async def test_proxy_resolve_fails_closed_on_bridge_error(tmp_path, monkeypatch):
     """If BrokerBridge.get_peer_public_key raises, /resolve returns 502."""
     from httpx import ASGITransport as _ASGIT, AsyncClient as _AC
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
+    from tests._mtls_helpers import provision_internal_agent
 
     db_file = tmp_path / "resolve_fail.sqlite"
     monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
@@ -648,17 +642,13 @@ async def test_proxy_resolve_fails_closed_on_bridge_error(tmp_path, monkeypatch)
     async with _AC(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
             app.state.broker_bridge = fake_bridge
-            raw = generate_api_key("alice")
-            await create_agent(
-                agent_id="alice",
-                display_name="alice",
+            alice_headers = await provision_internal_agent(
+                "alice", org_id="resolvefailorg",
                 capabilities=["oneshot.message"],
-                api_key_hash=hash_api_key(raw),
-                cert_pem="-----X-----",
             )
             r = await cli.post(
                 "/v1/egress/resolve",
-                headers={"X-API-Key": raw},
+                headers=alice_headers,
                 json={"recipient_id": "other::bob"},
             )
     assert r.status_code == 502

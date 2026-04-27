@@ -21,6 +21,8 @@ from mcp_proxy.local.session import (
     LocalSessionStore,
 )
 
+from tests._mtls_helpers import provision_internal_agent
+
 
 # ── LocalSessionStore unit tests ────────────────────────────────────
 
@@ -209,28 +211,20 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_internal_agent(agent_id: str = "sender-bot") -> str:
-    """Create an internal agent with API key and return the raw key."""
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import create_agent
-    raw_key = generate_api_key(agent_id)
-    await create_agent(
-        agent_id=agent_id,
-        display_name=agent_id,
-        capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw_key),
-    )
-    return raw_key
+async def _provision_internal_agent(agent_id: str = "sender-bot") -> dict[str, str]:
+    """Create an internal agent (via the mTLS helper) and return the
+    nginx-shaped headers nginx forwards on mTLS-required locations."""
+    return await provision_internal_agent(agent_id, capabilities=["cap.read"])
 
 
 @pytest.mark.asyncio
 async def test_router_opens_local_session_for_intra_target(proxy_app):
     app, client = proxy_app
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
 
     resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": api_key},
+        headers=sender_headers,
         json={
             "target_agent_id": "acme::peer-bot",
             "target_org_id": "acme",
@@ -250,14 +244,14 @@ async def test_router_opens_local_session_for_intra_target(proxy_app):
 @pytest.mark.asyncio
 async def test_router_accept_close_round_trip(proxy_app):
     app, client = proxy_app
-    initiator_key = await _provision_internal_agent("sender-bot")
-    responder_key = await _provision_internal_agent("peer-bot")
+    initiator_headers = await _provision_internal_agent("sender-bot")
+    responder_headers = await _provision_internal_agent("peer-bot")
 
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": initiator_key},
+        headers=initiator_headers,
         json={
-            "target_agent_id": "peer-bot",
+            "target_agent_id": "acme::peer-bot",
             "target_org_id": "acme",
             "capabilities": [],
         },
@@ -266,7 +260,7 @@ async def test_router_accept_close_round_trip(proxy_app):
 
     accept_resp = await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": responder_key},
+        headers=responder_headers,
     )
     assert accept_resp.status_code == 200, accept_resp.text
 
@@ -275,7 +269,7 @@ async def test_router_accept_close_round_trip(proxy_app):
 
     close_resp = await client.post(
         f"/v1/egress/sessions/{session_id}/close",
-        headers={"X-API-Key": initiator_key},
+        headers=initiator_headers,
     )
     assert close_resp.status_code == 200, close_resp.text
     assert store.get(session_id).status == SessionStatus.closed
@@ -284,20 +278,20 @@ async def test_router_accept_close_round_trip(proxy_app):
 @pytest.mark.asyncio
 async def test_accept_rejects_non_responder(proxy_app):
     app, client = proxy_app
-    initiator_key = await _provision_internal_agent("sender-bot")
+    initiator_headers = await _provision_internal_agent("sender-bot")
     await _provision_internal_agent("peer-bot")
-    stranger_key = await _provision_internal_agent("stranger-bot")
+    stranger_headers = await _provision_internal_agent("stranger-bot")
 
     open_resp = await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": initiator_key},
-        json={"target_agent_id": "peer-bot", "target_org_id": "acme", "capabilities": []},
+        headers=initiator_headers,
+        json={"target_agent_id": "acme::peer-bot", "target_org_id": "acme", "capabilities": []},
     )
     session_id = open_resp.json()["session_id"]
 
     resp = await client.post(
         f"/v1/egress/sessions/{session_id}/accept",
-        headers={"X-API-Key": stranger_key},
+        headers=stranger_headers,
     )
     assert resp.status_code == 403
 
@@ -305,18 +299,18 @@ async def test_accept_rejects_non_responder(proxy_app):
 @pytest.mark.asyncio
 async def test_list_sessions_returns_local_only_without_broker(proxy_app):
     app, client = proxy_app
-    api_key = await _provision_internal_agent("sender-bot")
+    sender_headers = await _provision_internal_agent("sender-bot")
 
     # Explicitly clear the broker bridge so list_sessions falls back to local.
     app.state.broker_bridge = None
 
     await client.post(
         "/v1/egress/sessions",
-        headers={"X-API-Key": api_key},
-        json={"target_agent_id": "peer-bot", "target_org_id": "acme", "capabilities": []},
+        headers=sender_headers,
+        json={"target_agent_id": "acme::peer-bot", "target_org_id": "acme", "capabilities": []},
     )
 
-    resp = await client.get("/v1/egress/sessions", headers={"X-API-Key": api_key})
+    resp = await client.get("/v1/egress/sessions", headers=sender_headers)
     assert resp.status_code == 200
     sessions = resp.json()["sessions"]
     assert len(sessions) == 1

@@ -1,14 +1,14 @@
 """
-Egress API endpoints — internal agents authenticate with API keys and
-communicate through the Cullis broker without seeing x509 keys, DPoP,
-or any cryptography.
+Egress API endpoints — internal agents authenticate with mTLS client
+certs and communicate through the Cullis broker without seeing x509
+keys, DPoP, or any cryptography directly.
 
-All endpoints require X-API-Key authentication (via
-``get_agent_from_dpop_api_key``). That dep runs the legacy bearer
-lookup first and, when ``CULLIS_EGRESS_DPOP_MODE`` is ``optional`` or
-``required`` (F-B-11 Phase 5 default: ``optional``), additionally
-validates a DPoP proof carried in the ``DPoP`` header and pins it to
-the agent's registered ``dpop_jkt``.
+All endpoints require client-cert authentication (via
+``get_agent_from_dpop_client_cert``, ADR-014). That dep verifies the
+cert nginx forwarded in ``X-SSL-Client-Cert`` against
+``internal_agents.cert_pem`` and, when ``CULLIS_EGRESS_DPOP_MODE`` is
+``optional`` or ``required``, additionally validates a DPoP proof from
+the ``DPoP`` header pinned to the agent's registered ``dpop_jkt``.
 """
 import json
 import logging
@@ -22,7 +22,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from mcp_proxy.auth.dpop_api_key import get_agent_from_dpop_api_key
+from mcp_proxy.auth.dpop_client_cert import get_agent_from_dpop_client_cert
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
 from mcp_proxy.egress.reach_guard import check_reach, resolve_target_org
@@ -239,7 +239,7 @@ def _local_session_to_dict(session: LocalSession) -> dict:
 async def open_session(
     body: OpenSessionRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Open a session on behalf of an internal agent.
 
@@ -357,7 +357,7 @@ async def open_session(
 async def list_sessions(
     request: Request,
     status: str | None = None,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """List sessions for the authenticated agent — local + broker merged."""
     local_store = _get_local_store(request)
@@ -384,7 +384,7 @@ async def list_sessions(
 async def accept_session(
     session_id: str,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Accept a pending session (local or broker)."""
     _validate_session_id(session_id)
@@ -439,7 +439,7 @@ async def accept_session(
 async def close_session(
     session_id: str,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Close a session (local or broker)."""
     _validate_session_id(session_id)
@@ -495,7 +495,7 @@ async def close_session(
 async def send_message(
     body: SendMessageRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Send an E2E-encrypted message.
 
@@ -770,7 +770,7 @@ async def poll_messages(
     session_id: str,
     request: Request,
     after: int = -1,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Poll for messages in a session (local or broker).
 
@@ -843,7 +843,7 @@ async def ack_message(
     session_id: str,
     msg_id: str,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Acknowledge delivery of a queued local message (ADR-001 Phase 3c).
 
@@ -883,7 +883,7 @@ async def ack_message(
 async def resolve_recipient(
     body: ResolveRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Resolve a recipient and tell the SDK how to send.
 
@@ -1004,7 +1004,7 @@ async def resolve_recipient(
 async def get_agent_public_key(
     agent_id: str,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Return the target agent's x509 certificate PEM.
 
@@ -1022,8 +1022,8 @@ async def get_agent_public_key(
         (and fall back to ``cert_pem=None`` when the bridge is absent,
         mirroring ``/resolve``'s standalone behaviour).
 
-    Rate-limit: inherited from ``get_agent_from_dpop_api_key`` →
-    ``get_agent_from_api_key``, which enforces the shared
+    Rate-limit: inherited from ``get_agent_from_dpop_client_cert`` →
+    ``get_agent_from_client_cert``, which enforces the shared
     ``rate_limit_per_minute`` (default 60/min/agent) against every
     ``/v1/egress/*`` call. No per-route override — keeping this aligned
     with ``/resolve`` + ``/peers`` means an enumeration-probing caller
@@ -1114,7 +1114,7 @@ async def list_peers(
     request: Request,
     q: str | None = None,
     limit: int = 50,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ) -> PeersResponse:
     """List peers the caller can address right now via /v1/egress/*.
 
@@ -1258,7 +1258,7 @@ async def list_peers(
 async def discover_agents(
     body: DiscoverRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Discover remote agents on the network."""
     bridge = _get_bridge(request)
@@ -1287,7 +1287,7 @@ async def discover_agents(
 async def invoke_remote_tool(
     body: InvokeToolRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_api_key),
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Invoke a tool on a remote org via an active broker session.
 
