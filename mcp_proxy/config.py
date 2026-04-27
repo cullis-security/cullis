@@ -51,10 +51,12 @@ class ProxySettings(BaseSettings):
     # Mastio. ``nginx_cert_dir`` is the path inside the Mastio
     # container where Org CA + server cert + server key are written
     # at first-boot; the sidecar mounts the same docker volume read-
-    # only at ``/etc/nginx/certs``. Empty disables the cert provisioning
-    # path entirely (useful in unit tests + legacy deploys without
-    # the sidecar).
-    nginx_cert_dir: str = "/var/lib/mastio/nginx-certs"
+    # only at ``/etc/nginx/certs``. **Empty by default** so the
+    # in-process pytest lifespan doesn't try to write into
+    # ``/var/lib/mastio/...`` (not writable for a non-root pytest
+    # process). Compose + Helm set the real path explicitly via env /
+    # ConfigMap; runtime deploys never see the empty default.
+    nginx_cert_dir: str = ""
     # SAN(s) baked into the server cert. Comma-separated for multi-
     # host deployments. Default ``mastio.local`` matches the
     # docker-compose default; override with MCP_PROXY_NGINX_SAN for
