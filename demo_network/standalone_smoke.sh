@@ -58,17 +58,17 @@ seed_agent() {
     local org_id="acme"
     local canonical_id="${org_id}::${agent_id}"
 
+    # Mint inside the container, drop cert+key under /tmp/<agent>.{crt,key}
+    # so we can pull them out via ``compose cp`` without inventing a
+    # stdout splitter on the host.
     $COMPOSE exec -T proxy python -c "
 import asyncio, os, sys
-from cryptography.hazmat.primitives import serialization
 from mcp_proxy.db import init_db, create_agent
-from mcp_proxy.egress.agent_manager import OrgCAManager
+from mcp_proxy.egress.agent_manager import AgentManager
 async def main():
     await init_db(os.environ['MCP_PROXY_DATABASE_URL'])
-    mgr = OrgCAManager(org_id='${org_id}', trust_domain='cullis.local')
+    mgr = AgentManager(org_id='${org_id}', trust_domain='cullis.local')
     if not await mgr.load_org_ca_from_config():
-        # The Mastio first-boot has already written the CA to proxy_config;
-        # if load failed something is wrong with the bring-up.
         sys.exit('Org CA missing from proxy_config — first-boot likely failed')
     cert_pem, key_pem = mgr._generate_agent_cert('${agent_id}')
     await create_agent(
@@ -78,22 +78,20 @@ async def main():
         api_key_hash='\$2b\$12\$placeholder',
         cert_pem=cert_pem,
     )
-    # Stream cert + key on stdout, separator-delimited, so the host
-    # script can split them apart without an intermediate file inside
-    # the container.
-    sys.stdout.write(cert_pem)
-    sys.stdout.write('---SMOKE-CERT-KEY-SEP---\n')
-    sys.stdout.write(key_pem)
+    with open('/tmp/${agent_id}.crt', 'w') as f:
+        f.write(cert_pem)
+    with open('/tmp/${agent_id}.key', 'w') as f:
+        f.write(key_pem)
+    os.chmod('/tmp/${agent_id}.key', 0o600)
 asyncio.run(main())
-" > "$CERTS_DIR/$agent_id.bundle"
+"
 
-    # Split bundle into separate cert/key files curl can consume.
-    awk '/^---SMOKE-CERT-KEY-SEP---$/ {section++; next} {print > target[section]}' \
-        target[0]="$CERTS_DIR/$agent_id.crt" \
-        target[1]="$CERTS_DIR/$agent_id.key" \
-        "$CERTS_DIR/$agent_id.bundle"
-    rm -f "$CERTS_DIR/$agent_id.bundle"
-    chmod 600 "$CERTS_DIR/$agent_id.key"
+    # Pull cert + key out to the host so curl can read them. ``compose
+    # cp`` resolves the service name to its container, no need to look
+    # up the container id by hand.
+    $COMPOSE cp "proxy:/tmp/${agent_id}.crt" "$CERTS_DIR/${agent_id}.crt"
+    $COMPOSE cp "proxy:/tmp/${agent_id}.key" "$CERTS_DIR/${agent_id}.key"
+    chmod 600 "$CERTS_DIR/${agent_id}.key"
 }
 
 
