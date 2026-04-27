@@ -52,26 +52,6 @@
     <!-- ═══════════════════════════════════════════════════════════════════ -->
     <div id="panel-overview" class="main-tab-panel">
 
-        <!-- New API Key reveal (shown only after rotation) -->
-        {% if new_api_key %}
-        <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
-            <div class="flex items-start gap-3">
-                <svg class="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
-                <div class="flex-1">
-                    <p class="text-sm font-semibold text-amber-400 mb-1">New API Key — Save This Now</p>
-                    <p class="text-xs text-amber-500/70 mb-3">This key will only be shown once. The old key is now invalid.</p>
-                    <div class="flex items-center gap-2">
-                        <code class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-accent-400 font-mono select-all break-all">{{ new_api_key }}</code>
-                        <button type="button" onclick="copyToClipboard('{{ new_api_key }}')"
-                                class="px-3 py-2 border border-gray-700 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
         <!-- Agent info card -->
         <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
             <div class="grid grid-cols-2 md:grid-cols-3 gap-6">
@@ -128,24 +108,6 @@
             {% endif %}
         </div>
 
-        <!-- API Key management -->
-        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
-            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">API Key</h3>
-            <div class="mb-4">
-                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Current Key Hash</p>
-                <p class="text-xs text-gray-500 font-mono truncate" title="{{ agent.api_key_hash }}">{{ agent.api_key_hash[:20] }}...</p>
-            </div>
-            <p class="text-xs text-gray-500 mb-4">Rotating the key immediately invalidates the current key. The agent must be updated with the new key.</p>
-            <form method="post" action="/proxy/agents/{{ agent.agent_id }}/rotate-key"
-                  onsubmit="return confirm('Rotate API key? The current key will stop working immediately.')">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <button type="submit"
-                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider border border-amber-600/40 text-amber-400 rounded hover:bg-amber-900/20 transition-colors">
-                    <svg class="w-3.5 h-3.5 inline mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-                    Rotate Key
-                </button>
-            </form>
-        </div>
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -188,19 +150,22 @@
                 <pre id="code-python" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">import httpx
 
 PROXY_URL = "{{ proxy_url }}"
-API_KEY = "{{ api_key_display }}"  # Shown once at creation — store securely
+# ADR-014: present the agent's TLS client cert at the handshake — that
+# IS the credential. Mount cert.pem + key.pem from the identity bundle.
+CERT = ("/path/to/agent.pem", "/path/to/agent-key.pem")
+client = httpx.Client(cert=CERT, verify="/path/to/org-ca.crt")
 
-headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+headers = {"Content-Type": "application/json"}
 
 # 1. Discover remote agents
-resp = httpx.post(f"{PROXY_URL}/v1/egress/discover",
+resp = client.post(f"{PROXY_URL}/v1/egress/discover",
     headers=headers,
     json={"capabilities": ["order.read"]})
 agents = resp.json()["agents"]
 print(f"Found {len(agents)} agent(s)")
 
 # 2. Open session with a remote agent
-resp = httpx.post(f"{PROXY_URL}/v1/egress/sessions",
+resp = client.post(f"{PROXY_URL}/v1/egress/sessions",
     headers=headers,
     json={
         "target_agent_id": agents[0]["agent_id"],
@@ -210,7 +175,7 @@ resp = httpx.post(f"{PROXY_URL}/v1/egress/sessions",
 session_id = resp.json()["session_id"]
 
 # 3. Send a message
-httpx.post(f"{PROXY_URL}/v1/egress/send",
+client.post(f"{PROXY_URL}/v1/egress/send",
     headers=headers,
     json={
         "session_id": session_id,
@@ -219,7 +184,7 @@ httpx.post(f"{PROXY_URL}/v1/egress/send",
     })
 
 # 4. Poll for responses
-resp = httpx.get(f"{PROXY_URL}/v1/egress/messages/{session_id}",
+resp = client.get(f"{PROXY_URL}/v1/egress/messages/{session_id}",
     headers=headers)
 for msg in resp.json()["messages"]:
     print(msg["payload"])</pre>
@@ -231,29 +196,32 @@ for msg in resp.json()["messages"]:
             <div class="relative">
                 <button type="button" onclick="copyCode('code-curl')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
                 <pre id="code-curl" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">export PROXY="{{ proxy_url }}"
-export KEY="{{ api_key_display }}"
+# ADR-014: --cert + --key present the TLS client cert at handshake
+export CULLIS_CERT="/path/to/agent.pem"
+export CULLIS_KEY="/path/to/agent-key.pem"
+export CULLIS_CA="/path/to/org-ca.crt"
 
 # Discover agents
-curl -s -X POST $PROXY/v1/egress/discover \
-  -H "X-API-Key: $KEY" \
+curl -s --cert $CULLIS_CERT --key $CULLIS_KEY --cacert $CULLIS_CA \
+  -X POST $PROXY/v1/egress/discover \
   -H "Content-Type: application/json" \
   -d '{"capabilities": ["order.read"]}' | jq .
 
 # Open session
-curl -s -X POST $PROXY/v1/egress/sessions \
-  -H "X-API-Key: $KEY" \
+curl -s --cert $CULLIS_CERT --key $CULLIS_KEY --cacert $CULLIS_CA \
+  -X POST $PROXY/v1/egress/sessions \
   -H "Content-Type: application/json" \
   -d '{"target_agent_id":"partner::agent","target_org_id":"partner","capabilities":["order.read"]}' | jq .
 
 # Send message
-curl -s -X POST $PROXY/v1/egress/send \
-  -H "X-API-Key: $KEY" \
+curl -s --cert $CULLIS_CERT --key $CULLIS_KEY --cacert $CULLIS_CA \
+  -X POST $PROXY/v1/egress/send \
   -H "Content-Type: application/json" \
   -d '{"session_id":"SESSION_ID","payload":{"text":"Hello"},"recipient_agent_id":"partner::agent"}'
 
 # Poll messages
-curl -s $PROXY/v1/egress/messages/SESSION_ID \
-  -H "X-API-Key: $KEY" | jq .</pre>
+curl -s --cert $CULLIS_CERT --key $CULLIS_KEY --cacert $CULLIS_CA \
+  $PROXY/v1/egress/messages/SESSION_ID | jq .</pre>
             </div>
         </div>
 
@@ -261,39 +229,46 @@ curl -s $PROXY/v1/egress/messages/SESSION_ID \
         <div id="connect-nodejs" class="connect-panel hidden">
             <div class="relative">
                 <button type="button" onclick="copyCode('code-nodejs')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
-                <pre id="code-nodejs" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">const PROXY_URL = "{{ proxy_url }}";
-const API_KEY = "{{ api_key_display }}";
-const headers = {"X-API-Key": API_KEY, "Content-Type": "application/json"};
+                <pre id="code-nodejs" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">// ADR-014: Node 18+ uses an https.Agent with cert+key for mTLS
+import https from "node:https";
+import fs from "node:fs";
+
+const PROXY_URL = "{{ proxy_url }}";
+const agent = new https.Agent({
+  cert: fs.readFileSync("/path/to/agent.pem"),
+  key:  fs.readFileSync("/path/to/agent-key.pem"),
+  ca:   fs.readFileSync("/path/to/org-ca.crt"),
+});
+const headers = {"Content-Type": "application/json"};
+
+const fetchOpts = (method, body) => ({method, headers, agent, body});
 
 // Discover agents
-const agents = await fetch(`${PROXY_URL}/v1/egress/discover`, {
-  method: "POST", headers,
-  body: JSON.stringify({capabilities: ["order.read"]})
-}).then(r => r.json()).then(d => d.agents);
+const agents = await fetch(`${PROXY_URL}/v1/egress/discover`,
+  fetchOpts("POST", JSON.stringify({capabilities: ["order.read"]}))
+).then(r => r.json()).then(d => d.agents);
 
 // Open session
-const {session_id} = await fetch(`${PROXY_URL}/v1/egress/sessions`, {
-  method: "POST", headers,
-  body: JSON.stringify({
+const {session_id} = await fetch(`${PROXY_URL}/v1/egress/sessions`,
+  fetchOpts("POST", JSON.stringify({
     target_agent_id: agents[0].agent_id,
     target_org_id: agents[0].org_id,
     capabilities: ["order.read"]
-  })
-}).then(r => r.json());
+  }))
+).then(r => r.json());
 
 // Send message
-await fetch(`${PROXY_URL}/v1/egress/send`, {
-  method: "POST", headers,
-  body: JSON.stringify({
+await fetch(`${PROXY_URL}/v1/egress/send`,
+  fetchOpts("POST", JSON.stringify({
     session_id, payload: {text: "Hello from {{ agent.agent_id }}"},
     recipient_agent_id: agents[0].agent_id
-  })
-});
+  }))
+);
 
 // Poll messages
 const {messages} = await fetch(
   `${PROXY_URL}/v1/egress/messages/${session_id}`,
-  {headers}
+  {headers, agent}
 ).then(r => r.json());</pre>
             </div>
         </div>
@@ -304,9 +279,11 @@ const {messages} = await fetch(
                 <button type="button" onclick="copyCode('code-docker')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
                 <pre id="code-docker" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50">docker run -d --name {{ agent_name }} \
   -e CULLIS_PROXY_URL={{ proxy_url }} \
-  -e CULLIS_API_KEY={{ api_key_display }} \
   -e CULLIS_AGENT_ID={{ agent.agent_id }} \
   -e CULLIS_ORG_ID={{ org_id }} \
+  -v /path/to/agent.pem:/etc/cullis/cert.pem:ro \
+  -v /path/to/agent-key.pem:/etc/cullis/key.pem:ro \
+  -v /path/to/org-ca.crt:/etc/cullis/org-ca.crt:ro \
   your-agent-image:latest
 
 # Or with docker compose:
@@ -315,8 +292,11 @@ const {messages} = await fetch(
 #     image: your-agent-image
 #     environment:
 #       CULLIS_PROXY_URL: {{ proxy_url }}
-#       CULLIS_API_KEY: {{ api_key_display }}
-#       CULLIS_AGENT_ID: {{ agent.agent_id }}</pre>
+#       CULLIS_AGENT_ID: {{ agent.agent_id }}
+#     volumes:
+#       - /path/to/agent.pem:/etc/cullis/cert.pem:ro
+#       - /path/to/agent-key.pem:/etc/cullis/key.pem:ro
+#       - /path/to/org-ca.crt:/etc/cullis/org-ca.crt:ro</pre>
             </div>
         </div>
 
@@ -354,17 +334,20 @@ const {messages} = await fetch(
                 <button type="button" onclick="copyCode('code-iot')" class="copy-btn absolute top-3 right-3 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider bg-surface-800 hover:bg-surface-700 text-gray-400 hover:text-white rounded border border-gray-700/50 transition-colors z-10">Copy</button>
                 <pre id="code-iot" class="bg-[#0a0f1a] p-4 rounded-lg overflow-x-auto font-mono text-xs text-gray-300 leading-relaxed border border-gray-800/50"># Environment variables for your IoT device
 CULLIS_PROXY_URL={{ proxy_url }}
-CULLIS_API_KEY={{ api_key_display }}
 CULLIS_AGENT_ID={{ agent.agent_id }}
+# Mount the agent cert + key bundle on the device:
+#   /etc/cullis/cert.pem
+#   /etc/cullis/key.pem
+#   /etc/cullis/org-ca.crt
 
-# All proxy endpoints accept standard HTTP + JSON
-# Compatible with any HTTP client (ESP32, Raspberry Pi, etc.)</pre>
+# All proxy endpoints accept standard HTTPS + JSON with mTLS at TLS handshake
+# Compatible with any HTTPS client that supports client cert (ESP32, Pi, etc.)</pre>
             </div>
             <div class="mt-3 p-3 bg-amber-900/10 border border-amber-600/30 rounded-lg">
                 <div class="flex items-start gap-2">
                     <svg class="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
                     <p class="text-xs text-amber-400/80 leading-relaxed">
-                        <strong class="text-amber-400">Security:</strong> Use per-device API keys with minimal capabilities. Store keys in hardware secure element (TPM/SE) when available. Never share keys between devices.
+                        <strong class="text-amber-400">Security:</strong> Each device enrolls separately so it gets its own cert. Store the private key in a hardware secure element (TPM/SE) when available. Never share keys between devices.
                     </p>
                 </div>
             </div>
@@ -375,7 +358,7 @@ CULLIS_AGENT_ID={{ agent.agent_id }}
             <div class="p-3 bg-surface-900/80 border border-gray-800/50 rounded-lg">
                 <p class="text-xs text-gray-400 leading-relaxed">
                     <svg class="w-3.5 h-3.5 inline mr-1 text-info-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    Browser SPAs cannot securely store API keys. For web frontends, route requests through your backend server.
+                    Browser SPAs cannot use TLS client certificates from JS. For web frontends, route requests through your backend server.
                 </p>
             </div>
             <a href="/proxy/agents/{{ agent.agent_id }}/env-download"

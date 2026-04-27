@@ -110,7 +110,9 @@ async def test_redis_key_prefix_namespaces_mastio():
     # args: script_sha, numkeys, key, now, cutoff, max, request_id, ttl
     call_args = fake_redis.evalsha.await_args.args
     key = call_args[2]
-    assert key.startswith("mcp_proxy:ratelimit:api_key:")
+    # ADR-014 PR-C: rate-limit key is namespaced ``agent:`` (was
+    # ``api_key:``) — the credential is the cert, not the api_key.
+    assert key.startswith("mcp_proxy:ratelimit:agent:")
     assert key.endswith("agent-a")
 
 

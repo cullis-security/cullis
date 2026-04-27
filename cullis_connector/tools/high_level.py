@@ -19,9 +19,8 @@ explicit session/peer identifiers so the LLM can fire-and-forget
 exchanges without worrying about stomping on an ongoing conversation.
 
 ``get_audit_trail`` uses the Connector's enrolled proxy credentials
-(``X-API-Key`` emitted at enrollment) to hit the Site's audit read API.
-If the client was built without a proxy API key (legacy broker-only
-flow), the tool returns a clear error message rather than crashing.
+(TLS client cert at the handshake, ADR-014) to hit the Site's audit
+read API.
 """
 from __future__ import annotations
 

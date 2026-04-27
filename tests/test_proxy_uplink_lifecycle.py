@@ -265,13 +265,13 @@ async def test_agents_certs_survive_uplink_cycle(standalone_proxy):
         httpx.AsyncClient = original
 
     after_link = await get_agent("acme::alice-bot")
-    assert before["api_key_hash"] == after_link["api_key_hash"]
+    # ADR-014 PR-C: cert is the credential — assert it survives.
     assert before["cert_pem"] == after_link["cert_pem"]
 
     await client.post("/v1/admin/unlink-broker", json={})
 
     after_unlink = await get_agent("acme::alice-bot")
-    assert before["api_key_hash"] == after_unlink["api_key_hash"]
+    assert before["cert_pem"] == after_unlink["cert_pem"]
 
     # And the cert still authenticates — proof the cred survived both
     # state transitions end-to-end.

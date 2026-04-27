@@ -61,9 +61,9 @@ async def _seed_agent(agent_id: str) -> None:
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, api_key_hash, "
+                "(agent_id, display_name, capabilities, "
                 " created_at, is_active) "
-                "VALUES (:a, :a, '[]', 'hash', :ts, 1)"
+                "VALUES (:a, :a, '[]', :ts, 1)"
             ),
             {
                 "a": agent_id,

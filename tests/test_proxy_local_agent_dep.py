@@ -48,13 +48,10 @@ async def app_with_flag_on(tmp_path, monkeypatch):
     importlib.reload(db_mod)
     await db_mod.init_db(f"sqlite+aiosqlite:///{db_file}")
 
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    raw = generate_api_key("orga::alice")
     await db_mod.create_agent(
         agent_id="orga::alice",
         display_name="alice",
         capabilities=["order.read", "order.write"],
-        api_key_hash=hash_api_key(raw),
     )
 
     from datetime import datetime, timezone

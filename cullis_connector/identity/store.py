@@ -29,7 +29,6 @@ CERT_FILENAME = "agent.crt"
 KEY_FILENAME = "agent.key"
 CA_CHAIN_FILENAME = "ca-chain.pem"
 METADATA_FILENAME = "metadata.json"
-API_KEY_FILENAME = "api_key"
 # F-B-11 Phase 3d (#181) — per-identity DPoP keypair. Persisted as a
 # private JWK; the SDK reads it back via ``cullis_sdk.DpopKey.load``.
 DPOP_KEY_FILENAME = "dpop.jwk"
@@ -93,15 +92,17 @@ def save_identity(
     private_key: PrivateKeyTypes,
     ca_chain_pem: str | None,
     metadata: IdentityMetadata,
-    api_key: str | None = None,
     dpop_private_jwk: dict | None = None,
 ) -> None:
     """Persist the full identity bundle atomically per-file.
 
-    The private key, ``api_key`` file, and the DPoP private JWK
-    (audit F-B-11 Phase 3d, #181) are written with ``chmod 600``; the
-    public cert and metadata stay world-readable (they contain no
-    secret material).
+    The private key and the DPoP private JWK (audit F-B-11 Phase 3d,
+    #181) are written with ``chmod 600``; the public cert and metadata
+    stay world-readable (they contain no secret material).
+
+    ADR-014 PR-C: the cert/key pair IS the agent credential. No
+    api_key file is persisted — earlier Connector layouts that wrote
+    one are inert (the SDK's ``from_connector`` ignores it).
 
     ``dpop_private_jwk`` is optional — legacy Connectors that predate
     F-B-11 omit it, and the SDK's ``from_connector`` path falls back
@@ -136,16 +137,6 @@ def save_identity(
         json.dumps(metadata.to_dict(), indent=2).encode(),
         mode=0o644,
     )
-
-    # The X-API-Key (if provided) is written as a newline-terminated plain
-    # text file at 0600 — same treatment as the private key. Scripts read
-    # it with `.read_text().strip()` to get the raw sk_local_... value.
-    if api_key:
-        _write_atomic(
-            identity_dir / API_KEY_FILENAME,
-            (api_key + "\n").encode(),
-            mode=0o600,
-        )
 
     # F-B-11 Phase 3d — DPoP private JWK. Stored as a JSON wrapper the
     # SDK's ``DpopKey.load`` accepts: ``{"private_jwk": {...}}``.

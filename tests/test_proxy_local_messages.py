@@ -156,31 +156,6 @@ async def _provision(agent_id: str) -> dict[str, str]:
     return await provision_internal_agent(agent_id, capabilities=[])
 
 
-async def _provision_with_api_key(agent_id: str) -> tuple[dict[str, str], str]:
-    """Provision via mTLS helper *and* overwrite ``api_key_hash`` with a
-    real bcrypt hash of a freshly minted key.
-
-    The legacy ``/v1/local/ws?api_key=...`` upgrade still authenticates by
-    api-key (PR-B did not migrate the WebSocket path), so tests that
-    exercise the WS drain need the same agent to authenticate both via
-    the cert (for /v1/egress/*) and via an api-key (for the WS upgrade).
-    Returns ``(headers, raw_api_key)``.
-    """
-    from sqlalchemy import text
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-    from mcp_proxy.db import get_db
-
-    headers = await _provision(agent_id)
-    raw = generate_api_key(agent_id)
-    canonical = f"acme::{agent_id}"
-    async with get_db() as conn:
-        await conn.execute(
-            text("UPDATE internal_agents SET api_key_hash = :h WHERE agent_id = :aid"),
-            {"h": hash_api_key(raw), "aid": canonical},
-        )
-    return headers, raw
-
-
 async def _open_local_session(client: AsyncClient, initiator_headers: dict[str, str], responder: str) -> str:
     resp = await client.post(
         "/v1/egress/sessions",
@@ -298,31 +273,8 @@ async def test_send_idempotency_key_marks_duplicate(proxy_app):
     assert first.json()["msg_id"] == second.json()["msg_id"]
 
 
-@pytest.mark.asyncio
-async def test_ws_drain_delivers_pending(proxy_app):
-    app, client = proxy_app
-    initiator_headers = await _provision("alice")
-    responder_headers, responder_key = await _provision_with_api_key("bob")
-    session_id = await _open_local_session(client, initiator_headers, "acme::bob")
-
-    await client.post(
-        "/v1/egress/send",
-        headers=initiator_headers,
-        json={"session_id": session_id, "payload": {"n": 1}, "recipient_agent_id": "acme::bob"},
-    )
-    await client.post(
-        "/v1/egress/send",
-        headers=initiator_headers,
-        json={"session_id": session_id, "payload": {"n": 2}, "recipient_agent_id": "acme::bob"},
-    )
-
-    tc = TestClient(app, raise_server_exceptions=True)
-    with tc.websocket_connect(f"/v1/local/ws?api_key={responder_key}") as ws:
-        welcome = ws.receive_json()
-        assert welcome["type"] == "connected"
-        first = ws.receive_json()
-        second = ws.receive_json()
-        assert first["queued"] is True
-        assert second["queued"] is True
-        payloads = sorted([first["payload"]["n"], second["payload"]["n"]])
-        assert payloads == [1, 2]
+# Note: the WS drain test exercised the deleted ``/v1/local/ws`` endpoint
+# (PR-C dropped the api_key auth path it relied on). The drain path itself
+# still works through ``LocalConnectionManager`` — covered by the manager
+# unit tests in ``test_proxy_local_ws.py``. A cert-authenticated WS
+# replacement will land with its own end-to-end test.

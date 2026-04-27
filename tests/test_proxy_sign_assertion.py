@@ -84,28 +84,26 @@ async def _provision_agent_with_cert(app, agent_id: str) -> tuple[str, str]:
 
     cert_pem, key_pem = mgr._generate_agent_cert(agent_id.split("::", 1)[-1])
 
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
     from mcp_proxy.db import create_agent
-    raw = generate_api_key(agent_id)
     await create_agent(
         agent_id=agent_id,
         display_name=agent_id,
         capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
         cert_pem=cert_pem,
     )
     await set_config(f"agent_key:{agent_id}", key_pem)
-    return raw, cert_pem
+    return cert_pem
 
 
 @pytest.mark.asyncio
 async def test_sign_assertion_returns_jwt(proxy_app):
     app, client = proxy_app
-    api_key, cert_pem = await _provision_agent_with_cert(app, "acme::enrolled-bot")
+    cert_pem = await _provision_agent_with_cert(app, "acme::enrolled-bot")
+    from tests._mtls_helpers import mtls_headers
 
     resp = await client.post(
         "/v1/auth/sign-assertion",
-        headers={"X-API-Key": api_key},
+        headers=mtls_headers(cert_pem),
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -125,7 +123,7 @@ async def test_sign_assertion_returns_jwt(proxy_app):
 
 
 @pytest.mark.asyncio
-async def test_sign_assertion_requires_api_key(proxy_app):
+async def test_sign_assertion_requires_client_cert(proxy_app):
     _, client = proxy_app
     resp = await client.post("/v1/auth/sign-assertion")
     assert resp.status_code == 401
@@ -135,32 +133,29 @@ async def test_sign_assertion_requires_api_key(proxy_app):
 async def test_sign_assertion_not_reverse_proxied(proxy_app):
     """Route precedence — /v1/auth/sign-assertion must NOT hit the reverse proxy."""
     _, client = proxy_app
-    resp = await client.post(
-        "/v1/auth/sign-assertion",
-        headers={"X-API-Key": "sk_local_bogus_" + uuid.uuid4().hex},
-    )
-    # 401 from the API-key dependency — not 502/504 from upstream, not a
-    # broker-looking response. The reverse-proxy would yield something very
-    # different (x-cullis-role set by the forwarder override).
+    # Anonymous request → 401 from cert dep. The reverse-proxy would
+    # yield something very different (x-cullis-role set by the forwarder).
+    resp = await client.post("/v1/auth/sign-assertion")
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_sign_assertion_agent_missing_credentials(proxy_app):
     app, client = proxy_app
-    # Provision an agent WITHOUT calling the provisioning helper — just
-    # an API key, no cert+key. The endpoint must fail gracefully.
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+    # Provision an agent that has a cert (so the cert-auth dep accepts
+    # them) but NO server-side private key — the endpoint must fail
+    # gracefully with 404 because get_agent_credentials returns nothing.
     from mcp_proxy.db import create_agent
-    raw = generate_api_key("ghost-bot")
+    from tests._mtls_helpers import mint_agent_cert, mtls_headers
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="ghost-bot")
     await create_agent(
-        agent_id="ghost-bot",
+        agent_id="acme::ghost-bot",
         display_name="ghost-bot",
         capabilities=[],
-        api_key_hash=hash_api_key(raw),
+        cert_pem=cert_pem,
     )
     resp = await client.post(
         "/v1/auth/sign-assertion",
-        headers={"X-API-Key": raw},
+        headers=mtls_headers(cert_pem),
     )
     assert resp.status_code == 404

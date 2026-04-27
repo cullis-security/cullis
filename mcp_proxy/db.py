@@ -2,7 +2,7 @@
 MCP Proxy database — async SQLAlchemy 2.x Core over aiosqlite / asyncpg.
 
 Tables:
-  - internal_agents: locally registered agents (for egress API key auth)
+  - internal_agents: locally registered agents (mTLS client-cert auth, ADR-014)
   - audit_log: append-only immutable audit trail
   - proxy_config: key-value store for broker uplink config from setup wizard
   - local_*: ADR-001 Phase 4 surface, schema-only until then
@@ -290,7 +290,6 @@ async def create_agent(
     agent_id: str,
     display_name: str,
     capabilities: list[str],
-    api_key_hash: str,
     cert_pem: str | None = None,
     enrollment_method: str = "admin",
     spiffe_id: str | None = None,
@@ -301,17 +300,20 @@ async def create_agent(
     legacy callers (tests, dashboard) get the right metadata without
     code changes. The Connector approve flow and the BYOCA/SPIFFE
     enrollment endpoints pass the matching method value explicitly.
+
+    ADR-014 PR-C — the agent's TLS client cert is the credential; no
+    api_key_hash column exists.
     """
     ts = datetime.now(timezone.utc).isoformat()
     async with get_db() as conn:
         await conn.execute(
             text(
                 """INSERT INTO internal_agents (
-                       agent_id, display_name, capabilities, api_key_hash,
+                       agent_id, display_name, capabilities,
                        cert_pem, created_at, enrollment_method, spiffe_id,
                        enrolled_at
                    ) VALUES (
-                       :agent_id, :display_name, :capabilities, :api_key_hash,
+                       :agent_id, :display_name, :capabilities,
                        :cert_pem, :created_at, :enrollment_method, :spiffe_id,
                        :enrolled_at
                    )"""
@@ -320,7 +322,6 @@ async def create_agent(
                 "agent_id": agent_id,
                 "display_name": display_name,
                 "capabilities": json.dumps(capabilities),
-                "api_key_hash": api_key_hash,
                 "cert_pem": cert_pem,
                 "created_at": ts,
                 "enrollment_method": enrollment_method,
@@ -341,104 +342,6 @@ async def get_agent(agent_id: str) -> dict | None:
         if row is None:
             return None
         return _agent_row_to_dict(row)
-
-
-# Constant-time enumeration defence (issue #2). When the prefix-derived
-# agent_id doesn't match any row we still run one bcrypt.checkpw against
-# this dummy hash so the response latency for "unknown agent" matches
-# "known agent, wrong secret". Without it, the fast path for unknown
-# names (SQL miss ≈ 1 ms vs. match-attempt ≈ 300 ms) would let an
-# attacker enumerate agent names by timing. Generated once at import
-# time — checkpw against a valid hash that never matches real keys.
-_DUMMY_API_KEY_HASH: bytes | None = None
-
-
-def _dummy_api_key_hash() -> bytes:
-    global _DUMMY_API_KEY_HASH
-    if _DUMMY_API_KEY_HASH is None:
-        import bcrypt
-        _DUMMY_API_KEY_HASH = bcrypt.hashpw(b"never-a-real-key", bcrypt.gensalt())
-    return _DUMMY_API_KEY_HASH
-
-
-async def get_agent_by_key_hash(raw_api_key: str) -> dict | None:
-    """Look up an active agent by verifying a raw API key.
-
-    The key format is ``sk_local_{agent_name}_{32 hex chars}``. We parse
-    ``agent_name`` out of the prefix, build the canonical agent_id
-    ``{org_id}::{agent_name}`` (the Mastio serves a single org per
-    instance), fetch that one row, and verify its bcrypt hash. ``rpartition``
-    handles agent names that contain underscores — the hex suffix is
-    always the final 32 chars after the last underscore.
-
-    Issue #2: the previous implementation fetched every active agent and
-    ran ``bcrypt.checkpw`` synchronously in a loop, which scales as
-    O(N_agents × 200-400ms) per auth call and blocks the event loop for
-    the full duration. At N=10 concurrent requests the p99 was 29 s
-    (baseline benchmark in ``test/nightly/benchmarks/dpop_concurrency.py``).
-    Three fixes combined:
-      (a) parse the agent name from the prefix → O(1) row lookup, one
-          bcrypt per request instead of N.
-      (b) run ``bcrypt.checkpw`` on a worker thread via ``asyncio.to_thread``
-          so the single event-loop thread stays free to accept new
-          requests while the hash verify runs.
-      (c) run one dummy bcrypt when no row matches, so the "unknown agent"
-          response time is indistinguishable from "known agent, wrong
-          secret" — closes the timing side channel introduced by (a).
-    """
-    import bcrypt
-
-    if not raw_api_key.startswith("sk_local_"):
-        return None
-    rest = raw_api_key[len("sk_local_"):]
-    agent_name, sep, hex_part = rest.rpartition("_")
-    if not agent_name or not sep or len(hex_part) != 32:
-        return None
-
-    from mcp_proxy.config import get_settings
-    org_id = (get_settings().org_id or "").strip()
-    full_id = f"{org_id}::{agent_name}" if org_id else agent_name
-
-    async with get_db() as conn:
-        result = await conn.execute(
-            text("SELECT * FROM internal_agents "
-                 "WHERE is_active = 1 AND agent_id = :aid"),
-            {"aid": full_id},
-        )
-        row = result.mappings().first()
-        if row is None and full_id != agent_name:
-            # Pre-migration fallback: some legacy rows were stored with
-            # the bare name. Only hit this branch when the canonical
-            # lookup missed, so it costs at most one extra indexed
-            # query per wrong key — not per request in steady state.
-            result = await conn.execute(
-                text("SELECT * FROM internal_agents "
-                     "WHERE is_active = 1 AND agent_id = :aid"),
-                {"aid": agent_name},
-            )
-            row = result.mappings().first()
-
-        if row is None:
-            # Burn a bcrypt.checkpw against the dummy hash so the failure
-            # path takes roughly the same wall time as a wrong-secret
-            # success path. ``checkpw`` returns False — discard the
-            # result; the caller sees None either way.
-            await asyncio.to_thread(
-                bcrypt.checkpw,
-                raw_api_key.encode(),
-                _dummy_api_key_hash(),
-            )
-            return None
-
-        stored_hash = row["api_key_hash"]
-        ok = await asyncio.to_thread(
-            bcrypt.checkpw,
-            raw_api_key.encode(),
-            stored_hash.encode(),
-        )
-        if ok:
-            return _agent_row_to_dict(row)
-    return None
 
 
 async def list_agents() -> list[dict]:
@@ -1070,7 +973,6 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
         "agent_id": row["agent_id"],
         "display_name": row["display_name"],
         "capabilities": json.loads(row["capabilities"]),
-        "api_key_hash": row["api_key_hash"],
         "cert_pem": row["cert_pem"],
         "created_at": row["created_at"],
         "is_active": bool(row["is_active"]),

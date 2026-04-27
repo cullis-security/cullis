@@ -351,7 +351,6 @@ class CullisClient:
         # Save config to .env file if requested
         if save_config:
             env_lines = [
-                f"CULLIS_API_KEY={config['api_key']}",
                 f"CULLIS_AGENT_ID={config['agent_id']}",
                 f"CULLIS_PROXY_URL={config['proxy_url']}",
                 f"CULLIS_ORG_ID={config['org_id']}",
@@ -359,7 +358,10 @@ class CullisClient:
             Path(save_config).write_text("\n".join(env_lines) + "\n")
             log("sdk", f"Config saved to {save_config}")
 
-        # Build a proxy-oriented client (stores API key + proxy URL for egress calls)
+        # Build a proxy-oriented client. ADR-014: subsequent calls
+        # authenticate by presenting the agent's TLS client cert at the
+        # handshake — the caller is responsible for arranging cert+key
+        # delivery (out-of-band, separate enrollment endpoint, etc.).
         instance = cls.__new__(cls)
         instance.base = config["proxy_url"].rstrip("/")
         instance._verify_tls = verify_tls
@@ -374,8 +376,6 @@ class CullisClient:
         instance._dpop_nonce = None
         instance._egress_dpop_key = None
         instance._egress_dpop_nonce = None
-        # Store proxy credentials for egress API
-        instance._proxy_api_key = config["api_key"]
         instance._proxy_agent_id = config["agent_id"]
         instance._proxy_org_id = config["org_id"]
         # Mirror __init__: callers may attach the on-disk identity bundle
@@ -414,20 +414,17 @@ class CullisClient:
     def proxy_headers(self, method: str = "POST", url: str = "") -> dict:
         """Return headers for proxy egress API calls.
 
-        Always includes ``X-API-Key``. When ``_egress_dpop_key`` is set
-        (Phase 3c, #181), also signs and includes a DPoP proof bound
-        to ``method`` + ``url`` + the API key (via ``ath``) + the last
-        server nonce we saw. Missing method/url on a DPoP-enabled
-        client falls back to the bearer header alone — the call sites
-        in this module all pass the concrete values; external callers
-        that invoke ``proxy_headers`` without them (legacy integration
-        code, custom tooling) stay on the legacy path so they never
-        silently ship unsigned proofs.
+        ADR-014: the cert presented at the TLS handshake IS the agent
+        credential — no ``X-API-Key`` is sent. The httpx.Client passes
+        ``cert=(cert_path, key_path)`` when the SDK was built via
+        ``from_identity_dir`` / ``from_connector`` / ``from_enrollment``.
+        When ``_egress_dpop_key`` is set (Phase 3c, #181), this method
+        signs and includes a DPoP proof bound to ``method`` + ``url`` +
+        the last server nonce we saw. Missing method/url on a DPoP-enabled
+        client returns just ``Content-Type`` — the cert at the TLS
+        handshake still authenticates the call.
         """
-        if not hasattr(self, "_proxy_api_key") or not self._proxy_api_key:
-            raise RuntimeError("Not enrolled — use from_enrollment() or set proxy credentials")
         headers = {
-            "X-API-Key": self._proxy_api_key,
             "Content-Type": "application/json",
         }
         key = getattr(self, "_egress_dpop_key", None)
@@ -435,7 +432,6 @@ class CullisClient:
             proof = key.sign_proof(
                 method,
                 url,
-                access_token=self._proxy_api_key,
                 nonce=self._egress_dpop_nonce,
             )
             headers["DPoP"] = proof
@@ -495,63 +491,47 @@ class CullisClient:
     # ── ADR-011 — unified enrollment + runtime auth ───────────────────
 
     @classmethod
-    def from_api_key_file(
+    def from_identity_dir(
         cls,
         mastio_url: str,
         *,
-        api_key_path: "str | Path",
+        cert_path: "str | Path",
+        key_path: "str | Path",
         dpop_key_path: "str | Path | None" = None,
-        cert_path: "str | Path | None" = None,
-        key_path: "str | Path | None" = None,
         agent_id: str | None = None,
         org_id: str | None = None,
         verify_tls: bool = True,
         timeout: float = 10.0,
     ) -> "CullisClient":
-        """Primary runtime constructor under ADR-011.
+        """Primary runtime constructor under ADR-014.
 
-        Reads the API key + (optional) DPoP JWK the agent was enrolled
-        with and returns a client pre-configured for the Mastio's egress
-        API. Authentication is mTLS client cert + DPoP under ADR-014;
-        the API key file is still read for backward-compat headers
-        during the PR-B → PR-C transition window. See ADR-011 for the
-        enrollment methods that produce these files (``enroll_via_byoca``,
-        ``enroll_via_spiffe``, or the Connector device-code flow — use
-        ``from_connector(...)`` for the Connector case since it reads
-        a different on-disk layout).
+        Builds an httpx.Client that presents the agent's TLS client cert
+        at the handshake — that IS the credential. The optional DPoP
+        keypair signs each egress request when ``egress_dpop_mode`` is
+        ``optional`` or ``required``.
 
         Args:
             mastio_url: base URL of the Mastio (``https://mastio.local:9443``).
-            api_key_path: file that holds the plaintext API key.
+            cert_path, key_path: ADR-014 mTLS material. Required —
+                without them ``/v1/egress/*`` returns 401 from nginx.
             dpop_key_path: file holding the private DPoP JWK. Omit to
                 run without DPoP binding — only accepted while the
                 server's ``egress_dpop_mode`` is ``off`` or ``optional``.
-            cert_path, key_path: ADR-014 mTLS material. When supplied,
-                the client presents the cert at the TLS handshake so
-                nginx in front of the Mastio authenticates the agent
-                without an ``X-API-Key`` header. Required for any
-                deploy past PR-A — ``/v1/egress/*`` returns 401 from
-                nginx without them.
             agent_id, org_id: optional identity metadata. Populated on
                 the client instance; the Mastio doesn't require them on
-                egress calls but callers rely on them for logging.
+                egress calls (the cert SAN is authoritative) but callers
+                rely on them for logging.
 
         Example::
 
-            client = CullisClient.from_api_key_file(
+            client = CullisClient.from_identity_dir(
                 "https://mastio.local:9443",
-                api_key_path="/etc/cullis/agent/api-key",
-                dpop_key_path="/etc/cullis/agent/dpop.jwk",
                 cert_path="/etc/cullis/agent/cert.pem",
                 key_path="/etc/cullis/agent/key.pem",
+                dpop_key_path="/etc/cullis/agent/dpop.jwk",
             )
             client.send_oneshot("orgb::agent-b", {"hello": "world"})
         """
-        api_key_path = Path(api_key_path)
-        api_key = api_key_path.read_text().strip()
-        if not api_key:
-            raise ValueError(f"{api_key_path} is empty — no API key to use")
-
         instance = cls.__new__(cls)
         instance.base = mastio_url.rstrip("/")
         instance._verify_tls = verify_tls
@@ -562,7 +542,7 @@ class CullisClient:
             key_path=key_path,
         )
         instance.token = None
-        instance._label = agent_id or "(api-key-auth)"
+        instance._label = agent_id or "(client-cert-auth)"
         instance._signing_key_pem = None
         instance._pubkey_cache = {}
         instance._client_seq = {}
@@ -571,7 +551,6 @@ class CullisClient:
         instance._dpop_nonce = None
         instance._egress_dpop_key = None
         instance._egress_dpop_nonce = None
-        instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
         # ``_update_nonce`` reads ``self.server_role`` on every response;
@@ -589,6 +568,49 @@ class CullisClient:
         log("sdk", f"Runtime client ready (mastio={mastio_url}, "
                    f"agent={instance._label})")
         return instance
+
+    # Backwards-compat alias — deprecated. Existing callers that pass
+    # ``api_key_path`` get a clear deprecation warning. Prefer
+    # ``from_identity_dir(cert_path=..., key_path=..., dpop_key_path=...)``.
+    @classmethod
+    def from_api_key_file(
+        cls,
+        mastio_url: str,
+        *,
+        api_key_path: "str | Path | None" = None,  # ignored, accepted for compat
+        dpop_key_path: "str | Path | None" = None,
+        cert_path: "str | Path | None" = None,
+        key_path: "str | Path | None" = None,
+        agent_id: str | None = None,
+        org_id: str | None = None,
+        verify_tls: bool = True,
+        timeout: float = 10.0,
+    ) -> "CullisClient":
+        import warnings
+        warnings.warn(
+            "CullisClient.from_api_key_file is deprecated under ADR-014 — "
+            "the api_key path is gone, the TLS client cert IS the agent "
+            "credential. Use from_identity_dir(cert_path=, key_path=, "
+            "dpop_key_path=) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if cert_path is None or key_path is None:
+            raise ValueError(
+                "from_api_key_file (deprecated): cert_path and key_path are "
+                "now required. Use from_identity_dir for the canonical entry "
+                "point."
+            )
+        return cls.from_identity_dir(
+            mastio_url,
+            cert_path=cert_path,
+            key_path=key_path,
+            dpop_key_path=dpop_key_path,
+            agent_id=agent_id,
+            org_id=org_id,
+            verify_tls=verify_tls,
+            timeout=timeout,
+        )
 
     @classmethod
     def enroll_via_byoca(
@@ -738,16 +760,15 @@ class CullisClient:
                 f"Enrollment failed (HTTP {resp.status_code}): {resp.text}"
             )
         enrolled = resp.json()
-        api_key = enrolled["api_key"]
         agent_id = enrolled["agent_id"]
         org_id = agent_id.split("::", 1)[0] if "::" in agent_id else None
 
         # ADR-014: BYOCA agents bring their own cert+key (already in
         # ``body["cert_pem"]`` / ``body["private_key_pem"]``). SPIFFE
         # agents bring an SVID under different keys. We persist the
-        # cert+key alongside the api_key when the caller asked for
-        # disk persistence so the runtime client can present them at
-        # the TLS handshake against nginx.
+        # cert+key when the caller asked for disk persistence so the
+        # runtime client can present them at the TLS handshake against
+        # nginx — that cert IS the credential under PR-C.
         cert_pem_runtime = body.get("cert_pem") or body.get("svid_pem")
         key_pem_runtime = body.get("private_key_pem") or body.get("svid_key_pem")
 
@@ -757,7 +778,6 @@ class CullisClient:
             persist_dir = Path(persist_to)
             cls._persist_enrollment(
                 persist_dir,
-                api_key=api_key,
                 agent_id=agent_id,
                 org_id=org_id,
                 mastio_url=mastio_url,
@@ -788,7 +808,6 @@ class CullisClient:
         instance._dpop_nonce = None
         instance._egress_dpop_key = dpop_key
         instance._egress_dpop_nonce = None
-        instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
         instance.server_role = None
@@ -801,7 +820,6 @@ class CullisClient:
     def _persist_enrollment(
         persist_to: "Path",
         *,
-        api_key: str,
         agent_id: str,
         org_id: str | None,
         mastio_url: str,
@@ -810,21 +828,16 @@ class CullisClient:
         private_key_pem: str | None = None,
     ) -> None:
         """Write enrollment credentials under ``persist_to/`` with 0600
-        perms on secrets. Layout:
+        perms on secrets. Layout (ADR-014):
 
-            persist_to/api-key        — plaintext API key
             persist_to/dpop.jwk       — private DPoP JWK (only if enabled)
             persist_to/agent.json     — {agent_id, org_id, mastio_url}
-            persist_to/cert.pem       — leaf cert (mTLS, ADR-014)
-            persist_to/key.pem        — private key (mTLS, ADR-014)
+            persist_to/cert.pem       — leaf cert (mTLS, the credential)
+            persist_to/key.pem        — private key (mTLS, the credential)
         """
         import json as _json
         import os as _os
         persist_to.mkdir(parents=True, exist_ok=True)
-
-        api_key_path = persist_to / "api-key"
-        api_key_path.write_text(api_key)
-        _os.chmod(api_key_path, 0o600)
 
         (persist_to / "agent.json").write_text(_json.dumps({
             "agent_id": agent_id,
@@ -862,7 +875,10 @@ class CullisClient:
             <config_dir>/identity/agent.crt       ← agent cert (PEM)
             <config_dir>/identity/agent.key       ← agent key (PEM)
             <config_dir>/identity/metadata.json   ← agent_id, site_url, ...
-            <config_dir>/identity/api_key         ← API key plaintext
+
+        ADR-014 PR-C: the cert is the credential — no api_key file is
+        read. Earlier Connectors that wrote ``identity/api_key`` are
+        compatible (the file is ignored).
 
         Raises ``FileNotFoundError`` if the identity hasn't been enrolled
         yet (user should open the Connector dashboard first).
@@ -875,17 +891,11 @@ class CullisClient:
 
         identity_dir = config_dir / "identity"
         metadata_path = identity_dir / "metadata.json"
-        api_key_path = identity_dir / "api_key"
 
         if not metadata_path.exists():
             raise FileNotFoundError(
                 f"Connector identity not found at {identity_dir}. "
                 "Open the Connector dashboard and complete enrollment first."
-            )
-        if not api_key_path.exists():
-            raise FileNotFoundError(
-                f"Connector api_key missing at {api_key_path}. "
-                "Re-run enrollment through the Connector dashboard."
             )
 
         metadata = _json.loads(metadata_path.read_text())
@@ -896,7 +906,6 @@ class CullisClient:
                 f"metadata.json at {metadata_path} is missing agent_id or site_url"
             )
 
-        api_key = api_key_path.read_text().strip()
         org_id = agent_id.split("::", 1)[0] if "::" in agent_id else ""
 
         # verify_tls is not explicitly stored by the Connector — default to
@@ -941,7 +950,6 @@ class CullisClient:
         instance._dpop_nonce = None
         instance._egress_dpop_key = None
         instance._egress_dpop_nonce = None
-        instance._proxy_api_key = api_key
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
         # Mirror __init__: callers may attach the on-disk identity bundle
@@ -968,8 +976,9 @@ class CullisClient:
                 import warnings
                 warnings.warn(
                     f"Could not load or generate egress DPoP key at "
-                    f"{dpop_path}: {exc}. Falling back to legacy "
-                    f"X-API-Key bearer; pass enable_dpop=False to silence.",
+                    f"{dpop_path}: {exc}. Continuing without DPoP — the "
+                    f"client cert at the TLS handshake still authenticates; "
+                    f"pass enable_dpop=False to silence.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
@@ -1136,15 +1145,16 @@ class CullisClient:
         that assertion to the broker's ``/v1/auth/token`` (via the
         reverse-proxy) to receive a DPoP-bound access token.
 
-        Requires :attr:`_proxy_api_key` and :attr:`_proxy_agent_id` to be set —
-        typically via :meth:`from_enrollment`. After a successful call,
-        :attr:`token` holds the broker access token and all subsequent
-        ``_authed_request`` / ``discover`` / ``open_session`` / ``send`` calls
-        work exactly like a cert-based login.
+        Requires :attr:`_proxy_agent_id` to be set and the underlying
+        httpx.Client to carry the agent's TLS client cert (ADR-014) —
+        typically via :meth:`from_enrollment` / :meth:`from_identity_dir`.
+        After a successful call, :attr:`token` holds the broker access
+        token and all subsequent ``_authed_request`` / ``discover`` /
+        ``open_session`` / ``send`` calls work exactly like a cert-based
+        login.
         """
-        api_key = getattr(self, "_proxy_api_key", None)
         agent_id = getattr(self, "_proxy_agent_id", None)
-        if not api_key or not agent_id:
+        if not agent_id:
             raise RuntimeError(
                 "login_via_proxy() requires proxy enrollment — "
                 "use CullisClient.from_enrollment() first",
@@ -1154,7 +1164,6 @@ class CullisClient:
         try:
             sign_resp = self._http.post(
                 f"{self.base}/v1/auth/sign-assertion",
-                headers={"X-API-Key": api_key},
             )
             sign_resp.raise_for_status()
             self._update_nonce(sign_resp)
@@ -1219,16 +1228,15 @@ class CullisClient:
              mastio counter-sig header — identical to the legacy path
              from this point on.
 
-        Requires :attr:`_proxy_api_key`, :attr:`_proxy_agent_id`,
-        :attr:`_signing_key_pem`, and :attr:`_cert_pem` to have been
-        populated via :meth:`from_connector` (or set manually). No
-        fallback to :meth:`login_via_proxy` — if the new endpoint is
-        absent the caller sees a clear error rather than a silent
-        downgrade.
+        Requires :attr:`_proxy_agent_id`, :attr:`_signing_key_pem`,
+        :attr:`_cert_pem`, and an httpx.Client carrying the TLS client
+        cert (ADR-014) — populated via :meth:`from_connector` (or set
+        manually). No fallback to :meth:`login_via_proxy` — if the new
+        endpoint is absent the caller sees a clear error rather than a
+        silent downgrade.
         """
-        api_key = getattr(self, "_proxy_api_key", None)
         agent_id = getattr(self, "_proxy_agent_id", None)
-        if not api_key or not agent_id:
+        if not agent_id:
             raise RuntimeError(
                 "login_via_proxy_with_local_key() requires proxy enrollment "
                 "— use CullisClient.from_connector() or from_enrollment() first",
@@ -1254,7 +1262,6 @@ class CullisClient:
             # Step 1 — fetch nonce.
             ch_resp = self._http.post(
                 f"{self.base}/v1/auth/login-challenge",
-                headers={"X-API-Key": api_key},
             )
             ch_resp.raise_for_status()
             self._update_nonce(ch_resp)
@@ -1270,7 +1277,6 @@ class CullisClient:
             # Step 3 — ask Mastio to endorse it.
             sign_resp = self._http.post(
                 f"{self.base}/v1/auth/sign-challenged-assertion",
-                headers={"X-API-Key": api_key},
                 json={"client_assertion": assertion, "nonce": nonce},
             )
             sign_resp.raise_for_status()

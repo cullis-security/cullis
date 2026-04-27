@@ -16,8 +16,9 @@ scripts just pass the admin secret.
 Register vs update:
 - POST  ``/v1/admin/agents``                   — create new agent row
                                                 (emits cert signed by
-                                                Agent CA / Org CA and
-                                                API key if enrolling)
+                                                Agent CA / Org CA — the
+                                                cert is the agent's
+                                                credential per ADR-014).
 - PATCH ``/v1/admin/agents/{id}/federated``    — flip the federate flag
 - DELETE ``/v1/admin/agents/{id}``             — deactivate (revoke-at-
                                                 Court follows if the
@@ -29,11 +30,9 @@ pre-Agent-CA sandbox). No new PKI logic here.
 """
 from __future__ import annotations
 
-import bcrypt
 import hmac
 import json
 import logging
-import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
@@ -86,8 +85,8 @@ class AgentCreateResponse(BaseModel):
     display_name: str
     capabilities: list[str]
     federated: bool
-    api_key: str  # plaintext — shown exactly once
     cert_pem: str
+    private_key_pem: str | None = None  # echoed when the Mastio minted the keypair
 
 
 class AgentOut(BaseModel):
@@ -106,15 +105,6 @@ class FederatedPatch(BaseModel):
 
 
 # ── helpers ─────────────────────────────────────────────────────────────
-
-def _api_key_for(agent_name: str) -> str:
-    """Cryptographically-strong local API key. 32 random hex chars + prefix
-    so it's recognizable in logs and can be revoked without re-scanning."""
-    return f"sk_local_{agent_name}_{secrets.token_hex(16)}"
-
-
-def _bcrypt_hash(raw: str) -> str:
-    return bcrypt.hashpw(raw.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def _now_iso() -> str:
@@ -145,9 +135,15 @@ async def create_agent(
 ) -> AgentCreateResponse:
     """Register a new agent on the Mastio.
 
-    Emits an Org-CA-signed x509 cert + a local API key. Writes the row
-    to ``internal_agents`` with ``federated`` set per the request. The
-    Phase 3 publisher picks it up if federated=True.
+    Emits an Org-CA-signed x509 cert (the agent's credential per
+    ADR-014). Writes the row to ``internal_agents`` with ``federated``
+    set per the request. The Phase 3 publisher picks it up if
+    federated=True.
+
+    When the Mastio minted the keypair (no cert+key was supplied in
+    the body), the response includes ``private_key_pem`` so the caller
+    can hand it to the agent process — the cert presented at the TLS
+    handshake is what authenticates subsequent calls.
     """
     mgr = await _require_agent_mgr(request)
     agent_name = body.agent_name
@@ -157,6 +153,7 @@ async def create_agent(
     # caller (e.g. the sandbox bootstrap that owns the same Org CA and
     # has already shared the private key with an agent container over a
     # volume mount). Otherwise mint a fresh pair via the Org CA.
+    minted_locally = False
     if body.cert_pem and body.private_key_pem:
         cert_pem = body.cert_pem
         key_pem = body.private_key_pem
@@ -167,6 +164,7 @@ async def create_agent(
         )
     else:
         cert_pem, key_pem = mgr._generate_agent_cert(agent_name)
+        minted_locally = True
 
     # Persist the private key. Store in Vault if configured, otherwise
     # fall back to proxy_config (same pattern as AgentManager.create_agent).
@@ -178,9 +176,6 @@ async def create_agent(
                   agent_id, exc)
         await set_config(f"agent_key:{agent_id}", key_pem)
 
-    api_key = _api_key_for(agent_name)
-    api_key_hash = _bcrypt_hash(api_key)
-
     ts = _now_iso()
     try:
         async with get_db() as conn:
@@ -188,12 +183,12 @@ async def create_agent(
                 text(
                     """
                     INSERT INTO internal_agents (
-                        agent_id, display_name, capabilities, api_key_hash,
+                        agent_id, display_name, capabilities,
                         cert_pem, created_at, is_active,
                         federated, federated_at, federation_revision,
                         enrollment_method, enrolled_at
                     ) VALUES (
-                        :aid, :name, :caps, :hash,
+                        :aid, :name, :caps,
                         :cert, :now, 1,
                         :federated, NULL, 1,
                         'admin', :now
@@ -204,7 +199,6 @@ async def create_agent(
                     "aid": agent_id,
                     "name": body.display_name or agent_name,
                     "caps": json.dumps(body.capabilities),
-                    "hash": api_key_hash,
                     "cert": cert_pem,
                     "now": ts,
                     # Bind a Python bool so SQLAlchemy + asyncpg write a
@@ -232,8 +226,11 @@ async def create_agent(
         display_name=body.display_name or agent_name,
         capabilities=body.capabilities,
         federated=body.federated,
-        api_key=api_key,
         cert_pem=cert_pem,
+        # Echo the freshly-minted private key only when the Mastio
+        # generated the keypair itself — otherwise the caller already
+        # has it (BYOCA / volume-shared sandbox bootstrap).
+        private_key_pem=key_pem if minted_locally else None,
     )
 
 

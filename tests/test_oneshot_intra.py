@@ -49,19 +49,15 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
-async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, dict[str, str], str, str]:
-    """Provision an agent with BOTH a real API key and a client cert.
+async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[dict[str, str], str, str]:
+    """Provision an agent with a client cert (ADR-014).
 
     All ``/v1/egress/*`` routes — sessions, send, and one-shot
-    message/{send,inbox} — authenticate via the mTLS client cert under
-    ADR-014. The raw api-key is still generated for legacy callers
-    (e.g. WS endpoints not yet migrated) but tests on this file no
-    longer need it.
+    message/{send,inbox} — authenticate via the mTLS client cert.
 
-    Returns ``(raw_api_key, mtls_headers, cert_pem, priv_pem)`` keyed by
-    the canonical ``<org>::<agent_id>``.
+    Returns ``(mtls_headers, cert_pem, priv_pem)`` keyed by the canonical
+    ``<org>::<agent_id>``.
     """
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
     from mcp_proxy.db import create_agent
 
     canonical = f"{org_id}::{agent_id}"
@@ -72,15 +68,13 @@ async def _provision_agent(agent_id: str, org_id: str = "acme") -> tuple[str, di
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    raw = generate_api_key(agent_id)
     await create_agent(
         agent_id=canonical,
         display_name=agent_id,
         capabilities=["cap.read"],
-        api_key_hash=hash_api_key(raw),
         cert_pem=cert_pem,
     )
-    return raw, mtls_headers(cert_pem), cert_pem, priv_pem
+    return mtls_headers(cert_pem), cert_pem, priv_pem
 
 
 async def _provision_local_target(agent_id: str, cert_pem: str) -> None:
@@ -145,8 +139,8 @@ def _build_send_body(
 async def test_oneshot_happy_path(proxy_app):
     """alice sends a one-shot → bob's inbox returns it with the correct corr_id."""
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -183,8 +177,8 @@ async def test_oneshot_happy_path(proxy_app):
 @pytest.mark.asyncio
 async def test_correlation_id_auto_generated(proxy_app):
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -222,8 +216,8 @@ async def test_correlation_id_auto_generated(proxy_app):
 @pytest.mark.asyncio
 async def test_reply_link_persisted(proxy_app):
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, bob_priv = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, bob_priv = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -270,8 +264,8 @@ async def test_reply_link_persisted(proxy_app):
 @pytest.mark.asyncio
 async def test_duplicate_correlation_id_idempotent(proxy_app):
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -319,7 +313,7 @@ async def test_cross_org_without_broker_returns_503(proxy_app):
     Cross-org happy path is covered in tests/test_oneshot_cross.py.
     """
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
     await _provision_local_target("acme::alice", alice_cert)
 
     body, _ = _build_send_body(
@@ -358,8 +352,8 @@ async def test_unauthorized_sender_is_rejected(proxy_app):
 async def test_inbox_filters_out_session_rows(proxy_app):
     """Inbox must return ONLY one-shot rows, not session /send rows."""
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -421,8 +415,8 @@ async def test_inbox_filters_out_session_rows(proxy_app):
 @pytest.mark.asyncio
 async def test_audit_chain_integrity_after_3_oneshots(proxy_app):
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -449,8 +443,8 @@ async def test_audit_chain_integrity_after_3_oneshots(proxy_app):
 async def test_oneshot_row_is_discriminable_in_db(proxy_app):
     """DB-level invariant: the row flips is_oneshot=1 and session_id=NULL."""
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 
@@ -485,7 +479,7 @@ async def test_oneshot_row_is_discriminable_in_db(proxy_app):
 async def test_ttl_boundaries_validated(proxy_app):
     """ttl_seconds < 10 or > 3600 is rejected at pydantic level."""
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, _ = await _provision_agent("alice")
+    alice_headers, alice_cert, _ = await _provision_agent("alice")
     await _provision_local_target("acme::alice", alice_cert)
 
     r = await client.post(
@@ -510,8 +504,8 @@ async def test_envelope_fields_included_in_stored_blob(proxy_app):
     recipient's verifier can reconstruct the canonical form.
     """
     _, client = proxy_app
-    alice_key, alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
-    bob_key, bob_headers, bob_cert, _ = await _provision_agent("bob")
+    alice_headers, alice_cert, alice_priv = await _provision_agent("alice")
+    bob_headers, bob_cert, _ = await _provision_agent("bob")
     await _provision_local_target("acme::bob", bob_cert)
     await _provision_local_target("acme::alice", alice_cert)
 

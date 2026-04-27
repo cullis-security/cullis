@@ -36,19 +36,6 @@ class EnrollmentStartRequest(BaseModel):
             " Not used for auth — helps admin decide and appears in audit."
         ),
     )
-    api_key_hash: str | None = Field(
-        None,
-        min_length=20,
-        max_length=200,
-        description=(
-            "bcrypt hash of the X-API-Key the Connector generated locally."
-            " The raw key never leaves the requester's machine. On approve,"
-            " this hash is copied to internal_agents.api_key_hash so the"
-            " Connector can authenticate to /v1/egress/* immediately."
-            " Optional for backward compat — omitting it makes the server"
-            " generate its own key during approval (legacy behaviour)."
-        ),
-    )
     dpop_jwk: dict | None = Field(
         None,
         description=(

@@ -100,7 +100,6 @@ async def start_enrollment(
                 requester_email=payload.requester_email,
                 reason=payload.reason,
                 device_info=payload.device_info,
-                api_key_hash=payload.api_key_hash,
                 dpop_jwk=payload.dpop_jwk,
             )
     except service.EnrollmentError as exc:

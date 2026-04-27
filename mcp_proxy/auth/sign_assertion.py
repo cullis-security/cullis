@@ -3,8 +3,8 @@
 An agent enrolled via the proxy doesn't have its x509 key material locally
 (it sits server-side, in Vault or in the proxy_config fallback). To obtain a
 DPoP token from the broker via the reverse-proxy, it calls this endpoint
-with its X-API-Key, and the proxy returns a freshly-minted client_assertion
-signed with the agent's certificate.
+with its mTLS client cert (ADR-014), and the proxy returns a freshly-minted
+client_assertion signed with the agent's certificate.
 
 The SDK then posts that assertion to ``/v1/auth/token`` (reverse-proxied),
 gets back a DPoP-bound access token, and from that point on it behaves
@@ -21,7 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from cullis_sdk.auth import build_client_assertion
-from mcp_proxy.auth.api_key import InternalAgent, get_agent_from_api_key
+from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+from mcp_proxy.models import InternalAgent
 
 _log = logging.getLogger("mcp_proxy.auth.sign_assertion")
 
@@ -49,7 +50,7 @@ class SignAssertionResponse(BaseModel):
 )
 async def sign_assertion(
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_api_key),
+    agent: InternalAgent = Depends(get_agent_from_client_cert),
 ) -> SignAssertionResponse:
     """Return a fresh x509 client_assertion JWT for the authenticated agent.
 

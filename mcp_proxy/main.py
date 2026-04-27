@@ -660,7 +660,7 @@ if _cors_origins:
         allow_origins=_cors_origins,
         allow_credentials=_cors_allow_credentials,
         allow_methods=["GET", "POST", "DELETE", "PATCH", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "DPoP", "X-API-Key"],
+        allow_headers=["Authorization", "Content-Type", "DPoP"],
     )
 
 
@@ -937,8 +937,11 @@ app.include_router(egress_router)
 from mcp_proxy.egress.oneshot import router as oneshot_router
 app.include_router(oneshot_router)
 
-from mcp_proxy.local.ws_router import router as local_ws_router
-app.include_router(local_ws_router)
+# ADR-014 PR-C: the legacy /v1/local/ws endpoint relied on api_key
+# query-param auth, which is gone. The local_ws_manager itself stays
+# (push fan-out by agent_id) — it's used by the egress router to deliver
+# messages to whatever delivery channel ships next. A cert-authenticated
+# replacement is deferred.
 
 from mcp_proxy.enrollment.router import router as enrollment_router
 app.include_router(enrollment_router)

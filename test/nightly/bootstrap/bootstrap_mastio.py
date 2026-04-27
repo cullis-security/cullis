@@ -199,12 +199,12 @@ def _enroll_agents_via_byoca(
     ``/v1/admin/agents/enroll/byoca``.
 
     The outer bootstrap already minted an Org-CA-signed cert/key pair
-    per agent under ``/state/{org}/agents/{name}/``. Phase 1b exposed a
-    verified enrollment endpoint that accepts that material, verifies
-    the chain, and emits an API key + pins DPoP jkt. We persist the
-    returned credentials alongside the cert so agent containers can
-    ``from_api_key_file(...)`` at runtime — no more SPIFFE/BYOCA
-    direct login to the Court.
+    per agent under ``/state/{org}/agents/{name}/``. The verified
+    enrollment endpoint accepts that material, verifies the chain, and
+    pins the DPoP jkt. PR-C dropped api_key entirely — we only persist
+    the matching private DPoP JWK alongside; cert+key on disk doubles
+    as the runtime TLS client cert (presented at the per-org nginx
+    sidecar's TLS handshake).
 
     Returns the subset of manifest rows successfully enrolled so the
     caller can drive binding create+approve on the Court. Row shape
@@ -246,12 +246,9 @@ def _enroll_agents_via_byoca(
         )
         if r.status_code == 201:
             resp = r.json()
-            # Persist the runtime credentials next to the cert so the
-            # agent container's volume mount finds them. Layout matches
-            # ``CullisClient.from_api_key_file`` expectations: one file
-            # per artifact, 0600-ish (sandbox mount is 0644 by default).
-            (entry / "api-key").write_text(resp["api_key"])
-            (entry / "api-key").chmod(0o644)
+            # Persist the matching private DPoP JWK next to the cert
+            # so the agent's runtime ``from_identity_dir`` finds it.
+            # cert+key are already on disk from the outer bootstrap.
             import json as _json
             (entry / "dpop.jwk").write_text(
                 _json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
@@ -262,7 +259,7 @@ def _enroll_agents_via_byoca(
             enrolled.append({"org_id": org_id, "agent_name": name,
                              "capabilities": capabilities})
         elif r.status_code == 409:
-            _info(f"{org_id}::{name}: already enrolled — skipping")
+            _info(f"{org_id}::{name}: already enrolled — keeping existing dpop.jwk")
             enrolled.append({"org_id": org_id, "agent_name": name,
                              "capabilities": capabilities})
         else:

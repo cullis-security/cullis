@@ -1,5 +1,5 @@
 """
-Per-agent sliding-window rate limiter for the egress X-API-Key path.
+Per-agent sliding-window rate limiter for the egress client-cert / DPoP path.
 
 Two backends, chosen on first use based on Redis availability:
   - InMemoryAgentRateLimiter — single-worker only, counters reset on restart.
@@ -7,9 +7,10 @@ Two backends, chosen on first use based on Redis availability:
     over a Redis sorted set.
 
 The proxy's current rate-limit surface is narrow: one bucket per agent_id
-(``settings.rate_limit_per_minute``), enforced on ``get_agent_from_api_key``.
-This module keeps that shape; the broker's richer multi-bucket limiter
-(``app/rate_limit/limiter.py``) can be ported if more buckets appear.
+(``settings.rate_limit_per_minute``), enforced on
+``get_agent_from_client_cert`` (ADR-014). This module keeps that shape; the
+broker's richer multi-bucket limiter (``app/rate_limit/limiter.py``) can be
+ported if more buckets appear.
 
 Mastio default (single-instance intra-org) runs with the in-memory backend.
 Deploying with multiple workers without Redis silently multiplies the
@@ -64,7 +65,7 @@ class RedisAgentRateLimiter:
     and register is closed server-side.
     """
 
-    _PREFIX = "mcp_proxy:ratelimit:api_key:"
+    _PREFIX = "mcp_proxy:ratelimit:agent:"
     _LUA_SCRIPT = """
 local key = KEYS[1]
 local now = tonumber(ARGV[1])

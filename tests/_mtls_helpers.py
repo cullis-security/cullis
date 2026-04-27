@@ -156,12 +156,10 @@ async def provision_internal_agent(
     """Insert an active agent with a freshly-minted cert + return headers.
 
     Drop-in replacement for the legacy ``_provision_caller`` shape:
-    instead of returning a raw API key, returns the headers a real
-    Connector would have caused nginx to forward.
-
-    The ``api_key_hash`` column is populated with a placeholder so
-    legacy code paths that inspect the row don't crash; the cert dep
-    never reads it. PR-C drops the column entirely.
+    returns the headers a real Connector would have caused nginx to
+    forward (cert PEM via ``X-SSL-Client-Cert`` + the verify marker).
+    PR-C dropped the ``api_key_hash`` column entirely — the cert is
+    the credential.
     """
     from sqlalchemy import text
     from mcp_proxy.db import get_db
@@ -180,7 +178,6 @@ async def provision_internal_agent(
             "display_name": display,
             "capabilities": json.dumps(caps),
             "cert_pem": cert_pem,
-            "api_key_hash": "$2b$12$placeholder",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "is_active": 1 if is_active else 0,
         }
@@ -189,9 +186,9 @@ async def provision_internal_agent(
                 text(
                     "INSERT INTO internal_agents "
                     "(agent_id, display_name, capabilities, cert_pem, "
-                    " api_key_hash, created_at, is_active, dpop_jkt) "
+                    " created_at, is_active, dpop_jkt) "
                     "VALUES (:agent_id, :display_name, :capabilities, "
-                    " :cert_pem, :api_key_hash, :created_at, :is_active, "
+                    " :cert_pem, :created_at, :is_active, "
                     " :dpop_jkt)"
                 ),
                 {**row, "dpop_jkt": dpop_jkt},
@@ -201,9 +198,9 @@ async def provision_internal_agent(
                 text(
                     "INSERT INTO internal_agents "
                     "(agent_id, display_name, capabilities, cert_pem, "
-                    " api_key_hash, created_at, is_active) "
+                    " created_at, is_active) "
                     "VALUES (:agent_id, :display_name, :capabilities, "
-                    " :cert_pem, :api_key_hash, :created_at, :is_active)"
+                    " :cert_pem, :created_at, :is_active)"
                 ),
                 row,
             )

@@ -107,10 +107,10 @@ async def _insert_local_agent(
                 """
                 INSERT INTO internal_agents (
                     agent_id, display_name, capabilities, cert_pem,
-                    api_key_hash, created_at, is_active
+                    created_at, is_active
                 ) VALUES (
                     :aid, :dn, :caps, :cert,
-                    '$2b$12$placeholder', '2026-04-16T00:00:00Z', :active
+                    '2026-04-16T00:00:00Z', :active
                 )
                 """
             ),

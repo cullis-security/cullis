@@ -56,18 +56,17 @@ async def _provision_local_target(agent_id: str, cert_pem: str | None = "DUMMY-C
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
+                "(agent_id, display_name, capabilities, cert_pem, "
                 " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :created_at, :is_active)"
+                " :created_at, :is_active)"
             ),
             {
                 "agent_id": agent_id,
                 "display_name": agent_id,
                 "capabilities": "[]",
                 "cert_pem": cert_pem,
-                "api_key_hash": "$2b$12$placeholder",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },
         )

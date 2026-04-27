@@ -53,12 +53,11 @@ async def _seed_agent(
             text(
                 """
                 INSERT INTO internal_agents (
-                    agent_id, display_name, capabilities, api_key_hash,
-                    cert_pem, created_at, is_active,
+                    agent_id, display_name, capabilities, cert_pem, created_at, is_active,
                     federated, federation_revision, last_pushed_revision,
                     reach
                 ) VALUES (
-                    :aid, :name, :caps, :hash,
+                    :aid, :name, :caps,
                     NULL, :now, 1,
                     :fed, 1, 0,
                     :reach
@@ -69,7 +68,6 @@ async def _seed_agent(
                 "aid": agent_id,
                 "name": agent_id.split("::", 1)[-1],
                 "caps": json.dumps([]),
-                "hash": "$2b$12$placeholder",
                 "now": "2026-04-17T00:00:00+00:00",
                 "fed": 1 if federated else 0,
                 "reach": reach,

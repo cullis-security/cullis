@@ -17,9 +17,9 @@ Flow (see imp/connector_login_challenge_response_design.md for the full
 picture):
 
   1. Client posts ``/v1/auth/login-challenge`` authenticated by
-     ``X-API-Key``. The Mastio mints a 32-byte random nonce, stores it
-     under ``login_challenge:{agent_id}:{nonce}`` with TTL 120s, and
-     returns it.
+     mTLS client cert (ADR-014). The Mastio mints a 32-byte random
+     nonce, stores it under ``login_challenge:{agent_id}:{nonce}``
+     with TTL 120s, and returns it.
 
   2. Client builds a standard broker ``client_assertion`` JWT
      (:func:`cullis_sdk.auth.build_client_assertion`) signed locally
@@ -63,8 +63,9 @@ from cryptography import x509
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from mcp_proxy.auth.api_key import InternalAgent, get_agent_from_api_key
 from mcp_proxy.auth.challenge_store import get_challenge_store
+from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+from mcp_proxy.models import InternalAgent
 
 _log = logging.getLogger("mcp_proxy.auth.challenge_response")
 
@@ -186,7 +187,7 @@ def _log_clock_skew_hint(exc: jose_jwt.PyJWTError, agent_id: str) -> None:
 )
 async def login_challenge(
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_api_key),
+    agent: InternalAgent = Depends(get_agent_from_client_cert),
 ) -> LoginChallengeResponse:
     """Mint a nonce bound to the authenticated agent.
 
@@ -228,7 +229,7 @@ async def login_challenge(
 async def sign_challenged_assertion(
     body: SignChallengedAssertionRequest,
     request: Request,
-    agent: InternalAgent = Depends(get_agent_from_api_key),
+    agent: InternalAgent = Depends(get_agent_from_client_cert),
 ) -> SignChallengedAssertionResponse:
     """Verify a client-signed assertion + counter-sign it.
 
@@ -299,8 +300,8 @@ async def sign_challenged_assertion(
             detail=f"assertion: {exc}",
         ) from exc
 
-    # sub must match the X-API-Key holder — prevents agent A from using
-    # its own API-key to get B's assertion endorsed.
+    # sub must match the cert holder — prevents agent A from using
+    # its own client cert to get B's assertion endorsed.
     if claims.get("sub") != agent.agent_id:
         _log.info(
             "login challenge rejected: assertion sub=%r, caller agent_id=%r",

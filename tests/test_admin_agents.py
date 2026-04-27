@@ -59,8 +59,12 @@ async def test_create_agent_emits_key_and_cert(tmp_path, monkeypatch):
             assert data["agent_id"] == "aa-create::alice"
             assert data["capabilities"] == ["order.read"]
             assert data["federated"] is False
-            assert data["api_key"].startswith("sk_local_alice_")
+            # ADR-014 PR-C: cert is the credential. Mastio mints + echoes
+            # the keypair so the caller can hand it to the agent process.
             assert "BEGIN CERTIFICATE" in data["cert_pem"]
+            assert data["private_key_pem"]
+            assert "PRIVATE KEY" in data["private_key_pem"]
+            assert "api_key" not in data
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 

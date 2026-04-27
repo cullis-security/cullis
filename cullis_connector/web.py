@@ -42,8 +42,6 @@ from cullis_connector.statusline_token import ensure_statusline_token
 from cullis_connector.enrollment import (
     EnrollmentFailed,
     RequesterInfo,
-    _bcrypt_hash,
-    _generate_api_key,
     _start,
 )
 from cullis_connector.inbox_dispatcher import InboxDispatcher
@@ -90,7 +88,6 @@ class _Pending:
     site_url: str
     verify_tls: bool
     private_key: EllipticCurvePrivateKey
-    api_key_raw: str
     requester: RequesterInfo
     started_at: float = field(default_factory=time.time)
     poll_interval_s: int = 5
@@ -279,15 +276,12 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
         private_key = generate_keypair()
         pubkey_pem = public_key_to_pem(private_key.public_key()).decode()
-        api_key_raw = _generate_api_key()
-        api_key_hash = _bcrypt_hash(api_key_raw)
 
         try:
             start_resp = _start(
                 site_url=site_url,
                 pubkey_pem=pubkey_pem,
                 requester=requester,
-                api_key_hash=api_key_hash,
                 verify_tls=verify_tls,
                 timeout_s=config.request_timeout_s,
             )
@@ -314,7 +308,6 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             site_url=site_url,
             verify_tls=verify_tls,
             private_key=private_key,
-            api_key_raw=api_key_raw,
             requester=requester,
             poll_interval_s=int(start_resp.get("poll_interval_s", 5)),
         )
@@ -408,7 +401,6 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 private_key=_pending.private_key,
                 ca_chain_pem=None,  # Phase 2c will fetch the CA chain.
                 metadata=metadata,
-                api_key=_pending.api_key_raw,
             )
             _clear_pending()
             return JSONResponse({"status": "approved", "agent_id": agent_id})
