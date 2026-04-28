@@ -7,6 +7,25 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.3.3] — 2026-04-28
+
+### Changed
+- **Drop the `api_key` runtime path entirely** (Mastio ADR-014 PR-C,
+  monorepo #334). The TLS client cert presented at the per-org nginx
+  sidecar's handshake is now the only agent credential — `X-API-Key`
+  header is no longer emitted, `~/.cullis/identity/api_key` is no
+  longer written, and `cullis_connector._generate_api_key` /
+  `_bcrypt_hash` are gone. Connectors enrolled with this version (or
+  upgraded in place — the cert+key were already on disk from
+  enrollment) continue to authenticate seamlessly to a post-PR-C
+  Mastio. **A pre-PR-C Mastio is no longer compatible** — match the
+  Mastio version when upgrading the Connector.
+
+### Fixed
+- `cullis-connector` is back in sync with the Mastio wire protocol.
+  0.3.2 against a post-PR-C Mastio would 401 on every egress call
+  (the Mastio's `get_agent_from_dpop_api_key` dep is gone).
+
 ## [v0.1.0] — 2026-04-14
 
 Initial public release of the Cullis Connector.
@@ -41,4 +60,5 @@ Initial public release of the Cullis Connector.
 - TLS verification is enabled by default; `--no-verify-tls` is
   accepted only for local development and logs a prominent warning.
 
+[v0.3.3]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.3.3
 [v0.1.0]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.1.0
