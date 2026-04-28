@@ -164,9 +164,14 @@ services:
       MCP_PROXY_ADMIN_SECRET:      "${PROXY_A_ADMIN_SECRET:-nightly-proxy-admin-a}"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
-      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100"
+      MCP_PROXY_ALLOWED_ORIGINS:   "https://localhost:9443"
       MCP_PROXY_ENVIRONMENT:       "development"
       MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      # ADR-014 — host-side smoke.py + workload drivers reach this Mastio
+      # at https://localhost:9443 (mastio-nginx-a sidecar). Without this
+      # env the backend reconstructs htu as http://localhost:9443/... (no
+      # --proxy-headers) and DPoP htu match fails on every egress call.
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://localhost:9443"
       PROXY_INTRA_ORG:             "true"
       PROXY_TRANSPORT_INTRA_ORG:   "mtls-only"
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
@@ -281,9 +286,13 @@ services:
       MCP_PROXY_ADMIN_SECRET:      "${PROXY_B_ADMIN_SECRET:-nightly-proxy-admin-b}"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orgb"
-      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9200"
+      MCP_PROXY_ALLOWED_ORIGINS:   "https://localhost:9543"
       MCP_PROXY_ENVIRONMENT:       "development"
       MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      # ADR-014 — host-side smoke.py + workload drivers reach this Mastio
+      # at https://localhost:9543 (mastio-nginx-b sidecar, port-mapped to
+      # avoid the 9443 collision with proxy-a).
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://localhost:9543"
       PROXY_INTRA_ORG:             "true"
       PROXY_TRANSPORT_INTRA_ORG:   "mtls-only"
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
