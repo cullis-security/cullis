@@ -71,7 +71,7 @@ def main() -> int:
 
     _step(1, "Load enrolled identity and authenticate to the local Mastio")
     _info(
-        f"reading api-key + dpop.jwk from {identity_root}/{org_id}/agents/{agent_name}/"
+        f"reading agent.pem + agent-key.pem + dpop.jwk from {identity_root}/{org_id}/agents/{agent_name}/"
     )
     try:
         client = load_enrolled_client(broker, org_id, agent_name, identity_root)

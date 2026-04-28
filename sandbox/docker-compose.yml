@@ -250,12 +250,14 @@ services:
       MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
-      # Intentionally unset: the sandbox serves the same proxy at two
-      # hostnames (``proxy-a`` intra-docker, ``localhost:9100`` from the
-      # host). Leaving ``proxy_public_url`` empty falls back to
-      # ``request.url`` for DPoP htu reconstruction — matches the agent's
-      # signed htu in both cases instead of pinning one.
-      # MCP_PROXY_PROXY_PUBLIC_URL: unset
+      # ADR-014 — agents now reach the Mastio over TLS via the
+      # mastio-nginx-a sidecar on 9443. The DPoP htu the agent signs is
+      # ``https://mastio-nginx-a:9443/...``; nginx forwards plain HTTP
+      # to mcp-proxy:9100, so without an explicit override Starlette
+      # would reconstruct htu as ``http://...:9100/...`` and fail the
+      # match. Pin it here so ``_build_htu`` returns the URL the agent
+      # actually signed.
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-nginx-a:9443"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
@@ -459,7 +461,7 @@ services:
       # nginx sidecar on 9443. The agent presents its Org-CA-signed
       # cert (loaded from /state/{org}/agents/{name}/agent.{pem,key})
       # at the TLS handshake; nginx verifies + forwards.
-      BROKER_URL: "https://proxy-a:9443"
+      BROKER_URL: "https://mastio-nginx-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
       PEERS_FILE: "/state/peers.json"
@@ -503,7 +505,7 @@ services:
         condition: service_healthy
     environment:
       # ADR-014 — see agent-a rationale; same nginx sidecar.
-      BROKER_URL: "https://proxy-a:9443"
+      BROKER_URL: "https://mastio-nginx-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
       PEERS_FILE: "/state/peers.json"
@@ -557,8 +559,8 @@ services:
       MCP_PROXY_STANDALONE: "false"  # PR-D: explicit federated opt-in
       MCP_PROXY_BROKER_URL:        "http://broker:8000"
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
-      # See proxy-a comment above — unset so DPoP htu falls back to request.url.
-      # MCP_PROXY_PROXY_PUBLIC_URL: unset
+      # ADR-014 — see proxy-a rationale; pin htu to the orgb sidecar.
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-nginx-b:9443"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-b"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orgb"
@@ -710,7 +712,7 @@ services:
         condition: service_healthy
     environment:
       # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
-      BROKER_URL: "https://proxy-b:9443"
+      BROKER_URL: "https://mastio-nginx-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
       PEERS_FILE: "/state/peers.json"
