@@ -7,6 +7,29 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.3.4] — 2026-04-28
+
+### Fixed
+- **`install-mcp` now propagates the shared CLI flags into the saved
+  IDE / MCP-client entry** (monorepo #339). Previously every config
+  was hard-wired to ``args = ["serve"]`` regardless of what the
+  operator typed; ``--profile`` / ``--site-url`` / ``--config-dir`` /
+  ``--no-verify-tls`` are now carried through. Closes the workaround
+  in memory ``feedback_install_mcp_no_profile``.
+- **`cullis-connector serve --no-verify-tls` now actually disables
+  TLS verification** end-to-end. The flag set ``cfg.verify_tls=False``
+  but the SDK's ``CullisClient.from_connector`` derived its own
+  default from the site URL scheme (https → True), so the eager
+  ``login_via_proxy_with_local_key`` against a self-signed Org CA
+  failed at SSL handshake and left ``state.client = None``. The SDK
+  now accepts an explicit ``verify_tls`` override that the CLI
+  passes through.
+
+### Compat
+- Requires `cullis-sdk>=0.1.1` for the new `verify_tls` parameter on
+  `CullisClient.from_connector`. Older SDK installs raise `TypeError`
+  at startup.
+
 ## [v0.3.3] — 2026-04-28
 
 ### Changed
@@ -60,5 +83,6 @@ Initial public release of the Cullis Connector.
 - TLS verification is enabled by default; `--no-verify-tls` is
   accepted only for local development and logs a prominent warning.
 
+[v0.3.4]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.3.4
 [v0.3.3]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.3.3
 [v0.1.0]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.1.0
