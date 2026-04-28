@@ -87,7 +87,8 @@ full values reference.
 | `docker compose is not installed` | Install Docker Engine 20.10+ with Compose v2 |
 | `network cullis-broker_default not found` (with `--shared-broker`) | Bring the Court compose project up first, or drop `--shared-broker` |
 | Browser warns "self-signed certificate" | Expected. The Org CA is local; accept once or extract `org-ca.crt` from the `mcp_proxy_data` volume and import it. |
-| `MCP_PROXY_PROXY_PUBLIC_URL` mismatch (`htu`) | Default is empty (auto-detect from Host header). Set explicitly only when fronting with a stable public hostname. |
+| Agent gets `401 Invalid DPoP proof: htu mismatch` | The Mastio validates DPoP proofs against `MCP_PROXY_PROXY_PUBLIC_URL` (default `https://localhost:9443` for quickstart). Production deploys MUST override this in `proxy.env` to match the public hostname agents reach the Mastio at — e.g. `MCP_PROXY_PROXY_PUBLIC_URL=https://mastio.myorg.example.com`. |
+| `Bind for 0.0.0.0:9443 failed: port is already allocated` | Another service on the host is using 9443 (Caddy / Traefik / nginx-proxy / a previous Mastio that didn't shut down cleanly). Override the host port in `proxy.env`: `MCP_PROXY_PORT=9444`. **Critical:** also update `MCP_PROXY_PROXY_PUBLIC_URL` to use the same port (e.g. `https://mastio.acme.local:9444`) — agents firma DPoP htu against that exact URL+port and a mismatch silently 401s. |
 
 ## Updating
 

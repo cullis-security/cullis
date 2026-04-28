@@ -115,6 +115,30 @@ if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
         die "--prod requires proxy.env to exist with real values. Run: BROKER_URL=https://broker.example.com PROXY_PUBLIC_URL=https://mastio.myorg.example.com ./generate-proxy-env.sh --prod"
     fi
     bash "$SCRIPT_DIR/generate-proxy-env.sh" --defaults
+
+    # Critical: agents validate DPoP htu against MCP_PROXY_PROXY_PUBLIC_URL.
+    # Without an explicit public URL the laptop default (localhost:9443) is
+    # baked in, and any agent reaching the Mastio over a non-localhost
+    # hostname (Docker host on a LAN, internal DNS, public hostname) hits
+    # 401 ``Invalid DPoP proof: htu mismatch`` on every egress. Ask up
+    # front so the operator never finds out post-deploy.
+    echo ""
+    echo "  ${BOLD}Where will agents reach this Mastio?${RESET}"
+    echo "    ${GRAY}- Laptop quick-try: just press Enter (uses https://localhost:9443)${RESET}"
+    echo "    ${GRAY}- Internal server / VM: enter the public URL agents resolve at${RESET}"
+    echo "    ${GRAY}  e.g. https://mastio.acme.local  or  https://192.168.10.42:9443${RESET}"
+    echo "    ${GRAY}- Internet-facing: the LB/ingress hostname${RESET}"
+    echo "    ${GRAY}  e.g. https://mastio.myorg.example.com${RESET}"
+    echo ""
+    read -rp "  Public URL [https://localhost:9443]: " _public_url
+    _public_url="${_public_url:-https://localhost:9443}"
+
+    # Strip any pre-existing line and re-add (proxy.env from the
+    # generator may already carry an empty one).
+    sed -i.bak '/^#*[[:space:]]*MCP_PROXY_PROXY_PUBLIC_URL=/d' "$SCRIPT_DIR/proxy.env"
+    rm -f "$SCRIPT_DIR/proxy.env.bak"
+    echo "MCP_PROXY_PROXY_PUBLIC_URL=$_public_url" >> "$SCRIPT_DIR/proxy.env"
+    ok "proxy.env: MCP_PROXY_PROXY_PUBLIC_URL=$_public_url"
 fi
 
 if [[ "$MODE" == "production" ]]; then
@@ -148,6 +172,16 @@ if [[ "$MODE" == "production" ]]; then
         die "Fix the issues above and rerun. Aborting before compose up."
     fi
     ok "proxy.env validated for production"
+fi
+
+# ── Pre-flight: host port not already in use ───────────────────────────────
+_host_port="$(grep -E '^MCP_PROXY_PORT=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+_host_port="${_host_port:-9443}"
+if command -v ss >/dev/null 2>&1 && ss -tlnH "sport = :${_host_port}" 2>/dev/null | grep -q .; then
+    err "Host port ${_host_port} is already in use — another service is bound there."
+    err "Override with MCP_PROXY_PORT=<free-port> in proxy.env, and update"
+    err "MCP_PROXY_PROXY_PUBLIC_URL to use the same port (otherwise agents 401)."
+    die "Refusing to start — fix the port conflict first."
 fi
 
 # ── Pull + Start ────────────────────────────────────────────────────────────
