@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chart: [cullis, cullis-proxy]
+        chart: [cullis, cullis-mastio]
 
     steps:
       - uses: actions/checkout@v4
@@ -101,7 +101,7 @@ jobs:
           if [ "${{ matrix.chart }}" = "cullis" ]; then
             docker build -t cullis-broker:ci-local -f Dockerfile .
           else
-            docker build -t cullis-proxy:ci-local -f mcp_proxy/Dockerfile .
+            docker build -t cullis-mastio:ci-local -f mcp_proxy/Dockerfile .
           fi
 
       - name: Load image into kind
@@ -110,7 +110,7 @@ jobs:
           if [ "${{ matrix.chart }}" = "cullis" ]; then
             kind load docker-image cullis-broker:ci-local --name chart-testing
           else
-            kind load docker-image cullis-proxy:ci-local --name chart-testing
+            kind load docker-image cullis-mastio:ci-local --name chart-testing
           fi
 
       # values-dev.yaml has broker.pki.bootstrap.enabled=true, so the
@@ -139,21 +139,21 @@ jobs:
             # life-cycle has a separate failure mode (lifespan stalls
             # post-cert-mint, suspected fsGroup × emptyDir interaction)
             # that wants its own kind-local debug session. Until that
-            # lands as a follow-up, helm-test runs cullis-proxy with
+            # lands as a follow-up, helm-test runs cullis-mastio with
             # ``nginx.enabled=false`` so the chart installs the proxy
             # alone and serves /healthz on 9100. Standalone is left
             # at the chart default (true).
             helm install ${{ matrix.chart }} deploy/helm/${{ matrix.chart }}/ \
               -n cullis-test \
               -f deploy/helm/${{ matrix.chart }}/values-dev.yaml \
-              --set proxy.image.repository=cullis-proxy \
+              --set proxy.image.repository=cullis-mastio \
               --set proxy.image.tag=ci-local \
               --set proxy.image.pullPolicy=Never \
               --set nginx.enabled=false \
               --wait --timeout 5m
           fi
 
-      # ADR-014 — for cullis-proxy the Service hands raw TLS bytes from
+      # ADR-014 — for cullis-mastio the Service hands raw TLS bytes from
       # the in-pod nginx sidecar on 9443. We curl over HTTPS with -sk
       # because the leaf is signed by the Mastio's auto-generated Org CA
       # (we're testing "the chart serves healthz", not TLS validation).
@@ -164,7 +164,7 @@ jobs:
             SVC=cullis-broker PORT=8000 SCHEME=http CURL_FLAGS="-sf"
           else
             # nginx.enabled=false in helm-test → service exposes 9100 plain.
-            SVC=cullis-proxy PORT=9100 SCHEME=http CURL_FLAGS="-sf"
+            SVC=cullis-mastio PORT=9100 SCHEME=http CURL_FLAGS="-sf"
           fi
           kubectl -n cullis-test run curl-healthz --rm -i --restart=Never \
             --image=curlimages/curl:8.10.1 -- \
@@ -176,7 +176,7 @@ jobs:
           if [ "${{ matrix.chart }}" = "cullis" ]; then
             SVC=cullis-broker PORT=8000 SCHEME=http CURL_FLAGS="-sf"
           else
-            SVC=cullis-proxy PORT=9100 SCHEME=http CURL_FLAGS="-sf"
+            SVC=cullis-mastio PORT=9100 SCHEME=http CURL_FLAGS="-sf"
           fi
           kubectl -n cullis-test run curl-readyz --rm -i --restart=Never \
             --image=curlimages/curl:8.10.1 -- \
@@ -188,7 +188,7 @@ jobs:
           if [ "${{ matrix.chart }}" = "cullis" ]; then
             SVC=cullis-broker PORT=8000 SCHEME=http CURL_FLAGS="-s"
           else
-            SVC=cullis-proxy PORT=9100 SCHEME=http CURL_FLAGS="-s"
+            SVC=cullis-mastio PORT=9100 SCHEME=http CURL_FLAGS="-s"
           fi
           echo "::group::/readyz body"
           kubectl -n cullis-test run curl-readyz-dump --rm -i --restart=Never \

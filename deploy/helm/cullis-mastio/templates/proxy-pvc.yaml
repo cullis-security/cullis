@@ -2,13 +2,13 @@
 Skip PVC entirely when the proxy is configured for Postgres — SQLite path is
 unused and the volume would just dangle. ADR-001 Phase 1.4.
 */ -}}
-{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not (include "cullis-proxy.usesPostgres" .)) }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not (include "cullis-mastio.usesPostgres" .)) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "cullis-proxy.pvcName" . }}
+  name: {{ include "cullis-mastio.pvcName" . }}
   labels:
-    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+    {{- include "cullis-mastio.proxy.labels" . | nindent 4 }}
   annotations:
     # Keep the claim (and thus the SQLite data) if the release is deleted.
     helm.sh/resource-policy: keep

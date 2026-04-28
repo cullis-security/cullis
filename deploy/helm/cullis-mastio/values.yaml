@@ -24,9 +24,9 @@ imagePullSecrets: []
 # ---------------------------------------------------------------------------
 proxy:
   image:
-    # -- Container image repository for the MCP proxy.
-    # Published by the release-proxy workflow on every `proxy-vX.Y.Z` tag.
-    repository: ghcr.io/cullis-security/mcp-proxy
+    # -- Container image repository for the Mastio.
+    # Published by the release-mastio workflow on every `mastio-vX.Y.Z` tag.
+    repository: ghcr.io/cullis-security/cullis-mastio
     # -- Image tag. When empty the chart appVersion is used.
     tag: ""
     # -- Image pull policy.
@@ -130,7 +130,7 @@ proxy:
   # -- Additional envFrom sources (e.g. External Secret-backed Secrets).
   extraEnvFrom: []
     # - secretRef:
-    #     name: cullis-proxy-external-secrets
+    #     name: cullis-mastio-external-secrets
 
   # -- Extra volumes injected into the proxy pod. Typical uses:
   #   * Mount a ConfigMap holding the corporate CA bundle (VAULT_CACERT
@@ -158,8 +158,8 @@ proxy:
   podAnnotations: {}
     # Example: inject a secret via HashiCorp Vault Agent Injector.
     # vault.hashicorp.com/agent-inject: "true"
-    # vault.hashicorp.com/role: "cullis-proxy"
-    # vault.hashicorp.com/agent-inject-secret-proxy.env: "secret/data/cullis-proxy/env"
+    # vault.hashicorp.com/role: "cullis-mastio"
+    # vault.hashicorp.com/agent-inject-secret-proxy.env: "secret/data/cullis-mastio/env"
 
   # -- Additional labels on proxy pods.
   podLabels: {}
@@ -199,7 +199,7 @@ proxy:
             topologyKey: kubernetes.io/hostname
             labelSelector:
               matchLabels:
-                app.kubernetes.io/name: cullis-proxy
+                app.kubernetes.io/name: cullis-mastio
                 app.kubernetes.io/component: proxy
 
   # -- Liveness probe configuration. Hits /healthz.
@@ -328,9 +328,9 @@ postgres:
   image: postgres:16-alpine
   storageSize: 10Gi
   storageClassName: ""
-  username: cullis_proxy
-  password: cullis-proxy-dev-password
-  database: cullis_proxy
+  username: cullis_mastio
+  password: cullis-mastio-dev-password
+  database: cullis_mastio
   port: 5432
   resources:
     limits:

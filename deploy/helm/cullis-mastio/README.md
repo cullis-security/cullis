@@ -15,8 +15,8 @@ ingress story.
 Production install:
 
 ```bash
-helm install cullis-proxy ./deploy/helm/cullis-proxy \
-  --namespace cullis-proxy --create-namespace \
+helm install cullis-mastio ./deploy/helm/cullis-mastio \
+  --namespace cullis-mastio --create-namespace \
   --set ingress.host=proxy.myorg.example.com \
   --set proxy.brokerUrl=https://broker.cullis.example.com \
   --set proxy.brokerJwksUrl=https://broker.cullis.example.com/.well-known/jwks.json \
@@ -29,9 +29,9 @@ helm install cullis-proxy ./deploy/helm/cullis-proxy \
 Dev install on `kind` / `minikube`:
 
 ```bash
-helm install cullis-proxy ./deploy/helm/cullis-proxy \
-  --namespace cullis-proxy --create-namespace \
-  -f deploy/helm/cullis-proxy/values-dev.yaml
+helm install cullis-mastio ./deploy/helm/cullis-mastio \
+  --namespace cullis-mastio --create-namespace \
+  -f deploy/helm/cullis-mastio/values-dev.yaml
 ```
 
 ## What the chart deploys
@@ -117,7 +117,7 @@ secrets:
 proxy:
   serviceAccount:
     annotations:
-      vault.hashicorp.com/role: cullis-proxy
+      vault.hashicorp.com/role: cullis-mastio
 ```
 
 For production prefer the Vault Agent Injector (sidecar) or External
@@ -132,31 +132,31 @@ Set `secrets.create=false` and create the Secret yourself:
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: cullis-proxy-env
-  namespace: cullis-proxy
+  name: cullis-mastio-env
+  namespace: cullis-mastio
 spec:
   refreshInterval: 1h
   secretStoreRef:
     name: aws-secretsmanager
     kind: ClusterSecretStore
   target:
-    name: cullis-proxy-env
+    name: cullis-mastio-env
     creationPolicy: Owner
   data:
     - secretKey: MCP_PROXY_ADMIN_SECRET
       remoteRef:
-        key: cullis-proxy/admin_secret
+        key: cullis-mastio/admin_secret
     - secretKey: MCP_PROXY_DASHBOARD_SIGNING_KEY
       remoteRef:
-        key: cullis-proxy/dashboard_signing_key
+        key: cullis-mastio/dashboard_signing_key
 ```
 
 Then install with:
 
 ```bash
-helm install cullis-proxy ./deploy/helm/cullis-proxy \
+helm install cullis-mastio ./deploy/helm/cullis-mastio \
   --set secrets.create=false \
-  --set secrets.existingSecret=cullis-proxy-env
+  --set secrets.existingSecret=cullis-mastio-env
 ```
 
 ## Security posture
@@ -179,9 +179,9 @@ temp files next to the DB. Flip it to true by adding a dedicated
 ## Validation
 
 ```bash
-helm lint deploy/helm/cullis-proxy
-helm template deploy/helm/cullis-proxy > /dev/null
-helm template deploy/helm/cullis-proxy -f deploy/helm/cullis-proxy/values-dev.yaml > /dev/null
+helm lint deploy/helm/cullis-mastio
+helm template deploy/helm/cullis-mastio > /dev/null
+helm template deploy/helm/cullis-mastio -f deploy/helm/cullis-mastio/values-dev.yaml > /dev/null
 ```
 
 The `ServiceMonitor` is only rendered when
@@ -192,7 +192,7 @@ cluster at `helm install` time.
 ## Upgrade
 
 ```bash
-helm upgrade cullis-proxy ./deploy/helm/cullis-proxy -f values-prod.yaml
+helm upgrade cullis-mastio ./deploy/helm/cullis-mastio -f values-prod.yaml
 ```
 
 The Deployment uses `maxSurge: 1, maxUnavailable: 0` and a 5 s

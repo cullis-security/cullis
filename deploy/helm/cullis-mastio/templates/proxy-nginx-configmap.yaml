@@ -9,9 +9,9 @@ that ought to converge to a single rendered template at some point).
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "cullis-proxy.proxy.fullname" . }}-nginx
+  name: {{ include "cullis-mastio.proxy.fullname" . }}-nginx
   labels:
-    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+    {{- include "cullis-mastio.proxy.labels" . | nindent 4 }}
 data:
   00-maps.conf: |
     # WebSocket Upgrade helper — must live in http {} context.

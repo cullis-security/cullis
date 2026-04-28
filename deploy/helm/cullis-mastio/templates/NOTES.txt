@@ -22,7 +22,7 @@ Chart   : {{ .Chart.Name }}-{{ .Chart.Version }} (appVersion {{ .Chart.AppVersio
 {{- else }}
 3. Ingress is disabled. Port-forward the proxy Service to reach it:
 
-   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cullis-proxy.proxy.fullname" . }} 9100:{{ .Values.proxy.service.port }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cullis-mastio.proxy.fullname" . }} 9100:{{ .Values.proxy.service.port }}
    open http://127.0.0.1:9100/health
 {{- end }}
 
@@ -59,4 +59,4 @@ WARNING: proxy.replicaCount > 1 but persistence.accessModes is ReadWriteOnce.
          (EFS / Filestore / Azure Files / Longhorn RWX).
 {{- end }}
 
-For upgrade and operational runbooks see deploy/helm/cullis-proxy/README.md.
+For upgrade and operational runbooks see deploy/helm/cullis-mastio/README.md.

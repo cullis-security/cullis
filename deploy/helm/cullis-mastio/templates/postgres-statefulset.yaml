@@ -5,19 +5,19 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ include "cullis-proxy.postgres.fullname" . }}
+  name: {{ include "cullis-mastio.postgres.fullname" . }}
   labels:
-    {{- include "cullis-proxy.postgres.labels" . | nindent 4 }}
+    {{- include "cullis-mastio.postgres.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "cullis-proxy.postgres.fullname" . }}
+  serviceName: {{ include "cullis-mastio.postgres.fullname" . }}
   replicas: 1
   selector:
     matchLabels:
-      {{- include "cullis-proxy.postgres.selectorLabels" . | nindent 6 }}
+      {{- include "cullis-mastio.postgres.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "cullis-proxy.postgres.selectorLabels" . | nindent 8 }}
+        {{- include "cullis-mastio.postgres.selectorLabels" . | nindent 8 }}
     spec:
       securityContext:
         fsGroup: 999
@@ -67,7 +67,7 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "cullis-proxy.postgres.labels" . | nindent 10 }}
+          {{- include "cullis-mastio.postgres.labels" . | nindent 10 }}
       spec:
         accessModes:
           - ReadWriteOnce

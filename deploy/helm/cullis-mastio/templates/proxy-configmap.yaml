@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "cullis-proxy.configMapName" . }}
+  name: {{ include "cullis-mastio.configMapName" . }}
   labels:
-    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+    {{- include "cullis-mastio.proxy.labels" . | nindent 4 }}
 data:
   MCP_PROXY_ENVIRONMENT: {{ .Values.proxy.environment | quote }}
   MCP_PROXY_HOST: "0.0.0.0"
@@ -56,8 +56,8 @@ data:
   # MCP_PROXY_DATABASE_URL is kept so older proxy images still pick the
   # value up — the runtime takes PROXY_DB_URL as authoritative when both
   # are set.
-  PROXY_DB_URL: {{ include "cullis-proxy.databaseUrl" . | quote }}
-  MCP_PROXY_DATABASE_URL: {{ include "cullis-proxy.databaseUrl" . | quote }}
+  PROXY_DB_URL: {{ include "cullis-mastio.databaseUrl" . | quote }}
+  MCP_PROXY_DATABASE_URL: {{ include "cullis-mastio.databaseUrl" . | quote }}
 
   {{- if .Values.vault.enabled }}
   MCP_PROXY_SECRET_BACKEND: "vault"

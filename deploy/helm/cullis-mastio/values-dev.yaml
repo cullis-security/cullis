@@ -1,15 +1,15 @@
 # Dev values override — relaxed settings for kind / minikube / k3d.
 # NEVER use on a real production cluster.
 #
-#   helm install cullis-proxy ./deploy/helm/cullis-proxy \
-#     -f deploy/helm/cullis-proxy/values-dev.yaml
+#   helm install cullis-mastio ./deploy/helm/cullis-mastio \
+#     -f deploy/helm/cullis-mastio/values-dev.yaml
 
 proxy:
   environment: development
   replicaCount: 1
   brokerUrl: "http://cullis-broker.cullis.svc.cluster.local:8000"
   brokerJwksUrl: "http://cullis-broker.cullis.svc.cluster.local:8000/.well-known/jwks.json"
-  proxyPublicUrl: "http://cullis-proxy.127.0.0.1.nip.io"
+  proxyPublicUrl: "http://cullis-mastio.127.0.0.1.nip.io"
   brokerVerifyTls: false
   resources:
     limits:
@@ -30,7 +30,7 @@ persistence:
 ingress:
   enabled: true
   className: nginx
-  host: cullis-proxy.127.0.0.1.nip.io
+  host: cullis-mastio.127.0.0.1.nip.io
   tls:
     enabled: false
     certManagerIssuer: ""

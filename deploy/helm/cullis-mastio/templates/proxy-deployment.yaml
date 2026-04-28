@@ -1,9 +1,9 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "cullis-proxy.proxy.fullname" . }}
+  name: {{ include "cullis-mastio.proxy.fullname" . }}
   labels:
-    {{- include "cullis-proxy.proxy.labels" . | nindent 4 }}
+    {{- include "cullis-mastio.proxy.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.proxy.replicaCount }}
@@ -18,11 +18,11 @@ spec:
       maxUnavailable: 0
   selector:
     matchLabels:
-      {{- include "cullis-proxy.proxy.selectorLabels" . | nindent 6 }}
+      {{- include "cullis-mastio.proxy.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "cullis-proxy.proxy.selectorLabels" . | nindent 8 }}
+        {{- include "cullis-mastio.proxy.selectorLabels" . | nindent 8 }}
         {{- with .Values.proxy.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -37,7 +37,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "cullis-proxy.serviceAccountName" . }}
+      serviceAccountName: {{ include "cullis-mastio.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -69,7 +69,7 @@ spec:
       {{- end }}
       containers:
         - name: proxy
-          image: {{ include "cullis-proxy.image" . }}
+          image: {{ include "cullis-mastio.image" . }}
           imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
           {{- with .Values.proxy.securityContext }}
           securityContext:
@@ -81,10 +81,10 @@ spec:
               protocol: TCP
           envFrom:
             - configMapRef:
-                name: {{ include "cullis-proxy.configMapName" . }}
+                name: {{ include "cullis-mastio.configMapName" . }}
             {{- if or .Values.secrets.create .Values.secrets.existingSecret }}
             - secretRef:
-                name: {{ include "cullis-proxy.secretName" . }}
+                name: {{ include "cullis-mastio.secretName" . }}
             {{- end }}
             {{- with .Values.proxy.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
@@ -126,7 +126,7 @@ spec:
                   - -c
                   - sleep {{ .Values.proxy.preStopSleepSeconds }}
           volumeMounts:
-            {{- if not (include "cullis-proxy.usesPostgres" .) }}
+            {{- if not (include "cullis-mastio.usesPostgres" .) }}
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
             {{- end }}
@@ -181,11 +181,11 @@ spec:
           {{- end }}
         {{- end }}
       volumes:
-        {{- if not (include "cullis-proxy.usesPostgres" .) }}
+        {{- if not (include "cullis-mastio.usesPostgres" .) }}
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "cullis-proxy.pvcName" . }}
+            claimName: {{ include "cullis-mastio.pvcName" . }}
           {{- else }}
           emptyDir: {}
           {{- end }}
@@ -200,7 +200,7 @@ spec:
           emptyDir: {}
         - name: nginx-conf
           configMap:
-            name: {{ include "cullis-proxy.proxy.fullname" . }}-nginx
+            name: {{ include "cullis-mastio.proxy.fullname" . }}-nginx
         {{- end }}
         {{- with .Values.proxy.extraVolumes }}
         {{- toYaml . | nindent 8 }}

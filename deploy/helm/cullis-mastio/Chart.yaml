@@ -1,5 +1,5 @@
 apiVersion: v2
-name: cullis-proxy
+name: cullis-mastio
 description: |
   Cullis MCP Proxy — org-level gateway between internal AI agents and the
   Cullis trust broker. Production-ready Helm chart with HPA,
