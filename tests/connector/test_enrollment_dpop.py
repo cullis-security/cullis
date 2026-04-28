@@ -243,7 +243,6 @@ def test_save_identity_rejects_public_only_dpop_jwk(tmp_path: Path):
             private_key=priv,
             ca_chain_pem=None,
             metadata=metadata,
-            api_key="sk_local_x_" + "a" * 32,
             dpop_private_jwk=pub_jwk,  # missing 'd'
         )
 
