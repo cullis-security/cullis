@@ -139,6 +139,21 @@ if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
     rm -f "$SCRIPT_DIR/proxy.env.bak"
     echo "MCP_PROXY_PROXY_PUBLIC_URL=$_public_url" >> "$SCRIPT_DIR/proxy.env"
     ok "proxy.env: MCP_PROXY_PROXY_PUBLIC_URL=$_public_url"
+
+    # Extract the hostname (no scheme, no port) and bake it into the
+    # nginx server cert SAN list. Without this, an agent that connects
+    # to `https://mastio.acme.local:9443` with verify_tls=True fails the
+    # TLS handshake — the cert only carries the default
+    # `mastio.local,localhost` SANs and the hostname doesn't match.
+    # ``sed`` strips the scheme and port; the result is empty for the
+    # localhost default, in which case we keep the SAN at its default.
+    _public_host="$(echo "$_public_url" | sed -E 's|^https?://||; s|:[0-9]+$||; s|/.*$||')"
+    if [[ -n "$_public_host" && "$_public_host" != "localhost" ]]; then
+        sed -i.bak '/^#*[[:space:]]*MCP_PROXY_NGINX_SAN=/d' "$SCRIPT_DIR/proxy.env"
+        rm -f "$SCRIPT_DIR/proxy.env.bak"
+        echo "MCP_PROXY_NGINX_SAN=${_public_host},mastio.local,localhost" >> "$SCRIPT_DIR/proxy.env"
+        ok "proxy.env: MCP_PROXY_NGINX_SAN=${_public_host},mastio.local,localhost"
+    fi
 fi
 
 if [[ "$MODE" == "production" ]]; then
