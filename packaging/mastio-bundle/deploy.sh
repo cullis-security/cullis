@@ -174,6 +174,16 @@ if [[ "$MODE" == "production" ]]; then
     ok "proxy.env validated for production"
 fi
 
+# ── Pre-flight: host port not already in use ───────────────────────────────
+_host_port="$(grep -E '^MCP_PROXY_PORT=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+_host_port="${_host_port:-9443}"
+if command -v ss >/dev/null 2>&1 && ss -tlnH "sport = :${_host_port}" 2>/dev/null | grep -q .; then
+    err "Host port ${_host_port} is already in use — another service is bound there."
+    err "Override with MCP_PROXY_PORT=<free-port> in proxy.env, and update"
+    err "MCP_PROXY_PROXY_PUBLIC_URL to use the same port (otherwise agents 401)."
+    die "Refusing to start — fix the port conflict first."
+fi
+
 # ── Pull + Start ────────────────────────────────────────────────────────────
 step "Deploying Cullis Mastio (${MODE}, $([ $SHARED_BROKER -eq 1 ] && echo shared-broker || echo standalone))"
 
