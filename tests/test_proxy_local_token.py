@@ -259,7 +259,10 @@ async def flag_off_proxy(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
     monkeypatch.setenv("MCP_PROXY_BROKER_URL", "http://broker.invalid")
-    monkeypatch.delenv("MCP_PROXY_LOCAL_AUTH_ENABLED", raising=False)
+    # ``standalone`` defaults to True (PR-D), and that auto-enables
+    # local_auth via config.py. Pin it off explicitly so the forwarder
+    # contract this test asserts still holds.
+    monkeypatch.setenv("MCP_PROXY_LOCAL_AUTH_ENABLED", "false")
     monkeypatch.delenv("PROXY_LOCAL_AUTH", raising=False)
 
     from mcp_proxy.config import get_settings

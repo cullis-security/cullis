@@ -348,6 +348,18 @@ class ProxySettings(BaseSettings):
         # PROXY_TRANSPORT_INTRA_ORG keep full control.
         if self.standalone and _env("PROXY_TRANSPORT_INTRA_ORG") is None:
             self.transport_intra_org = "mtls-only"
+        # ADR-012 — local-first auth: in standalone mode the Mastio is the
+        # only token issuer (there's no Court to forward ``/v1/auth/token``
+        # to). Without ``local_auth_enabled`` the agent-side
+        # ``login_via_proxy_with_local_key`` flow 503s on ``broker_url
+        # missing``. Flip the default on whenever standalone is set and
+        # the operator hasn't explicitly overridden ``MCP_PROXY_LOCAL_AUTH_ENABLED``.
+        if (
+            self.standalone
+            and _env("MCP_PROXY_LOCAL_AUTH_ENABLED") is None
+            and _env("PROXY_LOCAL_AUTH") is None
+        ):
+            self.local_auth_enabled = True
         return self
 
 

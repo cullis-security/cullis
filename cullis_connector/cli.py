@@ -363,7 +363,13 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
     try:
         from cullis_sdk import CullisClient
 
-        client = CullisClient.from_connector(cfg.config_dir)
+        # Honour ``--no-verify-tls`` (cfg.verify_tls=False) end-to-end.
+        # ``from_connector`` derives a default from the site_url scheme;
+        # without an explicit override the dev/lab path with a
+        # self-signed Org CA can't login_via_proxy_with_local_key.
+        client = CullisClient.from_connector(
+            cfg.config_dir, verify_tls=cfg.verify_tls,
+        )
         # Attach the loaded identity bundle so downstream helpers
         # (canonical_recipient, etc.) can derive the sender's org from
         # the cert subject without reaching into process-global state.
@@ -463,6 +469,25 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
                 print(f"{'':<22} {'':<14} ↳ {r.note}")
         return 0
 
+    # Propagate the shared flags the operator passed on the install-mcp
+    # invocation into the persisted MCP entry. Without this the saved
+    # ``args`` would be just ``["serve"]`` — every IDE/MCP client would
+    # then bind to the ``default`` profile against an unset site_url and
+    # connect to nothing useful (memory: feedback_install_mcp_no_profile).
+    serve_args: list[str] = ["serve"]
+    if getattr(args, "profile", None):
+        serve_args += ["--profile", args.profile]
+    if getattr(args, "config_dir", None):
+        serve_args += ["--config-dir", args.config_dir]
+    if getattr(args, "site_url", None):
+        serve_args += ["--site-url", args.site_url]
+    # ``args.verify_tls`` is True/False/None. None = not specified
+    # (inherit), False = ``--no-verify-tls`` was set on the command
+    # line, True = ``--verify-tls`` (no current flag for this — kept
+    # for symmetry).
+    if getattr(args, "verify_tls", None) is False:
+        serve_args += ["--no-verify-tls"]
+
     backup_dir = cfg.config_dir / "backups"
     any_error = False
 
@@ -479,7 +504,7 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
             result = uninstall_mcp(ide_id, backup_dir=backup_dir)
             verb = "uninstall"
         else:
-            result = install_mcp(ide_id, backup_dir=backup_dir)
+            result = install_mcp(ide_id, backup_dir=backup_dir, args=serve_args)
             verb = "install"
 
         name = KNOWN_IDES[ide_id].display_name

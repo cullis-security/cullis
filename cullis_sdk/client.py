@@ -862,6 +862,7 @@ class CullisClient:
         *,
         timeout: float = 10.0,
         enable_dpop: bool = True,
+        verify_tls: bool | None = None,
     ) -> CullisClient:
         """Build a client from an enrolled Connector Desktop identity on disk.
 
@@ -908,9 +909,12 @@ class CullisClient:
 
         org_id = agent_id.split("::", 1)[0] if "::" in agent_id else ""
 
-        # verify_tls is not explicitly stored by the Connector — default to
-        # True for https sites, False for http (developer / sandbox).
-        verify_tls = site_url.startswith("https://")
+        # verify_tls precedence: explicit caller arg > URL scheme default.
+        # The Connector itself doesn't persist a TLS-verify preference, so
+        # callers (the ``serve`` CLI when ``--no-verify-tls`` is set, or
+        # tests pinning the dev path) override the URL-scheme default.
+        if verify_tls is None:
+            verify_tls = site_url.startswith("https://")
 
         instance = cls.__new__(cls)
         instance.base = site_url.rstrip("/")

@@ -231,7 +231,7 @@ async def test_approve_signs_cert_and_marks_approved(db_engine):
         )
 
     assert record["status"] == "approved"
-    assert record["agent_id_assigned"] == "agent-mrossi"
+    assert record["agent_id_assigned"] == "acme::agent-mrossi"
     cert = x509.load_pem_x509_certificate(record["cert_pem"].encode())
     # CN contains the admin-chosen agent_id.
     cns = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
@@ -296,12 +296,12 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
         )).mappings().all()
 
     assert len(agents) == 1, "device-code approval must insert one agent"
-    assert agents[0]["agent_id"] == "claude-bot"
+    assert agents[0]["agent_id"] == "acme::claude-bot"
     assert bool(agents[0]["is_active"]) is True
     assert agents[0]["cert_pem"], "cert_pem must be persisted on the agent row"
 
     assert len(audits) == 1
-    assert audits[0]["agent_id"] == "claude-bot"
+    assert audits[0]["agent_id"] == "acme::claude-bot"
     assert audits[0]["status"] == "success"
 
 

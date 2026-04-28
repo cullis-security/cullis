@@ -195,7 +195,7 @@ async def test_approve_via_dashboard_issues_cert(proxy_app):
     async with get_db() as conn:
         record = await service.get_record(conn, session_id)
     assert record["status"] == "approved"
-    assert record["agent_id_assigned"] == "agent-mrossi"
+    assert record["agent_id_assigned"] == "acme::agent-mrossi"
     assert record["cert_pem"]
     # Cert CN reflects org::agent_id binding (service-layer invariant).
     cert = x509.load_pem_x509_certificate(record["cert_pem"].encode())

@@ -35,6 +35,9 @@ async def proxy_forwarding(tmp_path, monkeypatch):
     # Any value — we overwrite app.state.reverse_proxy_client below anyway.
     monkeypatch.setenv("MCP_PROXY_BROKER_URL", BROKER_TARGET)
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
+    # standalone-default flips local_auth on; this test exercises the
+    # forward-to-broker reverse-proxy path, so pin local_auth off.
+    monkeypatch.setenv("MCP_PROXY_LOCAL_AUTH_ENABLED", "false")
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
@@ -100,6 +103,12 @@ async def _register_agent_on_broker(agent_id: str, org_id: str) -> None:
         )
 
 
+@pytest.mark.skip(
+    reason="ADR-012 + PR-D: standalone-default boots the local /v1/auth/token "
+           "handler at module import, so /v1/auth/token never falls through to "
+           "the reverse-proxy forwarder. DPoP htu / x5c propagation is now "
+           "tested via the local handler path (test_proxy_local_token.py)."
+)
 @pytest.mark.asyncio
 async def test_auth_token_via_proxy(proxy_forwarding, dpop):
     """Agent auth via proxy: DPoP htu and x5c both propagate so broker accepts."""
@@ -133,6 +142,11 @@ async def test_auth_token_via_proxy(proxy_forwarding, dpop):
     assert resp.headers.get("x-cullis-role") == "proxy"
 
 
+@pytest.mark.skip(
+    reason="ADR-012 + PR-D: see test_auth_token_via_proxy. /v1/auth/token "
+           "doesn't reach the reverse-proxy forwarder; the local handler "
+           "is responsible for DPoP-Nonce now."
+)
 @pytest.mark.asyncio
 async def test_dpop_nonce_header_propagates(proxy_forwarding, dpop):
     """Broker-issued DPoP-Nonce header must survive reverse-proxy forwarding."""
@@ -171,6 +185,12 @@ async def test_reverse_proxy_tags_role_header(proxy_forwarding):
     assert resp.headers.get("x-cullis-role") == "proxy"
 
 
+@pytest.mark.skip(
+    reason="ADR-012 + PR-D: see test_auth_token_via_proxy. The 503 "
+           "broker_url-missing short-circuit no longer fires for /v1/auth/token "
+           "(local handler intercepts). The reverse-proxy 503 path is still "
+           "exercised on other forwarded routes."
+)
 @pytest.mark.asyncio
 async def test_reverse_proxy_503_when_broker_url_unset(proxy_forwarding):
     """With no broker_url configured, the reverse proxy short-circuits 503."""
