@@ -1,21 +1,21 @@
-# Release pipeline for `mcp-proxy`.
+# Release pipeline for the Cullis Mastio.
 #
-# Triggered by pushing a tag of the form `proxy-vX.Y.Z`. On tag push:
+# Triggered by pushing a tag of the form `mastio-vX.Y.Z`. On tag push:
 #
 #   1. Run the proxy test subset to gate the release.
 #   2. Build and push the multi-arch Docker image to ghcr.io.
-#   3. Create a GitHub Release with a changelog excerpt.
+#   3. Package + push the Helm chart to ghcr.io.
+#   4. Build the deploy bundle (tar.gz + zip) from packaging/mastio-bundle/.
+#   5. Create a GitHub Release with bundle assets + image refs.
 #
-# The proxy is a runtime, not a library — no wheel / sdist / PyPI upload.
-# This workflow is isolated from the main CI pipeline: only tag pushes
-# trigger it.
+# The Mastio is a runtime, not a library — no PyPI upload.
 
-name: release-proxy
+name: release-mastio
 
 on:
   push:
     tags:
-      - "proxy-v*"
+      - "mastio-v*"
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ permissions:
 jobs:
   # ── 1. Tests ─────────────────────────────────────────────────────────
   test:
-    name: Test proxy
+    name: Test Mastio
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run proxy test subset
+      - name: Run Mastio test subset
         env:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
@@ -71,10 +71,10 @@ jobs:
       - name: Extract version from tag
         id: extract
         run: |
-          # proxy-v1.2.3 → 1.2.3
-          version="${GITHUB_REF_NAME#proxy-v}"
+          # mastio-v1.2.3 → 1.2.3
+          version="${GITHUB_REF_NAME#mastio-v}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Releasing mcp-proxy: ${version}"
+          echo "Releasing cullis-mastio: ${version}"
 
   # ── 3. Docker image → ghcr.io ───────────────────────────────────────
   build-docker:
@@ -101,13 +101,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/mcp-proxy
+          images: ghcr.io/${{ github.repository_owner }}/cullis-mastio
           tags: |
-            type=match,pattern=proxy-v(.*),group=1
-            type=match,pattern=proxy-v(\d+\.\d+)\..*,group=1
+            type=match,pattern=mastio-v(.*),group=1
+            type=match,pattern=mastio-v(\d+\.\d+)\..*,group=1
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
           labels: |
-            org.opencontainers.image.title=Cullis MCP Proxy
+            org.opencontainers.image.title=Cullis Mastio
             org.opencontainers.image.description=Standalone org-level gateway for AI agents
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
@@ -124,7 +124,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 4. Helm chart → ghcr.io/cullis-security/charts/cullis-proxy ──────
+  # ── 4. Helm chart → ghcr.io/<owner>/charts/cullis-mastio ─────────────
   publish-helm:
     name: Package & push Helm chart
     needs: [build-docker, version]
@@ -153,14 +153,14 @@ jobs:
           # The tag is the source of truth; Chart.yaml's baked-in version
           # is the floor for local development. Bump both in lockstep here
           # so `helm install ... --version X.Y.Z` always matches the image.
-          sed -i "s/^version: .*/version: ${VERSION}/" deploy/helm/cullis-proxy/Chart.yaml
-          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" deploy/helm/cullis-proxy/Chart.yaml
-          head -15 deploy/helm/cullis-proxy/Chart.yaml
+          sed -i "s/^version: .*/version: ${VERSION}/" deploy/helm/cullis-mastio/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" deploy/helm/cullis-mastio/Chart.yaml
+          head -15 deploy/helm/cullis-mastio/Chart.yaml
 
       - name: Package chart
         run: |
           mkdir -p dist/charts
-          helm package deploy/helm/cullis-proxy --destination dist/charts
+          helm package deploy/helm/cullis-mastio --destination dist/charts
           ls -lah dist/charts
 
       - name: Push chart to OCI registry
@@ -169,24 +169,84 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           helm push \
-            "dist/charts/cullis-proxy-${VERSION}.tgz" \
+            "dist/charts/cullis-mastio-${VERSION}.tgz" \
             "oci://ghcr.io/${OWNER}/charts"
 
-  # ── 5. GitHub Release ────────────────────────────────────────────────
+  # ── 5. Deploy bundle (tar.gz + zip) ─────────────────────────────────
+  build-bundle:
+    name: Build deploy bundle
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stamp version into bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pin CULLIS_MASTIO_VERSION default to the released version so
+          # `./deploy.sh` (no env var) gets a reproducible image instead
+          # of `latest`. Operators can still override the env var.
+          sed -i "s|CULLIS_MASTIO_VERSION:-latest|CULLIS_MASTIO_VERSION:-${VERSION}|" \
+            packaging/mastio-bundle/docker-compose.yml
+
+      - name: Stage bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAGING="dist/cullis-mastio-bundle-${VERSION}"
+          mkdir -p "${STAGING}"
+          cp -r packaging/mastio-bundle/. "${STAGING}/"
+          ls -lah "${STAGING}/"
+          # Stable-name top-level dir inside the archive: `cullis-mastio-bundle/`
+          # (no version suffix) so the README quickstart `cd cullis-mastio-bundle/`
+          # works against any release. The archive filename carries the version.
+          mv "${STAGING}" "dist/cullis-mastio-bundle"
+
+      - name: Package tar.gz + zip
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          tar czf "cullis-mastio-bundle-${VERSION}.tar.gz" cullis-mastio-bundle
+          tar czf "cullis-mastio-bundle.tar.gz" cullis-mastio-bundle
+          zip -qr "cullis-mastio-bundle-${VERSION}.zip" cullis-mastio-bundle
+          zip -qr "cullis-mastio-bundle.zip" cullis-mastio-bundle
+          ls -lah *.tar.gz *.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: |
+            dist/cullis-mastio-bundle-*.tar.gz
+            dist/cullis-mastio-bundle-*.zip
+            dist/cullis-mastio-bundle.tar.gz
+            dist/cullis-mastio-bundle.zip
+          retention-days: 7
+
+  # ── 6. GitHub Release ────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: [build-docker, publish-helm, version]
+    needs: [build-docker, publish-helm, build-bundle, version]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: dist
+
       - name: Extract changelog section
         id: changelog
         run: |
           version="${{ needs.version.outputs.version }}"
-          # Grab the section matching ## [vX.Y.Z] or ## vX.Y.Z, up to the next ## heading.
           if [[ -f CHANGELOG.md ]]; then
             awk "/^## \\[?v?${version}\\]?/{flag=1; next} /^## /{flag=0} flag" CHANGELOG.md \
               > release-notes.md || true
@@ -195,34 +255,40 @@ jobs:
             cat > release-notes.md <<NOTES
           Release ${GITHUB_REF_NAME}
 
-          Docker image: \`ghcr.io/${{ github.repository_owner }}/mcp-proxy:${version}\`
-          Helm chart:   \`oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-proxy:${version}\`
-
-          ADR-014 — single \`docker run\` is no longer the deploy path.
-          The Mastio is fronted by an nginx sidecar that terminates TLS
-          and enforces mTLS on agent-identity routes. Use compose:
+          ## Quickstart
 
           \`\`\`bash
-          # Clone or copy docker-compose.proxy.yml + docker-compose.proxy.standalone.yml
-          # + nginx/mastio/{mastio.conf,00-maps.conf} from this release.
-          ./deploy_proxy.sh --standalone
-          # Reaches https://localhost:9443 with mTLS on /v1/egress/* + /v1/agents/*
+          curl -L https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/cullis-mastio-bundle.tar.gz | tar xz
+          cd cullis-mastio-bundle/
+          ./deploy.sh
           \`\`\`
 
-          Kubernetes:
+          Reaches \`https://localhost:9443/proxy/login\` with a self-
+          signed cert from the auto-generated Org CA. Complete the
+          first-boot wizard and enroll your first agent.
+
+          ## Artifacts
+
+          - **Bundle**: \`cullis-mastio-bundle-${version}.tar.gz\` /
+            \`.zip\` (image-based docker-compose, no source tree
+            required)
+          - **Docker image**: \`ghcr.io/${{ github.repository_owner }}/cullis-mastio:${version}\`
+          - **Helm chart**: \`oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-mastio:${version}\`
+
+          ## Kubernetes
 
           \`\`\`bash
-          helm install cullis-proxy \\
-            oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-proxy \\
+          helm install cullis-mastio \\
+            oci://ghcr.io/${{ github.repository_owner }}/charts/cullis-mastio \\
             --version ${version} \\
-            --set nginx.san="cullis.acme.internal,mastio.local" \\
-            --set proxy.proxyPublicUrl=https://cullis.acme.internal
+            --set nginx.san="mastio.myorg.example.com,mastio.local" \\
+            --set proxy.proxyPublicUrl=https://mastio.myorg.example.com
           \`\`\`
 
-          The chart deploys the sidecar in the same pod and exposes
-          port 9443 via the Service. \`org_id\` is derived from the
-          auto-generated Org CA (ADR-006 §2.2) — no \`--set\` needed
-          unless you bring your own CA.
+          The chart deploys the nginx sidecar in the same pod and
+          exposes port 9443 via the Service. \`org_id\` is derived
+          from the auto-generated Org CA (ADR-006 §2.2) — no extra
+          \`--set\` needed unless you bring your own CA.
           NOTES
           fi
           cat release-notes.md
@@ -231,7 +297,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: "Cullis MCP Proxy ${{ github.ref_name }}"
+          name: "Cullis Mastio ${{ github.ref_name }}"
           body_path: release-notes.md
+          files: |
+            dist/cullis-mastio-bundle-*.tar.gz
+            dist/cullis-mastio-bundle-*.zip
+            dist/cullis-mastio-bundle.tar.gz
+            dist/cullis-mastio-bundle.zip
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
