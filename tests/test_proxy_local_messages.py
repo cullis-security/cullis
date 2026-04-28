@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from starlette.testclient import TestClient
 
 from mcp_proxy.local import message_queue as local_queue
 

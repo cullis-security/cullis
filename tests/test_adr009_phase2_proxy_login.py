@@ -70,7 +70,6 @@ async def test_sign_assertion_includes_mastio_signature(tmp_path, monkeypatch):
             await set_config("agent_key:sa-mastio::alice", key_pem)
 
             # ADR-014 PR-C: present the agent's TLS client cert to authenticate.
-            from tests._mtls_helpers import mtls_headers
             import urllib.parse as _up
             r = await cli.post(
                 "/v1/auth/sign-assertion",

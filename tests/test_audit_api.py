@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from mcp_proxy.audit.router import _MAX_ENTRIES
 from mcp_proxy.db import dispose_db, get_db, init_db, log_audit
-from tests._mtls_helpers import mtls_headers, provision_internal_agent
+from tests._mtls_helpers import provision_internal_agent
 
 
 _SESSION_A = "sess-aaaa-1111"

@@ -6,8 +6,6 @@ needing the cert+key locally.
 """
 from __future__ import annotations
 
-import uuid
-
 import jwt as jose_jwt
 import pytest
 import pytest_asyncio
