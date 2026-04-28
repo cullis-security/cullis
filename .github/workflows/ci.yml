@@ -13,33 +13,63 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # ─── Path filter ────────────────────────────────────────────────────
+  # Detects whether the PR touches code paths that the unit suite + lint
+  # actually cover. Docs / sandbox / reference / packaging changes don't
+  # need the 1981-test pytest run — the umbrella ``test (3.11)`` job
+  # below short-circuits to a green pass when ``code`` is false, so
+  # branch protection still gets the required check.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'app/**'
+              - 'mcp_proxy/**'
+              - 'cullis_sdk/**'
+              - 'cullis_connector/**'
+              - 'agents/**'
+              - 'tests/**'
+              - 'sdk-ts/**'
+              - 'alembic/**'
+              - 'requirements*.txt'
+              - 'pyproject.toml'
+              - 'pytest.ini'
+              - '.github/workflows/ci.yml'
+
+  # ─── Test shards (3-way pytest-split) ───────────────────────────────
+  # Splits the ~1981-test suite across 3 parallel runners. Each shard
+  # repeats setup (pip + npm cache hits keep it cheap) and runs roughly
+  # one third of the tests by file. ``--dist=loadfile`` from pytest.ini
+  # still applies inside each shard for intra-runner xdist parallelism.
+  #
+  # Not a required check — the umbrella ``test (3.11)`` job below
+  # aggregates the three results so branch protection keeps a single
+  # check name.
+  test-shard:
+    name: test-shard (${{ matrix.split-group }}/3)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11"]
-    # Audit F-B-5: Settings() now refuses the insecure default
-    # ADMIN_SECRET at construction time. Alembic imports app.db.database
-    # (which calls get_settings() at module load) without going through
-    # the pytest conftest.py that seeds a test secret, so set it
-    # job-wide so every step that constructs Settings has a non-default
-    # value available.
-    #
-    # The value MUST match the ``ADMIN_HEADERS`` literal hard-coded in
-    # ``tests/conftest.py`` — the conftest uses ``os.environ.setdefault``
-    # so a CI-supplied value wins, and ``ADMIN_HEADERS`` is a plain
-    # string. Mismatch → every admin-authed test 403s against
-    # ``/v1/admin/*`` and so on.
+        split-group: [1, 2, 3]
     env:
       ADMIN_SECRET: "test-secret-not-default"
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
           cache: "pip"
           cache-dependency-path: requirements.txt
 
@@ -63,10 +93,12 @@ jobs:
           npx tsc || true  # pre-existing unused-var warning in client.ts doesn't block emit
 
       - name: Lint with ruff
+        if: matrix.split-group == 1
         run: |
           ruff check app/ agents/sdk.py tests/ --select E,F,W --ignore E501,E402
 
       - name: Verify Alembic migrations
+        if: matrix.split-group == 1
         env:
           DATABASE_URL: "sqlite+aiosqlite:///./test_migrations.db"
         run: |
@@ -74,26 +106,59 @@ jobs:
           python -c "import sqlite3; c=sqlite3.connect('test_migrations.db'); tables=c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall(); print(f'{len(tables)} tables created'); assert len(tables) >= 10, f'Expected >=10 tables, got {len(tables)}'"
           rm -f test_migrations.db
 
-      - name: Run tests
+      - name: Run tests (shard ${{ matrix.split-group }}/3)
         env:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
         run: |
-          pytest tests/ --tb=short --ignore=tests/test_postgres_integration.py
+          pytest tests/ \
+              --tb=short \
+              --ignore=tests/test_postgres_integration.py \
+              --splits 3 --group ${{ matrix.split-group }}
 
       - name: Anti-flaky concurrency gate (10× rotation race tests)
+        if: matrix.split-group == 1
         env:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
-        # Issue #281 — the rotation concurrency tests exercise asyncio.Lock
-        # + stage-before-propagate ordering + crash-liveness fault injection.
-        # Running them 10× consecutively catches order-of-coroutine flakes
-        # that a single run would mask. Keep the count tight — the full
-        # file is ~10s per run, so 10× ≈ 100s, which is acceptable CI cost
-        # for the blast-radius of this code path.
+        # Issue #281 — pinned to shard 1 instead of every shard so the
+        # 100s overhead is paid once. The full file is ~10s per run, so
+        # 10× ≈ 100s is acceptable CI cost for the blast-radius of this
+        # code path.
         run: |
           pytest tests/test_proxy_mastio_rotation_concurrency.py \
               --count=10 -n auto --dist=loadfile --tb=short -q
+
+  # ─── Umbrella job — preserves the ``test (3.11)`` required check ────
+  # Aggregates the test-shard matrix into a single status check named
+  # ``test (3.11)`` so the existing branch protection rule keeps
+  # working without rule edits. Passes when:
+  #   - ``code`` filter is false (no relevant changes), OR
+  #   - all three shards succeeded.
+  test:
+    needs: [changes, test-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - name: Aggregate shard results
+        run: |
+          set -e
+          code="${{ needs.changes.outputs.code }}"
+          shard="${{ needs.test-shard.result }}"
+          echo "code=${code} shard=${shard}"
+          if [[ "${code}" != "true" ]]; then
+            echo "No code changes — skipping test suite (umbrella PASS)."
+            exit 0
+          fi
+          if [[ "${shard}" == "success" ]]; then
+            echo "All shards green."
+            exit 0
+          fi
+          echo "::error::test-shard matrix did not succeed (result=${shard})"
+          exit 1
 
   security:
     runs-on: ubuntu-latest
