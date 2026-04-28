@@ -17,7 +17,7 @@ Two backends, mirroring :mod:`mcp_proxy.auth.dpop_jti_store`:
 
 Key shape: ``login_challenge:{agent_id}:{nonce}`` — binding the nonce
 to the caller means a leaked nonce can't be redeemed by a different
-``X-API-Key`` holder (defence in depth on top of the ``sub`` claim check
+client-cert holder (defence in depth on top of the ``sub`` claim check
 in the verification path).
 """
 from __future__ import annotations

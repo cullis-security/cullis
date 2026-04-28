@@ -219,16 +219,15 @@ async def _seed_legacy_state(
             await conn.execute(
                 text(
                     "INSERT INTO internal_agents "
-                    "(agent_id, display_name, capabilities, api_key_hash, "
+                    "(agent_id, display_name, capabilities, "
                     " cert_pem, created_at, is_active, enrollment_method) "
                     "VALUES "
-                    "(:aid, :name, '[]', :hash, :cert, "
+                    "(:aid, :name, '[]', :cert, "
                     " '2026-04-23T00:00:00+00:00', 1, 'connector')"
                 ),
                 {
                     "aid": aid,
                     "name": f"agent {aid}",
-                    "hash": "x" * 64,
                     "cert": leaf_pem,
                 },
             )

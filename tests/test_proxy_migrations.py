@@ -72,7 +72,7 @@ async def test_init_db_fresh_sqlite_runs_alembic_upgrade(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     finally:
         conn.close()
-    assert rows == [("0021_anomaly_detector_tables",)]
+    assert rows == [("0022_drop_api_key_hash",)]
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_init_db_stamps_legacy_sqlite_then_upgrades(tmp_path):
         conn.close()
 
     assert rows == [("legacy-agent",)], "pre-existing row lost during stamp+upgrade"
-    assert version == [("0021_anomaly_detector_tables",)]
+    assert version == [("0022_drop_api_key_hash",)]
 
 
 @pytest.mark.asyncio

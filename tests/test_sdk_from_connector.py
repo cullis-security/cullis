@@ -1,10 +1,10 @@
 """SDK CullisClient.from_connector() — loads identity from Connector dir.
 
-Matches the layout written by ``cullis_connector.identity.store.save_identity``:
+Matches the layout written by ``cullis_connector.identity.store.save_identity``
+under ADR-014:
     <config_dir>/identity/agent.crt
     <config_dir>/identity/agent.key
     <config_dir>/identity/metadata.json
-    <config_dir>/identity/api_key
 """
 from __future__ import annotations
 
@@ -22,18 +22,15 @@ def _write_identity(
     *,
     agent_id: str = "demo-org::alice",
     site_url: str = "http://mastio.test",
-    api_key: str = "sk_local_test_deadbeef",
     cert_pem: str | None = None,
     key_pem: str | None = None,
 ) -> Path:
     identity_dir = tmp_path / "identity"
     identity_dir.mkdir(parents=True, exist_ok=True)
 
-    # ADR-014: ``from_connector`` builds the runtime httpx.Client with
-    # ``cert=(cert_path, key_path)`` so the agent presents its cert at
-    # the TLS handshake to nginx. Hand a real cert+key pair signed by
-    # the test Org CA — the placeholder PEMs the fixture used pre-PR-B
-    # explode at httpx ssl context construction.
+    # ADR-014: the cert IS the credential. ``from_connector`` builds the
+    # runtime httpx.Client with ``cert=(cert_path, key_path)`` so the
+    # agent presents its cert at the TLS handshake to nginx.
     if cert_pem is None or key_pem is None:
         org_id, _, agent_name = agent_id.partition("::")
         if not agent_name:
@@ -50,7 +47,6 @@ def _write_identity(
         "site_url": site_url,
         "issued_at": "2026-04-17T00:00:00+00:00",
     }))
-    (identity_dir / "api_key").write_text(api_key)
     return tmp_path
 
 
@@ -61,7 +57,6 @@ def test_from_connector_loads_identity(tmp_path):
     assert client.base == "http://mastio.test"
     assert client._proxy_agent_id == "demo-org::alice"
     assert client._proxy_org_id == "demo-org"
-    assert client._proxy_api_key == "sk_local_test_deadbeef"
     assert client._verify_tls is False  # http → verify_tls defaults off
     assert client.token is None  # login_via_proxy not invoked yet
 
@@ -77,13 +72,6 @@ def test_from_connector_missing_identity_dir(tmp_path):
         CullisClient.from_connector(config_dir=tmp_path)
 
 
-def test_from_connector_missing_api_key(tmp_path):
-    cfg = _write_identity(tmp_path)
-    (cfg / "identity" / "api_key").unlink()
-    with pytest.raises(FileNotFoundError, match="api_key missing"):
-        CullisClient.from_connector(config_dir=cfg)
-
-
 def test_from_connector_malformed_metadata(tmp_path):
     cfg = _write_identity(tmp_path)
     (cfg / "identity" / "metadata.json").write_text(json.dumps({
@@ -93,10 +81,15 @@ def test_from_connector_malformed_metadata(tmp_path):
         CullisClient.from_connector(config_dir=cfg)
 
 
-def test_from_connector_trims_api_key_whitespace(tmp_path):
-    cfg = _write_identity(tmp_path, api_key="sk_local_test_abcdef\n")
+def test_from_connector_legacy_api_key_file_ignored(tmp_path):
+    """ADR-014 PR-C: stray ``identity/api_key`` files from older
+    Connectors are ignored — the cert is the credential and
+    ``from_connector`` no longer reads or requires the api_key file."""
+    cfg = _write_identity(tmp_path)
+    (cfg / "identity" / "api_key").write_text("sk_local_legacy_abc")
     client = CullisClient.from_connector(config_dir=cfg)
-    assert client._proxy_api_key == "sk_local_test_abcdef"
+    # Loads cleanly; no _proxy_api_key attribute on the instance.
+    assert not hasattr(client, "_proxy_api_key") or client.__dict__.get("_proxy_api_key") is None
 
 
 def test_from_connector_agent_without_org_prefix(tmp_path):

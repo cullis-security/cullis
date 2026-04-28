@@ -3,7 +3,9 @@
 #
 # Asserts the things that make this deployment "reference":
 #   1. All six LLM agents are running and healthy
-#   2. Each has its api-key + dpop.jwk on the bootstrap-state volume
+#   2. Each has its agent.pem + agent-key.pem + dpop.jwk on the
+#      bootstrap-state volume (ADR-014 — TLS cert + DPoP only;
+#      PR-C dropped api_key entirely)
 #   3. Three distinct enrollment methods were exercised
 #
 # Run AFTER `bash reference/demo.sh full` brings the stack up.
@@ -42,7 +44,7 @@ ID_PROBE=$(docker compose --profile full run --rm --entrypoint sh bootstrap-mast
 for org in orga orgb; do
     for d in /state/$org/agents/*/; do
         name=$(basename "$d")
-        if [ -f "$d/api-key" ] && [ -f "$d/dpop.jwk" ]; then
+        if [ -f "$d/agent.pem" ] && [ -f "$d/agent-key.pem" ] && [ -f "$d/dpop.jwk" ]; then
             echo "OK $org::$name"
         else
             echo "MISSING $org::$name"
@@ -53,7 +55,7 @@ done
 
 while IFS= read -r line; do
     if [[ "$line" == OK* ]]; then
-        pass "${line#OK }: api-key + dpop.jwk present"
+        pass "${line#OK }: agent.pem + agent-key.pem + dpop.jwk present"
     elif [[ "$line" == MISSING* ]]; then
         fail "${line#MISSING }: identity files missing"
     fi

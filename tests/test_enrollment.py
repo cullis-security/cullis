@@ -241,61 +241,10 @@ async def test_approve_signs_cert_and_marks_approved(db_engine):
     assert cert.public_key().public_numbers() == submitted_pub.public_numbers()
 
 
-@pytest.mark.asyncio
-async def test_start_enrollment_accepts_connector_provided_api_key_hash(db_engine):
-    """Connector-provided api_key_hash flows through start → approve → internal_agents.
-
-    End-to-end: connector generates a raw key locally, hashes it, submits
-    the hash with /v1/enrollment/start. After approve(), the hash shows up
-    verbatim in internal_agents.api_key_hash so the SAME raw key (which
-    only the connector has) authenticates to /v1/egress/*.
-    """
-    import bcrypt
-    from sqlalchemy import text as _text
-    from mcp_proxy.auth.api_key import verify_api_key
-    from mcp_proxy.egress.agent_manager import AgentManager
-    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
-    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
-    await manager.load_org_ca(ca_key, ca_cert_pem)
-
-    raw_key = "sk_local_connector_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    submitted_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt()).decode()
-
-    pubkey = _rsa_pubkey_pem()
-    async with get_db() as conn:
-        started = await service.start_enrollment(
-            conn,
-            pubkey_pem=pubkey,
-            requester_name="A",
-            requester_email="a@x.com",
-            reason=None,
-            device_info=None,
-            api_key_hash=submitted_hash,
-        )
-
-    async with get_db() as conn:
-        await service.approve(
-            conn,
-            session_id=started.session_id,
-            agent_id="conn-bot",
-            capabilities=["test.read"],
-            groups=[],
-            admin_name="admin",
-            agent_manager=manager,
-        )
-
-    async with get_db() as conn:
-        row = (await conn.execute(
-            _text("SELECT api_key_hash FROM internal_agents WHERE agent_id = 'conn-bot'"),
-        )).mappings().first()
-
-    assert row is not None
-    assert row["api_key_hash"] == submitted_hash, (
-        "approve() must reuse the connector-provided hash rather than "
-        "generating a new one"
-    )
-    # And the raw key the connector kept locally verifies against it.
-    assert verify_api_key(raw_key, row["api_key_hash"]) is True
+# ADR-014 PR-C: the api_key path is gone — the cert the Mastio signs at
+# approval is the credential. The "connector-provided api_key_hash"
+# round-trip test is removed; ``test_approve_registers_agent_in_internal_registry``
+# below covers the cert-based round-trip.
 
 
 @pytest.mark.asyncio

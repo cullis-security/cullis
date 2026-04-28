@@ -1,11 +1,11 @@
 """
-Internal agent identity lifecycle — x509 certificate issuance, API key
-management, Vault key storage, and broker registration.
+Internal agent identity lifecycle — x509 certificate issuance, Vault
+key storage, and broker registration.
 
 Each internal agent gets:
-  - An RSA-2048 x509 certificate signed by the Org CA (SPIFFE SAN URI)
-  - A private key stored in Vault (or DB fallback)
-  - A local API key (sk_local_{name}_{hex}) for authenticating to the proxy
+  - An RSA-2048 x509 certificate signed by the Org CA (SPIFFE SAN URI).
+    This cert IS the agent's credential at the TLS layer (ADR-014).
+  - A private key stored in Vault (or DB fallback).
 """
 import asyncio
 import hashlib
@@ -22,7 +22,6 @@ from cryptography.x509 import (
 )
 from cryptography.x509.oid import NameOID
 
-from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
 from mcp_proxy.auth.local_keystore import LocalKeyStore, MastioKey, compute_kid
 from mcp_proxy.auth.mastio_rotation import ContinuityProof, build_proof
 from mcp_proxy.config import get_settings, vault_tls_verify
@@ -591,14 +590,17 @@ class AgentManager:
         """Create a new internal agent.
 
         Steps:
-          1. Generate x509 cert+key (signed by Org CA)
-          2. Store key in Vault (or DB if Vault not available)
-          3. Generate API key (sk_local_{name}_{hex})
-          4. Store agent record in DB (with bcrypt hash of API key, cert PEM)
-          5. Register agent with broker via HTTP (best-effort)
-          6. Return (agent_info_dict, api_key_plaintext)
+          1. Generate x509 cert+key (signed by Org CA) — the cert IS
+             the agent's credential at the TLS layer (ADR-014).
+          2. Store key in Vault (or DB if Vault not available).
+          3. Store agent record in DB.
+          4. Return ``(agent_info_dict, key_pem)`` so the caller can
+             hand the freshly-minted private key to the agent process.
 
-        The API key plaintext is shown ONCE — never stored or retrievable.
+        The private key plaintext is shown ONCE — Vault stores the
+        canonical copy; this method returns the same bytes only so the
+        synchronous caller (dashboard / sandbox bootstrap) can ship it
+        to the agent's filesystem.
         """
         agent_id = f"{self._org_id}::{agent_name}"
 
@@ -616,16 +618,11 @@ class AgentManager:
             # Key will be stored in proxy_config as fallback
             await set_config(f"agent_key:{agent_id}", key_pem)
 
-        # 3. Generate API key
-        api_key = generate_api_key(agent_name)
-        api_key_hash = hash_api_key(api_key)
-
-        # 4. Store agent record in DB
+        # 3. Store agent record in DB
         await db_create_agent(
             agent_id=agent_id,
             display_name=display_name,
             capabilities=capabilities,
-            api_key_hash=api_key_hash,
             cert_pem=cert_pem,
         )
 
@@ -642,40 +639,11 @@ class AgentManager:
             "display_name": display_name,
             "capabilities": capabilities,
             "cert_pem": cert_pem,
+            "private_key_pem": key_pem,
         }
 
         logger.info("Internal agent created: %s", agent_id)
-        return agent_info, api_key
-
-    async def rotate_api_key(self, agent_id: str) -> str:
-        """Generate new API key for existing agent. Invalidates old key.
-
-        Returns new API key plaintext (shown once).
-        """
-        agent = await db_get_agent(agent_id)
-        if agent is None:
-            raise ValueError(f"Agent not found: {agent_id}")
-        if not agent["is_active"]:
-            raise ValueError(f"Agent is deactivated: {agent_id}")
-
-        # Extract agent_name from agent_id (org::name)
-        agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
-
-        new_key = generate_api_key(agent_name)
-        new_hash = hash_api_key(new_key)
-
-        # Update hash in DB
-        from sqlalchemy import text
-
-        from mcp_proxy.db import get_db
-        async with get_db() as db:
-            await db.execute(
-                text("UPDATE internal_agents SET api_key_hash = :api_key_hash WHERE agent_id = :agent_id"),
-                {"api_key_hash": new_hash, "agent_id": agent_id},
-            )
-
-        logger.info("API key rotated for agent: %s", agent_id)
-        return new_key
+        return agent_info, key_pem
 
     async def deactivate_agent(self, agent_id: str) -> None:
         """Deactivate agent.

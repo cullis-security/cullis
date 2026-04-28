@@ -48,15 +48,14 @@ async def _provision_local_peer(agent_id: str, display_name: str = "", capabilit
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, api_key_hash, created_at, is_active) "
+                "(agent_id, display_name, capabilities, created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, "
-                " :api_key_hash, :created_at, :is_active)"
+                " :created_at, :is_active)"
             ),
             {
                 "agent_id": agent_id,
                 "display_name": display_name,
                 "capabilities": capabilities,
-                "api_key_hash": "$2b$12$placeholder",
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },
@@ -134,8 +133,8 @@ async def test_peers_inactive_agents_excluded(proxy_app):
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, api_key_hash, created_at, is_active) "
-                "VALUES ('disabled-one', 'Disabled', '[]', '$2b$12$x', :ts, 0)"
+                "(agent_id, display_name, capabilities, created_at, is_active) "
+                "VALUES ('disabled-one', 'Disabled', '[]', :ts, 0)"
             ),
             {"ts": datetime.now(timezone.utc).isoformat()},
         )

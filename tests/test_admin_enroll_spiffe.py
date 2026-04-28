@@ -152,7 +152,8 @@ async def test_spiffe_enroll_happy_path_with_body_bundle(tmp_path, monkeypatch):
             body = r.json()
             assert body["agent_id"] == "sp-happy::alice"
             assert body["spiffe_id"] == spiffe
-            assert body["api_key"].startswith("sk_local_alice_")
+            # ADR-014 PR-C: no api_key minted — the SVID is the credential.
+            assert "api_key" not in body
 
             row = await _fetch_row("sp-happy::alice")
             assert row["enrollment_method"] == "spiffe"

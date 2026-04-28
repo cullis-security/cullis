@@ -102,10 +102,9 @@ async def _seed_local_agent(agent_id: str, display: str = "Agent") -> None:
             text(
                 """
                 INSERT INTO internal_agents (
-                    agent_id, display_name, capabilities, api_key_hash,
-                    created_at, is_active
+                    agent_id, display_name, capabilities, created_at, is_active
                 ) VALUES (
-                    :aid, :disp, '[]', '$2b$12$placeholder',
+                    :aid, :disp, '[]',
                     '2026-04-16T10:00:00Z', 1
                 )
                 """

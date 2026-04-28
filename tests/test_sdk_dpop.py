@@ -202,6 +202,9 @@ def test_from_enrollment_disable_dpop_keeps_legacy(
 def test_proxy_headers_injects_dpop_when_key_present(
     stub_enroll_server, tmp_path,
 ):
+    """ADR-014 PR-C: ``proxy_headers`` no longer ships ``X-API-Key`` —
+    the cert at TLS handshake is the agent identity. DPoP proof still
+    rides per-request."""
     from cullis_sdk import CullisClient
 
     client = CullisClient.from_enrollment(
@@ -211,7 +214,7 @@ def test_proxy_headers_injects_dpop_when_key_present(
     )
     headers = client.proxy_headers("POST", "http://proxy.test/v1/egress/ping")
     assert "DPoP" in headers
-    assert "X-API-Key" in headers
+    assert "X-API-Key" not in headers
 
     # The proof's jwk thumbprint matches the registered key.
     from mcp_proxy.auth.dpop import compute_jkt
@@ -222,9 +225,10 @@ def test_proxy_headers_injects_dpop_when_key_present(
 def test_proxy_headers_skips_dpop_without_url(
     stub_enroll_server, tmp_path,
 ):
-    """Defensive: an external caller that invokes ``proxy_headers()``
-    without method/url (legacy integration code) should never ship an
-    unsigned/empty-htu proof. Fall back to the bearer-only header."""
+    """Defensive: ``proxy_headers()`` without method/url (legacy
+    integration code) skips the DPoP proof to avoid shipping an
+    empty-htu signature. Post-PR-C the result is just the JSON
+    content-type — no api_key bearer fallback exists anymore."""
     from cullis_sdk import CullisClient
 
     client = CullisClient.from_enrollment(
@@ -234,7 +238,7 @@ def test_proxy_headers_skips_dpop_without_url(
     )
     headers = client.proxy_headers()  # no method/url
     assert "DPoP" not in headers
-    assert headers["X-API-Key"].startswith("sk_local_")
+    assert "X-API-Key" not in headers
 
 
 def test_egress_http_retries_on_use_dpop_nonce(

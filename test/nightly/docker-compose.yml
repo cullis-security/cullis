@@ -23,6 +23,11 @@ volumes:
   postgres-data:
   proxy-a-data:
   proxy-b-data:
+  # ADR-014 — per-org nginx sidecar TLS material. Each Mastio writes
+  # its server cert + Org CA bundle here at first-boot; the matching
+  # mastio-nginx-{a,b} sidecar mounts read-only and serves 9443.
+  mastio-a-nginx-certs:
+  mastio-b-nginx-certs:
 
 services:
 
@@ -187,11 +192,21 @@ services:
       MCP_PROXY_ANOMALY_SUSTAINED_TICKS_REQUIRED: "${MCP_PROXY_ANOMALY_SUSTAINED_TICKS_REQUIRED:-3}"
       MCP_PROXY_ANOMALY_EVALUATION_INTERVAL_S:    "${MCP_PROXY_ANOMALY_EVALUATION_INTERVAL_S:-30}"
       MCP_PROXY_ANOMALY_CEILING_PER_MIN:          "${MCP_PROXY_ANOMALY_CEILING_PER_MIN:-3}"
+      # ADR-014 — first-boot writes Org CA + nginx server cert into
+      # the shared volume so the mastio-nginx-a sidecar can serve TLS
+      # on 9443. SAN includes ``proxy-a`` (intra-network alias) and
+      # ``localhost`` (host-side workload drivers).
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-a,localhost"
     volumes:
       - proxy-a-data:/data
+      - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orga-internal:
-        aliases: [proxy-a]
+        # ``mcp-proxy`` is the upstream name nginx/mastio/mastio.conf
+        # hard-codes; alias here so the sidecar's ``proxy_pass``
+        # resolves without forking the shared config.
+        aliases: [proxy-a, mcp-proxy]
       public-wan:
         aliases: [proxy-a]
     expose: ["9100"]
@@ -202,6 +217,34 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orga agents. Host port
+  # 9443 is what test/nightly/workload/_common.py talks to.
+  mastio-nginx-a:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-a:
+        condition: service_healthy
+    volumes:
+      - ../../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-a-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orga-internal:
+        aliases: [mastio-nginx-a]
+    expose: ["9443"]
+    ports: ["9443:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Org B Mastio (proxy) ──────────────────────────────────────────────────
 
@@ -258,11 +301,15 @@ services:
       MCP_PROXY_ANOMALY_SUSTAINED_TICKS_REQUIRED: "${MCP_PROXY_ANOMALY_SUSTAINED_TICKS_REQUIRED:-3}"
       MCP_PROXY_ANOMALY_EVALUATION_INTERVAL_S:    "${MCP_PROXY_ANOMALY_EVALUATION_INTERVAL_S:-30}"
       MCP_PROXY_ANOMALY_CEILING_PER_MIN:          "${MCP_PROXY_ANOMALY_CEILING_PER_MIN:-3}"
+      # ADR-014 — see proxy-a rationale.
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-b,localhost"
     volumes:
       - proxy-b-data:/data
+      - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orgb-internal:
-        aliases: [proxy-b]
+        aliases: [proxy-b, mcp-proxy]
       public-wan:
         aliases: [proxy-b]
     expose: ["9100"]
@@ -273,6 +320,34 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orgb agents. Host port
+  # 9543 keeps proxy-a's 9443 free; matches the smoke.py default.
+  mastio-nginx-b:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-b:
+        condition: service_healthy
+    volumes:
+      - ../../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-b-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orgb-internal:
+        aliases: [mastio-nginx-b]
+    expose: ["9443"]
+    ports: ["9543:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Post-proxy-boot: pin mastio_pubkey + BYOCA enroll N agents ────────────
 

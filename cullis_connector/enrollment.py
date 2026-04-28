@@ -23,10 +23,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import os
-import secrets
-
-import bcrypt
 import httpx
 from cryptography import x509
 
@@ -38,20 +34,6 @@ from cullis_connector.identity import (
 )
 from cullis_connector.identity.store import IdentityMetadata, load_identity
 
-
-_API_KEY_PREFIX = "sk_local_"
-
-
-def _generate_api_key() -> str:
-    """Mirror of mcp_proxy.auth.api_key.generate_api_key — same format
-    (``sk_local_<label>_<32-hex>``) so the server accepts the resulting hash
-    with its existing ``verify_api_key`` helper."""
-    label = os.environ.get("HOSTNAME", "connector").replace(" ", "-")[:32]
-    return f"{_API_KEY_PREFIX}{label}_{secrets.token_hex(16)}"
-
-
-def _bcrypt_hash(raw: str) -> str:
-    return bcrypt.hashpw(raw.encode(), bcrypt.gensalt()).decode()
 
 _log = logging.getLogger("cullis_connector.enrollment")
 
@@ -98,12 +80,8 @@ def enroll(
     private_key = generate_keypair()
     pubkey_pem = public_key_to_pem(private_key.public_key()).decode()
 
-    # Generate an X-API-Key locally. The raw key never leaves this process
-    # until we persist it to disk post-approval. The server receives only
-    # the bcrypt hash and copies it into internal_agents.api_key_hash on
-    # approve() so /v1/egress/* auth works from day one.
-    api_key_raw = _generate_api_key()
-    api_key_hash = _bcrypt_hash(api_key_raw)
+    # ADR-014 PR-C: the cert the Mastio signs at approval is the
+    # agent's credential — no api_key is minted on either side.
 
     # F-B-11 Phase 3d (#181) — generate the DPoP keypair locally, submit
     # the public JWK at start, persist the private half alongside the
@@ -118,7 +96,6 @@ def enroll(
         site_url=site_url,
         pubkey_pem=pubkey_pem,
         requester=requester,
-        api_key_hash=api_key_hash,
         dpop_jwk=dpop_public_jwk,
         verify_tls=verify_tls,
         timeout_s=request_timeout_s,
@@ -176,7 +153,6 @@ def enroll(
         private_key=private_key,
         ca_chain_pem=None,  # Phase 2c will fetch the CA chain from the Site.
         metadata=metadata,
-        api_key=api_key_raw,
         dpop_private_jwk=dpop_key.private_jwk(),
     )
 
@@ -197,7 +173,6 @@ def _start(
     site_url: str,
     pubkey_pem: str,
     requester: RequesterInfo,
-    api_key_hash: str | None,
     verify_tls: bool,
     timeout_s: float,
     dpop_jwk: dict | None = None,
@@ -211,8 +186,6 @@ def _start(
         body["reason"] = requester.reason
     if requester.device_info:
         body["device_info"] = requester.device_info
-    if api_key_hash:
-        body["api_key_hash"] = api_key_hash
     # F-B-11 Phase 3d — include the public DPoP JWK so Mastio can
     # compute + store its thumbprint on approve (wire added in #207).
     if dpop_jwk is not None:

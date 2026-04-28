@@ -1,13 +1,13 @@
-"""Sandbox demo agent — ADR-011 unified API-key+DPoP auth + A2A messaging.
+"""Reference demo agent — ADR-014 mTLS client cert + DPoP + A2A messaging.
 
-Each agent authenticates to the Mastio with the API key + DPoP key the
-bootstrap stage enrolled for it, drains the one-shot inbox, and (when
-``AGENT_AUTO_SEND=true``) fires a nonce at every peer listed in
+Each agent authenticates to the Mastio with the TLS client cert + DPoP
+key the bootstrap stage enrolled for it, drains the one-shot inbox, and
+(when ``AGENT_AUTO_SEND=true``) fires a nonce at every peer listed in
 ``/state/peers.json``. Received nonces land in ``/tmp/received.json``
 for the smoke suite to inspect.
 
 Env:
-    BROKER_URL                e.g. http://proxy-a:9100
+    BROKER_URL                e.g. https://proxy-a:9443
     ORG_ID                    e.g. orga
     AGENT_NAME                short name (becomes {ORG_ID}::{AGENT_NAME})
     IDENTITY_DIR              /state/{ORG_ID}/agents/{AGENT_NAME} by default
@@ -47,14 +47,19 @@ def _record(nonce: str) -> None:
 
 
 def wait_for_http(url: str, timeout: float = 60.0) -> bool:
-    import urllib.request
-    import urllib.error
+    # ADR-014 — Mastio's https endpoint behind the per-org nginx
+    # sidecar uses a self-signed Org CA, so verify=False (matches the
+    # SDK's ``verify_tls=False``).
+    import httpx
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            urllib.request.urlopen(url, timeout=2)
-            return True
-        except (urllib.error.URLError, OSError):
+    with httpx.Client(verify=False, timeout=2.0) as client:
+        while time.monotonic() < deadline:
+            try:
+                r = client.get(url)
+                if r.status_code < 500:
+                    return True
+            except httpx.HTTPError:
+                pass
             time.sleep(1)
     return False
 
@@ -64,10 +69,10 @@ def _receive_loop(client: CullisClient, self_id: str) -> None:
 
     ADR-011 Phase 4b — replaces the old session-based poll loop. The
     egress one-shot inbox lives on the Mastio (``/v1/egress/message/inbox``
-    under API-key + DPoP auth) for intra-org deliveries short-circuited
-    by ADR-001, and mirrors cross-org rows the broker pushed back after
-    the publisher replay. ``decrypt_oneshot`` verifies the envelope
-    signature and returns the inner payload.
+    under mTLS client-cert + DPoP auth) for intra-org deliveries
+    short-circuited by ADR-001, and mirrors cross-org rows the broker
+    pushed back after the publisher replay. ``decrypt_oneshot`` verifies
+    the envelope signature and returns the inner payload.
     """
     seen: set[str] = set()
     while True:
@@ -111,11 +116,12 @@ def _send_to_peers(client: CullisClient, self_id: str, peers: list[str]) -> None
 
     ADR-011 Phase 4b — replaced ``open_session`` + ``send`` with
     ``send_oneshot``. The call hits ``/v1/egress/resolve`` + ``/v1/egress/
-    message/send`` on the Mastio (API-key + DPoP), which triggers the
-    ADR-001 intra-org short-circuit when ``PROXY_INTRA_ORG=true`` and the
-    peer lives on the same proxy — the Court never sees intra-org
-    traffic. Cross-org targets resolve to ``envelope`` transport and
-    ride the ADR-009 counter-signature chain end-to-end.
+    message/send`` on the Mastio (mTLS client-cert + DPoP), which
+    triggers the ADR-001 intra-org short-circuit when
+    ``PROXY_INTRA_ORG=true`` and the peer lives on the same proxy — the
+    Court never sees intra-org traffic. Cross-org targets resolve to
+    ``envelope`` transport and ride the ADR-009 counter-signature chain
+    end-to-end.
     """
     for peer_id in peers:
         nonce = f"{self_id}->{peer_id}:{uuid.uuid4().hex[:8]}"
@@ -127,52 +133,53 @@ def _send_to_peers(client: CullisClient, self_id: str, peers: list[str]) -> None
                   flush=True)
 
 
-def _auth_api_key_file(mastio_url: str, identity_dir: str, self_id: str) -> CullisClient:
-    """ADR-011 Phase 4 — runtime agents read the credentials the
-    bootstrap-mastio stage enrolled for them.
+def _auth_identity_dir(mastio_url: str, identity_dir: str, self_id: str) -> CullisClient:
+    """ADR-014 — runtime agents authenticate via TLS client cert + DPoP.
 
-    Layout matches what ``_enroll_agents_via_byoca`` writes under
-    ``/state/{org}/agents/{name}/``: ``api-key`` + ``dpop.jwk`` (both
-    required for egress DPoP enforcement).
+    Layout matches what bootstrap + bootstrap-mastio writes under
+    ``/state/{org}/agents/{name}/``: ``agent.pem`` (cert) +
+    ``agent-key.pem`` (private key) + ``dpop.jwk`` (egress proof key).
+
+    ``verify_tls=False`` because the reference deployment's Org CA is
+    self-signed.
     """
-    api_key_path = pathlib.Path(identity_dir) / "api-key"
+    cert_path = pathlib.Path(identity_dir) / "agent.pem"
+    key_path = pathlib.Path(identity_dir) / "agent-key.pem"
     dpop_key_path = pathlib.Path(identity_dir) / "dpop.jwk"
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if api_key_path.exists() and dpop_key_path.exists():
+        if cert_path.exists() and key_path.exists() and dpop_key_path.exists():
             break
         time.sleep(0.5)
     else:
         raise RuntimeError(
-            f"[{self_id}] api-key or dpop.jwk missing under {identity_dir} "
-            "— did bootstrap-mastio run?"
+            f"[{self_id}] missing identity material under {identity_dir} "
+            "(need agent.pem, agent-key.pem, dpop.jwk) — "
+            "did bootstrap-mastio + bootstrap run?"
         )
-    client = CullisClient.from_api_key_file(
+    client = CullisClient.from_identity_dir(
         mastio_url,
-        api_key_path=api_key_path,
+        cert_path=cert_path,
+        key_path=key_path,
         dpop_key_path=dpop_key_path,
         agent_id=self_id,
         org_id=self_id.split("::", 1)[0],
+        verify_tls=False,
     )
-    # Session APIs (``list_sessions`` / ``open_session`` / ``send``) still
-    # require a broker JWT. ``login_via_proxy`` converts the API key into
-    # one by asking the Mastio to mint a client_assertion on the agent's
-    # behalf + forwarding it to the Court — the agent never handles a
-    # cert. Egress / ``send_oneshot`` calls continue to use the API-key
-    # + DPoP path directly.
+    # Session APIs (``list_sessions`` / ``open_session`` / ``send``)
+    # require a broker JWT. ``login_via_proxy`` asks the Mastio to mint
+    # a client_assertion on the agent's behalf (PR-C: the auth dep on
+    # ``/v1/auth/sign-assertion`` resolves the agent from the TLS client
+    # cert nginx forwards in ``X-SSL-Client-Cert``) and forwards it to
+    # the Court for a DPoP-bound access token. Egress / ``send_oneshot``
+    # calls continue under the same client-cert + DPoP path.
     client.login_via_proxy()
     # ``client.send`` signs each A2A message with the agent's private
-    # key (end-to-end non-repudiation layer sitting on top of the
-    # session envelope). Under ADR-011 the agent keeps reading its
-    # cert/key from the identity dir alongside ``api-key`` + ``dpop.jwk``
-    # — the key is bound to the same row the Mastio enrolled, so the
-    # broker verifies the inner signature against the public half it
-    # already has. Enrollment via Connector/admin-token would persist
-    # its own ``agent-key.pem`` here; BYOCA/SPIFFE enrollment reuses
-    # the cert the operator submitted.
-    key_path = pathlib.Path(identity_dir) / "agent-key.pem"
-    if key_path.exists():
-        client._signing_key_pem = key_path.read_text()
+    # key (end-to-end non-repudiation layer). The TLS key on disk
+    # doubles as the signing key — the broker verifies the inner
+    # signature against the public half pinned in
+    # ``internal_agents.cert_pem``.
+    client._signing_key_pem = key_path.read_text()
     return client
 
 
@@ -198,16 +205,16 @@ def main() -> int:
         identity_dir = os.environ.get(
             "IDENTITY_DIR", f"/state/{org_id}/agents/{name}",
         )
-        client = _auth_api_key_file(broker, identity_dir, self_id)
+        client = _auth_identity_dir(broker, identity_dir, self_id)
     except Exception as exc:
-        print(f"[{self_id}] FAIL: api-key auth: {exc!r}",
+        print(f"[{self_id}] FAIL: client-cert auth: {exc!r}",
               file=sys.stderr, flush=True)
         return 2
 
     token_preview = (
-        client.token[:24] if getattr(client, "token", None) else "(api-key only)"
+        client.token[:24] if getattr(client, "token", None) else "(cert-auth only)"
     )
-    print(f"[{self_id}] API-key+DPoP auth OK — token={token_preview}...",
+    print(f"[{self_id}] mTLS+DPoP auth OK — token={token_preview}...",
           flush=True)
     pathlib.Path("/tmp/ready").write_text(self_id + "\n")
     _persist_received()  # initialize empty /tmp/received.json

@@ -198,7 +198,8 @@ class DashboardInboxPoller:
         # decrypt_oneshot needs the sender's cert to verify the envelope
         # signature. Device-code-enrolled Connectors can't spend a
         # broker JWT on the Court's federation API, so we hand the SDK
-        # the proxy-backed fetcher that auths with X-API-Key + DPoP.
+        # the proxy-backed fetcher that auths via mTLS client cert
+        # (ADR-014) + DPoP.
         # Pubkey-lookup failures are security-relevant (the message is
         # dropped so no unverified plaintext surfaces) — log at ERROR
         # so operators see the skip without toggling DEBUG. Other decrypt

@@ -4,7 +4,8 @@ Endpoint:
 
     GET /v1/audit/session/{session_id}
 
-Authentication: ``X-API-Key`` (same internal-agent scheme used for egress).
+Authentication: mTLS client cert (ADR-014). The cert presented at the TLS
+handshake IS the agent identity — same dep as ``/v1/egress/*``.
 
 Authorization (MVP): the caller may read the audit trail for a session
 only if the ``audit_log`` table contains at least one entry with
@@ -26,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from mcp_proxy.auth.api_key import get_agent_from_api_key
+from mcp_proxy.auth.client_cert import get_agent_from_client_cert
 from mcp_proxy.db import get_db
 from mcp_proxy.models import InternalAgent
 
@@ -78,7 +79,7 @@ def _row_to_entry(row: Any) -> AuditEntry:
 )
 async def get_session_audit(
     session_id: str,
-    agent: InternalAgent = Depends(get_agent_from_api_key),
+    agent: InternalAgent = Depends(get_agent_from_client_cert),
 ) -> list[AuditEntry]:
     """Return the audit trail for ``session_id`` if the caller is a peer.
 

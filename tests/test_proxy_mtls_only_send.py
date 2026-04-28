@@ -71,7 +71,6 @@ async def _provision_signing_agent(agent_id: str, org_id: str = "acme") -> tuple
         agent_id=canonical,
         display_name=agent_id,
         capabilities=["cap.read"],
-        api_key_hash="$2b$12$placeholder",
         cert_pem=cert_pem,
     )
     return mtls_headers(cert_pem), priv_pem

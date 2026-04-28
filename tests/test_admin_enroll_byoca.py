@@ -153,7 +153,7 @@ async def _fetch_internal_row(app, agent_id: str) -> dict:
 
 # ── happy path ───────────────────────────────────────────────────────────
 
-async def test_byoca_enroll_happy_path_returns_api_key(tmp_path, monkeypatch):
+async def test_byoca_enroll_happy_path_returns_cert_thumbprint(tmp_path, monkeypatch):
     app = await _spin_proxy(tmp_path, monkeypatch, "bc-happy")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
@@ -179,7 +179,8 @@ async def test_byoca_enroll_happy_path_returns_api_key(tmp_path, monkeypatch):
             assert r.status_code == 201, r.text
             body = r.json()
             assert body["agent_id"] == "bc-happy::alice"
-            assert body["api_key"].startswith("sk_local_alice_")
+            # ADR-014 PR-C: no api_key minted — the cert is the credential.
+            assert "api_key" not in body
             assert len(body["cert_thumbprint"]) == 64  # SHA-256 hex
             assert body["spiffe_id"] is None
             assert body["dpop_jkt"] is None

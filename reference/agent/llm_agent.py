@@ -1,10 +1,12 @@
 """LLM-driven Cullis agent for the reference deployment.
 
-Each container instance runs ONE agent. Identity comes from the
-``api-key`` + ``dpop.jwk`` pair the bootstrap-mastio enrolled and
-parked under ``/state/{org}/agents/{name}/``. The role (BUYER /
-INVENTORY / BROKER / SUPPLIER) selects the system prompt that frames
-the LLM's decision-making each turn.
+Each container instance runs ONE agent. Identity comes from the TLS
+client cert + private key + DPoP keypair (ADR-014) parked under
+``/state/{org}/agents/{name}/``: bootstrap mints the cert/key, and
+bootstrap-mastio drops the matching private DPoP JWK alongside after
+verifying the Mastio-side enrollment. The role (BUYER / INVENTORY /
+BROKER / SUPPLIER) selects the system prompt that frames the LLM's
+decision-making each turn.
 
 Loop:
   1. (optional, once) inject ``INITIAL_PROMPT`` env as if it were a
@@ -176,12 +178,13 @@ def _load_prompt() -> str:
 
 
 def _wait_identity(timeout_s: float = 60.0) -> None:
-    """Block until bootstrap-mastio has written api-key + dpop.jwk."""
+    """Block until bootstrap + bootstrap-mastio have written cert+key+dpop.jwk."""
     deadline = time.monotonic() + timeout_s
-    api_key = IDENTITY_DIR / "api-key"
+    cert = IDENTITY_DIR / "agent.pem"
+    key = IDENTITY_DIR / "agent-key.pem"
     dpop = IDENTITY_DIR / "dpop.jwk"
     while time.monotonic() < deadline:
-        if api_key.exists() and dpop.exists():
+        if cert.exists() and key.exists() and dpop.exists():
             return
         time.sleep(0.5)
     raise SystemExit(
@@ -190,28 +193,31 @@ def _wait_identity(timeout_s: float = 60.0) -> None:
 
 
 def _load_client() -> CullisClient:
-    """Build a CullisClient from the on-disk credentials."""
+    """Build a CullisClient from the on-disk credentials.
+
+    ADR-014 — TLS client cert authenticates against the per-org nginx
+    sidecar on ``https://proxy-X:9443``. ``verify_tls=False`` because
+    the reference deployment's Org CA is self-signed.
+    """
     _wait_identity()
-    client = CullisClient.from_api_key_file(
+    cert_path = IDENTITY_DIR / "agent.pem"
+    key_path = IDENTITY_DIR / "agent-key.pem"
+    client = CullisClient.from_identity_dir(
         BROKER_URL,
-        api_key_path=IDENTITY_DIR / "api-key",
+        cert_path=cert_path,
+        key_path=key_path,
         dpop_key_path=IDENTITY_DIR / "dpop.jwk",
         agent_id=SELF_ID,
         org_id=ORG_ID,
+        verify_tls=False,
     )
     client.login_via_proxy()
     # send_oneshot signs each envelope with the agent's private key for
-    # end-to-end non-repudiation. from_api_key_file() doesn't load the
-    # PEM (api-key + dpop.jwk are sufficient for auth and DPoP-bound
-    # tokens), so we have to inject it manually — same pattern as the
-    # sandbox agent. Without this the first send_oneshot raises
-    # "one-shot send requires a signing key".
-    key_path = IDENTITY_DIR / "agent-key.pem"
-    if key_path.exists():
-        client._signing_key_pem = key_path.read_text()
-        log.info(f"signing key loaded ({key_path})")
-    else:
-        log.warning(f"no agent-key.pem at {key_path} — sends will fail")
+    # end-to-end non-repudiation. The TLS key doubles as the signing
+    # key — the broker verifies the inner signature against the public
+    # half pinned in ``internal_agents.cert_pem``.
+    client._signing_key_pem = key_path.read_text()
+    log.info(f"signing key loaded ({key_path})")
     log.info(f"identity loaded; logged in via proxy ({BROKER_URL})")
     return client
 

@@ -129,16 +129,15 @@ async def _insert_active_agent_with_method(method: str) -> None:
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, api_key_hash, "
+                "(agent_id, display_name, capabilities, "
                 " cert_pem, created_at, is_active, enrollment_method) "
                 "VALUES "
-                "(:aid, :name, '[]', :hash, NULL, '2026-04-23T00:00:00+00:00', "
+                "(:aid, :name, '[]', NULL, '2026-04-23T00:00:00+00:00', "
                 " 1, :method)"
             ),
             {
                 "aid": f"agent-{method}",
                 "name": f"agent {method}",
-                "hash": "x" * 64,
                 "method": method,
             },
         )

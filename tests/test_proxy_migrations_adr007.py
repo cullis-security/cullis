@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from mcp_proxy.db import dispose_db, init_db
 from mcp_proxy.db_models import LocalAgentResourceBinding, LocalMCPResource
 
-HEAD_REVISION = "0021_anomaly_detector_tables"
+HEAD_REVISION = "0022_drop_api_key_hash"
 PREVIOUS_REVISION = "0006_enrollment_api_key_hash"
 
 

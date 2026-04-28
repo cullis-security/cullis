@@ -64,12 +64,11 @@ async def _seed_agents(tmp_path, monkeypatch, rows: list[dict]):
                 text(
                     """
                     INSERT INTO internal_agents (
-                        agent_id, display_name, capabilities, api_key_hash,
-                        cert_pem, created_at, is_active,
+                        agent_id, display_name, capabilities, cert_pem, created_at, is_active,
                         federated, federated_at, federation_revision,
                         last_pushed_revision
                     ) VALUES (
-                        :aid, :name, :caps, :hash,
+                        :aid, :name, :caps,
                         :cert, :created, :active,
                         :fed, :fed_at, :rev, :last
                     )
@@ -79,7 +78,6 @@ async def _seed_agents(tmp_path, monkeypatch, rows: list[dict]):
                     "aid": r["agent_id"],
                     "name": r.get("display_name", r["agent_id"]),
                     "caps": json.dumps(r.get("capabilities", [])),
-                    "hash": "$2b$12$placeholder",
                     "cert": r.get("cert_pem", "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"),
                     "created": "2026-04-17T00:00:00+00:00",
                     "active": 1 if r.get("is_active", True) else 0,

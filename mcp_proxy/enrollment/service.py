@@ -164,7 +164,6 @@ async def start_enrollment(
     requester_email: str,
     reason: str | None,
     device_info: str | None,
-    api_key_hash: str | None = None,
     dpop_jwk: dict | None = None,
 ) -> StartedEnrollment:
     """Create a new pending enrollment.
@@ -172,12 +171,11 @@ async def start_enrollment(
     The session_id is a 128-bit URL-safe random token — unguessable so only
     the client that started the flow can poll it.
 
-    ``api_key_hash`` is the bcrypt hash of an X-API-Key that the connector
-    generated locally (the raw key never leaves the requester's machine).
-    If provided, it gets stored now and copied to internal_agents on
-    approve() so the connector can authenticate to /v1/egress/* from day
-    one. Legacy connectors that don't send this still work — the server
-    generates its own key in approve() for backward compatibility.
+    ADR-014 PR-C — the agent's TLS client cert is the credential. No
+    api_key is minted; ``approve()`` writes only ``cert_pem`` (signed by
+    the Org CA on approval) to ``internal_agents``. The Connector
+    presents that cert at the TLS handshake on subsequent calls and
+    ``get_agent_from_client_cert`` resolves the agent identity.
 
     ``dpop_jwk`` (F-B-11 Phase 3b) is the optional public JWK of the
     Connector's DPoP keypair. When supplied the server computes its RFC
@@ -200,11 +198,11 @@ async def start_enrollment(
             """INSERT INTO pending_enrollments (
                 session_id, pubkey_pem, pubkey_fingerprint,
                 requester_name, requester_email, reason, device_info,
-                status, created_at, expires_at, api_key_hash, dpop_jkt
+                status, created_at, expires_at, dpop_jkt
             ) VALUES (
                 :sid, :pk, :fp,
                 :name, :email, :reason, :device,
-                'pending', :created, :expires, :keyhash, :dpop_jkt
+                'pending', :created, :expires, :dpop_jkt
             )"""
         ),
         {
@@ -217,7 +215,6 @@ async def start_enrollment(
             "device": device_info,
             "created": _iso(now),
             "expires": _iso(expires_at),
-            "keyhash": api_key_hash,
             "dpop_jkt": dpop_jkt,
         },
     )
@@ -283,17 +280,9 @@ async def approve(
     )
 
     # Register the approved agent in the main internal_agents registry so it
-    # shows up in the dashboard and can authenticate via X-API-Key against
-    # /v1/egress/*. If the connector supplied its own api_key_hash at start
-    # (see 0005 migration), reuse it — the server never sees the raw key.
-    # Legacy connectors that didn't send one get a server-generated hash
-    # here (backward-compatible with pre-#123 clients).
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-
-    api_key_hash = record.get("api_key_hash")
-    if not api_key_hash:
-        raw_api_key = generate_api_key(agent_id)
-        api_key_hash = hash_api_key(raw_api_key)
+    # shows up in the dashboard and can authenticate via mTLS client cert
+    # (ADR-014) against /v1/egress/*. The cert ``cert_pem`` we just signed
+    # on the line above is the credential — no api_key is minted.
     existing = await conn.execute(
         text("SELECT 1 FROM internal_agents WHERE agent_id = :aid"),
         {"aid": agent_id},
@@ -302,17 +291,16 @@ async def approve(
         await conn.execute(
             text(
                 """INSERT INTO internal_agents
-                   (agent_id, display_name, capabilities, api_key_hash,
+                   (agent_id, display_name, capabilities,
                     cert_pem, created_at, is_active, device_info, dpop_jkt,
                     enrollment_method, enrolled_at)
-                   VALUES (:aid, :dn, :caps, :hash, :cert, :created, 1,
+                   VALUES (:aid, :dn, :caps, :cert, :created, 1,
                            :device, :dpop_jkt, 'connector', :created)"""
             ),
             {
                 "aid": agent_id,
                 "dn": agent_id,
                 "caps": json.dumps(capabilities),
-                "hash": api_key_hash,
                 "cert": cert_pem,
                 "created": now,
                 # Free-form JSON carried from the Connector at start_enrollment

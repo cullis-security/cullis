@@ -62,18 +62,17 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
+                "(agent_id, display_name, capabilities, cert_pem, "
                 " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :created_at, :is_active)"
+                " :created_at, :is_active)"
             ),
             {
                 "agent_id": "acme::sender-bot",
                 "display_name": "sender-bot",
                 "capabilities": '["cap.read"]',
                 "cert_pem": cert_pem,
-                "api_key_hash": "$2b$12$placeholder",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },
         )
@@ -85,18 +84,17 @@ async def test_send_via_proxy_mtls_only_end_to_end(proxy_app):
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
+                "(agent_id, display_name, capabilities, cert_pem, "
                 " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :created_at, :is_active)"
+                " :created_at, :is_active)"
             ),
             {
                 "agent_id": "peer-bot",
                 "display_name": "peer-bot",
                 "capabilities": "[]",
                 "cert_pem": cert_pem,
-                "api_key_hash": "$2b$12$placeholder",
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },
         )

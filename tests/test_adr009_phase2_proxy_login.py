@@ -52,7 +52,6 @@ async def test_sign_assertion_includes_mastio_signature(tmp_path, monkeypatch):
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
             # Pre-register an agent so sign-assertion can resolve credentials.
-            from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
             from mcp_proxy.db import create_agent
             from mcp_proxy.egress.agent_manager import AgentManager
             mgr: AgentManager = app.state.agent_manager
@@ -60,21 +59,24 @@ async def test_sign_assertion_includes_mastio_signature(tmp_path, monkeypatch):
             # Issue an agent cert signed by the Org CA that the proxy just
             # generated during first-boot.
             cert_pem, key_pem = mgr._generate_agent_cert("alice")
-            raw = generate_api_key("alice")
             await create_agent(
                 agent_id="sa-mastio::alice",
                 display_name="alice",
                 capabilities=["oneshot.message"],
-                api_key_hash=hash_api_key(raw),
                 cert_pem=cert_pem,
             )
             # Persist the private key so get_agent_credentials works.
             from mcp_proxy.db import set_config
             await set_config("agent_key:sa-mastio::alice", key_pem)
 
+            # ADR-014 PR-C: present the agent's TLS client cert to authenticate.
+            import urllib.parse as _up
             r = await cli.post(
                 "/v1/auth/sign-assertion",
-                headers={"X-API-Key": raw},
+                headers={
+                    "X-SSL-Client-Cert": _up.quote(cert_pem, safe=""),
+                    "X-SSL-Client-Verify": "SUCCESS",
+                },
             )
             assert r.status_code == 200, r.text
             body = r.json()

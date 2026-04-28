@@ -13,6 +13,9 @@ Three responsibilities:
    - for every agent the outer bootstrap minted a cert/key for under
      ``/state/{org}/agents/{name}/``, ``POST /v1/admin/agents`` on the
      owning Mastio with the pre-generated material and ``federated=true``
+   - persist the matching private DPoP JWK alongside the cert so the
+     agent's runtime ``from_identity_dir`` finds it (cert+key are
+     already on disk; PR-C dropped api_key entirely)
    - the Phase 3 publisher loop picks the row up from
      ``internal_agents`` and pushes it to the Court
 
@@ -169,11 +172,11 @@ def _read_org_secret(org_id: str) -> str | None:
 def _generate_dpop_jwk() -> tuple[dict, dict]:
     """Generate an EC P-256 DPoP keypair. Returns ``(public_jwk, private_jwk)``.
 
-    ADR-011 Phase 4 — enrollment must ship a public JWK so the Mastio
-    pins its jkt from the first request, and the agent container needs
-    the matching private JWK on disk to sign proofs at runtime. The
-    sandbox bootstrap is the single producer/consumer, so we hand-roll
-    the keypair here rather than import cullis_sdk.dpop (keeps the
+    ADR-014 — enrollment must ship a public JWK so the Mastio pins its
+    jkt from the first request, and the agent container needs the
+    matching private JWK on disk to sign proofs at runtime. The
+    bootstrap is the single producer/consumer, so we hand-roll the
+    keypair here rather than import cullis_sdk.dpop (keeps the
     container lean — SDK lives in the agent image, not here).
     """
     import base64 as _b64
@@ -192,18 +195,19 @@ def _generate_dpop_jwk() -> tuple[dict, dict]:
 
 
 def _persist_runtime_creds(
-    entry: pathlib.Path, api_key: str, private_jwk: dict,
+    entry: pathlib.Path, private_jwk: dict,
 ) -> None:
-    """Write api-key + dpop.jwk next to the agent's cert.
+    """Write the matching private DPoP JWK next to the agent's cert.
 
-    Shared by all three enrollment methods — once an agent has those two
-    files plus its agent.pem/agent-key.pem, runtime auth via
-    ``CullisClient.from_api_key_file`` is identical regardless of how the
-    Mastio was convinced to issue them.
+    ADR-014 — cert+key on disk are the runtime identity (presented at
+    the nginx-sidecar TLS handshake). PR-C dropped the api_key path
+    entirely; the only artifact we still need to drop alongside is the
+    private DPoP JWK that pairs with the public one we just sent in the
+    enroll body. Once an agent has cert+key+dpop.jwk, runtime auth via
+    ``CullisClient.from_identity_dir`` is identical regardless of which
+    enrollment method got the Mastio to pin its jkt.
     """
     import json as _json
-    (entry / "api-key").write_text(api_key)
-    (entry / "api-key").chmod(0o644)
     (entry / "dpop.jwk").write_text(
         _json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
     )
@@ -238,7 +242,7 @@ def _enroll_one_byoca(
     )
     if r.status_code == 201:
         resp = r.json()
-        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _persist_runtime_creds(entry, private_jwk)
         _ok(f"{org_id}::{name}: enrolled via BYOCA "
             f"(caps={capabilities or '[]'}, jkt={resp.get('dpop_jkt', '')[:12]}…)")
         return {"org_id": org_id, "agent_name": name,
@@ -291,7 +295,7 @@ def _enroll_one_spiffe(
     )
     if r.status_code == 201:
         resp = r.json()
-        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _persist_runtime_creds(entry, private_jwk)
         _ok(f"{org_id}::{name}: enrolled via SPIFFE "
             f"(spiffe_id={CYAN}{resp.get('spiffe_id', '')}{RESET}, "
             f"jkt={resp.get('dpop_jkt', '')[:12]}…)")
@@ -351,7 +355,7 @@ def _enroll_one_connector_simulated(
     )
     if r.status_code == 201:
         resp = r.json()
-        _persist_runtime_creds(entry, resp["api_key"], private_jwk)
+        _persist_runtime_creds(entry, private_jwk)
         _ok(f"{org_id}::{name}: enrolled via Connector device-code "
             f"{YELLOW}(simulated → BYOCA wire){RESET} "
             f"jkt={resp.get('dpop_jkt', '')[:12]}…")

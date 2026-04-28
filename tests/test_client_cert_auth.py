@@ -162,7 +162,6 @@ async def test_rejects_cert_pin_mismatch(proxy_app):
         agent_id="acme::alice",
         display_name="alice",
         capabilities=["cap.read"],
-        api_key_hash="$2b$12$placeholder",
         cert_pem=real_cert_pem,
     )
     # Authenticate with the second cert that was never stored.
@@ -203,7 +202,6 @@ async def test_cn_fallback_when_san_missing(proxy_app, monkeypatch):
         agent_id="acme::legacy",
         display_name="legacy",
         capabilities=["cap.read"],
-        api_key_hash="$2b$12$placeholder",
         cert_pem=cert_pem,
     )
     headers = mtls_headers(cert_pem)

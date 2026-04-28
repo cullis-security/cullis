@@ -18,7 +18,7 @@ from alembic.config import Config as AlembicConfig
 
 from mcp_proxy.db import create_agent, dispose_db, init_db
 
-HEAD_REVISION = "0021_anomaly_detector_tables"
+HEAD_REVISION = "0022_drop_api_key_hash"
 PREVIOUS_REVISION = "0015_enrollment_dpop_jkt"
 NEW_COLUMNS = {"enrollment_method", "spiffe_id", "enrolled_at"}
 
@@ -71,6 +71,11 @@ def test_migration_0016_backfills_existing_rows(tmp_path):
     command.upgrade(cfg, PREVIOUS_REVISION)
     conn = sqlite3.connect(str(db_file))
     try:
+        # Pre-0022 schema still has the NOT NULL ``api_key_hash``
+        # column; we're stamped at 0015 here and exercising the 0016
+        # backfill path. The 0022 migration drops the column later
+        # (and rebuilds the row), so the placeholder hash never
+        # survives the upgrade chain.
         conn.execute(
             """INSERT INTO internal_agents
                (agent_id, display_name, capabilities, api_key_hash,
@@ -129,13 +134,11 @@ async def test_create_agent_helper_writes_enrollment_metadata(tmp_path):
             agent_id="orga::test",
             display_name="Test",
             capabilities=["sandbox.read"],
-            api_key_hash="h",
         )
         await create_agent(
             agent_id="orga::spiffe-test",
             display_name="SPIFFE Test",
             capabilities=[],
-            api_key_hash="h2",
             enrollment_method="spiffe",
             spiffe_id="spiffe://orga.test/spiffe-test",
         )

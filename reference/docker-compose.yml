@@ -42,6 +42,11 @@ volumes:
   bootstrap-state:
   proxy-a-data:
   proxy-b-data:
+  # ADR-014 — per-org nginx sidecar TLS material. Each Mastio writes
+  # its server cert + Org CA bundle here at first-boot; the matching
+  # mastio-nginx-{a,b} sidecar mounts read-only and serves 9443.
+  mastio-a-nginx-certs:
+  mastio-b-nginx-certs:
   # Phase 6 observability stack
   loki-data:
   prometheus-data:
@@ -304,11 +309,22 @@ services:
       # BrokerBridge's own per-agent Court login, so the envelope path
       # keeps working.
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      # ADR-014 — first-boot writes Org CA + nginx server cert into the
+      # shared volume so the mastio-nginx-a sidecar can serve TLS on
+      # 9443 against the same CA the agents' certs chain to. SAN
+      # includes ``proxy-a`` (the alias agents resolve over
+      # orga-internal) and ``localhost`` (smoke + dev curl from host).
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-a,localhost"
     volumes:
       - proxy-a-data:/data
+      - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orga-internal:
-        aliases: [proxy-a]
+        # ``mcp-proxy`` is the upstream name nginx/mastio/mastio.conf
+        # hard-codes; add it as an alias here so the sidecar's
+        # ``proxy_pass`` resolves without forking the shared config.
+        aliases: [proxy-a, mcp-proxy]
       public-wan:
         aliases: [proxy-a]
     expose: ["9100"]
@@ -319,6 +335,39 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orga agents. Lives only
+  # on orga-internal: verifies client certs against the Org CA the
+  # Mastio just minted, terminates TLS on 9443, forwards plaintext to
+  # mcp-proxy:9100 inside the same network.
+  mastio-nginx-a:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-a:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-a-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orga-internal:
+        aliases: [mastio-nginx-a]
+    expose: ["9443"]
+    ports: ["9443:9443"]
+    healthcheck:
+      # Cert files on disk + master pid alive — busybox wget TLS
+      # handshake against the self-signed Org CA flakes on Alpine; if
+      # the cert material were invalid nginx wouldn't have started.
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Blocco 4 — SPIRE stack per Org A ──────────────────────────────────────
   #
@@ -422,8 +471,15 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      # ADR-014 — wait for the nginx sidecar to be serving 9443 before
+      # the agent's first SDK call hits the wire.
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — agents reach the Mastio over mTLS via the per-org
+      # nginx sidecar on 9443. The agent presents its Org-CA-signed
+      # cert at the TLS handshake; nginx verifies + forwards.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "agent-a"
       PEERS_FILE: "/state/peers.json"
@@ -464,8 +520,11 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — see agent-a rationale; same nginx sidecar.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "byoca-bot"
       PEERS_FILE: "/state/peers.json"
@@ -534,11 +593,15 @@ services:
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
       # ADR-012 — Mastio-local /v1/auth/token (see proxy-a rationale).
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      # ADR-014 — see proxy-a rationale.
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "proxy-b,localhost"
     volumes:
       - proxy-b-data:/data
+      - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
     networks:
       orgb-internal:
-        aliases: [proxy-b]
+        aliases: [proxy-b, mcp-proxy]
       public-wan:
         aliases: [proxy-b]
     expose: ["9100"]
@@ -549,6 +612,34 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # ADR-014 — TLS terminator + mTLS gate for orgb agents. Mirrors
+  # mastio-nginx-a; host port 9543 keeps proxy-a's 9443 free.
+  mastio-nginx-b:
+    image: nginx:1.27-alpine
+    depends_on:
+      proxy-b:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-b-nginx-certs:/etc/nginx/certs:ro
+    networks:
+      orgb-internal:
+        aliases: [mastio-nginx-b]
+    expose: ["9443"]
+    ports: ["9543:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   # ── Blocco 4 — SPIRE stack per Org B ──────────────────────────────────────
 
@@ -638,8 +729,11 @@ services:
         condition: service_completed_successfully
       broker:
         condition: service_healthy
+      mastio-nginx-b:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-b:9100"
+      # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
+      BROKER_URL: "https://proxy-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "agent-b"
       PEERS_FILE: "/state/peers.json"
@@ -662,8 +756,9 @@ services:
   # Each agent runs `reference/agent/llm_agent.py`, calls Ollama on the host
   # via `host.docker.internal`, and acts according to its `AGENT_ROLE` system
   # prompt (buyer / inventory / broker / supplier). Identity files
-  # (api-key + dpop.jwk + cert + key) come from the read-only bootstrap-state
-  # volume, populated by `bootstrap-mastio` via the three enrollment paths.
+  # (agent.pem + agent-key.pem + dpop.jwk — ADR-014, no api_key) come
+  # from the read-only bootstrap-state volume: cert+key from the outer
+  # bootstrap, dpop.jwk from bootstrap-mastio after enrollment.
   #
   # Ollama URL defaults to `host.docker.internal:11434` via the `extra_hosts`
   # gateway entry — works without Docker Desktop on Linux. Override with the
@@ -678,8 +773,11 @@ services:
         condition: service_completed_successfully
       proxy-a:
         condition: service_healthy
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — agents reach Mastio A via the orga nginx sidecar.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "alice-byoca"
       AGENT_ROLE: "buyer"
@@ -708,8 +806,11 @@ services:
         condition: service_completed_successfully
       proxy-a:
         condition: service_healthy
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — agents reach Mastio A via the orga nginx sidecar.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "alice-spiffe"
       AGENT_ROLE: "inventory"
@@ -737,8 +838,11 @@ services:
         condition: service_completed_successfully
       proxy-a:
         condition: service_healthy
+      mastio-nginx-a:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-a:9100"
+      # ADR-014 — agents reach Mastio A via the orga nginx sidecar.
+      BROKER_URL: "https://proxy-a:9443"
       ORG_ID: "orga"
       AGENT_NAME: "alice-connector"
       AGENT_ROLE: "broker"
@@ -766,8 +870,11 @@ services:
         condition: service_completed_successfully
       proxy-b:
         condition: service_healthy
+      mastio-nginx-b:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-b:9100"
+      # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
+      BROKER_URL: "https://proxy-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "bob-byoca"
       AGENT_ROLE: "inventory"
@@ -795,8 +902,11 @@ services:
         condition: service_completed_successfully
       proxy-b:
         condition: service_healthy
+      mastio-nginx-b:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-b:9100"
+      # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
+      BROKER_URL: "https://proxy-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "bob-spiffe"
       AGENT_ROLE: "supplier"
@@ -824,8 +934,11 @@ services:
         condition: service_completed_successfully
       proxy-b:
         condition: service_healthy
+      mastio-nginx-b:
+        condition: service_healthy
     environment:
-      BROKER_URL: "http://proxy-b:9100"
+      # ADR-014 — agents reach Mastio B via the orgb nginx sidecar.
+      BROKER_URL: "https://proxy-b:9443"
       ORG_ID: "orgb"
       AGENT_NAME: "bob-connector"
       AGENT_ROLE: "broker"
@@ -905,11 +1018,10 @@ services:
     # pairs that ``bootstrap`` persisted under /state/{org}/agents/{name}/
     # and forwards them to the owning Mastio for enrollment.
     #
-    # ADR-011 Phase 4 — the mount now needs **read-write**: the enroll
-    # endpoint returns an API key + DPoP jkt that bootstrap_mastio
-    # persists next to the cert (``api-key``, ``dpop.jwk``) so the agent
-    # containers can ``from_api_key_file(...)`` at runtime. Without rw
-    # the enroll loop 500s on the first write.
+    # ADR-014 — the mount needs **read-write**: bootstrap_mastio
+    # persists the matching private DPoP JWK (``dpop.jwk``) next to the
+    # cert so the agent containers can ``from_identity_dir(...)`` at
+    # runtime. Without rw the persist call 500s on the first write.
     volumes:
       - bootstrap-state:/state
     # Needs all three networks: Court via public-wan, Mastio A via

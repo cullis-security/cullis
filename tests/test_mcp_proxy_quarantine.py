@@ -44,9 +44,9 @@ async def _insert_agent(engine: AsyncEngine, agent_id: str, active: int = 1) -> 
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, api_key_hash, "
+                "(agent_id, display_name, capabilities, "
                 " created_at, is_active) "
-                "VALUES (:a, :a, '[]', 'hash', :ts, :act)"
+                "VALUES (:a, :a, '[]', :ts, :act)"
             ),
             {
                 "a": agent_id,

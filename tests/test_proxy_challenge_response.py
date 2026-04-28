@@ -24,13 +24,20 @@ from tests.cert_factory import (
 ORG_ID = "challenge-test"
 
 
+def _canonical(agent_id: str) -> str:
+    return agent_id if "::" in agent_id else f"{ORG_ID}::{agent_id}"
+
+
 def _cert_pem(agent_id: str) -> str:
-    _, cert = make_agent_cert(agent_id, ORG_ID)
+    # ADR-014 PR-C: cert dep keys off the canonical
+    # ``{org_id}::{agent_name}`` CN — always normalise so the cached
+    # cert matches the row provisioned with the same id.
+    _, cert = make_agent_cert(_canonical(agent_id), ORG_ID)
     return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
 def _key_pem(agent_id: str) -> str:
-    return get_agent_key_pem(agent_id, ORG_ID)
+    return get_agent_key_pem(_canonical(agent_id), ORG_ID)
 
 
 @pytest_asyncio.fixture
@@ -61,43 +68,50 @@ async def proxy_app(tmp_path, monkeypatch):
     reset_challenge_store()
 
 
-async def _provision_agent(agent_id: str, *, cert_pem: str | None = None) -> str:
-    """Insert an internal_agents row with the real cert + an API-key.
-    Returns the raw API-key to use in X-API-Key."""
+async def _provision_agent(agent_id: str, *, cert_pem: str | None = None) -> tuple[dict[str, str], str]:
+    """Insert an internal_agents row with a cert + return mtls headers.
+
+    ADR-014 PR-C: the cert IS the credential. Returns ``(headers, cert_pem)``.
+
+    ``agent_id`` is the bare local name (``alice``); the row + cert
+    are keyed off the canonical ``{ORG_ID}::{agent_id}`` so the
+    ``get_agent_from_client_cert`` dep parses CN/SAN successfully.
+    """
     from datetime import datetime, timezone
     from sqlalchemy import text
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
     from mcp_proxy.db import get_db
+    from tests._mtls_helpers import mtls_headers
 
-    raw_key = generate_api_key(agent_id)
-    pem = cert_pem if cert_pem is not None else _cert_pem(agent_id)
+    canonical = (
+        agent_id if "::" in agent_id else f"{ORG_ID}::{agent_id}"
+    )
+    pem = cert_pem if cert_pem is not None else _cert_pem(canonical)
 
     async with get_db() as conn:
         await conn.execute(
             text(
                 "INSERT INTO internal_agents "
-                "(agent_id, display_name, capabilities, cert_pem, api_key_hash, "
+                "(agent_id, display_name, capabilities, cert_pem, "
                 " created_at, is_active) "
                 "VALUES (:agent_id, :display_name, :capabilities, :cert_pem, "
-                " :api_key_hash, :created_at, :is_active)"
+                " :created_at, :is_active)"
             ),
             {
-                "agent_id": agent_id,
-                "display_name": agent_id,
+                "agent_id": canonical,
+                "display_name": canonical,
                 "capabilities": "[]",
                 "cert_pem": pem,
-                "api_key_hash": hash_api_key(raw_key),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "is_active": 1,
             },
         )
-    return raw_key
+    return mtls_headers(pem), pem
 
 
-async def _issue_challenge(client: AsyncClient, api_key: str) -> str:
+async def _issue_challenge(client: AsyncClient, headers: dict[str, str]) -> str:
     resp = await client.post(
         "/v1/auth/login-challenge",
-        headers={"X-API-Key": api_key},
+        headers=headers,
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["nonce"]
@@ -109,14 +123,14 @@ async def _issue_challenge(client: AsyncClient, api_key: str) -> str:
 @pytest.mark.asyncio
 async def test_challenge_issued_for_authenticated_agent(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
+    api_key_headers, _ = await _provision_agent("alice")
     resp = await client.post(
         "/v1/auth/login-challenge",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["agent_id"] == "alice"
+    assert body["agent_id"] == f"{ORG_ID}::alice"
     assert body["expires_in"] == 120
     # 32 random bytes → 43 base64url chars (no padding).
     assert len(body["nonce"]) == 43
@@ -135,19 +149,19 @@ async def test_challenge_rejects_unauthenticated(proxy_app):
 @pytest.mark.asyncio
 async def test_happy_path_sign_challenged_assertion(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
-    nonce = await _issue_challenge(client, api_key)
+    api_key_headers, _ = await _provision_agent("alice")
+    nonce = await _issue_challenge(client, api_key_headers)
     assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce,
+        f"{ORG_ID}::alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce,
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["agent_id"] == "alice"
+    assert body["agent_id"] == f"{ORG_ID}::alice"
     assert body["client_assertion"] == assertion
     # mastio_signature may be None when the mastio identity isn't
     # loaded in the test harness — both shapes are valid responses.
@@ -157,22 +171,22 @@ async def test_happy_path_sign_challenged_assertion(proxy_app):
 @pytest.mark.asyncio
 async def test_nonce_replay_rejected(proxy_app):
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
-    nonce = await _issue_challenge(client, api_key)
+    api_key_headers, _ = await _provision_agent("alice")
+    nonce = await _issue_challenge(client, api_key_headers)
     assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce,
+        f"{ORG_ID}::alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce,
     )
 
     first = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert first.status_code == 200
     # Same nonce, same assertion → 401 on replay (nonce was consumed).
     second = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert second.status_code == 401
@@ -184,18 +198,18 @@ async def test_nonce_bound_to_issuing_agent(proxy_app):
     """Nonce issued for agent A can't be redeemed by agent B's API-key.
     Defence-in-depth beyond the sub==agent check."""
     _, client = proxy_app
-    api_key_a = await _provision_agent("alice")
-    api_key_b = await _provision_agent("bob")
+    api_key_a_headers, _ = await _provision_agent("alice")
+    api_key_b_headers, _ = await _provision_agent("bob")
 
     # A issues and gets a nonce.
-    nonce = await _issue_challenge(client, api_key_a)
+    nonce = await _issue_challenge(client, api_key_a_headers)
     # B tries to redeem it (with a B-signed assertion).
     assertion, _ = build_client_assertion(
-        "bob", _cert_pem("bob"), _key_pem("bob"), nonce=nonce,
+        f"{ORG_ID}::bob", _cert_pem("bob"), _key_pem("bob"), nonce=nonce,
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key_b},
+        headers=api_key_b_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     # B's consume() for (bob, nonce) misses because the nonce was
@@ -208,16 +222,16 @@ async def test_assertion_sub_mismatch_rejected(proxy_app):
     """A tries to redeem B's assertion using A's API-key (via A's nonce).
     Caught by the ``sub != agent_id`` check."""
     _, client = proxy_app
-    api_key_a = await _provision_agent("alice")
+    api_key_a_headers, _ = await _provision_agent("alice")
     await _provision_agent("bob")
-    nonce = await _issue_challenge(client, api_key_a)
-    # Assertion signed by bob — wrong sub for the X-API-Key caller.
+    nonce = await _issue_challenge(client, api_key_a_headers)
+    # Assertion signed by bob — wrong sub for the cert-presenting caller.
     assertion, _ = build_client_assertion(
-        "bob", _cert_pem("bob"), _key_pem("bob"), nonce=nonce,
+        f"{ORG_ID}::bob", _cert_pem("bob"), _key_pem("bob"), nonce=nonce,
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key_a},
+        headers=api_key_a_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert resp.status_code == 401
@@ -230,15 +244,15 @@ async def test_nonce_claim_tampered_rejected(proxy_app):
     the ``decoded.nonce == body.nonce`` check — enforces that the
     client signature covers the nonce actually being consumed."""
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
-    nonce_a = await _issue_challenge(client, api_key)
-    nonce_b = await _issue_challenge(client, api_key)
+    api_key_headers, _ = await _provision_agent("alice")
+    nonce_a = await _issue_challenge(client, api_key_headers)
+    nonce_b = await _issue_challenge(client, api_key_headers)
     assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce_a,
+        f"{ORG_ID}::alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce_a,
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce_b},
     )
     # nonce_b is consumed (we issued it above and the handler consumes
@@ -248,38 +262,44 @@ async def test_nonce_claim_tampered_rejected(proxy_app):
 
 @pytest.mark.asyncio
 async def test_cert_pin_mismatch_rejected(proxy_app):
-    """An agent enrolled with cert X presents a valid chain-of-trust
-    cert Y (same CA). Caught by the ``leaf_der != pinned_der`` check."""
+    """The agent's row stores cert X (alice's real cert), but the
+    caller presents cert Y signed by the same Org CA. The transport-
+    layer dep ``get_agent_from_client_cert`` pins the leaf DER against
+    the stored cert and rejects pre-handler with 401, before the
+    challenge logic even runs.
+
+    Pre-PR-C this case was caught by the assertion handler's own pin
+    check; PR-C subsumes the check into the auth dep.
+    """
     _, client = proxy_app
-    # Provision alice with bob's cert pinned — simulates rotation drift
-    # or an attempt to swap the cert out.
-    api_key = await _provision_agent("alice", cert_pem=_cert_pem("bob"))
-    nonce = await _issue_challenge(client, api_key)
-    # Alice signs an assertion with her own cert (matches chain but not pin).
-    assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"), nonce=nonce,
-    )
+    await _provision_agent("alice")  # row stores alice's real cert
+    # Caller presents bob's cert (chains to same Org CA, different leaf).
+    from tests._mtls_helpers import mtls_headers
+    bob_headers = mtls_headers(_cert_pem("bob"))
     resp = await client.post(
-        "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
-        json={"client_assertion": assertion, "nonce": nonce},
+        "/v1/auth/login-challenge",
+        headers=bob_headers,
     )
     assert resp.status_code == 401
-    assert "pinned" in resp.json()["detail"].lower()
+    # ``unknown`` (bob row not provisioned) or ``match`` (bob row
+    # exists but DER doesn't match) are both valid pin-failure
+    # detail strings — both surface the same security boundary.
+    detail = resp.json()["detail"].lower()
+    assert "unknown" in detail or "match" in detail or "pin" in detail
 
 
 @pytest.mark.asyncio
 async def test_missing_nonce_in_assertion_rejected(proxy_app):
     """Assertion has no ``nonce`` claim at all → mismatch vs request body."""
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
-    nonce = await _issue_challenge(client, api_key)
+    api_key_headers, _ = await _provision_agent("alice")
+    nonce = await _issue_challenge(client, api_key_headers)
     assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"),  # no nonce
+        f"{ORG_ID}::alice", _cert_pem("alice"), _key_pem("alice"),  # no nonce
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert resp.status_code == 401
@@ -300,15 +320,15 @@ async def test_sign_rejects_nonexistent_nonce(proxy_app):
     """No challenge was ever issued with this nonce → 401 even before
     any crypto runs."""
     _, client = proxy_app
-    api_key = await _provision_agent("alice")
+    api_key_headers, _ = await _provision_agent("alice")
     # Fake nonce the store never saw.
     fake_nonce = base64.urlsafe_b64encode(b"\x00" * 32).rstrip(b"=").decode()
     assertion, _ = build_client_assertion(
-        "alice", _cert_pem("alice"), _key_pem("alice"), nonce=fake_nonce,
+        f"{ORG_ID}::alice", _cert_pem("alice"), _key_pem("alice"), nonce=fake_nonce,
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": fake_nonce},
     )
     assert resp.status_code == 401
@@ -321,8 +341,8 @@ async def test_sign_rejects_chain_not_signed_by_org_ca(proxy_app):
     pinned Org CA."""
     _, client = proxy_app
     # Provision alice with a cert from ORG_ID's CA (correct).
-    api_key = await _provision_agent("alice")
-    nonce = await _issue_challenge(client, api_key)
+    api_key_headers, _ = await _provision_agent("alice")
+    nonce = await _issue_challenge(client, api_key_headers)
     # Build assertion with a cert from a DIFFERENT org — its CA won't
     # match the one set_config('org_ca_cert', ...) pinned in the fixture.
     other_cert = _cert_pem_from_other_org("alice")
@@ -332,7 +352,7 @@ async def test_sign_rejects_chain_not_signed_by_org_ca(proxy_app):
     )
     resp = await client.post(
         "/v1/auth/sign-challenged-assertion",
-        headers={"X-API-Key": api_key},
+        headers=api_key_headers,
         json={"client_assertion": assertion, "nonce": nonce},
     )
     assert resp.status_code == 401

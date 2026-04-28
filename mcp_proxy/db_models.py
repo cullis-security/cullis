@@ -45,7 +45,6 @@ class InternalAgent(Base):
     agent_id = Column(Text, primary_key=True)
     display_name = Column(Text, nullable=False)
     capabilities = Column(Text, nullable=False, server_default="[]")  # JSON array
-    api_key_hash = Column(Text, nullable=False)
     cert_pem = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False)
     is_active = Column(Integer, nullable=False, server_default="1")

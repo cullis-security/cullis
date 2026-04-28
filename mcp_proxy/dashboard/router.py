@@ -1176,7 +1176,6 @@ async def agents_page(request: Request):
         local_agents=local_agents,
         org_status=org_status,
         has_ca=has_ca,
-        new_api_key=None,
         new_agent_id=None,
     ))
 
@@ -1191,8 +1190,7 @@ async def agents_create(request: Request):
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
-    from mcp_proxy.db import list_agents, create_agent as db_create_agent, log_audit, get_config
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
+    from mcp_proxy.db import list_agents, log_audit, get_config
     from mcp_proxy.egress.agent_manager import AgentManager
     from mcp_proxy.config import get_settings
 
@@ -1212,7 +1210,6 @@ async def agents_create(request: Request):
             org_status=_org_status,
             has_ca=_has_ca,
             error="Agent name and display name are required.",
-            new_api_key=None,
             new_agent_id=None,
         ))
 
@@ -1221,28 +1218,30 @@ async def agents_create(request: Request):
     # Determine org_id from config or settings
     org_id = await get_config("org_id") or get_settings().org_id
 
-    # Try to use AgentManager with full x509 cert generation
+    # ADR-014 PR-C — agent creation requires a loaded Org CA so the
+    # Mastio can mint the agent's TLS client cert (the credential).
     try:
         mgr = AgentManager(org_id=org_id)
         ca_loaded = await mgr.load_org_ca_from_config()
 
-        if ca_loaded:
-            # Full creation: x509 cert + API key + Vault storage + broker registration
-            agent_info, raw_key = await mgr.create_agent(agent_name, display_name, capabilities)
-            agent_id = agent_info["agent_id"]
-            creation_mode = "x509+api_key"
-        else:
-            # Fallback: API key only (no cert — CA not configured)
-            raw_key = generate_api_key(agent_name)
-            key_hash = hash_api_key(raw_key)
-            agent_id = f"{org_id}::{agent_name}" if org_id else f"proxy::{agent_name}"
-            await db_create_agent(
-                agent_id=agent_id,
-                display_name=display_name,
-                capabilities=capabilities,
-                api_key_hash=key_hash,
-            )
-            creation_mode = "api_key_only"
+        if not ca_loaded:
+            agents = await list_agents()
+            _org_status = await get_config("org_status") or ""
+            return templates.TemplateResponse("agents.html", _ctx(
+                request, session,
+                active="agents",
+                agents=agents,
+                org_status=_org_status,
+                has_ca=False,
+                error=(
+                    "Org CA is not loaded — complete broker setup before "
+                    "creating agents (the cert is the agent credential)."
+                ),
+                new_agent_id=None,
+            ))
+
+        agent_info, _key_pem = await mgr.create_agent(agent_name, display_name, capabilities)
+        agent_id = agent_info["agent_id"]
     except Exception as exc:
         agents = await list_agents()
         _org_status = await get_config("org_status") or ""
@@ -1254,7 +1253,6 @@ async def agents_create(request: Request):
             org_status=_org_status,
             has_ca=_has_ca,
             error=f"Failed to create agent: {exc}",
-            new_api_key=None,
             new_agent_id=None,
         ))
 
@@ -1262,7 +1260,7 @@ async def agents_create(request: Request):
         agent_id=agent_id,
         action="agent.create",
         status="success",
-        detail=f"display_name={display_name}, capabilities={capabilities}, mode={creation_mode}",
+        detail=f"display_name={display_name}, capabilities={capabilities}, mode=x509",
     )
 
     # ADR-010 Phase 6a-4 — the dashboard used to follow agent creation with
@@ -1282,7 +1280,6 @@ async def agents_create(request: Request):
         agents=agents,
         org_status=org_status,
         has_ca=has_ca,
-        new_api_key=raw_key,
         new_agent_id=agent_id,
     ))
 
@@ -1317,85 +1314,16 @@ async def agent_detail_page(request: Request, agent_id: str):
     broker_url = await get_config("broker_url") or ""
     org_id = await get_config("org_id") or settings.org_id
     agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
-    api_key_display = f"sk_local_{agent_name}_..."
 
     return templates.TemplateResponse("agent_detail.html", _ctx(
         request, session,
         active="agents",
         agent=agent,
         audit_entries=audit_entries,
-        new_api_key=None,
         proxy_url=proxy_url,
         broker_url=broker_url,
         org_id=org_id,
         agent_name=agent_name,
-        api_key_display=api_key_display,
-    ))
-
-
-@router.post("/agents/{agent_id:path}/rotate-key")
-async def agent_rotate_key(request: Request, agent_id: str):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not await verify_csrf(request, session):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    from mcp_proxy.db import get_agent, get_config, get_db, log_audit
-    from mcp_proxy.auth.api_key import generate_api_key, hash_api_key
-
-    agent = await get_agent(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Extract the base name from agent_id (proxy::name -> name)
-    base_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
-    raw_key = generate_api_key(base_name)
-    key_hash = hash_api_key(raw_key)
-
-    from sqlalchemy import text
-
-    async with get_db() as db:
-        await db.execute(
-            text("UPDATE internal_agents SET api_key_hash = :api_key_hash WHERE agent_id = :agent_id"),
-            {"api_key_hash": key_hash, "agent_id": agent_id},
-        )
-
-    await log_audit(
-        agent_id=agent_id,
-        action="agent.rotate_key",
-        status="success",
-    )
-
-    # Re-fetch agent and audit
-    agent = await get_agent(agent_id)
-    async with get_db() as db:
-        result = await db.execute(
-            text("SELECT * FROM audit_log WHERE agent_id = :agent_id ORDER BY timestamp DESC LIMIT 20"),
-            {"agent_id": agent_id},
-        )
-        audit_entries = [dict(row) for row in result.mappings().all()]
-
-    # Extra context for integration snippets (show real key after rotation)
-    from mcp_proxy.config import get_settings
-    settings = get_settings()
-    proxy_url = settings.proxy_public_url or f"http://localhost:{settings.port}"
-    broker_url = await get_config("broker_url") or ""
-    org_id = await get_config("org_id") or settings.org_id
-    agent_name = agent_id.split("::")[-1] if "::" in agent_id else agent_id
-    api_key_display = raw_key  # Show real key in snippets right after rotation
-
-    return templates.TemplateResponse("agent_detail.html", _ctx(
-        request, session,
-        active="agents",
-        agent=agent,
-        audit_entries=audit_entries,
-        new_api_key=raw_key,
-        proxy_url=proxy_url,
-        broker_url=broker_url,
-        org_id=org_id,
-        agent_name=agent_name,
-        api_key_display=api_key_display,
     ))
 
 
@@ -1422,8 +1350,9 @@ async def agent_env_download(request: Request, agent_id: str):
 
     env_content = f"""# Cullis Agent Configuration — {agent_id}
 # Generated from MCP Proxy dashboard
+# ADR-014: the agent authenticates by presenting its TLS client cert
+# at the handshake. Mount cert.pem + key.pem from the identity bundle.
 CULLIS_PROXY_URL={proxy_url}
-CULLIS_API_KEY=sk_local_{agent_name}_YOUR_KEY_HERE
 CULLIS_AGENT_ID={agent_id}
 CULLIS_ORG_ID={org_id}
 CULLIS_BROKER_URL={broker_url}

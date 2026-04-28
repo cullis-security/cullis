@@ -72,27 +72,31 @@ def patched_httpx(monkeypatch):
     return state
 
 
-# ── from_api_key_file ────────────────────────────────────────────────────
+# ── from_identity_dir (ADR-014) ──────────────────────────────────────────
 
 
-def test_from_api_key_file_reads_credentials_from_disk(tmp_path):
+def test_from_identity_dir_loads_cert_and_dpop(tmp_path):
     from cullis_sdk import CullisClient
     from cullis_sdk.dpop import DpopKey
+    from tests._mtls_helpers import mint_agent_cert
 
-    api_key_path = tmp_path / "api-key"
-    api_key_path.write_text("sk_local_alice_deadbeef")
+    cert_pem, key_pem = mint_agent_cert(org_id="orga", agent_name="alice")
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_text(cert_pem)
+    key_path.write_text(key_pem)
 
     dpop_key = DpopKey.generate(path=tmp_path / "dpop.jwk")
 
-    client = CullisClient.from_api_key_file(
+    client = CullisClient.from_identity_dir(
         "http://proxy-a:9100",
-        api_key_path=api_key_path,
+        cert_path=cert_path,
+        key_path=key_path,
         dpop_key_path=tmp_path / "dpop.jwk",
         agent_id="orga::alice",
         org_id="orga",
     )
 
-    assert client._proxy_api_key == "sk_local_alice_deadbeef"
     assert client._proxy_agent_id == "orga::alice"
     assert client._proxy_org_id == "orga"
     assert client._egress_dpop_key is not None
@@ -101,31 +105,38 @@ def test_from_api_key_file_reads_credentials_from_disk(tmp_path):
     assert client._egress_dpop_key.thumbprint() == dpop_key.thumbprint()
 
 
-def test_from_api_key_file_without_dpop_stays_bearer_only(tmp_path):
+def test_from_identity_dir_without_dpop_works(tmp_path):
     from cullis_sdk import CullisClient
+    from tests._mtls_helpers import mint_agent_cert
 
-    api_key_path = tmp_path / "api-key"
-    api_key_path.write_text("sk_bearer_only")
+    cert_pem, key_pem = mint_agent_cert(org_id="orga", agent_name="alice")
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    cert_path.write_text(cert_pem)
+    key_path.write_text(key_pem)
 
-    client = CullisClient.from_api_key_file(
+    client = CullisClient.from_identity_dir(
         "http://proxy-a:9100",
-        api_key_path=api_key_path,
+        cert_path=cert_path,
+        key_path=key_path,
     )
-    assert client._proxy_api_key == "sk_bearer_only"
     assert client._egress_dpop_key is None
 
 
-def test_from_api_key_file_rejects_empty_key(tmp_path):
+def test_from_api_key_file_deprecated_and_requires_cert(tmp_path):
+    """The legacy ``from_api_key_file`` entrypoint emits a deprecation
+    warning and refuses to build a client without cert+key — under PR-C
+    the api_key path is gone so it would silently authenticate to nothing."""
+    import warnings as _warnings
     from cullis_sdk import CullisClient
 
-    api_key_path = tmp_path / "empty"
-    api_key_path.write_text("")
-
-    with pytest.raises(ValueError, match="empty"):
-        CullisClient.from_api_key_file(
-            "http://proxy-a:9100",
-            api_key_path=api_key_path,
-        )
+    with pytest.raises(ValueError, match="cert_path and key_path"):
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            CullisClient.from_api_key_file(
+                "http://proxy-a:9100",
+                api_key_path=tmp_path / "ignored",
+            )
 
 
 # ── enroll_via_byoca ─────────────────────────────────────────────────────
@@ -136,7 +147,6 @@ def test_enroll_via_byoca_posts_and_persists(tmp_path, patched_httpx):
 
     patched_httpx["next_response"] = _StubResponse(201, {
         "agent_id": "orga::alice",
-        "api_key": "sk_local_alice_abc",
         "cert_thumbprint": "0" * 64,
         "spiffe_id": None,
         "dpop_jkt": None,  # server echoes whatever we sent
@@ -163,23 +173,21 @@ def test_enroll_via_byoca_posts_and_persists(tmp_path, patched_httpx):
     assert call["json"]["dpop_jwk"]["kty"] == "EC"
     assert "d" not in call["json"]["dpop_jwk"]  # private material never shipped
 
-    # Client credentials wired
-    assert client._proxy_api_key == "sk_local_alice_abc"
+    # Client credentials wired (ADR-014: agent_id only — cert is the credential)
     assert client._proxy_agent_id == "orga::alice"
     assert client._proxy_org_id == "orga"
     assert client._egress_dpop_key is not None
 
-    # Persisted layout
+    # Persisted layout (no api-key file under PR-C)
     persist = tmp_path / "identity"
-    assert (persist / "api-key").read_text() == "sk_local_alice_abc"
     assert (persist / "dpop.jwk").exists()
     agent_meta = json.loads((persist / "agent.json").read_text())
     assert agent_meta["agent_id"] == "orga::alice"
     assert agent_meta["org_id"] == "orga"
     assert agent_meta["mastio_url"] == "http://proxy-a:9100"
-    # Secret files must be 0600 — avoid co-tenant read.
-    assert (persist / "api-key").stat().st_mode & 0o777 == 0o600
     assert (persist / "dpop.jwk").stat().st_mode & 0o777 == 0o600
+    # The legacy api-key file MUST NOT be written.
+    assert not (persist / "api-key").exists()
 
 
 def test_enroll_via_byoca_raises_on_server_error(tmp_path, patched_httpx):
@@ -205,7 +213,6 @@ def test_enroll_via_byoca_enable_dpop_false_skips_jwk(tmp_path, patched_httpx):
 
     patched_httpx["next_response"] = _StubResponse(201, {
         "agent_id": "orga::nodpop",
-        "api_key": "sk_no_dpop",
         "cert_thumbprint": "0" * 64,
         "spiffe_id": None,
         "dpop_jkt": None,
@@ -236,7 +243,6 @@ def test_enroll_via_spiffe_posts_svid_and_bundle(tmp_path, patched_httpx):
     spiffe = "spiffe://orga.test/agent/bob"
     patched_httpx["next_response"] = _StubResponse(201, {
         "agent_id": "orga::bob",
-        "api_key": "sk_local_bob_xyz",
         "cert_thumbprint": "0" * 64,
         "spiffe_id": spiffe,
         "dpop_jkt": "fake-jkt",
@@ -259,7 +265,8 @@ def test_enroll_via_spiffe_posts_svid_and_bundle(tmp_path, patched_httpx):
     assert "dpop_jwk" in call["json"]
 
     assert client._proxy_agent_id == "orga::bob"
-    assert (tmp_path / "identity" / "api-key").read_text() == "sk_local_bob_xyz"
+    # ADR-014 PR-C: no api-key file persisted.
+    assert not (tmp_path / "identity" / "api-key").exists()
 
 
 def test_enroll_via_spiffe_omits_bundle_when_none_supplied(tmp_path, patched_httpx):
@@ -267,7 +274,6 @@ def test_enroll_via_spiffe_omits_bundle_when_none_supplied(tmp_path, patched_htt
 
     patched_httpx["next_response"] = _StubResponse(201, {
         "agent_id": "orga::bob",
-        "api_key": "sk",
         "cert_thumbprint": "0" * 64,
         "spiffe_id": "spiffe://x.test/y",
         "dpop_jkt": None,
@@ -307,7 +313,6 @@ def test_login_from_pem_emits_deprecation_warning():
     dep = [w for w in caught if issubclass(w.category, DeprecationWarning)]
     assert dep, "login_from_pem must emit DeprecationWarning"
     assert "ADR-011" in str(dep[0].message)
-    assert "from_api_key_file" in str(dep[0].message)
 
 
 def test_from_spiffe_workload_api_emits_deprecation_warning(monkeypatch):

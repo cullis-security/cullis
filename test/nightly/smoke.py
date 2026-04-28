@@ -18,8 +18,8 @@ from cullis_sdk import CullisClient
 STATE = pathlib.Path(__file__).parent / "state"
 MANIFEST = STATE / "agents.json"
 MASTIO_URLS = {
-    "orga": os.environ.get("MASTIO_A_URL", "http://localhost:9100"),
-    "orgb": os.environ.get("MASTIO_B_URL", "http://localhost:9200"),
+    "orga": os.environ.get("MASTIO_A_URL", "https://localhost:9443"),
+    "orgb": os.environ.get("MASTIO_B_URL", "https://localhost:9543"),
 }
 
 GREEN, RED, RESET = "\033[32m", "\033[31m", "\033[0m"
@@ -30,19 +30,21 @@ def _probe(entry: dict) -> tuple[str, bool, str]:
     name = entry["agent_name"]
     agent_id = entry["agent_id"]
     agent_dir = STATE / org_id / "agents" / name
-    api_key = agent_dir / "api-key"
+    cert = agent_dir / "agent.pem"
+    key = agent_dir / "agent-key.pem"
     dpop = agent_dir / "dpop.jwk"
 
-    for f in (api_key, dpop):
+    for f in (cert, key, dpop):
         if not f.exists():
             return agent_id, False, f"missing {f.name}"
 
     mastio_url = MASTIO_URLS[org_id]
     try:
-        client = CullisClient.from_api_key_file(
+        client = CullisClient.from_identity_dir(
             mastio_url,
-            api_key_path=api_key, dpop_key_path=dpop,
+            cert_path=cert, key_path=key, dpop_key_path=dpop,
             agent_id=agent_id, org_id=org_id,
+            verify_tls=False,
             timeout=30.0,
         )
         peers = client.list_peers(limit=50)

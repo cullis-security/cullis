@@ -17,24 +17,16 @@
     </div>
     {% endif %}
 
-    <!-- New API Key reveal (shown only after creation) -->
-    {% if new_api_key %}
-    <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+    <!-- New agent created — direct the operator to the detail page for cert export -->
+    {% if new_agent_id %}
+    <div class="mb-6 p-5 bg-emerald-900/10 border border-emerald-600/30 rounded-lg">
         <div class="flex items-start gap-3">
-            <svg class="w-5 h-5 text-amber-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+            <svg class="w-5 h-5 text-emerald-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
             <div class="flex-1">
-                <p class="text-sm font-semibold text-amber-400 mb-1">API Key Created — Save This Now</p>
-                <p class="text-xs text-amber-500/70 mb-3">This key will only be shown once. Store it securely.</p>
-                {% if new_agent_id %}
+                <p class="text-sm font-semibold text-emerald-400 mb-1">Agent created</p>
+                <p class="text-xs text-emerald-500/70 mb-3">The Mastio minted a TLS client cert (ADR-014) — that IS the agent's credential. Open the agent's detail page to download cert + key.</p>
                 <p class="text-xs text-gray-500 mb-1">Agent: <span class="font-mono text-gray-400">{{ new_agent_id }}</span></p>
-                {% endif %}
-                <div class="flex items-center gap-2">
-                    <code class="flex-1 bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-accent-400 font-mono select-all break-all">{{ new_api_key }}</code>
-                    <button onclick="copyToClipboard('{{ new_api_key }}')"
-                            class="px-3 py-2 border border-gray-700 rounded text-xs text-gray-400 hover:text-white hover:bg-gray-800 transition-colors flex-shrink-0">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"/></svg>
-                    </button>
-                </div>
+                <a href="/proxy/agents/{{ new_agent_id }}" class="text-xs text-accent-400 hover:underline">Open agent detail →</a>
             </div>
         </div>
     </div>

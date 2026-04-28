@@ -5,8 +5,9 @@ pre-generated Org-CA-signed cert/key pair into a fresh
 ``internal_agents`` row. The Mastio verifies that the cert chains to
 its loaded Org CA (preventing cross-org cert leakage at enrollment
 time), extracts the SPIFFE URI SAN if present, and emits the standard
-enrollment output: agent_id + one-shot API key + DPoP jkt pinning if
-the caller supplied a public JWK.
+enrollment output: agent_id + cert thumbprint + DPoP jkt pinning if
+the caller supplied a public JWK. ADR-014 PR-C: the cert IS the
+credential, no api_key is minted.
 
 This is the first of four ``/enroll/<method>`` endpoints in Phase 1.
 The ``admin`` (plain create) method remains on the existing
@@ -23,8 +24,6 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import bcrypt
-import secrets
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -78,22 +77,12 @@ class ByocaEnrollResponse(BaseModel):
     agent_id: str
     display_name: str
     capabilities: list[str]
-    api_key: str  # plaintext — shown exactly once
     cert_thumbprint: str
     spiffe_id: str | None
     dpop_jkt: str | None
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
-
-def _api_key_for(agent_name: str) -> str:
-    """Match the pattern used by ``admin.agents._api_key_for`` so audit
-    trails and key-hygiene scripts see a consistent prefix."""
-    return f"sk_local_{agent_name}_{secrets.token_hex(16)}"
-
-
-def _bcrypt_hash(raw: str) -> str:
-    return bcrypt.hashpw(raw.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 
 def _now_iso() -> str:
@@ -241,11 +230,12 @@ async def enroll_byoca(
       3. Assert the cert is signed by the Mastio's loaded Org CA —
          prevents cross-org cert leakage at enrollment.
       4. Extract SPIFFE URI SAN if present.
-      5. Issue an API key + pin optional DPoP jkt.
+      5. Pin optional DPoP jkt.
 
-    Returns the new ``agent_id`` (format ``<org>::<name>``), the
-    one-shot plaintext API key (shown once), cert thumbprint, and the
-    resolved SPIFFE/DPoP attributes.
+    Returns the new ``agent_id`` (format ``<org>::<name>``), cert
+    thumbprint, and the resolved SPIFFE/DPoP attributes. The agent
+    authenticates to ``/v1/egress/*`` by presenting ``cert_pem`` at
+    the TLS handshake — that's the credential (ADR-014).
     """
     mgr = await _require_agent_mgr(request)
     agent_name = body.agent_name
@@ -297,8 +287,6 @@ async def enroll_byoca(
                   agent_id, exc)
         await set_config(f"agent_key:{agent_id}", body.private_key_pem)
 
-    api_key = _api_key_for(agent_name)
-    api_key_hash = _bcrypt_hash(api_key)
     ts = _now_iso()
 
     try:
@@ -307,12 +295,12 @@ async def enroll_byoca(
                 text(
                     """
                     INSERT INTO internal_agents (
-                        agent_id, display_name, capabilities, api_key_hash,
+                        agent_id, display_name, capabilities,
                         cert_pem, created_at, is_active,
                         federated, federated_at, federation_revision,
                         enrollment_method, spiffe_id, enrolled_at, dpop_jkt
                     ) VALUES (
-                        :aid, :name, :caps, :hash,
+                        :aid, :name, :caps,
                         :cert, :now, 1,
                         :federated, NULL, 1,
                         'byoca', :spiffe, :now, :dpop_jkt
@@ -323,7 +311,6 @@ async def enroll_byoca(
                     "aid": agent_id,
                     "name": body.display_name or agent_name,
                     "caps": json.dumps(body.capabilities),
-                    "hash": api_key_hash,
                     "cert": body.cert_pem,
                     "now": ts,
                     "federated": bool(body.federated),
@@ -351,7 +338,6 @@ async def enroll_byoca(
         agent_id=agent_id,
         display_name=body.display_name or agent_name,
         capabilities=body.capabilities,
-        api_key=api_key,
         cert_thumbprint=_cert_thumbprint(cert),
         spiffe_id=spiffe_id,
         dpop_jkt=dpop_jkt,
@@ -391,7 +377,6 @@ class SpiffeEnrollResponse(BaseModel):
     agent_id: str
     display_name: str
     capabilities: list[str]
-    api_key: str
     cert_thumbprint: str
     spiffe_id: str       # MANDATORY for SPIFFE enrollment, unlike BYOCA
     dpop_jkt: str | None
@@ -504,8 +489,6 @@ async def enroll_spiffe(
                   agent_id, exc)
         await set_config(f"agent_key:{agent_id}", body.svid_key_pem)
 
-    api_key = _api_key_for(agent_name)
-    api_key_hash = _bcrypt_hash(api_key)
     ts = _now_iso()
 
     try:
@@ -514,12 +497,12 @@ async def enroll_spiffe(
                 text(
                     """
                     INSERT INTO internal_agents (
-                        agent_id, display_name, capabilities, api_key_hash,
+                        agent_id, display_name, capabilities,
                         cert_pem, created_at, is_active,
                         federated, federated_at, federation_revision,
                         enrollment_method, spiffe_id, enrolled_at, dpop_jkt
                     ) VALUES (
-                        :aid, :name, :caps, :hash,
+                        :aid, :name, :caps,
                         :cert, :now, 1,
                         :federated, NULL, 1,
                         'spiffe', :spiffe, :now, :dpop_jkt
@@ -530,7 +513,6 @@ async def enroll_spiffe(
                     "aid": agent_id,
                     "name": body.display_name or agent_name,
                     "caps": json.dumps(body.capabilities),
-                    "hash": api_key_hash,
                     "cert": body.svid_pem,
                     "now": ts,
                     "federated": bool(body.federated),
@@ -559,7 +541,6 @@ async def enroll_spiffe(
         agent_id=agent_id,
         display_name=body.display_name or agent_name,
         capabilities=body.capabilities,
-        api_key=api_key,
         cert_thumbprint=_cert_thumbprint(svid),
         spiffe_id=spiffe_id,
         dpop_jkt=dpop_jkt,

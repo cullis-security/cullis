@@ -75,7 +75,6 @@ async def main():
         agent_id='${canonical_id}',
         display_name='${agent_id}',
         capabilities=['cap.read', 'cap.write'],
-        api_key_hash='\$2b\$12\$placeholder',
         cert_pem=cert_pem,
     )
     with open('/tmp/${agent_id}.crt', 'w') as f:

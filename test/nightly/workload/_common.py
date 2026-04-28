@@ -2,10 +2,10 @@
 logging, graceful shutdown. Each driver runs as its own process and writes
 to test/nightly/logs/<run-ts>/<driver>-<agent>.jsonl.
 
-Identity pattern mirrors sandbox/scenarios/_identity.py — the API-key +
-DPoP runtime auth needs both login_via_proxy() (for session APIs that go
-through _authed_request) and _signing_key_pem (for send_oneshot outer
-signature).
+Identity pattern mirrors sandbox/scenarios/_identity.py — ADR-014 mTLS
+client cert + DPoP runtime auth needs both login_via_proxy() (for
+session APIs that go through _authed_request) and _signing_key_pem
+(for send_oneshot outer signature).
 """
 from __future__ import annotations
 
@@ -24,8 +24,8 @@ STATE = pathlib.Path(__file__).resolve().parent.parent / "state"
 LOGS_ROOT = pathlib.Path(__file__).resolve().parent.parent / "logs"
 
 MASTIO_URLS = {
-    "orga": os.environ.get("MASTIO_A_URL", "http://localhost:9100"),
-    "orgb": os.environ.get("MASTIO_B_URL", "http://localhost:9200"),
+    "orga": os.environ.get("MASTIO_A_URL", "https://localhost:9443"),
+    "orgb": os.environ.get("MASTIO_B_URL", "https://localhost:9543"),
 }
 
 
@@ -40,27 +40,34 @@ def load_manifest() -> list[dict]:
 
 def load_client(agent_id: str) -> CullisClient:
     """Replicates sandbox/scenarios/_identity.load_enrolled_client but
-    reads state from the local test/nightly/state/ bind mount."""
+    reads state from the local test/nightly/state/ bind mount.
+
+    ADR-014 — TLS client cert authenticates against the per-org nginx
+    sidecar; ``verify_tls=False`` for the self-signed Org CA.
+    """
     org_id, agent_name = agent_id.split("::", 1)
     identity_dir = STATE / org_id / "agents" / agent_name
-    for f in ("api-key", "dpop.jwk", "agent-key.pem"):
+    for f in ("agent.pem", "agent-key.pem", "dpop.jwk"):
         if not (identity_dir / f).exists():
             raise SystemExit(
                 f"{identity_dir / f} missing — agent not enrolled"
             )
 
     mastio_url = MASTIO_URLS[org_id]
-    client = CullisClient.from_api_key_file(
+    key_path = identity_dir / "agent-key.pem"
+    client = CullisClient.from_identity_dir(
         mastio_url,
-        api_key_path=identity_dir / "api-key",
+        cert_path=identity_dir / "agent.pem",
+        key_path=key_path,
         dpop_key_path=identity_dir / "dpop.jwk",
         agent_id=agent_id,
         org_id=org_id,
+        verify_tls=False,
         timeout=30.0,
     )
     # login_via_proxy mints a broker JWT so session APIs work.
     client.login_via_proxy()
-    client._signing_key_pem = (identity_dir / "agent-key.pem").read_text()
+    client._signing_key_pem = key_path.read_text()
     return client
 
 
