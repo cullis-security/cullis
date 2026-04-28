@@ -18,7 +18,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="${PROJECT_DIR:-$(dirname "$SCRIPT_DIR")}"
+# Bundle layout — script lives at the bundle root next to
+# proxy.env.example. The repo-side copy in scripts/ keeps its original
+# parent-of-scripts default; PROJECT_DIR can still be overridden via env.
+PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"
 
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
 BOLD=$'\033[1m'; GRAY=$'\033[90m'; RESET=$'\033[0m'
