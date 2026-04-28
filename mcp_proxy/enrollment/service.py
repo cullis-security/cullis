@@ -258,10 +258,14 @@ async def approve(
     # ADR-014 — ``get_agent_from_client_cert`` parses the cert SAN
     # (``spiffe://<trust_domain>/<org_id>/<agent_name>``) and looks up
     # ``internal_agents.agent_id`` by the canonical ``{org_id}::{agent_name}``
-    # form. Store the canonical form so the cert-auth dep finds the row;
-    # the short ``agent_id`` from the admin form is treated as the agent
-    # name within this org.
-    canonical_id = f"{agent_manager.org_id}::{agent_id}"
+    # form. Store the canonical form so the cert-auth dep finds the row.
+    # Accept both shapes from the admin form: short ``agent-x`` (treated
+    # as the agent name within this org) and pre-canonical ``acme::agent-x``
+    # (kept as-is, idempotent — the dashboard happens to ship both
+    # depending on which page builds the request).
+    canonical_id = (
+        agent_id if "::" in agent_id else f"{agent_manager.org_id}::{agent_id}"
+    )
 
     now = _iso(_now())
     await conn.execute(
