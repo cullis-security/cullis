@@ -132,17 +132,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     install_mcp = subparsers.add_parser(
         "install-mcp",
-        help="Write the Cullis MCP entry into Claude Desktop / Cursor / Cline.",
+        help="Write the Cullis MCP entry into a supported MCP client.",
     )
     _add_shared_args(install_mcp)
+    # Source the choices from the IDE registry so adding a new client
+    # (claude-code, zed, windsurf — landed before this PR but not
+    # exposed as ``--ide`` values) doesn't drift the CLI surface.
+    # ``claude-code`` is accepted as an operator-friendly alias for
+    # ``claude-code-cli``; the canonical id is the value the descriptor
+    # carries, but ``claude-code-cli`` reads like an internal slug to
+    # someone typing the flag.
+    from cullis_connector.ide_config import KNOWN_IDES as _KNOWN_IDES
+    _IDE_CHOICES = sorted(set(_KNOWN_IDES.keys()) | {"claude-code"})
     install_mcp.add_argument(
         "--ide",
         dest="ides",
         action="append",
         default=None,
-        choices=["claude-desktop", "cursor", "cline"],
-        help="Target a specific IDE (repeatable). Omit to auto-configure "
-             "every detected IDE on this machine.",
+        choices=_IDE_CHOICES,
+        help="Target a specific MCP client (repeatable). Omit to "
+             "auto-configure every detected client on this machine. "
+             "``claude-code`` is an alias for ``claude-code-cli``.",
     )
     install_mcp.add_argument(
         "--list",
@@ -223,6 +233,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Dashboard port (default 7777).",
     )
 
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Audit IDE MCP configs for stale Cullis entries.",
+    )
+    _add_shared_args(doctor)
+    doctor.add_argument(
+        "--ide",
+        dest="ides",
+        action="append",
+        default=None,
+        help="Limit the scan to these clients (repeatable). Omit to "
+             "scan every supported MCP client.",
+    )
+
     return parser
 
 
@@ -233,6 +257,7 @@ _KNOWN_SUBCOMMANDS = frozenset({
     "install-autostart",
     "dashboard",
     "desktop",
+    "doctor",
 })
 
 # Shared flags are parsed by the subparser that owns the chosen command.
@@ -445,6 +470,14 @@ def _cmd_enroll(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+_IDE_ALIASES = {"claude-code": "claude-code-cli"}
+
+
+def _resolve_ide_id(value: str) -> str:
+    """Map operator-friendly aliases to the canonical registry id."""
+    return _IDE_ALIASES.get(value, value)
+
+
 def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     from cullis_connector.ide_config import (
         KNOWN_IDES,
@@ -455,7 +488,10 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
         uninstall_mcp,
     )
 
-    target_ids = args.ides or list(KNOWN_IDES.keys())
+    target_ids = (
+        [_resolve_ide_id(i) for i in args.ides]
+        if args.ides else list(KNOWN_IDES.keys())
+    )
 
     if args.ide_list_only:
         print(f"{'IDE':<22} {'STATUS':<14} PATH")
@@ -490,6 +526,7 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
 
     backup_dir = cfg.config_dir / "backups"
     any_error = False
+    installed_names: list[str] = []
 
     for ide_id in target_ids:
         detection = detect_ide_status(ide_id)
@@ -513,6 +550,8 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
             print(f"[ok]   {name}: {action} at {result.config_path}")
             if result.backup_path:
                 print(f"       ↳ backup: {result.backup_path}")
+            if not args.ide_uninstall:
+                installed_names.append(name)
         elif result.status == "already_configured":
             print(f"[skip] {name}: already {'' if args.ide_uninstall else 'configured '}in place")
         else:
@@ -520,6 +559,19 @@ def _cmd_install_mcp(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
             print(f"[err]  {name}: {result.error}")
 
         _log.debug("%s result for %s: %s", verb, ide_id, result)
+
+    # Finding #7 (dogfood 2026-04-29): clients load their MCP config
+    # at session startup, so an already-running Claude Code / Cursor
+    # / Cline session won't see the new server until it restarts.
+    # Without this hint operators would invoke the tools, get a
+    # "tool not found" error, and only then realise.
+    if installed_names and not args.ide_uninstall:
+        joined = ", ".join(installed_names)
+        print(
+            f"\n→ Restart {joined} to load the Cullis MCP server. "
+            "Existing sessions will not see the new tools until a fresh "
+            "session is opened."
+        )
 
     return 1 if any_error else 0
 
@@ -649,6 +701,33 @@ def _cmd_desktop(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return run_desktop_app(cfg, host=host, port=port)
 
 
+def _cmd_doctor(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    """Audit IDE MCP configs for stale Cullis entries (Finding #8)."""
+    from cullis_connector.doctor import has_problems, scan
+
+    ide_filter = (
+        [_resolve_ide_id(i) for i in args.ides] if args.ides else None
+    )
+    entries = scan(ide_filter)
+    if not entries:
+        print("No Cullis MCP entries found in any supported client.")
+        print(
+            "(Run ``cullis-connector install-mcp --list`` to see which "
+            "clients are detected on this machine.)"
+        )
+        return 0
+
+    print(f"{'IDE':<22} {'STATUS':<14} ENTRY")
+    print("-" * 80)
+    for e in entries:
+        print(f"{e.ide_display:<22} {e.status:<14} {e.server_name}")
+        if e.config_path is not None:
+            print(f"{'':<22} {'':<14} ↳ at {e.config_path}")
+        print(f"{'':<22} {'':<14} ↳ {e.detail}")
+
+    return 1 if has_problems(entries) else 0
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
 
@@ -680,6 +759,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_dashboard(cfg, args)
     if command == "desktop":
         return _cmd_desktop(cfg, args)
+    if command == "doctor":
+        return _cmd_doctor(cfg, args)
     return _cmd_serve(cfg)
 
 

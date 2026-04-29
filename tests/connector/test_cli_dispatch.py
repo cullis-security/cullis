@@ -136,3 +136,43 @@ def test_profile_flag_before_subcommand_gets_moved_after():
 def test_desktop_with_flags_round_trips():
     argv = ["desktop", "--profile", "south", "--port", "7788"]
     assert _ensure_subcommand(argv) == argv
+
+
+# ── install-mcp --ide choices + alias resolution ─────────────────────
+
+
+def test_install_mcp_ide_choices_include_every_known_client():
+    """Finding #6 (dogfood 2026-04-29): the registry already knew
+    about ``claude-code-cli``, ``zed``, and ``windsurf`` but the CLI
+    flag accepted only the original three. Pin the choices against
+    the registry so any new descriptor lands in argparse too."""
+    from cullis_connector.cli import _build_parser
+    from cullis_connector.ide_config import KNOWN_IDES
+
+    parser = _build_parser()
+    install_mcp = None
+    for action in parser._actions:
+        if hasattr(action, "choices") and isinstance(action.choices, dict):
+            install_mcp = action.choices.get("install-mcp")
+            break
+    assert install_mcp is not None
+
+    ide_action = next(
+        a for a in install_mcp._actions if a.dest == "ides"
+    )
+    choices = set(ide_action.choices)
+    # Every registry id must be a valid choice.
+    assert set(KNOWN_IDES.keys()) <= choices
+    # And the friendly alias is also accepted.
+    assert "claude-code" in choices
+
+
+def test_install_mcp_alias_resolves_to_canonical_id():
+    """``claude-code`` is an operator-friendly alias that the
+    install-mcp dispatch must normalise to the registry's canonical
+    ``claude-code-cli`` before lookup."""
+    from cullis_connector.cli import _resolve_ide_id
+    assert _resolve_ide_id("claude-code") == "claude-code-cli"
+    # Anything not in the alias map passes through unchanged.
+    assert _resolve_ide_id("cursor") == "cursor"
+    assert _resolve_ide_id("zed") == "zed"
