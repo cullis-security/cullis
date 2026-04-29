@@ -581,12 +581,48 @@ def _cmd_dashboard(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
 
     # Import late so the dashboard deps stay optional for serve/enroll.
     from cullis_connector.web import build_app
-
-    app = build_app(cfg)
+    from cullis_connector._port_check import (
+        EXIT_PORT_UNAVAILABLE,
+        check_port_available,
+        detect_running_dashboard,
+    )
 
     host = getattr(args, "web_host", "127.0.0.1")
     port = int(getattr(args, "web_port", 7777))
     url = f"http://{host}:{port}"
+
+    # Pre-flight: a port-busy here used to bubble up as ``errno 98 address
+    # already in use`` from inside uvicorn's loop. With ``Restart=on-failure``
+    # in the systemd autostart unit, that meant ~350 fail/h crash-loop
+    # (dogfood Finding #1, 2026-04-29). Failing fast with EX_CONFIG (78)
+    # lets the unit's ``RestartPreventExitStatus=78`` keep the loop
+    # quiet and gives the operator an actionable message.
+    if not check_port_available(host, port):
+        kind = detect_running_dashboard(host, port)
+        if kind == "cullis_connector":
+            _log.error(
+                "Another Cullis Connector dashboard is already serving "
+                "%s. Open it in your browser, or pass ``--port <N>`` to "
+                "run a second instance on a different port (e.g. 7778).",
+                url,
+            )
+        elif kind == "unknown":
+            _log.error(
+                "Port %d on %s is already in use by another process "
+                "(not a Connector dashboard). Stop it, or pass "
+                "``--port <N>`` to choose a different port.",
+                port, host,
+            )
+        else:
+            _log.error(
+                "Cannot bind %s — the port is unavailable but no "
+                "process responded to a probe. Pass ``--port <N>`` "
+                "or check ``ss -ltnp | grep :%d``.",
+                url, port,
+            )
+        return EXIT_PORT_UNAVAILABLE
+
+    app = build_app(cfg)
 
     if getattr(args, "open_browser", True):
         import threading

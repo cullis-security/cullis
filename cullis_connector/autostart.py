@@ -307,6 +307,10 @@ def _render_linux_unit(command: list[str]) -> str:
     # respects double-quoted words and backslash-escaped spaces; we pick
     # the backslash route so log output matches the original argv.
     exec_start = " ".join(a.replace(" ", r"\ ") for a in command)
+    # ``RestartPreventExitStatus=78`` keeps a port-busy or other
+    # configuration error (the CLI exits 78 = EX_CONFIG, see
+    # ``cullis_connector._port_check``) from turning into a crash-loop
+    # — dogfood 2026-04-29 saw ~350 fail/h before this guard landed.
     return textwrap.dedent(
         f"""
         [Unit]
@@ -319,6 +323,7 @@ def _render_linux_unit(command: list[str]) -> str:
         ExecStart={exec_start}
         Restart=on-failure
         RestartSec=3s
+        RestartPreventExitStatus=78
         StandardOutput=append:%h/.cullis/logs/connector.out.log
         StandardError=append:%h/.cullis/logs/connector.err.log
 

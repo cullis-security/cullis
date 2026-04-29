@@ -71,6 +71,11 @@
                 Keep the connector running so MCP tools stay available the
                 moment you open Cursor or Claude Desktop — no manual launch.
             </div>
+            {% if autostart_enabled and autostart_service_path %}
+            <div class="toggle-desc mono" style="margin-top: 6px; font-size: 11px; opacity: 0.7;">
+                Active at <span title="{{ autostart_service_path }}">{{ autostart_service_path }}</span>
+            </div>
+            {% endif %}
         </div>
         <button type="button"
                 class="toggle-switch"

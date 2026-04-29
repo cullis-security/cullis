@@ -446,6 +446,18 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             },
         )
 
+    @app.get("/api/ping")
+    def api_ping() -> JSONResponse:
+        """Stable identity probe — used by ``cullis-connector dashboard``
+        on startup to detect a Connector dashboard already bound to the
+        port and tell the operator instead of crashing on EADDRINUSE.
+
+        Returns the app name (and process port for diagnostics). Stays
+        cheap and side-effect-free so we can call it from a port-busy
+        path without coupling it to enrollment state.
+        """
+        return JSONResponse({"app": "cullis-connector"})
+
     @app.get("/api/status")
     def api_status() -> JSONResponse:
         """Single-shot poll of the remote enrollment status.
@@ -634,6 +646,9 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 "mcp_snippet": mcp_entry_snippet(),
                 "autostart_enabled": astatus.installed,
                 "autostart_platform": astatus.platform,
+                "autostart_service_path": (
+                    str(astatus.service_path) if astatus.service_path else None
+                ),
             },
         )
 

@@ -67,6 +67,21 @@ def test_linux_unit_escapes_spaces_in_args():
     assert "with\\ space" in text
 
 
+def test_linux_unit_prevents_crash_loop_on_port_busy():
+    """Dogfood Finding #1 (2026-04-29): a stale autostart unit and a
+    manually-launched dashboard collided on 7777 and the unit's
+    ``Restart=on-failure RestartSec=3s`` produced ~350 fail/h.
+    The CLI now exits 78 (EX_CONFIG) on port-busy; the unit must
+    pin that exit code into ``RestartPreventExitStatus`` so systemd
+    stops looping.
+    """
+    text = autostart._render_linux_unit(["cullis-connector", "dashboard"])
+    assert "RestartPreventExitStatus=78" in text
+    # Sanity: the existing on-failure restart stays in place — only
+    # the EX_CONFIG signal is excluded from the retry policy.
+    assert "Restart=on-failure" in text
+
+
 # ── Linux install / uninstall (file-level, subprocess mocked) ───────────
 
 
