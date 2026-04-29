@@ -233,6 +233,14 @@ if [[ -n "$UPGRADE_TO" ]]; then
     ok "proxy.env: CULLIS_MASTIO_VERSION=${UPGRADE_TO}"
     # Export so this very run sees the new pin without a re-source.
     export CULLIS_MASTIO_VERSION="$UPGRADE_TO"
+    # Stop the running stack BEFORE the port pre-flight below — without
+    # this, the port-9443 check sees our own existing nginx sidecar
+    # bound to it and refuses to continue. Volumes (DB + mastio-nginx
+    # certs) are preserved by ``compose down``, so the upgrade comes
+    # back up with the same Org CA + admin secret + enrolled agents.
+    $COMPOSE $COMPOSE_FILES --env-file proxy.env down 2>/dev/null \
+        || $COMPOSE $COMPOSE_FILES down
+    ok "Stopped existing stack — preparing rc${UPGRADE_TO} bring-up"
 fi
 
 # ── Pre-flight: host port not already in use ───────────────────────────────
