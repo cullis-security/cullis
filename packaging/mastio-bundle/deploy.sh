@@ -64,6 +64,15 @@ Options:
                               requires proxy.env pre-provisioned.
   --down                      Stop and remove containers.
   --pull                      Force-pull the image before starting.
+  --upgrade <version>         Pin CULLIS_MASTIO_VERSION in proxy.env to
+                              <version>, pull the new image, and recreate
+                              containers in-place. Volumes (DB, certs)
+                              are preserved. Equivalent to:
+                                  ./deploy.sh --down
+                                  edit proxy.env: CULLIS_MASTIO_VERSION=…
+                                  ./deploy.sh --pull
+                              packaged as one command so a non-tech
+                              operator never has to edit env by hand.
   --help, -h                  Show this help and exit.
 
 Environment:
@@ -75,6 +84,7 @@ Examples:
   CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh        # pinned version
   ./deploy.sh --shared-broker                    # join Court on same host
   ./deploy.sh --prod                             # standalone, prod safety
+  ./deploy.sh --upgrade 0.3.0-rc3                # bump image + restart
   ./deploy.sh --down                             # stop + remove
 EOF
 }
@@ -83,12 +93,30 @@ ACTION="up"
 MODE="development"
 SHARED_BROKER=0
 FORCE_PULL=0
-for arg in "$@"; do
+UPGRADE_TO=""
+# Manual loop because ``--upgrade <version>`` needs to consume the
+# next positional arg. Keeps the existing single-token flags working
+# without pulling in getopt.
+while [[ $# -gt 0 ]]; do
+    arg="$1"
     case "$arg" in
-        --down)          ACTION="down" ;;
-        --pull)          FORCE_PULL=1 ;;
-        --prod)          MODE="production" ;;
-        --shared-broker) SHARED_BROKER=1 ;;
+        --down)          ACTION="down"; shift ;;
+        --pull)          FORCE_PULL=1; shift ;;
+        --prod)          MODE="production"; shift ;;
+        --shared-broker) SHARED_BROKER=1; shift ;;
+        --upgrade)
+            shift
+            [[ $# -gt 0 && "$1" != --* ]] || die "--upgrade requires a version (e.g. --upgrade 0.3.0-rc3)"
+            UPGRADE_TO="$1"
+            FORCE_PULL=1
+            shift
+            ;;
+        --upgrade=*)
+            UPGRADE_TO="${arg#--upgrade=}"
+            [[ -n "$UPGRADE_TO" ]] || die "--upgrade= requires a value"
+            FORCE_PULL=1
+            shift
+            ;;
         --help|-h)       print_help; exit 0 ;;
         *) die "Unknown argument: $arg (use --help)" ;;
     esac
@@ -187,6 +215,24 @@ if [[ "$MODE" == "production" ]]; then
         die "Fix the issues above and rerun. Aborting before compose up."
     fi
     ok "proxy.env validated for production"
+fi
+
+# ── --upgrade: pin the requested version into proxy.env ────────────────────
+# We rewrite ``CULLIS_MASTIO_VERSION`` BEFORE the pull/up so the compose
+# expansion uses the new tag in this run AND the next plain ``./deploy.sh``
+# does too — operators don't expect the version to silently revert if they
+# forget the env var on a later restart.
+if [[ -n "$UPGRADE_TO" ]]; then
+    step "Upgrading Cullis Mastio to ${UPGRADE_TO}"
+    if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
+        die "proxy.env not found — run ./deploy.sh once before --upgrade"
+    fi
+    sed -i.bak '/^#*[[:space:]]*CULLIS_MASTIO_VERSION=/d' "$SCRIPT_DIR/proxy.env"
+    rm -f "$SCRIPT_DIR/proxy.env.bak"
+    echo "CULLIS_MASTIO_VERSION=${UPGRADE_TO}" >> "$SCRIPT_DIR/proxy.env"
+    ok "proxy.env: CULLIS_MASTIO_VERSION=${UPGRADE_TO}"
+    # Export so this very run sees the new pin without a re-source.
+    export CULLIS_MASTIO_VERSION="$UPGRADE_TO"
 fi
 
 # ── Pre-flight: host port not already in use ───────────────────────────────
