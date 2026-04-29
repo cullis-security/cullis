@@ -127,6 +127,14 @@ async def _dashboard_lifespan(app: FastAPI):
     stdio MCP server) because the dashboard runs in a separate
     process and on restart picks up whatever identity is on disk
     right now.
+
+    Pre-enrollment dashboards yield with ``inbox_poller = None`` and
+    rely on :func:`_ensure_inbox_poller_running` to spin up the
+    notifier the moment the identity lands (post admin approval),
+    instead of forcing the operator to restart the dashboard. That
+    closes the dogfood bug where notifications silently never
+    appeared because the dashboard had been launched before the
+    profile was enrolled.
     """
     config = app.state.connector_config
     app.state.inbox_poller = None
@@ -136,26 +144,55 @@ async def _dashboard_lifespan(app: FastAPI):
     # chmod 0600 — any local process that can read it already had the
     # means to read ``identity/agent.key`` anyway.
     app.state.statusline_token = ensure_statusline_token(config.config_dir)
-    if os.environ.get("CULLIS_CONNECTOR_NOTIFICATIONS", "on").lower() in ("0", "off", "false", "no"):
-        _log.info("inbox poller disabled via CULLIS_CONNECTOR_NOTIFICATIONS")
-        yield
-        return
 
-    poller = _start_inbox_poller(config)
-    app.state.inbox_poller = poller
-    dispatcher: InboxDispatcher | None = None
-    if poller is not None:
-        poller.start()
-        dispatcher = InboxDispatcher(poller, build_notifier())
-        dispatcher.start()
-        app.state.inbox_dispatcher = dispatcher
+    _ensure_inbox_poller_running(app)
     try:
         yield
     finally:
+        dispatcher = getattr(app.state, "inbox_dispatcher", None)
+        poller = getattr(app.state, "inbox_poller", None)
         if dispatcher is not None:
             await dispatcher.stop()
         if poller is not None:
             await poller.stop()
+
+
+def _ensure_inbox_poller_running(app: FastAPI) -> bool:
+    """Idempotently start the inbox poller + dispatcher.
+
+    Returns ``True`` if the poller is now running (either we started
+    it or it already was), ``False`` if there's no identity to poll
+    against or notifications are disabled. Safe to call from:
+
+      - the dashboard lifespan (boot), which fires while the loop is
+        still warming up but already running enough for
+        ``poller.start()`` to schedule its task
+      - ``/api/status`` right after ``save_identity`` succeeds, which
+        is the lazy-spawn path that closes the "dashboard launched
+        pre-enrollment" hole
+
+    Intentionally synchronous: ``poller.start()`` and
+    ``dispatcher.start()`` already wrap ``asyncio.create_task``
+    internally, and both call sites run inside the event loop
+    (lifespan + async handler), so no extra await plumbing is needed.
+    """
+    config = app.state.connector_config
+    if getattr(app.state, "inbox_poller", None) is not None:
+        return True
+    if os.environ.get("CULLIS_CONNECTOR_NOTIFICATIONS", "on").lower() in ("0", "off", "false", "no"):
+        _log.info("inbox poller disabled via CULLIS_CONNECTOR_NOTIFICATIONS")
+        return False
+
+    poller = _start_inbox_poller(config)
+    if poller is None:
+        return False
+    poller.start()
+    dispatcher = InboxDispatcher(poller, build_notifier())
+    dispatcher.start()
+    app.state.inbox_poller = poller
+    app.state.inbox_dispatcher = dispatcher
+    _log.info("inbox poller spawned (lazy=%s)", poller is not None)
+    return True
 
 
 def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
@@ -460,13 +497,20 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         return JSONResponse({"app": "cullis-connector"})
 
     @app.get("/api/status")
-    def api_status() -> JSONResponse:
+    def api_status(request: Request) -> JSONResponse:
         """Single-shot poll of the remote enrollment status.
 
         Returns JSON so the waiting page's HTMX can route to the next
         screen on its own.
         """
         if has_identity(config.config_dir):
+            # Lazy-spawn the inbox poller — the dashboard may have
+            # been launched pre-enrollment, in which case the lifespan
+            # bootstrap saw no identity and returned early. Now that
+            # the identity is on disk (this branch), the operator
+            # should start receiving notifications without having to
+            # restart the dashboard. Idempotent + cheap.
+            _ensure_inbox_poller_running(request.app)
             return JSONResponse({"status": "approved"})
         if _pending is None:
             return JSONResponse({"status": "idle"})
@@ -531,6 +575,14 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 metadata=metadata,
             )
             _clear_pending()
+            # First moment the identity exists on disk — kick the
+            # inbox poller now so the operator sees notifications
+            # without having to restart the dashboard. The next
+            # /api/status poll would also catch this via the
+            # ``has_identity`` branch above, but doing it here too
+            # closes the small window between approval and the
+            # following HTMX poll.
+            _ensure_inbox_poller_running(request.app)
             return JSONResponse({"status": "approved", "agent_id": agent_id})
 
         if remote_status == "rejected":

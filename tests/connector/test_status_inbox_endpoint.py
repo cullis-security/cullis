@@ -6,7 +6,7 @@ endpoint just reads a snapshot from the dispatcher object.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -56,6 +56,10 @@ def test_status_inbox_returns_dispatcher_snapshot(app):
     """Inject a fake dispatcher and verify the endpoint surfaces
     its status_snapshot() verbatim."""
     fake = MagicMock()
+    # Lifespan now drains the dispatcher on shutdown via ``await
+    # dispatcher.stop()`` (so lazy-spawned ones from /api/status are
+    # also cleaned up). Inject an awaitable stop on the fake.
+    fake.stop = AsyncMock(return_value=None)
     fake.status_snapshot.return_value = {
         "unread": 3,
         "last_sender": "acme::mario",
@@ -75,6 +79,7 @@ def test_status_inbox_returns_dispatcher_snapshot(app):
 
 def test_status_inbox_seen_calls_ack_when_dispatcher_present(app):
     fake = MagicMock()
+    fake.stop = AsyncMock(return_value=None)
     with TestClient(app) as client:
         app.state.inbox_dispatcher = fake
         r = client.post("/status/inbox/seen", headers=_auth_headers(app))
@@ -114,6 +119,7 @@ def test_status_inbox_seen_rejects_missing_auth_cannot_reset_counter(app):
     """Without auth, a local attacker must NOT be able to ack the
     dispatcher and hide unread messages from the user."""
     fake = MagicMock()
+    fake.stop = AsyncMock(return_value=None)
     with TestClient(app) as client:
         app.state.inbox_dispatcher = fake
         r = client.post("/status/inbox/seen")
