@@ -9,6 +9,7 @@ Each internal agent gets:
 """
 import asyncio
 import hashlib
+import ipaddress
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -326,6 +327,23 @@ class AgentManager:
 
         san_list = list(sans) if sans else ["mastio.local"]
 
+        # Split SANs into IP literals vs hostnames. RFC 6125 / RFC 5280:
+        # an IP-literal request URL is validated against ``iPAddress`` SAN,
+        # never ``dNSName`` — Python's ssl module enforces this strictly,
+        # so a leaf with ``DNS:192.168.122.154`` only fails ``hostname
+        # 192.168.122.154 doesn't match`` even though the string is "in"
+        # the cert. This was the standalone-bundle bug a non-tech operator
+        # hit on first deploy (Site URL filled in with the VM IP, agent
+        # then refuses every request with CERTIFICATE_VERIFY_FAILED).
+        san_ips: list[str] = []
+        san_hosts: list[str] = []
+        for entry in san_list:
+            try:
+                ipaddress.ip_address(entry)
+                san_ips.append(entry)
+            except ValueError:
+                san_hosts.append(entry)
+
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
@@ -338,16 +356,22 @@ class AgentManager:
         if ca_path.exists() and crt_path.exists() and key_path.exists():
             try:
                 existing = x509.load_pem_x509_certificate(crt_path.read_bytes())
-                # SAN match
+                # SAN match — read DNSName + IPAddress because the same
+                # ``san_list`` may contain both (now that we split). A
+                # cert that already carries the right entries — even if
+                # we used to write IPs as DNSName before this fix —
+                # should NOT trigger a regeneration here; the post-
+                # mint reuse check below catches the type mismatch.
                 try:
                     san_ext = existing.extensions.get_extension_for_class(
                         SubjectAlternativeName,
                     ).value
-                    existing_dns = sorted(
-                        san_ext.get_values_for_type(x509.DNSName)
-                    )
+                    existing_hosts = set(san_ext.get_values_for_type(x509.DNSName))
+                    existing_ips = {
+                        str(ip) for ip in san_ext.get_values_for_type(x509.IPAddress)
+                    }
                 except x509.ExtensionNotFound:
-                    existing_dns = []
+                    existing_hosts, existing_ips = set(), set()
                 # Issuer match (current Org CA's subject)
                 issuer_ok = (
                     existing.issuer.rfc4514_string()
@@ -364,12 +388,16 @@ class AgentManager:
                     == self._org_ca_cert.public_bytes(serialization.Encoding.DER)
                 )
 
-                if (
-                    issuer_ok
-                    and expiry_ok
-                    and ca_ok
-                    and sorted(san_list) == existing_dns
-                ):
+                # Strict equality: same hosts AND same IPs in the right
+                # SAN type. A pre-fix cert that had IPs in ``DNSName``
+                # falls through to the mint path, which is the right
+                # outcome — that cert is the bug we're closing.
+                sans_ok = (
+                    existing_hosts == set(san_hosts)
+                    and existing_ips == set(san_ips)
+                )
+
+                if issuer_ok and expiry_ok and ca_ok and sans_ok:
                     reuse = True
             except Exception as exc:  # treat any parse failure as "regenerate"
                 logger.info(
@@ -428,7 +456,10 @@ class AgentManager:
                 critical=False,
             )
             .add_extension(
-                SubjectAlternativeName([x509.DNSName(s) for s in san_list]),
+                SubjectAlternativeName(
+                    [x509.DNSName(h) for h in san_hosts]
+                    + [x509.IPAddress(ipaddress.ip_address(ip)) for ip in san_ips],
+                ),
                 critical=False,
             )
             .add_extension(
