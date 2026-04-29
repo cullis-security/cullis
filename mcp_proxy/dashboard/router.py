@@ -3044,6 +3044,66 @@ async def badge_updates(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Update advisory — banner + JSON polled by the dashboard frame.
+# The container can't auto-replace itself (no docker.sock), so we
+# advise + show the operator the exact ``./deploy.sh --upgrade <ver>``
+# they should run on the host.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/api/version-status")
+async def api_version_status(request: Request):
+    """JSON the banner polls every few minutes — surfaces a newer
+    Mastio release on GHCR when one is out.
+
+    Auth-gated to dashboard sessions: a leaked anonymous endpoint
+    that hits the GitHub API on every request would be an easy
+    rate-limit target. Logged-in admins are the only audience for
+    this advisory anyway.
+    """
+    from fastapi.responses import JSONResponse
+    session = get_session(request)
+    if not session.logged_in:
+        return JSONResponse({"update_available": False}, status_code=200)
+
+    from dataclasses import asdict as _asdict
+    from mcp_proxy.version_check import check_for_updates
+
+    status = await check_for_updates()
+    return JSONResponse(_asdict(status))
+
+
+@router.get("/badge/version")
+async def badge_version(request: Request):
+    """HTMX fragment — single-pixel-thin banner that says "Update
+    available: 0.3.0-rc3" and links to the modal with the copy-paste
+    install command. Empty response when no update is pending so the
+    sidebar stays clean."""
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+
+    from mcp_proxy.version_check import check_for_updates
+    status = await check_for_updates()
+    if not status.update_available or not status.install_command:
+        return HTMLResponse("")
+
+    cmd = status.install_command
+    latest = status.latest or ""
+    current = status.current
+    return HTMLResponse(
+        f'<a href="{status.release_url}" target="_blank" rel="noopener" '
+        f'class="block px-3 py-2 rounded text-xs font-mono '
+        f'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition" '
+        f'title="Run ``{cmd}`` on the Mastio host to upgrade. '
+        f'See release notes on GitHub.">'
+        f'⤴ Update: <span class="font-semibold">{latest}</span> '
+        f'<span class="opacity-60">(running {current})</span>'
+        f'</a>'
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Overview (post-login landing)
 # ─────────────────────────────────────────────────────────────────────────────
 
