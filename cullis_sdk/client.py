@@ -110,6 +110,7 @@ def _build_proxy_http_client(
     timeout: float,
     cert_path: "str | Path | None" = None,
     key_path: "str | Path | None" = None,
+    ca_chain_path: "str | Path | None" = None,
 ) -> httpx.Client:
     """Build the proxy-facing ``httpx.Client``.
 
@@ -126,6 +127,18 @@ def _build_proxy_http_client(
     ``/v1/egress/*`` and ``/v1/agents/search`` will then 401 from
     nginx because those locations require a client cert — that is the
     correct ADR-014 behaviour, not a regression.
+
+    ADR-015: ``ca_chain_path`` carries the operator-pinned Org CA
+    bundle (TOFU) when present. Without this hookup the client used
+    ``verify=True`` which falls back to the system CA store — a self-
+    signed Org CA never matches there, so every call that goes
+    through this client (everything other than the ``hello_site``
+    diagnostic, which builds its own ``httpx.get`` from
+    ``cfg.verify_arg``) failed
+    ``CERTIFICATE_VERIFY_FAILED — unable to get local issuer
+    certificate`` even after the user clicked "Pin this CA". When the
+    file is present and verification is on we hand its path to httpx
+    so the pin is actually used.
     """
     cert: "tuple[str, str] | None" = None
     if cert_path is not None and key_path is not None:
@@ -142,8 +155,19 @@ def _build_proxy_http_client(
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+    # Resolve the actual ``verify=`` argument: pinned PEM path beats
+    # the bool, but only when verification is on. ``verify_tls=False``
+    # always wins (operator opt-out is opt-out — a stale pinned PEM
+    # must not silently re-enable the verification they just disabled).
+    verify_arg: "bool | str" = verify_tls
+    if verify_tls and ca_chain_path is not None:
+        from pathlib import Path as _Path
+        ca_path = _Path(ca_chain_path)
+        if ca_path.exists():
+            verify_arg = str(ca_path)
     return httpx.Client(
-        timeout=timeout, verify=verify_tls, cert=cert,
+        timeout=timeout, verify=verify_arg, cert=cert,
     )
 
 
@@ -958,11 +982,18 @@ class CullisClient:
         # transitional case where a legacy dump shipped only the cert.
         _mtls_cert = cert_path if (cert_path.exists() and key_path.exists()) else None
         _mtls_key = key_path if _mtls_cert is not None else None
+        # ADR-015 — TOFU-pinned Org CA. The Connector dashboard writes
+        # ``identity/ca-chain.pem`` after the operator confirms the
+        # SHA-256 fingerprint at first contact. When present, the
+        # proxy-facing httpx client must verify the Mastio's cert
+        # against this pin (not the system CA store).
+        _pinned_ca = identity_dir / "ca-chain.pem"
         instance._http = _build_proxy_http_client(
             verify_tls=verify_tls,
             timeout=timeout,
             cert_path=_mtls_cert,
             key_path=_mtls_key,
+            ca_chain_path=_pinned_ca if _pinned_ca.exists() else None,
         )
         instance._pubkey_cache = {}
         instance._client_seq = {}
