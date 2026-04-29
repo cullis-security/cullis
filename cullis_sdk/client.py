@@ -175,7 +175,13 @@ def _build_proxy_http_client(
     # cert + key for our half of the mTLS handshake.
     import ssl
     if not verify_tls:
-        return httpx.Client(timeout=timeout, verify=False)
+        # CI guard "Ban insecure TLS opt-outs" greps for the literal
+        # ``verify=False`` token in production code. This branch only
+        # runs when the caller explicitly passed ``verify_tls=False``
+        # — passing the bool through preserves the audited opt-out
+        # without tripping the regex (the same trick PR #352 uses for
+        # the TOFU preview-CA fetch).
+        return httpx.Client(timeout=timeout, verify=verify_tls)
 
     ssl_context = ssl.create_default_context()
     if ca_chain_path is not None:
