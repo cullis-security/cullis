@@ -102,9 +102,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/cullis-mastio
+          # latest=auto would override the explicit enable= guard below.
+          flavor: |
+            latest=false
           tags: |
             type=match,pattern=mastio-v(.*),group=1
-            type=match,pattern=mastio-v(\d+\.\d+)\..*,group=1
+            type=match,pattern=mastio-v(\d+\.\d+)\..*,group=1,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
           labels: |
             org.opencontainers.image.title=Cullis Mastio
