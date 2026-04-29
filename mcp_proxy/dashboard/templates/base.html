@@ -106,6 +106,13 @@
 
         <!-- Footer status -->
         <div class="px-4 py-3 border-t border-gray-800/60 space-y-2">
+            <!-- Update advisory: empty unless GHCR has a newer mastio-v* tag.
+                 Polled every 30 minutes — the version_check cache rounds it
+                 down to ~1 GitHub API call/h regardless of how many admins
+                 have the dashboard open. -->
+            <div hx-get="/proxy/badge/version"
+                 hx-trigger="load, every 1800s"
+                 hx-swap="innerHTML"></div>
             <div class="flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full bg-accent-400 pulse-dot"></span>
                 <span class="text-[10px] text-gray-600 uppercase tracking-wider">Mastio Online</span>

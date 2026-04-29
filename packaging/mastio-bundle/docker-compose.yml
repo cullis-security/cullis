@@ -29,6 +29,12 @@ services:
     expose:
       - "9100"
     environment:
+      # The image tag this container was started with — read by the
+      # dashboard's update banner so it can compare against the latest
+      # release on GHCR and surface ``./deploy.sh --upgrade <ver>``
+      # when a newer Mastio is out. Falls back to "unknown" so the
+      # banner is silent on dev builds that don't pin a tag.
+      MCP_PROXY_VERSION:           ${CULLIS_MASTIO_VERSION:-unknown}
       MCP_PROXY_ENVIRONMENT:       ${MCP_PROXY_ENVIRONMENT:-development}
       MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
       MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
