@@ -66,6 +66,13 @@
         <button type="button" class="copy-btn" onclick="copyText('{{ enroll_url|e }}')">Copy</button>
     </div>
 
+    {% if admin_enrollments_url %}
+    <p class="footer-hint" style="margin-top: 1rem;">
+        Admin? Open <a href="{{ admin_enrollments_url|e }}" target="_blank" rel="noopener" id="admin-enrollments-link">{{ admin_enrollments_url }}</a>
+        on the Mastio dashboard to review and approve this request.
+    </p>
+    {% endif %}
+
     <div class="btn-row">
         <form method="post" action="/cancel" style="display: inline;">
             <button type="submit" class="btn btn-ghost">Cancel enrollment</button>

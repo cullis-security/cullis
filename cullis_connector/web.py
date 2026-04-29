@@ -442,6 +442,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 "connector_status_label": "Pending approval",
                 "session_id": _pending.session_id,
                 "enroll_url": _pending.enroll_url,
+                "admin_enrollments_url": f"{_pending.site_url.rstrip('/')}/proxy/enrollments",
                 "started_at_ms": int(_pending.started_at * 1000),
             },
         )
