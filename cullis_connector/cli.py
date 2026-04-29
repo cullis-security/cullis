@@ -436,7 +436,7 @@ def _cmd_enroll(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
                 reason=args.reason,
                 device_info=args.device_info,
             ),
-            verify_tls=cfg.verify_tls,
+            verify_tls=cfg.verify_arg,
             request_timeout_s=cfg.request_timeout_s,
         )
     except EnrollmentFailed as exc:

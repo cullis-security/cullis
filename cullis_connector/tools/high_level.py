@@ -264,7 +264,7 @@ def register(mcp: "FastMCP") -> None:
             resp = httpx.get(
                 url,
                 headers=headers,
-                verify=cfg.verify_tls,
+                verify=cfg.verify_arg,
                 timeout=cfg.request_timeout_s,
             )
         except httpx.HTTPError as exc:

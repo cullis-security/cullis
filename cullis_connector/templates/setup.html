@@ -48,6 +48,88 @@
         <span class="field-hint">The address IT gave you — typically ends with <span class="mono">:9443</span>.</span>
     </div>
 
+    <div class="field" id="tofu-box">
+        <label class="field-label">Site CA fingerprint <span class="muted">(recommended)</span></label>
+        <p class="field-hint" style="margin-bottom: 8px;">
+            Compare with what your admin gave you over a separate channel.
+            Pinning the CA stops anyone in the middle from impersonating the
+            Site even if they manage to issue a leaf cert for the same name.
+        </p>
+        <div class="btn-row" style="margin-top: 4px; gap: 8px;">
+            <button type="button" id="tofu-fetch-btn" class="btn">Fetch fingerprint</button>
+            <button type="button" id="tofu-pin-btn" class="btn btn-primary" style="display: none;">Pin this CA</button>
+            <span id="tofu-status" class="field-hint" style="margin: 0; align-self: center;"></span>
+        </div>
+        <pre id="tofu-fingerprint" class="mono" style="display: none; margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; word-break: break-all; white-space: pre-wrap; font-size: 12px;"></pre>
+        <input type="hidden" id="tofu-fingerprint-value" name="ca_fingerprint" value="">
+    </div>
+    <script>
+    (function () {
+        const $url = document.getElementById('site_url');
+        const $fetch = document.getElementById('tofu-fetch-btn');
+        const $pin = document.getElementById('tofu-pin-btn');
+        const $status = document.getElementById('tofu-status');
+        const $print = document.getElementById('tofu-fingerprint');
+        const $hidden = document.getElementById('tofu-fingerprint-value');
+        let pendingFingerprint = '';
+
+        function setStatus(text, ok) {
+            $status.textContent = text;
+            $status.style.color = ok === true ? '#7ecb7e'
+                : ok === false ? '#e08585'
+                : '';
+        }
+
+        async function postForm(url, data) {
+            const body = new URLSearchParams(data);
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body.toString(),
+            });
+            const json = await resp.json();
+            if (!resp.ok) throw new Error(json.error || ('HTTP ' + resp.status));
+            return json;
+        }
+
+        $fetch.addEventListener('click', async () => {
+            if (!$url.value.trim()) {
+                setStatus('Enter the Proxy URL first.', false);
+                return;
+            }
+            setStatus('Fetching…');
+            try {
+                const data = await postForm('/setup/preview-ca', {site_url: $url.value.trim()});
+                pendingFingerprint = data.fingerprint_sha256;
+                $print.textContent = data.fingerprint_short;
+                $print.style.display = 'block';
+                $pin.style.display = '';
+                setStatus('Compare ↑ with the value your admin gave you.', null);
+            } catch (e) {
+                setStatus(e.message, false);
+                $print.style.display = 'none';
+                $pin.style.display = 'none';
+            }
+        });
+
+        $pin.addEventListener('click', async () => {
+            setStatus('Pinning…');
+            try {
+                const data = await postForm('/setup/pin-ca', {
+                    site_url: $url.value.trim(),
+                    fingerprint_expected: pendingFingerprint,
+                });
+                $hidden.value = data.fingerprint_sha256;
+                $pin.style.display = 'none';
+                $fetch.disabled = true;
+                setStatus('✓ CA pinned — TLS will verify against this fingerprint.', true);
+            } catch (e) {
+                setStatus(e.message, false);
+            }
+        });
+    })();
+    </script>
+
     <div class="field">
         <label class="field-label" for="requester_name">Your name</label>
         <input

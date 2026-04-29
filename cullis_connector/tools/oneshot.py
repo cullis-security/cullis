@@ -44,6 +44,13 @@ def register(mcp: "FastMCP") -> None:
         resolves the target and routes the message; the recipient picks it
         up via ``receive_oneshot``.
 
+        If you are replying to a message you just received via
+        ``receive_oneshot``, prefer the ``reply`` tool — it threads the
+        conversation automatically by setting ``reply_to`` to the inbox
+        ``msg_id`` of the last decoded message. Use ``send_oneshot`` only
+        for new conversations or when you need the full parameter surface
+        (e.g. overriding ``correlation_id``).
+
         Args:
             recipient_id: Fully-qualified target (e.g. ``chipfactory::sales``).
                 Bare names resolve inside the sender's org.
@@ -142,4 +149,11 @@ def register(mcp: "FastMCP") -> None:
             state.last_peer_resolved = last_decoded_sender
             state.last_reply_to = last_decoded_msg_id
 
-        return f"{len(rows)} one-shot message(s):\n" + "\n".join(lines)
+        out = f"{len(rows)} one-shot message(s):\n" + "\n".join(lines)
+        if last_decoded_msg_id:
+            out += (
+                "\n\nTip: to thread a reply to the last message, call "
+                "``reply(text=...)`` — it sets ``reply_to`` automatically. "
+                "Use ``send_oneshot`` only for new conversations."
+            )
+        return out

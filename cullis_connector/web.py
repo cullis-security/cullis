@@ -278,11 +278,12 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         pubkey_pem = public_key_to_pem(private_key.public_key()).decode()
 
         try:
+            from cullis_connector.config import verify_arg_for
             start_resp = _start(
                 site_url=site_url,
                 pubkey_pem=pubkey_pem,
                 requester=requester,
-                verify_tls=verify_tls,
+                verify_tls=verify_arg_for(verify_tls, config.ca_chain_path),
                 timeout_s=config.request_timeout_s,
             )
         except EnrollmentFailed as exc:
@@ -312,6 +313,109 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             poll_interval_s=int(start_resp.get("poll_interval_s", 5)),
         )
         return RedirectResponse("/waiting", status_code=303)
+
+    # ── TOFU CA pinning (Finding #3 / dogfood 2026-04-29) ────────────────
+    #
+    # First-contact bootstrap: dashboard fetches the Org CA from the
+    # anonymous /pki/ca.crt endpoint, shows the SHA-256 fingerprint to
+    # the operator, and on confirmation pins the PEM to
+    # ``<profile>/identity/ca-chain.pem``. Subsequent httpx clients pick
+    # it up via ``ConnectorConfig.verify_arg`` and verify the Site's
+    # leaf cert end-to-end without needing the operator to keep
+    # ``--no-verify-tls`` on.
+
+    def _fetch_ca_pem(site_url: str) -> tuple[str, str]:
+        """Download the anonymous CA PEM and compute its SHA-256.
+
+        Always called with ``verify=False`` — the whole point is that
+        we don't trust the leaf yet. The fingerprint is what the
+        operator compares against the value their admin gave them
+        out-of-band; that comparison is the actual trust anchor, not
+        the TLS handshake.
+        """
+        from cryptography import x509
+        from cullis_connector.enrollment import cert_fingerprint
+        url = site_url.rstrip("/") + "/pki/ca.crt"
+        resp = httpx.get(url, verify=False, timeout=config.request_timeout_s)
+        if resp.status_code == 404:
+            raise RuntimeError(
+                "Site has no Org CA configured yet — ask the admin to "
+                "complete first-boot setup, then retry."
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Site returned HTTP {resp.status_code} for /pki/ca.crt"
+            )
+        pem = resp.text
+        cert = x509.load_pem_x509_certificate(pem.encode())
+        fingerprint = cert_fingerprint(cert)
+        return pem, fingerprint
+
+    @app.post("/setup/preview-ca")
+    def setup_preview_ca(site_url: str = Form(...)) -> JSONResponse:
+        """Show the operator the CA fingerprint before they pin it.
+
+        Returns the PEM body along with its SHA-256 hex digest. The
+        body is round-tripped through the browser so a TOCTOU between
+        preview and pin can be caught at pin time by re-fetching and
+        re-comparing — see ``setup_pin_ca``.
+        """
+        try:
+            pem, fingerprint = _fetch_ca_pem(site_url)
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=400,
+            )
+        return JSONResponse({
+            "fingerprint_sha256": fingerprint,
+            "fingerprint_short": ":".join(
+                fingerprint[i:i+2] for i in range(0, len(fingerprint), 2)
+            ),
+            "ca_pem": pem,
+        })
+
+    @app.post("/setup/pin-ca")
+    def setup_pin_ca(
+        site_url: str = Form(...),
+        fingerprint_expected: str = Form(...),
+    ) -> JSONResponse:
+        """Re-fetch the CA, verify the fingerprint still matches, save it.
+
+        The re-fetch closes the TOCTOU between preview and pin: an
+        attacker who could swap the CA between calls would have to
+        produce a cert with the same SHA-256 digest, which is the
+        whole point of using SHA-256 as the pin.
+        """
+        try:
+            pem, fingerprint = _fetch_ca_pem(site_url)
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=400,
+            )
+        if fingerprint.lower() != fingerprint_expected.lower().replace(":", ""):
+            return JSONResponse(
+                {
+                    "error": (
+                        "Fingerprint changed between preview and pin. "
+                        "Aborting — refresh and verify with your admin."
+                    ),
+                    "fingerprint_now": fingerprint,
+                },
+                status_code=409,
+            )
+        identity_dir = config.config_dir / "identity"
+        identity_dir.mkdir(parents=True, exist_ok=True)
+        ca_path = identity_dir / "ca-chain.pem"
+        ca_path.write_text(pem)
+        try:
+            ca_path.chmod(0o644)
+        except OSError:
+            pass  # Windows / non-POSIX filesystems
+        return JSONResponse({
+            "pinned": True,
+            "path": str(ca_path),
+            "fingerprint_sha256": fingerprint,
+        })
 
     @app.get("/waiting", response_class=HTMLResponse)
     def waiting_get(request: Request) -> Response:
@@ -348,9 +452,10 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             f"{_pending.site_url}/v1/enrollment/{_pending.session_id}/status"
         )
         try:
+            from cullis_connector.config import verify_arg_for
             resp = httpx.get(
                 poll_url,
-                verify=_pending.verify_tls,
+                verify=verify_arg_for(_pending.verify_tls, config.ca_chain_path),
                 timeout=config.request_timeout_s,
             )
         except httpx.HTTPError as exc:
@@ -609,7 +714,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         identity = load_identity(config.config_dir)
         base = identity.metadata.site_url.rstrip("/")
         return httpx.Client(
-            base_url=base, verify=config.verify_tls, timeout=10.0,
+            base_url=base, verify=config.verify_arg, timeout=10.0,
         )
 
     def _mcp_admin_headers() -> dict[str, str]:

@@ -861,6 +861,12 @@ app.include_router(challenge_response_router)
 from mcp_proxy.auth.jwks_local import router as jwks_local_router
 app.include_router(jwks_local_router)
 
+# Anonymous Org CA download for TOFU pinning during Connector first-contact
+# (Finding #3 / dogfood 2026-04-29). Path is /pki/ca.crt — outside any
+# reverse-proxied prefix, so registration order vs the forwarder is moot.
+from mcp_proxy.pki.public import router as pki_public_router
+app.include_router(pki_public_router)
+
 # ADR-012 Phase 2 — proxy-native /v1/auth/token. Gated behind
 # ``settings.local_auth_enabled`` so the reverse-proxy path remains the
 # default. MUST be registered before ``build_reverse_proxy_router()`` so

@@ -55,7 +55,7 @@ def enroll(
     site_url: str,
     config_dir: Path,
     requester: RequesterInfo,
-    verify_tls: bool = True,
+    verify_tls: bool | str = True,
     request_timeout_s: float = 10.0,
     max_wait_s: int = 30 * 60,
     poll_sink=sys.stderr,
@@ -173,7 +173,7 @@ def _start(
     site_url: str,
     pubkey_pem: str,
     requester: RequesterInfo,
-    verify_tls: bool,
+    verify_tls: bool | str,
     timeout_s: float,
     dpop_jwk: dict | None = None,
 ) -> dict[str, Any]:
@@ -215,7 +215,7 @@ def _poll_until_resolved(
     session_id: str,
     poll_interval_s: int,
     max_wait_s: int,
-    verify_tls: bool,
+    verify_tls: bool | str,
     timeout_s: float,
     poll_sink,
 ) -> dict[str, Any]:

@@ -92,3 +92,59 @@ def test_invalid_yaml_top_level_raises(tmp_path: Path) -> None:
     cfg_file.write_text("- this is a list, not a mapping\n")
     with pytest.raises(ValueError, match="must be a mapping"):
         load_config({"config_dir": str(tmp_path)}, env={})
+
+
+# ── verify_arg / verify_arg_for ────────────────────────────────────────────
+
+
+def test_verify_arg_returns_false_when_user_disabled_tls(tmp_path: Path) -> None:
+    """Opt-out is opt-out: a pinned CA on disk does NOT silently
+    re-enable verification when the operator passed --no-verify-tls."""
+    ca = tmp_path / "identity" / "ca-chain.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=False)
+    assert cfg.verify_arg is False
+
+
+def test_verify_arg_returns_path_when_ca_pinned(tmp_path: Path) -> None:
+    """TOFU pinning happy path: with verification on and a pinned CA
+    on disk, httpx receives the absolute path so it uses the pinned
+    CA as trust store instead of the system bundle."""
+    ca = tmp_path / "identity" / "ca-chain.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=True)
+    assert cfg.verify_arg == str(ca)
+
+
+def test_verify_arg_returns_true_when_no_ca_pinned(tmp_path: Path) -> None:
+    """First-contact / pre-TOFU state: verification on but no CA on
+    disk yet → httpx uses its default CA bundle (system trust store).
+    This still fails for self-signed Sites, which is the cue for the
+    TOFU bootstrap UI to kick in."""
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=True)
+    assert cfg.verify_arg is True
+
+
+def test_verify_arg_for_module_helper_matches_property(tmp_path: Path) -> None:
+    """``verify_arg_for`` must produce the same result as the
+    instance property when given the same inputs — callers with a
+    form-supplied ``verify_tls`` rely on this equivalence."""
+    from cullis_connector.config import verify_arg_for
+
+    ca_path = tmp_path / "identity" / "ca-chain.pem"
+    ca_path.parent.mkdir(parents=True)
+
+    # No CA pinned, verify on.
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=True)
+    assert verify_arg_for(True, ca_path) == cfg.verify_arg
+
+    # CA pinned, verify on.
+    ca_path.write_text("PEM")
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=True)
+    assert verify_arg_for(True, ca_path) == cfg.verify_arg
+
+    # CA pinned, verify off — both paths must collapse to False.
+    cfg = ConnectorConfig(config_dir=tmp_path, verify_tls=False)
+    assert verify_arg_for(False, ca_path) == cfg.verify_arg == False  # noqa: E712

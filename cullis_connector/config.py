@@ -94,6 +94,32 @@ class ConnectorConfig:
     def ca_chain_path(self) -> Path:
         return self.identity_dir / "ca-chain.pem"
 
+    @property
+    def verify_arg(self) -> bool | str:
+        """``httpx.verify`` value with TOFU-pinned CA when available.
+
+        See ``verify_arg_for`` — this property wires it to the
+        ``ConnectorConfig`` instance.
+        """
+        return verify_arg_for(self.verify_tls, self.ca_chain_path)
+
+
+def verify_arg_for(verify_tls: bool, ca_chain_path: Path) -> bool | str:
+    """Compute ``httpx.verify`` from a form-supplied ``verify_tls`` and a
+    profile's ``ca-chain.pem`` path.
+
+    Returns the absolute path to the pinned CA when the file exists and
+    verification is on, so httpx uses it as the trust store for
+    verifying the Site's leaf cert end-to-end. Returns ``False`` when
+    the operator has explicitly disabled verification (opt-out is
+    opt-out — a pinned CA does not silently re-enable it). Falls back
+    to ``True`` when verification is on but no CA has been pinned yet
+    (first contact before TOFU bootstrap completes).
+    """
+    if not verify_tls:
+        return False
+    return str(ca_chain_path) if ca_chain_path.exists() else True
+
 
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():

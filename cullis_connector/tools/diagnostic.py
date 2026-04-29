@@ -45,7 +45,7 @@ def register(mcp: "FastMCP") -> None:
         try:
             response = httpx.get(
                 url,
-                verify=cfg.verify_tls,
+                verify=cfg.verify_arg,
                 timeout=cfg.request_timeout_s,
             )
         except httpx.HTTPError as exc:
@@ -70,7 +70,7 @@ def register(mcp: "FastMCP") -> None:
             "site_status": payload.get("status", "unknown"),
             "site_version": payload.get("version", "unknown"),
             "latency_ms": latency_ms,
-            "tls_verified": cfg.verify_tls,
+            "tls_verified": cfg.verify_arg is not False,
         }
         _log.info("hello_site ok", extra=result)
         return json.dumps(result, ensure_ascii=False)
