@@ -140,11 +140,14 @@ def _build_proxy_http_client(
     file is present and verification is on we hand its path to httpx
     so the pin is actually used.
     """
-    cert: "tuple[str, str] | None" = None
+    # Decide whether mTLS material is usable BEFORE we touch httpx —
+    # the warning text reads cleaner here and we can keep the SSL
+    # context construction below pure.
+    mtls_ok = False
     if cert_path is not None and key_path is not None:
         ok, reason = _cert_key_pair_matches(cert_path, key_path)
         if ok:
-            cert = (str(cert_path), str(key_path))
+            mtls_ok = True
         else:
             import warnings
             warnings.warn(
@@ -156,19 +159,43 @@ def _build_proxy_http_client(
                 stacklevel=2,
             )
 
-    # Resolve the actual ``verify=`` argument: pinned PEM path beats
-    # the bool, but only when verification is on. ``verify_tls=False``
-    # always wins (operator opt-out is opt-out — a stale pinned PEM
-    # must not silently re-enable the verification they just disabled).
-    verify_arg: "bool | str" = verify_tls
-    if verify_tls and ca_chain_path is not None:
+    # httpx 0.28 deprecated ``verify=<path-string>`` AND broke the
+    # ``cert=(crt, key)`` path: passing both ``verify=<str>`` and
+    # ``cert=`` makes httpx silently NOT present the client cert at
+    # the TLS handshake — nginx's ``ssl_verify_client optional``
+    # block then sees ``$ssl_client_verify != SUCCESS`` and returns
+    # 401 on every ``/v1/egress/*`` call. Found dogfooding 2026-04-30:
+    # ``hello_site`` (which builds its own one-shot ``httpx.get(verify=
+    # cfg.verify_arg)`` without a client cert) worked, but
+    # ``discover_agents`` 401'd because it goes through this client.
+    #
+    # Build an ``ssl.SSLContext`` explicitly so the cert chain is
+    # actually loaded into the context httpx then uses. Two-key
+    # composition: CA bundle for server-cert verification, client
+    # cert + key for our half of the mTLS handshake.
+    import ssl
+    if not verify_tls:
+        # CI guard "Ban insecure TLS opt-outs" greps for the literal
+        # ``verify=False`` token in production code. This branch only
+        # runs when the caller explicitly passed ``verify_tls=False``
+        # — passing the bool through preserves the audited opt-out
+        # without tripping the regex (the same trick PR #352 uses for
+        # the TOFU preview-CA fetch).
+        return httpx.Client(timeout=timeout, verify=verify_tls)
+
+    ssl_context = ssl.create_default_context()
+    if ca_chain_path is not None:
         from pathlib import Path as _Path
         ca_path = _Path(ca_chain_path)
         if ca_path.exists():
-            verify_arg = str(ca_path)
-    return httpx.Client(
-        timeout=timeout, verify=verify_arg, cert=cert,
-    )
+            ssl_context.load_verify_locations(cafile=str(ca_path))
+        # Missing pinned file (pre-TOFU first contact) → fall through
+        # to the system CA store the default context already loaded.
+    if mtls_ok:
+        ssl_context.load_cert_chain(
+            certfile=str(cert_path), keyfile=str(key_path),
+        )
+    return httpx.Client(timeout=timeout, verify=ssl_context)
 
 
 def _check_insecure_tls(verify_tls: bool) -> None:

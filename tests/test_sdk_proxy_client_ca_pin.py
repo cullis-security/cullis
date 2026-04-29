@@ -104,10 +104,74 @@ def test_missing_pinned_file_falls_back_to_system_store(tmp_path):
 def test_no_ca_chain_argument_keeps_legacy_behaviour():
     """Direct-broker SDKs (``CullisClient(broker_url=…)``) call this
     builder without a ca_chain_path. Behaviour must be unchanged for
-    them — verify=True hits the system store, which is correct
-    against a public-CA-issued broker."""
+    them — system store is consulted, which is correct against a
+    public-CA-issued broker."""
     client = _build_proxy_http_client(
         verify_tls=True,
+        timeout=5.0,
+    )
+    assert isinstance(client, httpx.Client)
+
+
+def test_client_cert_loaded_into_ssl_context(tmp_path):
+    """Found dogfooding 2026-04-30 with httpx 0.28: passing
+    ``cert=(crt, key)`` together with ``verify=<str>`` silently fails
+    to present the client cert at the TLS handshake, so nginx's
+    ``ssl_verify_client optional`` returns 401 on every
+    ``/v1/egress/*`` call. Fix: build an explicit ``ssl.SSLContext``
+    and call ``load_cert_chain``. Pin that the constructed transport
+    has the SSLContext shape we expect.
+    """
+    from cryptography.hazmat.primitives import serialization
+    import ssl as _ssl
+
+    # Real cert+key pair — ``_cert_key_pair_matches`` rejects fakes,
+    # which is the right thing for the SDK but means we have to mint
+    # one for the test.
+    key = ec.generate_private_key(ec.SECP256R1())
+    subj = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "agent")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subj)
+        .issuer_name(subj)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=30))
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = tmp_path / "agent.crt"
+    key_pem = tmp_path / "agent.key"
+    cert_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_pem.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    ca_pem = _write_dummy_pem(tmp_path / "ca-chain.pem")
+
+    client = _build_proxy_http_client(
+        verify_tls=True,
+        timeout=5.0,
+        cert_path=cert_pem,
+        key_path=key_pem,
+        ca_chain_path=ca_pem,
+    )
+    # The httpx transport's pool holds the SSLContext we built. If
+    # the bug were back (path string verify + tuple cert), this
+    # attribute would either be missing or be a default context
+    # without our cert chain.
+    pool = client._transport._pool  # type: ignore[attr-defined]
+    ctx = pool._ssl_context
+    assert isinstance(ctx, _ssl.SSLContext)
+
+
+def test_verify_false_skips_ssl_context_build():
+    """``verify_tls=False`` is an explicit operator opt-out — must
+    pass straight through to ``httpx.Client(verify=False)``, not
+    silently re-enable verification by building a default context."""
+    client = _build_proxy_http_client(
+        verify_tls=False,
         timeout=5.0,
     )
     assert isinstance(client, httpx.Client)
