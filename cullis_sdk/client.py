@@ -222,6 +222,17 @@ class CullisClient:
         # detect which role is in front of it without a config change.
         self.server_role: str | None = None
 
+        # Dogfood Finding #9 (2026-04-29): when the SDK is built
+        # against a Mastio proxy (``from_connector`` / proxy-bound
+        # factories), session ops route through ``/v1/egress/sessions*``
+        # rather than ``/v1/broker/sessions*``. The egress router is
+        # the local mini-broker for intra-org sessions in standalone
+        # and falls through to the broker bridge for cross-org — the
+        # broker paths only worked when a Court was reachable, so they
+        # 503'd on every standalone Mastio. Direct-broker factories
+        # leave this False so they keep talking to ``/v1/broker``.
+        self._use_egress_for_sessions: bool = False
+
         # Opaque identity bundle attached by the caller after
         # construction. Connector callers set this to the loaded
         # ``cullis_connector.identity.IdentityBundle`` so helpers like
@@ -378,6 +389,8 @@ class CullisClient:
         instance._egress_dpop_nonce = None
         instance._proxy_agent_id = config["agent_id"]
         instance._proxy_org_id = config["org_id"]
+        # Dogfood Finding #9 — proxy-bound: see __init__.
+        instance._use_egress_for_sessions = True
         # Mirror __init__: callers may attach the on-disk identity bundle
         # afterwards (see ``canonical_recipient`` in cullis_connector).
         instance.identity = None
@@ -553,6 +566,8 @@ class CullisClient:
         instance._egress_dpop_nonce = None
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        # Dogfood Finding #9 — proxy-bound: see __init__.
+        instance._use_egress_for_sessions = True
         # ``_update_nonce`` reads ``self.server_role`` on every response;
         # since we skip ``__init__`` above (the ``cls.__new__(cls)`` route
         # that other factories also use), the attribute must exist.
@@ -810,6 +825,8 @@ class CullisClient:
         instance._egress_dpop_nonce = None
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        # Dogfood Finding #9 — proxy-bound: see __init__.
+        instance._use_egress_for_sessions = True
         instance.server_role = None
         instance.identity = None
 
@@ -956,6 +973,10 @@ class CullisClient:
         instance._egress_dpop_nonce = None
         instance._proxy_agent_id = agent_id
         instance._proxy_org_id = org_id
+        # Dogfood Finding #9 — proxy-bound: route session ops through
+        # /v1/egress/sessions* (handles intra-org locally, falls
+        # through to broker bridge for cross-org).
+        instance._use_egress_for_sessions = True
         # Mirror __init__: callers may attach the on-disk identity bundle
         # afterwards (see ``canonical_recipient`` in cullis_connector).
         instance.identity = None
@@ -1534,7 +1555,22 @@ class CullisClient:
 
     def open_session(self, target_agent_id: str, target_org_id: str,
                      capabilities: list[str]) -> str:
-        """Open a new session with a target agent. Returns session_id."""
+        """Open a new session with a target agent. Returns session_id.
+
+        Proxy-bound clients (``from_connector``, ``from_enrollment``,
+        ``from_identity_dir``) route through ``/v1/egress/sessions`` —
+        the proxy's local mini-broker handles intra-org and falls
+        through to the broker bridge for cross-org. Direct-broker
+        clients keep using ``/v1/broker/sessions``.
+        """
+        if self._use_egress_for_sessions:
+            resp = self._egress_http("post", "/v1/egress/sessions", json={
+                "target_agent_id": target_agent_id,
+                "target_org_id": target_org_id,
+                "capabilities": capabilities,
+            })
+            resp.raise_for_status()
+            return resp.json()["session_id"]
         path = "/v1/broker/sessions"
         resp = self._authed_request("POST", path, json={
             "target_agent_id": target_agent_id,
@@ -1546,28 +1582,64 @@ class CullisClient:
 
     def accept_session(self, session_id: str) -> None:
         """Accept a pending session."""
+        if self._use_egress_for_sessions:
+            resp = self._egress_http(
+                "post", f"/v1/egress/sessions/{session_id}/accept"
+            )
+            resp.raise_for_status()
+            return
         path = f"/v1/broker/sessions/{session_id}/accept"
         resp = self._authed_request("POST", path)
         resp.raise_for_status()
 
     def reject_session(self, session_id: str) -> None:
-        """Reject a pending session."""
+        """Reject a pending session.
+
+        The egress router has no dedicated reject endpoint — it folds
+        rejection into ``/close`` (the local store treats both as a
+        terminal state with the same semantics for the initiator).
+        Direct-broker clients still get the reject path so the broker
+        can distinguish 'rejected by target' from 'closed'.
+        """
+        if self._use_egress_for_sessions:
+            resp = self._egress_http(
+                "post", f"/v1/egress/sessions/{session_id}/close"
+            )
+            resp.raise_for_status()
+            return
         path = f"/v1/broker/sessions/{session_id}/reject"
         resp = self._authed_request("POST", path)
         resp.raise_for_status()
 
     def close_session(self, session_id: str) -> None:
         """Close an active session."""
+        if self._use_egress_for_sessions:
+            resp = self._egress_http(
+                "post", f"/v1/egress/sessions/{session_id}/close"
+            )
+            resp.raise_for_status()
+            return
         path = f"/v1/broker/sessions/{session_id}/close"
         resp = self._authed_request("POST", path)
         resp.raise_for_status()
 
     def list_sessions(self, status: str | None = None) -> list[SessionInfo]:
-        """List sessions, optionally filtered by status."""
-        path = "/v1/broker/sessions"
+        """List sessions, optionally filtered by status.
+
+        The egress shape wraps the list in ``{"sessions": [...]}`` and
+        the broker shape returns a flat list — unwrap on the egress
+        side so callers see the same return type.
+        """
         params = {}
         if status:
             params["status"] = status
+        if self._use_egress_for_sessions:
+            resp = self._egress_http("get", "/v1/egress/sessions", params=params)
+            resp.raise_for_status()
+            body = resp.json()
+            sessions = body.get("sessions", []) if isinstance(body, dict) else body
+            return [SessionInfo.from_dict(s) for s in sessions]
+        path = "/v1/broker/sessions"
         resp = self._authed_request("GET", path, params=params)
         resp.raise_for_status()
         return [SessionInfo.from_dict(s) for s in resp.json()]
@@ -1622,6 +1694,37 @@ class CullisClient:
             self._signing_key_pem, session_id, sender_agent_id,
             nonce, timestamp, cipher_blob, client_seq=client_seq,
         )
+
+        if self._use_egress_for_sessions:
+            # Egress envelope mode: cert-as-identity, no outer signature
+            # (mTLS provides transport integrity to the proxy; the
+            # ``inner_sig`` baked into ``cipher_blob`` provides E2E
+            # non-repudiation for the recipient).
+            body: dict[str, Any] = {
+                "session_id": session_id,
+                "payload": cipher_blob,
+                "recipient_agent_id": recipient_agent_id,
+                "mode": "envelope",
+            }
+            if ttl_seconds is not None:
+                body["ttl_seconds"] = ttl_seconds
+            if idempotency_key is not None:
+                body["idempotency_key"] = idempotency_key
+            for attempt in range(3):
+                try:
+                    resp = self._egress_http("post", "/v1/egress/send", json=body)
+                    resp.raise_for_status()
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return {"status": "accepted", "session_id": session_id}
+                except (httpx.ConnectError, httpx.TimeoutException):
+                    if attempt < 2:
+                        print(f"[{self._label}] Proxy unreachable — retry in 2s...", flush=True)
+                        time.sleep(2)
+                    else:
+                        raise ConnectionError(f"[{self._label}] Proxy unreachable after 3 attempts.")
+            raise ConnectionError(f"[{self._label}] Proxy send failed unexpectedly.")
 
         envelope = {
             "session_id": session_id,
@@ -2279,6 +2382,8 @@ class CullisClient:
         safe to continue; the broker has already moved on). Raises on
         transport failures so the caller can retry.
         """
+        if self._use_egress_for_sessions:
+            return self.ack_via_proxy(session_id, msg_id)
         path = f"/v1/broker/sessions/{session_id}/messages/{msg_id}/ack"
         resp = self._authed_request("POST", path)
         if resp.status_code == 204:
@@ -2317,7 +2422,39 @@ class CullisClient:
         return msg
 
     def poll(self, session_id: str, after: int = -1, poll_interval: int = 2) -> list[InboxMessage]:
-        """Poll for new messages in a session. Returns decrypted messages."""
+        """Poll for new messages in a session. Returns decrypted messages.
+
+        Egress poll wraps the list in ``{"messages": [...], "count": N,
+        "scope": ...}`` and, in envelope mode, serialises the cipher
+        blob to a JSON string under ``payload_ciphertext``. Reverse
+        both shape diffs so callers see the same ``list[InboxMessage]``
+        as the broker path.
+        """
+        if self._use_egress_for_sessions:
+            for attempt in range(5):
+                try:
+                    resp = self._egress_http(
+                        "get", f"/v1/egress/messages/{session_id}",
+                        params={"after": after},
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+                    raw = body.get("messages", []) if isinstance(body, dict) else body
+                    result: list[InboxMessage] = []
+                    for m in raw:
+                        unwrapped = self._unwrap_egress_message(m, session_id)
+                        decrypted = self.decrypt_payload(unwrapped, session_id=session_id)
+                        result.append(InboxMessage.from_dict(decrypted))
+                    return result
+                except httpx.HTTPStatusError:
+                    raise
+                except (httpx.ConnectError, httpx.TimeoutException):
+                    if attempt < 4:
+                        time.sleep(poll_interval)
+                    else:
+                        raise ConnectionError(f"[{self._label}] Proxy unreachable.")
+            return []
+
         path = f"/v1/broker/sessions/{session_id}/messages"
         for attempt in range(5):
             try:
@@ -2338,6 +2475,30 @@ class CullisClient:
                 else:
                     raise ConnectionError(f"[{self._label}] Broker unreachable.")
         return []
+
+    @staticmethod
+    def _unwrap_egress_message(m: dict, session_id: str) -> dict:
+        """Translate an egress poll-response row into the broker shape
+        ``decrypt_payload`` already understands.
+
+        Egress envelope rows carry the cipher dict serialised as JSON
+        under ``payload_ciphertext``; broker rows carry it as a dict
+        under ``payload``. mtls-only rows already have ``payload`` as
+        a dict — leave those alone, they decrypt as plaintext.
+        """
+        out = dict(m)
+        out.setdefault("session_id", session_id)
+        if out.get("mode") == "envelope" and "payload_ciphertext" in out:
+            try:
+                import json as _json
+                out["payload"] = _json.loads(out["payload_ciphertext"])
+            except (ValueError, TypeError):
+                # Leave as-is — decrypt_payload will fail closed if it
+                # can't parse the structure, which is the right outcome
+                # for a malformed wire frame.
+                pass
+            out.pop("payload_ciphertext", None)
+        return out
 
     # ── WebSocket ───────────────────────────────────────────────────
 
