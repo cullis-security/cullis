@@ -111,7 +111,9 @@ def test_load_missing_identity_raises(tmp_path: Path):
         load_identity(tmp_path)
 
 
-def test_save_overwrites_stale_ca_chain(tmp_path: Path):
+def test_save_overwrites_chain_when_explicit_value_supplied(tmp_path: Path):
+    """When the caller passes a NEW ``ca_chain_pem`` value, the file
+    must be replaced (rotation path)."""
     key = generate_keypair()
     cert_pem = _self_signed_cert_pem(key)
     metadata = IdentityMetadata(
@@ -125,17 +127,51 @@ def test_save_overwrites_stale_ca_chain(tmp_path: Path):
         ca_chain_pem="chain-v1",
         metadata=metadata,
     )
-    assert (tmp_path / "identity" / CA_CHAIN_FILENAME).exists()
+    assert (tmp_path / "identity" / CA_CHAIN_FILENAME).read_text() == "chain-v1"
 
-    # Second save without chain must delete the stale file.
     save_identity(
         config_dir=tmp_path,
         cert_pem=cert_pem,
         private_key=key,
-        ca_chain_pem=None,
+        ca_chain_pem="chain-v2",
         metadata=metadata,
     )
-    assert not (tmp_path / "identity" / CA_CHAIN_FILENAME).exists()
+    assert (tmp_path / "identity" / CA_CHAIN_FILENAME).read_text() == "chain-v2"
+
+
+def test_save_preserves_tofu_pinned_chain_when_arg_is_none(tmp_path: Path):
+    """ADR-015 dogfood bug: the dashboard's /setup/pin-ca handler
+    writes ``ca-chain.pem`` BEFORE the enrollment exchange (TOFU
+    flow). ``api_status`` then calls ``save_identity(ca_chain_pem=
+    None)`` after admin approval — historically that would delete
+    the operator-pinned PEM, leaving the SDK with no trust store
+    and every authenticated egress call failing
+    CERTIFICATE_VERIFY_FAILED.
+
+    Pin the new contract: when the caller passes ``None``, we leave
+    whatever's on disk alone. Cleanup is the responsibility of a
+    full profile wipe, not save_identity."""
+    key = generate_keypair()
+    cert_pem = _self_signed_cert_pem(key)
+    metadata = IdentityMetadata(
+        agent_id="x", capabilities=[], site_url="", issued_at=""
+    )
+
+    # Simulate the dashboard pin: write the file before any save.
+    (tmp_path / "identity").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "identity" / CA_CHAIN_FILENAME).write_text("tofu-pinned-pem")
+
+    save_identity(
+        config_dir=tmp_path,
+        cert_pem=cert_pem,
+        private_key=key,
+        ca_chain_pem=None,  # post-approval path
+        metadata=metadata,
+    )
+
+    chain = tmp_path / "identity" / CA_CHAIN_FILENAME
+    assert chain.exists(), "save_identity wiped the TOFU-pinned chain"
+    assert chain.read_text() == "tofu-pinned-pem"
 
 
 def test_load_fixes_loose_key_permissions(tmp_path: Path):

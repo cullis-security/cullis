@@ -126,11 +126,18 @@ def save_identity(
         _write_atomic(
             identity_dir / CA_CHAIN_FILENAME, ca_chain_pem.encode(), mode=0o644
         )
-    else:
-        # Remove any stale chain so later loads don't mis-represent trust.
-        chain = identity_dir / CA_CHAIN_FILENAME
-        if chain.exists():
-            chain.unlink()
+    # Note: when ``ca_chain_pem`` is ``None`` we deliberately leave the
+    # file alone. ADR-015 introduced TOFU pinning, which writes
+    # ``ca-chain.pem`` from the dashboard's /setup/pin-ca handler
+    # BEFORE the enrollment exchange. The earlier "cleanup stale
+    # chain" branch here was deleting the operator-pinned PEM the
+    # moment ``api_status`` called ``save_identity`` post-approval,
+    # leaving the SDK's proxy http client with no trust store and
+    # every authenticated egress call failing
+    # CERTIFICATE_VERIFY_FAILED. If a caller actually needs to clear
+    # a stale chain, ``wipe_identity`` (full profile reset) is the
+    # right tool — save_identity must not be destructive on a field
+    # it didn't receive.
 
     _write_atomic(
         identity_dir / METADATA_FILENAME,
