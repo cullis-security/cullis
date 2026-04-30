@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cullis-connector"
-version = "0.3.4"
+version = "0.3.5"
 description = "MCP server bridging local MCP clients (Claude Code, Cursor, Claude Desktop, ToolHive) to the Cullis federated agent-trust network."
 readme = "README_PKG.md"
 requires-python = ">=3.10"
@@ -60,7 +60,7 @@ dependencies = [
     # without dragging in the connector's MCP server stack. 0.3.1 shipped
     # without this line; `pip install cullis-connector` succeeded but every
     # subcommand died on `ModuleNotFoundError: cullis_sdk`.
-    "cullis-sdk>=0.1.1",
+    "cullis-sdk>=0.1.2",
     "mcp>=1.0",
     "httpx>=0.24.0",
     "cryptography>=41.0.0",

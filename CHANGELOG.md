@@ -7,6 +7,32 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.3.5] — 2026-04-30
+
+### Fixed
+- **Client cert is now actually presented at the nginx mTLS gate**
+  (monorepo #365). httpx 0.28 silently drops the client cert when
+  ``verify=<path-string>`` is combined with ``cert=(crt, key)``. The
+  SDK's egress + proxy clients now build an ``ssl.SSLContext``
+  explicitly and pass it via ``verify=ctx``, restoring the cert at
+  the TLS handshake. Symptom this closes: ``discover_agents`` /
+  ``send_oneshot`` / ``open_session`` returning 401 from
+  ``/v1/(egress|agents|audit)`` while ``hello_site`` (TLS-only)
+  succeeded.
+- **TOFU-pinned ``ca-chain.pem`` is preserved across re-enrollments**
+  (monorepo #364). ``save_identity`` previously overwrote the pinned
+  chain with whatever the bootstrap response carried, which broke
+  the SDK's verifier on the next call. The pin is now stable for the
+  lifetime of the identity.
+- **Proxy http client uses the TOFU-pinned ``ca-chain.pem``**
+  (monorepo #363). The SDK now points at the same chain the rest of
+  the connector trusts, instead of the system bundle that doesn't
+  know the Org CA.
+
+### Compat
+- Requires ``cullis-sdk>=0.1.2`` for the rebuilt SSLContext path.
+  Older SDK installs continue to 401 against the nginx mTLS gate.
+
 ## [v0.3.4] — 2026-04-28
 
 ### Fixed
