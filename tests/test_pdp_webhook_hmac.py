@@ -23,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from unittest.mock import patch
 
 import httpx
 import pytest
