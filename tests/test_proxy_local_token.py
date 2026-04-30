@@ -247,6 +247,28 @@ async def test_local_token_never_hits_the_court(flag_on_proxy):
     assert resp.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_local_token_rejects_sub_not_matching_cert(flag_on_proxy):
+    """Audit 2026-04-30 lane 1 H1 — IDOR via sub-spoofing.
+
+    Mint a leaf cert for ``acme::alice`` and sign an assertion claiming
+    ``sub: acme::bob``. Without the cert-binding check, the Mastio
+    would mint a LOCAL_TOKEN for bob's identity, letting alice
+    impersonate any other agent in the same org. Must return 401.
+    """
+    ctx = flag_on_proxy
+    leaf_key_pem, _, x5c = _issue_leaf(
+        ctx["ca_key"], ctx["ca_cert_pem"], "acme::alice"
+    )
+    # Cert says alice, assertion says bob — mismatch.
+    assertion = _build_assertion("acme::bob", leaf_key_pem, x5c)
+    resp = await ctx["client"].post(
+        "/v1/auth/token", json={"client_assertion": assertion}
+    )
+    assert resp.status_code == 401, resp.text
+    assert "cert" in resp.json()["detail"].lower()
+
+
 @pytest_asyncio.fixture
 async def flag_off_proxy(tmp_path, monkeypatch):
     """Proxy app with the flag *off*. /v1/auth/token must fall through to

@@ -33,6 +33,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from mcp_proxy.auth.client_cert import _identity_from_cert
 from mcp_proxy.auth.local_issuer import LOCAL_AUDIENCE, LOCAL_SCOPE, LocalIssuer
 from mcp_proxy.db import get_config
 
@@ -210,6 +211,27 @@ async def issue_local_token(body: TokenRequest, request: Request) -> TokenRespon
     agent_id = claims.get("sub")
     if not agent_id or not isinstance(agent_id, str):
         raise _unauthorized("assertion missing sub")
+
+    # Audit 2026-04-30 lane 1 H1 — bind ``sub`` to the leaf cert's
+    # canonical identity. Without this check, any agent holding a
+    # valid Org-CA-signed cert (i.e. any enrolled Connector) can sign
+    # an assertion claiming ``sub: <other-agent>`` and have the Mastio
+    # mint a LOCAL_TOKEN for that identity, bypassing every
+    # cert-pin defence the rest of ADR-014 PR-B carefully built. The
+    # Court's verifier (app/auth/x509_verifier.py:403) already
+    # enforces this; we mirror it on the Mastio side.
+    try:
+        cert_org, cert_agent = _identity_from_cert(leaf)
+    except HTTPException as exc:
+        _log.info("local /auth/token rejected: cert identity unparseable: %s", exc.detail)
+        raise _unauthorized("cert identity unparseable") from exc
+    canonical_agent_id = f"{cert_org}::{cert_agent}"
+    if agent_id != canonical_agent_id:
+        _log.warning(
+            "local /auth/token rejected: sub %s does not match cert %s",
+            agent_id, canonical_agent_id,
+        )
+        raise _unauthorized("sub does not match client cert")
 
     ttl = _resolve_ttl(request)
     token = issuer.issue(agent_id=agent_id, ttl_seconds=ttl)

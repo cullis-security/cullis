@@ -346,3 +346,109 @@ async def test_expired_grace_kid_is_rejected(app_with_flag_on):
     # DPoP (no DPoP header present) → 401 DPoP realm.
     assert resp.status_code == 401
     assert "dpop" in resp.headers.get("WWW-Authenticate", "").lower()
+
+
+# ── Audit 2026-04-30 lane 1 H2 — preserve reach on LOCAL_TOKEN egress ─
+
+
+@pytest.mark.asyncio
+async def test_local_token_egress_preserves_intra_reach(tmp_path, monkeypatch):
+    """Audit 2026-04-30 lane 1 H2 — LOCAL_TOKEN egress dep must NOT
+    drop the DB-stored ``reach`` field. Before the fix,
+    ``_maybe_local_internal_agent`` built ``InternalAgent(...)`` with
+    no ``reach=`` kwarg, so the model default ``"both"`` shadowed an
+    intra-only agent and reach_guard.py:119 silently relaxed reach.
+    """
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives import serialization
+    from datetime import datetime, timezone
+
+    from mcp_proxy.auth.local_agent_dep import _maybe_local_internal_agent
+
+    db_file = tmp_path / "proxy.sqlite"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    monkeypatch.setenv("MCP_PROXY_LOCAL_AUTH_ENABLED", "1")
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+    import mcp_proxy.db as db_mod
+    importlib.reload(db_mod)
+    await db_mod.init_db(f"sqlite+aiosqlite:///{db_file}")
+
+    # Create the agent with reach="intra" — the value that must
+    # survive the LOCAL_TOKEN dep round-trip. ``create_agent`` doesn't
+    # take a ``reach`` kwarg (set via dashboard later), so we patch it
+    # in directly.
+    await db_mod.create_agent(
+        agent_id="orga::intra-only",
+        display_name="intra-only",
+        capabilities=[],
+    )
+    from sqlalchemy import text as _sql_text
+    async with db_mod.get_db() as conn:
+        await conn.execute(
+            _sql_text("UPDATE internal_agents SET reach='intra' WHERE agent_id=:aid"),
+            {"aid": "orga::intra-only"},
+        )
+
+    # Mint key + LocalIssuer.
+    key = ec.generate_private_key(ec.SECP256R1())
+    priv_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    pub_pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    kid = compute_kid(pub_pem)
+    now = datetime.now(timezone.utc)
+    await db_mod.insert_mastio_key(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem,
+        created_at=now.isoformat(), activated_at=now.isoformat(),
+    )
+    active = MastioKey(
+        kid=kid, pubkey_pem=pub_pem, privkey_pem=priv_pem, cert_pem=None,
+        created_at=now, activated_at=now, deprecated_at=None, expires_at=None,
+    )
+    issuer = LocalIssuer(org_id="orga", active_key=active)
+    keystore = LocalKeyStore()
+
+    token = issuer.issue("orga::intra-only", ttl_seconds=60).token
+
+    # Mock minimal Request so the dep can run.
+    class _State:
+        pass
+
+    class _AppState:
+        local_issuer = issuer
+        local_keystore = keystore
+
+    class _App:
+        state = _AppState()
+
+    class _Headers(dict):
+        def get(self, key, default=None):  # type: ignore[override]
+            return super().get(key.lower(), default)
+
+    class _Request:
+        app = _App()
+        headers = _Headers({"authorization": f"Bearer {token}"})
+        client = None
+        method = "POST"
+        url = type("U", (), {"path": "/v1/egress/test"})()
+
+    agent = await _maybe_local_internal_agent(_Request())
+
+    assert agent is not None
+    assert agent.agent_id == "orga::intra-only"
+    assert agent.reach == "intra", (
+        f"reach must be preserved from DB; got {agent.reach!r} "
+        "(audit H2 — silent reach relaxation regressed)"
+    )
+
+    get_settings.cache_clear()
+    await db_mod.dispose_db()
