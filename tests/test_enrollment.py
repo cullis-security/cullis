@@ -440,3 +440,74 @@ def _generate_self_signed_ca(org_id: str) -> tuple[str, str]:
     ).decode()
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     return key_pem, cert_pem
+
+
+# ── Rate-limit tests (audit 2026-04-30 C2) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_http_start_rate_limits_after_budget(proxy_app, monkeypatch):
+    """6th /v1/enrollment/start from the same IP within 60s returns 429."""
+    _, client = proxy_app
+
+    import importlib
+
+    from mcp_proxy.auth.rate_limit import reset_agent_rate_limiter
+
+    enrollment_module = importlib.import_module("mcp_proxy.enrollment.router")
+    reset_agent_rate_limiter()
+    monkeypatch.setattr(enrollment_module, "_ENROLLMENT_START_PER_MINUTE", 5)
+
+    for _ in range(5):
+        resp = await client.post(
+            "/v1/enrollment/start",
+            json={
+                "pubkey_pem": _ec_pubkey_pem(),
+                "requester_name": "Mario",
+                "requester_email": "mario@acme.com",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+
+    blocked = await client.post(
+        "/v1/enrollment/start",
+        json={
+            "pubkey_pem": _ec_pubkey_pem(),
+            "requester_name": "Mario",
+            "requester_email": "mario@acme.com",
+        },
+    )
+    assert blocked.status_code == 429
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_http_status_rate_limits_after_budget(proxy_app, monkeypatch):
+    """61st /v1/enrollment/{id}/status from the same IP within 60s returns 429."""
+    _, client = proxy_app
+
+    import importlib
+
+    from mcp_proxy.auth.rate_limit import reset_agent_rate_limiter
+
+    enrollment_module = importlib.import_module("mcp_proxy.enrollment.router")
+    reset_agent_rate_limiter()
+    monkeypatch.setattr(enrollment_module, "_ENROLLMENT_STATUS_PER_MINUTE", 3)
+
+    started = await client.post(
+        "/v1/enrollment/start",
+        json={
+            "pubkey_pem": _ec_pubkey_pem(),
+            "requester_name": "X",
+            "requester_email": "x@x.com",
+        },
+    )
+    session_id = started.json()["session_id"]
+
+    for _ in range(3):
+        resp = await client.get(f"/v1/enrollment/{session_id}/status")
+        assert resp.status_code == 200
+
+    blocked = await client.get(f"/v1/enrollment/{session_id}/status")
+    assert blocked.status_code == 429
+    reset_agent_rate_limiter()

@@ -291,3 +291,73 @@ async def test_failure_counter_resets_after_recovery():
     await limiter.check("subject-E", "test.bucket")  # succeeds → reset
 
     assert limiter._redis_failure_count == 0
+
+
+# ── Bucket registration coverage (audit 2026-04-30 C1) ────────────────
+
+
+@pytest.mark.parametrize(
+    "bucket",
+    [
+        # Pre-existing
+        "auth.token",
+        "broker.session",
+        "broker.message",
+        "dashboard.login",
+        "onboarding.join",
+        "onboarding.rotate_mastio_pubkey",
+        "broker.rfq",
+        "broker.rfq_respond",
+        # Audit 2026-04-30 C1: previously called but never registered
+        "broker.oneshot",
+        "broker.oneshot_inbound",
+        "broker.oneshot_inbox",
+        "broker.poll",
+        "onboarding.invite_inspect",
+        "onboarding.attach",
+    ],
+)
+async def test_every_called_bucket_is_registered(bucket):
+    """Every bucket name passed to rate_limiter.check() must be registered.
+
+    Before this test landed, six buckets (broker.oneshot family +
+    onboarding.invite_inspect/attach) were referenced in routers but never
+    registered, making rate_limiter.check() a silent no-op for them.
+    """
+    assert bucket in rate_limiter._configs, (
+        f"bucket {bucket!r} not registered in rate_limiter; check() would silently "
+        "fail-open on it"
+    )
+
+
+async def test_unknown_bucket_logs_warning_once():
+    """check() with an unregistered bucket logs a one-time warning, not silent."""
+    import logging
+
+    limiter = SlidingWindowLimiter()
+    limiter._unregistered_buckets.clear()
+
+    captured: list[str] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _ListHandler(level=logging.WARNING)
+    logger = logging.getLogger("agent_trust")
+    logger.addHandler(handler)
+    prev_level = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        await limiter.check("subject", "totally.unknown.bucket")
+        assert any(
+            "totally.unknown.bucket" in msg and "not registered" in msg
+            for msg in captured
+        ), f"expected warning, got {captured!r}"
+
+        before = len(captured)
+        await limiter.check("subject", "totally.unknown.bucket")
+        assert len(captured) == before, "second call should NOT log again"
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)

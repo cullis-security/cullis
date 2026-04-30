@@ -21,9 +21,10 @@ import hmac
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
+from mcp_proxy.auth.rate_limit import get_agent_rate_limiter
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
     require_login,
@@ -42,6 +43,19 @@ from mcp_proxy.enrollment.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["enrollment"])
+
+# Per-IP budgets for the anonymous device-code endpoints. Audit 2026-04-30
+# C2 — these were unauthenticated and unrate-limited, letting any caller
+# flood the pending_enrollments table or enumerate /status timing.
+# ``start`` matches the broker ``onboarding.join`` cadence (5 per 5 min);
+# ``status`` allows ~1/sec polling, slightly above ``service.POLL_INTERVAL_S``.
+_ENROLLMENT_START_PER_MINUTE = 5
+_ENROLLMENT_STATUS_PER_MINUTE = 60
+
+
+def _client_ip(request: Request) -> str:
+    client = request.client
+    return client.host if client is not None else "unknown"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -91,6 +105,15 @@ async def start_enrollment(
     payload: EnrollmentStartRequest,
     request: Request,
 ) -> EnrollmentStartResponse:
+    client_ip = _client_ip(request)
+    if not await get_agent_rate_limiter().check(
+        f"ip:{client_ip}:enroll.start", _ENROLLMENT_START_PER_MINUTE,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="enrollment rate limit exceeded",
+        )
+
     try:
         async with get_db() as conn:
             started = await service.start_enrollment(
@@ -127,7 +150,19 @@ async def start_enrollment(
     "/v1/enrollment/{session_id}/status",
     response_model=EnrollmentStatusResponse,
 )
-async def enrollment_status(session_id: str) -> EnrollmentStatusResponse:
+async def enrollment_status(
+    session_id: str,
+    request: Request,
+) -> EnrollmentStatusResponse:
+    client_ip = _client_ip(request)
+    if not await get_agent_rate_limiter().check(
+        f"ip:{client_ip}:enroll.status", _ENROLLMENT_STATUS_PER_MINUTE,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="enrollment status rate limit exceeded",
+        )
+
     try:
         async with get_db() as conn:
             record = await service.get_record(conn, session_id)

@@ -56,6 +56,11 @@ class SlidingWindowLimiter:
         # Fail-open observability: count consecutive Redis failures so we can
         # log at WARNING without flooding logs (audit F-D-2).
         self._redis_failure_count: int = 0
+        # Buckets seen via check() that are not registered. Audit 2026-04-30
+        # found six call sites referencing buckets never registered, which
+        # made check() a silent no-op. Track first-sighting to log once per
+        # bucket without spamming.
+        self._unregistered_buckets: set[str] = set()
 
     def register(self, bucket: str, window_seconds: int, max_requests: int) -> None:
         """Register the configuration for a bucket. Called at startup."""
@@ -78,6 +83,13 @@ class SlidingWindowLimiter:
         """
         config = self._configs.get(bucket)
         if config is None:
+            if bucket not in self._unregistered_buckets:
+                self._unregistered_buckets.add(bucket)
+                _log.warning(
+                    "rate limiter bucket not registered, fail-open "
+                    "[bucket=%s] (this should be wired in limiter.py)",
+                    bucket,
+                )
             return
 
         self._select_backend()
@@ -232,3 +244,16 @@ rate_limiter.register("onboarding.rotate_mastio_pubkey",
                                           window_seconds=60,  max_requests=5)
 rate_limiter.register("broker.rfq",         window_seconds=60,  max_requests=5)
 rate_limiter.register("broker.rfq_respond", window_seconds=60,  max_requests=20)
+# Oneshot fan-out: sender, recipient inbound flood guard, inbox poll.
+# Audit 2026-04-30 C1 — these were referenced in oneshot_router.py but
+# never registered, so check() was a silent no-op.
+rate_limiter.register("broker.oneshot",         window_seconds=60, max_requests=60)
+rate_limiter.register("broker.oneshot_inbound", window_seconds=60, max_requests=120)
+rate_limiter.register("broker.oneshot_inbox",   window_seconds=60, max_requests=60)
+rate_limiter.register("broker.poll",            window_seconds=60, max_requests=60)
+# Onboarding anonymous inspect/attach paths. Inspect is read-only so a
+# slightly higher cap is fine; attach consumes invite-token state, so
+# match the join cadence (5/5min/IP).
+rate_limiter.register("onboarding.invite_inspect",
+                                                window_seconds=60,  max_requests=30)
+rate_limiter.register("onboarding.attach",      window_seconds=300, max_requests=5)
