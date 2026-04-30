@@ -85,9 +85,15 @@ async def proxy_app(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
     monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
+    from mcp_proxy.auth.rate_limit import reset_agent_rate_limiter
     from mcp_proxy.config import get_settings
 
     get_settings.cache_clear()
+    # Each test starts with a fresh rate-limit window. Several tests in this
+    # file POST /v1/enrollment/start multiple times as setup; without a
+    # reset the global module-level limiter accumulates across tests and
+    # later fixtures hit the 5/min budget.
+    reset_agent_rate_limiter()
 
     from mcp_proxy.main import app
 

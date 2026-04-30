@@ -330,34 +330,29 @@ async def test_every_called_bucket_is_registered(bucket):
     )
 
 
-async def test_unknown_bucket_logs_warning_once():
-    """check() with an unregistered bucket logs a one-time warning, not silent."""
-    import logging
+async def test_unknown_bucket_logs_warning_once(monkeypatch):
+    """check() with an unregistered bucket logs a one-time warning, not silent.
+
+    Patches ``_log.warning`` directly: the ``agent_trust`` logger config in
+    CI varies (propagate flag, handler chain) and ``caplog`` has been
+    flaky on it before, see ``feedback_mcp_proxy_logger_caplog``.
+    """
+    from app.rate_limit import limiter as limiter_module
 
     limiter = SlidingWindowLimiter()
-    limiter._unregistered_buckets.clear()
+    captured: list[tuple] = []
 
-    captured: list[str] = []
+    def _capture_warning(msg, *args, **kwargs):
+        captured.append((msg % args) if args else msg)
 
-    class _ListHandler(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            captured.append(record.getMessage())
+    monkeypatch.setattr(limiter_module._log, "warning", _capture_warning)
 
-    handler = _ListHandler(level=logging.WARNING)
-    logger = logging.getLogger("agent_trust")
-    logger.addHandler(handler)
-    prev_level = logger.level
-    logger.setLevel(logging.WARNING)
-    try:
-        await limiter.check("subject", "totally.unknown.bucket")
-        assert any(
-            "totally.unknown.bucket" in msg and "not registered" in msg
-            for msg in captured
-        ), f"expected warning, got {captured!r}"
+    await limiter.check("subject", "totally.unknown.bucket")
+    assert any(
+        "totally.unknown.bucket" in msg and "not registered" in msg
+        for msg in captured
+    ), f"expected warning, got {captured!r}"
 
-        before = len(captured)
-        await limiter.check("subject", "totally.unknown.bucket")
-        assert len(captured) == before, "second call should NOT log again"
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(prev_level)
+    before = len(captured)
+    await limiter.check("subject", "totally.unknown.bucket")
+    assert len(captured) == before, "second call should NOT log again"

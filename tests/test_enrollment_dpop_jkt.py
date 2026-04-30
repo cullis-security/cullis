@@ -303,8 +303,10 @@ async def http_app(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.test")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "fb11-p3b")
     monkeypatch.setenv("MCP_PROXY_STANDALONE", "true")
+    from mcp_proxy.auth.rate_limit import reset_agent_rate_limiter
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
+    reset_agent_rate_limiter()
     from mcp_proxy.main import app
     yield app
     get_settings.cache_clear()
