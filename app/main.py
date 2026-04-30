@@ -211,7 +211,19 @@ async def lifespan(app: FastAPI):
         from app.audit.tsa_worker import start_worker_task
         tsa_task, tsa_stop = start_worker_task(settings)
 
+    # Enterprise plugin startup hooks. Discovered + license-filtered at
+    # module import; here we let each plugin allocate its own resources
+    # (e.g. SAML SP, TSA worker overrides). Failures are logged inside
+    # the registry and never block core boot.
+    from app.plugins import get_registry as _get_plugin_registry
+    await _get_plugin_registry().run_startup(app)
+
     yield
+
+    # Stop enterprise plugins before tearing down core services so they
+    # can flush state (audit watermarks, TSA queues) while engine +
+    # redis are still up.
+    await _get_plugin_registry().run_shutdown(app)
 
     # ── Drain phase ──────────────────────────────────────────────────────────
     # If a signal was received, give the load balancer a few seconds to
@@ -304,6 +316,20 @@ else:
     )
 
 
+# Enterprise plugin middlewares. Registered before `security_headers` /
+# CORS so Starlette's LIFO order runs core admission first; plugins
+# only see traffic that already passed the core middleware stack.
+from app.plugins import get_registry as _get_plugin_registry_for_middlewares
+
+_court_plugin_registry = _get_plugin_registry_for_middlewares()
+_court_plugin_registry.add_middlewares(app)
+if _court_plugin_registry.plugins:
+    logger.info(
+        "enterprise middlewares registered: %s",
+        [p.name for p in _court_plugin_registry.plugins],
+    )
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -379,6 +405,16 @@ app.include_router(federation_router)
 # dropped in Phase 6a-4; these endpoints are now the only read path.
 from app.federation.read import router as federation_read_router
 app.include_router(federation_read_router)
+
+# Enterprise plugin routers. Mounted after every core router so a plugin
+# can never shadow a core endpoint by registering a conflicting path;
+# FastAPI keeps registration order on routing.
+_court_plugin_registry.mount_routers(app)
+if _court_plugin_registry.plugins:
+    logger.info(
+        "enterprise routers mounted from plugins: %s",
+        [p.name for p in _court_plugin_registry.plugins],
+    )
 
 # ── Static files ─────────────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
