@@ -214,6 +214,13 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
         is_active=bool(record.get("is_active", True)),
         cert_pem=record.get("cert_pem"),
         dpop_jkt=record.get("dpop_jkt"),
+        # Audit 2026-04-30 lane 1 H2 — preserve the DB-stored reach.
+        # Without this, the InternalAgent default ("both") shadows
+        # an intra-only or cross-only setting whenever the egress
+        # path runs through Bearer LOCAL_TOKEN, silently relaxing
+        # reach. The mTLS path (client_cert.py:333) already does
+        # this correctly; mirror it here for parity.
+        reach=record.get("reach") or "both",
     )
 
 
