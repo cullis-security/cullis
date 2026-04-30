@@ -106,6 +106,26 @@ async def search_federated_agents(
         exclude_org_id=exclude,
         trust_domain=settings.trust_domain,
     )
+
+    # Audit 2026-04-30 lane 3 H4 — direct-lookup (``agent_id`` or
+    # ``agent_uri``) bypasses the ``exclude_org_id`` filter, so any
+    # authenticated agent can resolve any cross-org agent's full
+    # record at the Court without an approved binding. Mirror the
+    # gate that ``GET /agents/{id}`` and ``GET /agents/{id}/public-key``
+    # already enforce: drop cross-org results whose owning org has no
+    # approved binding with the caller. Filter silently — same shape
+    # as "search found nothing".
+    if is_direct and agents:
+        gated: list = []
+        for a in agents:
+            if a.org_id == current_agent.org:
+                gated.append(a)
+                continue
+            binding = await get_approved_binding(db, a.org_id, a.agent_id)
+            if binding:
+                gated.append(a)
+        agents = gated
+
     return AgentListResponse(
         agents=[_as_agent_response(a, settings.trust_domain) for a in agents],
         total=len(agents),

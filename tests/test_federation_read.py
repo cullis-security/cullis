@@ -129,6 +129,71 @@ async def test_search_requires_at_least_one_filter(client: AsyncClient, dpop):
     assert resp.status_code == 422
 
 
+async def test_search_direct_lookup_cross_org_without_binding_filtered(
+    client: AsyncClient, dpop,
+):
+    """Audit 2026-04-30 lane 3 H4 — direct-id lookup at /agents/search
+    must enforce the same binding gate as /agents/{id} and
+    /agents/{id}/public-key. A caller with no approved binding for the
+    target org gets an empty list, NOT the agent record.
+    """
+    token = await _setup(
+        client, "fr-srch-caller", "fr-srch-caller::agent",
+        ["cap.read"], dpop,
+    )
+    # Target org bootstrapped WITHOUT a binding to the caller.
+    await client.post("/v1/registry/orgs", json={
+        "org_id": "fr-srch-target", "display_name": "target",
+        "secret": "fr-srch-target-secret",
+    }, headers=ADMIN_HEADERS)
+    await client.post(
+        "/v1/registry/orgs/fr-srch-target/certificate",
+        json={"ca_certificate": get_org_ca_pem("fr-srch-target")},
+        headers={
+            "x-org-id": "fr-srch-target",
+            "x-org-secret": "fr-srch-target-secret",
+        },
+    )
+    await seed_court_agent(
+        agent_id="fr-srch-target::leak",
+        org_id="fr-srch-target",
+        display_name="leak",
+        capabilities=["cap.read"],
+    )
+
+    resp = await client.get(
+        "/v1/federation/agents/search",
+        params={"agent_id": "fr-srch-target::leak"},
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = [a["agent_id"] for a in body["agents"]]
+    assert "fr-srch-target::leak" not in ids, (
+        "audit H4 — direct-id lookup must NOT leak a cross-org agent "
+        "without an approved binding"
+    )
+    assert body["total"] == 0
+
+
+async def test_search_direct_lookup_same_org_still_returns(
+    client: AsyncClient, dpop,
+):
+    """Same-org direct lookup must keep working — the binding gate is
+    cross-org only."""
+    token = await _setup(
+        client, "fr-srch-self", "fr-srch-self::agent", ["cap.read"], dpop,
+    )
+    resp = await client.get(
+        "/v1/federation/agents/search",
+        params={"agent_id": "fr-srch-self::agent", "include_own_org": True},
+        headers=dpop.headers("GET", "/v1/federation/agents/search", token),
+    )
+    assert resp.status_code == 200
+    ids = [a["agent_id"] for a in resp.json()["agents"]]
+    assert "fr-srch-self::agent" in ids
+
+
 # ── public-key ──────────────────────────────────────────────────────────
 
 async def test_public_key_same_org(client: AsyncClient, dpop):
