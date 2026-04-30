@@ -191,7 +191,8 @@ jobs:
           cat release-notes.md
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        # Pinned to SHA (was @v2 floating major) — audit 2026-04-30 lane 8 M5.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: ${{ github.ref_name }}
           name: "Cullis SDK ${{ github.ref_name }}"
@@ -227,7 +228,9 @@ jobs:
           path: dist
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        # Pinned to SHA (was @release/v1 moving alias) — audit 2026-04-30
+        # lane 8 M3. Most-exposed step in the entire release flow.
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
           password: ${{ secrets.PYPI_TOKEN }}
           # Switch to trusted publishing (OIDC) once the PyPI project
