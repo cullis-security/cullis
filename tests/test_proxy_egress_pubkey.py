@@ -260,3 +260,131 @@ async def test_pubkey_rate_limit_shared_with_egress_budget(
         monkeypatch.delenv("MCP_PROXY_RATE_LIMIT_PER_MINUTE", raising=False)
         get_settings.cache_clear()
         reset_agent_rate_limiter()
+
+
+# ── Audit 2026-04-30 lane 3 M2 — reach gate on cross-org public-key ─
+
+
+async def _set_caller_reach(agent_id: str, reach: str) -> None:
+    from sqlalchemy import text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            text("UPDATE internal_agents SET reach=:r WHERE agent_id=:aid"),
+            {"r": reach, "aid": agent_id},
+        )
+
+
+@pytest.mark.asyncio
+async def test_pubkey_cross_org_blocked_when_caller_reach_is_intra(proxy_app):
+    """Audit 2026-04-30 lane 3 M2 — an ``intra``-only agent must NOT
+    fetch cross-org peer public keys, even though the call is
+    nominally read-only. Without the gate, intra agents can pre-cache
+    cross-org keys ahead of paths that would later refuse send.
+    """
+    app, client = proxy_app
+    caller_headers = await _provision_caller("acme::intra-bot")
+    await _set_caller_reach("acme::intra-bot", "intra")
+
+    class _StubBridge:
+        async def get_peer_public_key(self, caller_agent_id, target):
+            raise AssertionError("bridge MUST NOT be reached for reach=intra")
+
+    app.state.broker_bridge = _StubBridge()
+    try:
+        resp = await client.get(
+            "/v1/egress/agents/other-org::bob/public-key",
+            headers=caller_headers,
+        )
+    finally:
+        app.state.broker_bridge = None
+
+    assert resp.status_code == 403, resp.text
+    assert "reach" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_pubkey_cross_org_allowed_when_caller_reach_is_both(proxy_app):
+    """Default reach=both keeps the cross-org cert fetch working."""
+    app, client = proxy_app
+    caller_headers = await _provision_caller("acme::both-bot")
+    # reach default is "both"; explicit set just to pin the contract.
+    await _set_caller_reach("acme::both-bot", "both")
+
+    class _StubBridge:
+        async def get_peer_public_key(self, caller_agent_id, target):
+            return "-----BEGIN CERTIFICATE-----\nCROSS\n-----END CERTIFICATE-----"
+
+    app.state.broker_bridge = _StubBridge()
+    try:
+        resp = await client.get(
+            "/v1/egress/agents/other-org::bob/public-key",
+            headers=caller_headers,
+        )
+    finally:
+        app.state.broker_bridge = None
+    assert resp.status_code == 200, resp.text
+    assert "CROSS" in resp.json()["cert_pem"]
+
+
+# ── Audit 2026-04-30 lane 3 H5 — discover reach gate ────────────────
+
+
+@pytest.mark.asyncio
+async def test_discover_returns_empty_when_caller_reach_is_intra(proxy_app):
+    """Audit 2026-04-30 lane 3 H5 — discover always queries the Court
+    (cross-org by definition). An intra-only agent must NOT receive a
+    ready-made cross-org agent list."""
+    app, client = proxy_app
+    caller_headers = await _provision_caller("acme::intra-disc")
+    await _set_caller_reach("acme::intra-disc", "intra")
+
+    class _StubBridge:
+        async def discover_agents(self, *args, **kwargs):
+            raise AssertionError("bridge MUST NOT be reached for reach=intra")
+
+    app.state.broker_bridge = _StubBridge()
+    try:
+        resp = await client.post(
+            "/v1/egress/discover",
+            headers=caller_headers,
+            json={"capabilities": ["cap.read"]},
+        )
+    finally:
+        app.state.broker_bridge = None
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["agents"] == []
+    assert body["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_discover_calls_bridge_when_caller_reach_is_both(proxy_app):
+    """reach=both: discover delegates to the broker bridge as before."""
+    app, client = proxy_app
+    caller_headers = await _provision_caller("acme::both-disc")
+    await _set_caller_reach("acme::both-disc", "both")
+
+    seen: list[str] = []
+
+    class _StubBridge:
+        async def discover_agents(self, agent_id, *, capabilities=None, q=None):
+            seen.append(agent_id)
+            return [{"agent_id": "other-org::peer", "capabilities": ["cap.read"]}]
+
+    app.state.broker_bridge = _StubBridge()
+    try:
+        resp = await client.post(
+            "/v1/egress/discover",
+            headers=caller_headers,
+            json={"capabilities": ["cap.read"]},
+        )
+    finally:
+        app.state.broker_bridge = None
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["agents"][0]["agent_id"] == "other-org::peer"
+    assert seen == ["acme::both-disc"]

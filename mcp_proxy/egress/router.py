@@ -1081,6 +1081,13 @@ async def get_agent_public_key(
             cert_pem=row["cert_pem"],
         )
 
+    # Audit 2026-04-30 lane 3 M2 — reach gate. The cross-org branch
+    # was reachable for agents whose reach is ``intra``, giving them
+    # a key-fetch primer for a path the send/session paths would
+    # later refuse. Mirror the gate that ``/resolve``, ``/peers``,
+    # ``/sessions`` already enforce: ``check_reach`` raises 403 here.
+    check_reach(agent, target_org, settings.org_id or "")
+
     # Cross-org: mirror ``/resolve``'s contract — when no bridge is
     # configured (pure standalone proxy) return cert_pem=None rather
     # than 400, so callers that tolerate a missing cert (e.g. mtls-only
@@ -1261,6 +1268,24 @@ async def discover_agents(
     agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
 ):
     """Discover remote agents on the network."""
+    # Audit 2026-04-30 lane 3 H5 — discover always queries the Court
+    # (cross-org by definition). An ``intra``-only agent must NOT
+    # surface a ready-made cross-org agent list. Filter to empty
+    # (matches ``/peers`` reach gate) rather than 403, so the SDK's
+    # ``discover_agents`` stays uniform across reach modes.
+    caller_reach = (getattr(agent, "reach", None) or "both").lower()
+    if caller_reach == "intra":
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="egress_discover",
+            status="success",
+            detail=(
+                f"capabilities={body.capabilities} q={body.q} "
+                "results=0 reason=reach=intra"
+            ),
+        )
+        return {"agents": [], "count": 0}
+
     bridge = _get_bridge(request)
     try:
         agents = await bridge.discover_agents(
@@ -1344,6 +1369,16 @@ async def invoke_remote_tool(
                 status_code=400,
                 detail="Cannot determine recipient from session metadata",
             )
+
+        # Audit 2026-04-30 lane 3 H5 — reach gate. ``open_session`` and
+        # ``send`` already gate by reach (router.py:261, :528) but
+        # ``tools/invoke`` did not, so an agent whose reach was tightened
+        # to ``intra`` after holding a cross-org session could still push
+        # tool_calls through it. Derive target_org from the canonical
+        # ``org::name`` recipient and reuse ``check_reach`` for parity.
+        _settings = get_settings()
+        recipient_target_org = resolve_target_org(recipient)
+        check_reach(agent, recipient_target_org, _settings.org_id or "")
 
         await bridge.send_message(
             agent.agent_id,
