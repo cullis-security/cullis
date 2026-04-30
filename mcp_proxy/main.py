@@ -486,12 +486,24 @@ async def lifespan(app: FastAPI):
     else:
         _log.info("anomaly detector disabled (mode=off)")
 
+    # Enterprise plugin startup hooks. Discovered + license-filtered at
+    # module import; here we let each plugin allocate its own resources
+    # (e.g. SAML SP keypair load, audit-export S3 client). Failures are
+    # logged inside the registry and never block core boot.
+    from mcp_proxy.plugins import get_registry as _get_plugin_registry
+    await _get_plugin_registry().run_startup(app)
+
     _log.info(
         "MCP Proxy started (host=%s, port=%d, env=%s)",
         settings.host, settings.port, settings.environment,
     )
 
     yield
+
+    # Stop enterprise plugins before tearing down core services so
+    # they can flush state (audit watermarks, SAML sessions) while
+    # engine + redis are still up.
+    await _get_plugin_registry().run_shutdown(app)
 
     # Cleanup — stop the latency tracker first so the background probe
     # doesn't race with engine dispose.
@@ -750,6 +762,20 @@ _log.info(
 # and /.well-known/ so observability never hides under load.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Enterprise plugin middlewares. Registered before the global rate
+# limit so Starlette's LIFO order runs the rate limiter FIRST on every
+# inbound request — plugin middlewares only see traffic that already
+# passed admission control.
+from mcp_proxy.plugins import get_registry as _get_plugin_registry_for_middlewares
+
+_plugin_registry = _get_plugin_registry_for_middlewares()
+_plugin_registry.add_middlewares(app)
+if _plugin_registry.plugins:
+    _log.info(
+        "enterprise middlewares registered: %s",
+        [p.name for p in _plugin_registry.plugins],
+    )
+
 from mcp_proxy.middleware.global_rate_limit import (
     GlobalRateLimitMiddleware,
     TokenBucket,
@@ -990,6 +1016,16 @@ app.include_router(downloads_router)
 # Parte 1) — admin list / apply / rollback under /proxy/updates.
 from mcp_proxy.dashboard.updates_router import router as updates_router
 app.include_router(updates_router)
+
+# Enterprise plugin routers. Mounted after every core router so a
+# plugin can never shadow a core endpoint by registering a conflicting
+# path; FastAPI keeps registration order on routing.
+_plugin_registry.mount_routers(app)
+if _plugin_registry.plugins:
+    _log.info(
+        "enterprise routers mounted from plugins: %s",
+        [p.name for p in _plugin_registry.plugins],
+    )
 
 # Static assets for the dashboard (compiled Tailwind CSS + bundled htmx).
 # Shake-out P0-09 + P1-10: serve /static/css/tailwind.css and /static/vendor/htmx.min.js
