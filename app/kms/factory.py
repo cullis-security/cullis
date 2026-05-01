@@ -58,6 +58,7 @@ def _build_provider() -> KMSProvider:
         return LocalKMSProvider(
             key_path=settings.broker_ca_key_path,
             cert_path=settings.broker_ca_cert_path,
+            secret_encryption_key_path=settings.secret_encryption_key_path,
         )
 
     raise RuntimeError(

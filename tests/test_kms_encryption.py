@@ -8,6 +8,7 @@ from app.kms.secret_encrypt import (
     decrypt_secret,
     is_encrypted,
     _ENC_PREFIX,
+    _ENC_PREFIX_V2,
 )
 
 # Use a deterministic "fake" PEM for testing — only the bytes matter for HKDF
@@ -78,12 +79,15 @@ def test_encrypt_same_value_produces_different_ciphertexts():
 
 @pytest.mark.asyncio
 async def test_kms_provider_encrypt_decrypt(client):
-    """KMS provider encrypt/decrypt methods work end-to-end."""
+    """KMS provider encrypt/decrypt methods work end-to-end. H8: v2 prefix."""
     from app.kms.factory import get_kms_provider
     kms = get_kms_provider()
     plaintext = "oidc-client-secret-via-kms"
     encrypted = await kms.encrypt_secret(plaintext)
-    assert encrypted.startswith(_ENC_PREFIX)
+    # H8 audit: providers always emit enc:v2 (master-key derived) for
+    # new ciphertexts. Decrypt still tolerates legacy enc:v1 from
+    # pre-cutover data.
+    assert encrypted.startswith(_ENC_PREFIX_V2)
     decrypted = await kms.decrypt_secret(encrypted)
     assert decrypted == plaintext
 

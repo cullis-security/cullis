@@ -18,6 +18,18 @@ class KMSProvider(Protocol):
         """Return the broker CA public key in PEM format."""
         ...
 
+    async def get_secret_encryption_key(self) -> bytes:
+        """Return the 32-byte master key used to derive at-rest secret KEKs.
+
+        H8 audit fix: the secret-encryption master key is decoupled from
+        the broker CA private key. Each backend manages its own
+        lifecycle (filesystem file, Vault KV field, cloud KMS-wrapped
+        material). On first call the backend may auto-generate it
+        (random 32 bytes) and persist it; subsequent calls return the
+        same bytes for the lifetime of the deployment until rotated.
+        """
+        ...
+
     async def encrypt_secret(self, plaintext: str) -> str:
         """Encrypt a secret string for storage at rest."""
         ...

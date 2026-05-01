@@ -206,12 +206,112 @@ class VaultKMSProvider:
             _log.info("KMS[vault] broker public key fetched from %s", self._secret_path)
         return self._public_key_pem
 
+    async def get_secret_encryption_key(self) -> bytes:
+        """Load the 32-byte secret-encryption master key from Vault.
+
+        H8 audit fix: the master key for at-rest secret encryption is
+        decoupled from the broker CA private key. The Vault KV path
+        carries it as ``secret_encryption_key_b64`` (base64 of 32
+        random bytes). On a fresh deploy that hasn't seeded the field
+        yet we generate one locally and write it back to Vault under a
+        CAS round-trip so the next boot reads the same value.
+        """
+        if hasattr(self, "_secret_encryption_key") and self._secret_encryption_key is not None:
+            return self._secret_encryption_key
+
+        secret: dict | None = None
+        try:
+            secret = await self._fetch_secret()
+        except VaultSecretNotFound:
+            pass
+
+        if secret and "secret_encryption_key_b64" in secret:
+            import base64 as _b64
+            try:
+                key = _b64.b64decode(secret["secret_encryption_key_b64"])
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Vault field 'secret_encryption_key_b64' is not valid "
+                    f"base64: {exc}",
+                ) from exc
+            if len(key) != 32:
+                raise RuntimeError(
+                    f"Vault field 'secret_encryption_key_b64' decoded to "
+                    f"{len(key)} bytes (expected 32)",
+                )
+            self._secret_encryption_key = key
+            _log.info("KMS[vault] secret-encryption master key loaded from %s", self._secret_path)
+            return key
+
+        # Field not seeded yet — generate locally + persist back to
+        # Vault so the next boot reads it from there.
+        import base64 as _b64
+        import secrets as _secrets
+
+        key = _secrets.token_bytes(32)
+        encoded = _b64.b64encode(key).decode("ascii")
+        ok = await self._write_field("secret_encryption_key_b64", encoded)
+        if not ok:
+            raise RuntimeError(
+                f"Vault path '{self._secret_path}' did not have "
+                "'secret_encryption_key_b64' and the write-back attempt "
+                "failed. Seed the field manually with `openssl rand 32 | "
+                "base64` before retrying.",
+            )
+        self._secret_encryption_key = key
+        _log.warning(
+            "KMS[vault] generated new secret-encryption master key and "
+            "persisted to %s. Back this Vault field up — losing it makes "
+            "every enc:v2 stored secret unrecoverable.",
+            self._secret_path,
+        )
+        return key
+
+    async def _write_field(self, field: str, value: str) -> bool:
+        """CAS write a single field into the existing Vault secret.
+
+        Used by ``get_secret_encryption_key`` to seed the master key on
+        first boot. Mirrors the merge-then-CAS pattern in
+        ``app.kms.admin_secret`` so concurrent writers don't lose data.
+        """
+        url = f"{self._vault_addr}/v1/{self._secret_path}"
+        headers = {"X-Vault-Token": self._vault_token, "Content-Type": "application/json"}
+        _ca_cert = os.environ.get("VAULT_CA_CERT", "")
+        _verify: bool | str = _ca_cert if _ca_cert else True
+        try:
+            async with httpx.AsyncClient(timeout=_VAULT_READ_TIMEOUT, verify=_verify) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    payload = resp.json()["data"]
+                    current = payload.get("data", {}) or {}
+                    version = payload.get("metadata", {}).get("version", 0)
+                    current[field] = value
+                    body: dict = {"options": {"cas": version}, "data": current}
+                else:
+                    body = {"data": {field: value}}
+                resp = await client.post(url, headers=headers, json=body)
+                return resp.status_code in (200, 204)
+        except Exception as exc:
+            _log.error("Vault write to %s failed: %s", self._secret_path, exc)
+            return False
+
     async def encrypt_secret(self, plaintext: str) -> str:
-        from app.kms.secret_encrypt import encrypt_secret
-        pem = await self.get_broker_private_key_pem()
-        return encrypt_secret(pem, plaintext)
+        from app.kms.secret_encrypt import encrypt_secret_v2
+        master_key = await self.get_secret_encryption_key()
+        return encrypt_secret_v2(master_key, plaintext)
 
     async def decrypt_secret(self, stored: str) -> str:
-        from app.kms.secret_encrypt import decrypt_secret
+        """Decrypt a stored secret. Tries v2 (master-key derived) first
+        and falls back to v1 (legacy CA-derived) so existing data
+        keeps decrypting through the H8 cutover.
+        """
+        from app.kms.secret_encrypt import (
+            _ENC_PREFIX_V2,
+            decrypt_secret,
+            decrypt_secret_v2,
+        )
+        if stored.startswith(_ENC_PREFIX_V2):
+            master_key = await self.get_secret_encryption_key()
+            return decrypt_secret_v2(master_key, stored)
         pem = await self.get_broker_private_key_pem()
         return decrypt_secret(pem, stored)

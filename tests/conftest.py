@@ -111,9 +111,18 @@ def _inject_kms_provider():
     certs/broker-ca-key.pem from disk, which doesn't exist in CI.
     """
     from tests.cert_factory import init_broker_keys
-    from app.kms.secret_encrypt import encrypt_secret, decrypt_secret
+    from app.kms.secret_encrypt import (
+        _ENC_PREFIX_V2,
+        decrypt_secret,
+        decrypt_secret_v2,
+        encrypt_secret_v2,
+    )
 
     priv_pem, pub_pem = init_broker_keys()
+    # H8 audit — tests now exercise the v2 master-key path. A
+    # deterministic master key is fine for tests; production uses 32
+    # random bytes from the LocalKMS / Vault backend.
+    test_master_key = b"\x42" * 32
 
     class _EphemeralKMS:
         async def get_broker_private_key_pem(self) -> str:
@@ -122,10 +131,15 @@ def _inject_kms_provider():
         async def get_broker_public_key_pem(self) -> str:
             return pub_pem
 
+        async def get_secret_encryption_key(self) -> bytes:
+            return test_master_key
+
         async def encrypt_secret(self, plaintext: str) -> str:
-            return encrypt_secret(priv_pem, plaintext)
+            return encrypt_secret_v2(test_master_key, plaintext)
 
         async def decrypt_secret(self, stored: str) -> str:
+            if stored.startswith(_ENC_PREFIX_V2):
+                return decrypt_secret_v2(test_master_key, stored)
             return decrypt_secret(priv_pem, stored)
 
     import app.kms.factory as kms_mod

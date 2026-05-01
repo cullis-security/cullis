@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     vault_token: str = ""
     vault_secret_path: str = "secret/data/broker"
 
+    # H8 audit fix — at-rest secret encryption uses a dedicated master
+    # key, NOT the broker CA private key. Local backend persists 32
+    # random bytes here on first boot (0600 perms). Vault backend
+    # stores the same material under the ``secret_encryption_key_b64``
+    # field of ``vault_secret_path`` and ignores this path. Operators
+    # MUST back this file up alongside the Org CA — losing it makes
+    # every enc:v2 stored secret unrecoverable.
+    secret_encryption_key_path: str = "certs/secret_encryption.key"
+
     # Audit hash chain TSA anchoring (issue #75). When enabled, a
     # background worker periodically timestamps each per-org chain head
     # with an external TSA so the broker operator cannot silently
