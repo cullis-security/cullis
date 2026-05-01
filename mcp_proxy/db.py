@@ -37,6 +37,14 @@ _PROXY_PKG_DIR = Path(__file__).resolve().parent
 _ALEMBIC_INI = _PROXY_PKG_DIR / "alembic.ini"
 _ALEMBIC_INITIAL_REVISION = "0001_initial_snapshot"
 
+# M-db-2 audit fix — Postgres advisory lock key for serialising the
+# alembic upgrade across concurrent workers. Mirrors the constant in
+# ``app/db/database.py``; the two locks are independent (different
+# DBs / different alembic chains) so the keys can be the same value.
+# ``0xC0115A1E_EB1C0DE`` reads "Cullis alembic code" — a memorable
+# hex constant operators can grep in pg_locks during incident triage.
+_ALEMBIC_ADVISORY_LOCK_KEY = 0xC0115A1E_EB1C0DE
+
 _log = logging.getLogger("mcp_proxy")
 
 
@@ -203,9 +211,36 @@ async def init_db(db_url: str) -> None:
         _log.info("Database initialized (no-migrations mode): %s", url)
         return
 
-    # Run alembic in a worker thread — alembic.command is synchronous and
-    # would block the event loop otherwise.
-    await asyncio.to_thread(_run_migrations_sync, url)
+    # M-db-2 audit fix — under N concurrent workers booting against
+    # the same Postgres cluster, two workers reading
+    # ``alembic_version`` before either wrote the next revision could
+    # race the same migration and fail mid-upgrade. Wrap the upgrade
+    # in a Postgres session-level advisory lock keyed by a fixed
+    # integer so only one worker runs the chain; others wait then
+    # no-op once head is reached. SQLite is single-writer by file,
+    # so the lock is skipped there.
+    is_postgres = url.startswith("postgresql") or "+asyncpg" in url
+    if is_postgres:
+        lock_engine = create_async_engine(url, **_engine_kwargs(url))
+        try:
+            async with lock_engine.connect() as lock_conn:
+                await lock_conn.execute(
+                    text("SELECT pg_advisory_lock(:k)"),
+                    {"k": _ALEMBIC_ADVISORY_LOCK_KEY},
+                )
+                try:
+                    await asyncio.to_thread(_run_migrations_sync, url)
+                finally:
+                    await lock_conn.execute(
+                        text("SELECT pg_advisory_unlock(:k)"),
+                        {"k": _ALEMBIC_ADVISORY_LOCK_KEY},
+                    )
+        finally:
+            await lock_engine.dispose()
+    else:
+        # Run alembic in a worker thread — alembic.command is synchronous
+        # and would block the event loop otherwise.
+        await asyncio.to_thread(_run_migrations_sync, url)
 
     _engine = create_async_engine(url, echo=False, future=True)
     if _engine.dialect.name == "sqlite":
