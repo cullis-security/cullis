@@ -250,6 +250,19 @@ async def login_page(request: Request):
     })
 
 
+def _login_client_ip(request: Request) -> str:
+    """Best-effort client IP for the login handler.
+
+    Uses the immediate transport peer rather than ``X-Forwarded-For``:
+    nginx in front of the Mastio handles trusted-proxy resolution and
+    rewrites ``request.client`` accordingly, while in dev / direct
+    deployments ``X-Forwarded-For`` is attacker-controlled and would
+    let any client mint a fresh "IP" per request to dodge the lockout.
+    """
+    client = request.client
+    return client.host if client is not None else "unknown"
+
+
 @router.post("/login")
 async def login_submit(request: Request):
     # State guard: if no password is set, you can't sign in — go register first.
@@ -275,6 +288,47 @@ async def login_submit(request: Request):
             "password_enabled": False,
         }, status_code=403)
 
+    # H9 audit fix — per-IP lockout + rate-limit before bcrypt.
+    from mcp_proxy.auth.rate_limit import get_agent_rate_limiter
+    from mcp_proxy.dashboard.login_lockout import (
+        LOGIN_RATE_PER_MINUTE,
+        get_login_lockout_store,
+    )
+    from mcp_proxy.db import log_audit
+
+    client_ip = _login_client_ip(request)
+    lockout_store = get_login_lockout_store()
+
+    locked_until = await lockout_store.is_locked(client_ip)
+    if locked_until is not None:
+        await log_audit(
+            agent_id="admin",
+            action="auth.login",
+            status="denied",
+            detail=f"ip-locked-until {int(locked_until)} ip={client_ip}",
+        )
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": (
+                "Too many failed attempts from this address. Try again later "
+                "or reset the admin password from the local CLI."
+            ),
+        }, status_code=429)
+
+    if not await get_agent_rate_limiter().check(
+        f"ip:{client_ip}:dashboard.login", LOGIN_RATE_PER_MINUTE,
+    ):
+        await log_audit(
+            agent_id="admin",
+            action="auth.login",
+            status="denied",
+            detail=f"rate-limited ip={client_ip}",
+        )
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Too many login attempts. Slow down and try again in a minute.",
+        }, status_code=429)
+
     form = await request.form()
     password = str(form.get("password", ""))
 
@@ -287,23 +341,27 @@ async def login_submit(request: Request):
     if not await verify_admin_password(password):
         # Audit the failure but keep the message vague (don't leak whether the
         # account exists, the username is wrong, etc.).
-        from mcp_proxy.db import log_audit
+        fail_count, locked_until = await lockout_store.record_failure(client_ip)
+        detail = f"invalid password ip={client_ip} consecutive_fails={fail_count}"
+        if locked_until is not None:
+            detail += f" locked-until={int(locked_until)}"
         await log_audit(
             agent_id="admin",
             action="auth.login",
             status="error",
-            detail="invalid password",
+            detail=detail,
         )
         return templates.TemplateResponse("login.html", {
             "request": request,
             "error": "Invalid password.",
         }, status_code=401)
 
-    from mcp_proxy.db import log_audit
+    await lockout_store.record_success(client_ip)
     await log_audit(
         agent_id="admin",
         action="auth.login",
         status="success",
+        detail=f"ip={client_ip}",
     )
 
     response = RedirectResponse(url=await _post_login_redirect(), status_code=303)
