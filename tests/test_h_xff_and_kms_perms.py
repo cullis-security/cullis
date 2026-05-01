@@ -100,34 +100,41 @@ async def test_local_kms_accepts_0600(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_local_kms_warns_on_loose_perms_in_dev(
-    tmp_path, monkeypatch, caplog,
+    tmp_path, monkeypatch,
 ) -> None:
-    """Development mode: warn loudly but still load."""
+    """Development mode: warn loudly but still load. Capture via a
+    monkeypatch on ``_log.warning`` because caplog's logger
+    propagation depends on root config that the conftest may
+    override; the direct patch is robust regardless."""
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.delenv("MCP_PROXY_ALLOW_LOOSE_CA_KEY_PERMS", raising=False)
     from app.config import get_settings
     get_settings.cache_clear()
 
-    from app.kms.local import LocalKMSProvider
+    from app.kms import local as local_kms
+
+    captured: list[str] = []
+
+    def _capture(msg, *args, **kwargs):
+        try:
+            captured.append(msg % args if args else msg)
+        except TypeError:
+            captured.append(str(msg))
+
+    monkeypatch.setattr(local_kms._log, "warning", _capture)
 
     key = tmp_path / "ca.key"
     cert = tmp_path / "ca.crt"
     cert.write_text("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n")
     _write_key_file(key, 0o644)
 
-    kms = LocalKMSProvider(
+    kms = local_kms.LocalKMSProvider(
         key_path=str(key), cert_path=str(cert),
         secret_encryption_key_path=str(tmp_path / "se.key"),
     )
-    import logging
-    with caplog.at_level(logging.WARNING, logger="agent_trust"):
-        pem = await kms.get_broker_private_key_pem()
+    pem = await kms.get_broker_private_key_pem()
     assert "BEGIN RSA PRIVATE KEY" in pem
-    # ``LogRecord.message`` is unset until ``getMessage()`` substitutes
-    # the %-args; use the substituted form so the assertion sees the
-    # post-format text.
-    rendered = [r.getMessage() for r in caplog.records]
-    assert any("loose POSIX perms" in m for m in rendered), rendered
+    assert any("loose POSIX perms" in m for m in captured), captured
     get_settings.cache_clear()
 
 
