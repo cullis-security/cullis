@@ -20,16 +20,22 @@ def load_enrolled_client(
     org_id: str,
     agent_name: str,
     identity_root: str | Path = "/state",
-    verify_tls: bool = False,
+    verify_tls: bool = True,
 ) -> CullisClient:
     identity_dir = Path(identity_root) / org_id / "agents" / agent_name
     cert_path = identity_dir / "agent.pem"
     key_path = identity_dir / "agent-key.pem"
     dpop_key_path = identity_dir / "dpop.jwk"
-    if not cert_path.exists() or not key_path.exists() or not dpop_key_path.exists():
+    ca_chain_path = Path(identity_root) / org_id / "ca.pem"
+    if (
+        not cert_path.exists()
+        or not key_path.exists()
+        or not dpop_key_path.exists()
+        or not ca_chain_path.exists()
+    ):
         raise RuntimeError(
             f"enrolled identity missing under {identity_dir} "
-            f"(expected agent.pem + agent-key.pem + dpop.jwk) — "
+            f"(expected agent.pem + agent-key.pem + dpop.jwk + {ca_chain_path}) — "
             "is bootstrap-mastio done?"
         )
     client = CullisClient.from_identity_dir(
@@ -40,6 +46,7 @@ def load_enrolled_client(
         agent_id=f"{org_id}::{agent_name}",
         org_id=org_id,
         verify_tls=verify_tls,
+        ca_chain_path=ca_chain_path,
     )
     # Mirror the runtime wiring in agent.py ``_auth_identity_dir``:
     #   • ``login_via_proxy`` mints a broker JWT so ``_authed_request``

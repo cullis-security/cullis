@@ -291,10 +291,15 @@ services:
       # ADR-014 — first-boot writes Org CA + nginx server cert into the
       # shared volume so the mastio-nginx-a sidecar can serve TLS on
       # 9443 against the same CA the agents' certs chain to. SAN
-      # includes ``proxy-a`` (the alias agents resolve over
-      # orga-internal) and ``localhost`` (smoke + dev curl from host).
+      # includes ``mastio-nginx-a`` (the docker-compose service name
+      # agents connect to via BROKER_URL=https://mastio-nginx-a:9443),
+      # ``proxy-a`` (network alias inside orga-internal), and
+      # ``localhost`` (smoke + dev curl from host). Without
+      # ``mastio-nginx-a`` in the SAN the agent's TLS hostname check
+      # fails and the sandbox runs through the verify_tls=False path,
+      # which masks any client-cert presentation regression.
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
-      MCP_PROXY_NGINX_SAN: "proxy-a,localhost"
+      MCP_PROXY_NGINX_SAN: "mastio-nginx-a,proxy-a,localhost"
     volumes:
       - proxy-a-data:/data
       - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
@@ -574,9 +579,10 @@ services:
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
       # ADR-012 — Mastio-local /v1/auth/token (see proxy-a rationale).
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
-      # ADR-014 — see proxy-a rationale.
+      # ADR-014 — see proxy-a rationale. SAN includes
+      # ``mastio-nginx-b`` (the hostname agents resolve to).
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
-      MCP_PROXY_NGINX_SAN: "proxy-b,localhost"
+      MCP_PROXY_NGINX_SAN: "mastio-nginx-b,proxy-b,localhost"
     volumes:
       - proxy-b-data:/data
       - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
