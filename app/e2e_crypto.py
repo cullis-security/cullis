@@ -29,6 +29,7 @@ def _b64url_decode(s: str) -> bytes:
 from cryptography.hazmat.primitives.asymmetric import ec, padding as asym_padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
 
 def _encrypt_aes_key_rsa(pubkey, aes_key: bytes) -> dict:
@@ -45,15 +46,21 @@ def _encrypt_aes_key_rsa(pubkey, aes_key: bytes) -> dict:
 
 
 def _encrypt_aes_key_ec(pubkey, aes_key: bytes) -> dict:
-    """Wrap AES key with ECDH + HKDF."""
+    """Wrap AES key with ECDH + HKDF + AES-KW (RFC 3394).
+
+    The HKDF-derived 256-bit KEK is consumed by AES Key Wrap, which is a
+    deterministic AEAD designed for wrapping symmetric keys. The wrapped
+    output is 8 bytes longer than the input (40 bytes for a 32-byte key)
+    and any single-bit tamper is detected by the integrity check during
+    unwrap (raises ``InvalidUnwrap``).
+    """
     ephemeral_key = ec.generate_private_key(pubkey.curve)
     shared_secret = ephemeral_key.exchange(ec.ECDH(), pubkey)
-    derived_key = HKDF(
+    kek = HKDF(
         algorithm=hashes.SHA256(), length=32,
-        salt=None, info=b"cullis-e2e-v1",
+        salt=None, info=b"cullis-e2e-v2-aeskw",
     ).derive(shared_secret)
-    # XOR the AES key with the derived key
-    encrypted_key = bytes(a ^ b for a, b in zip(aes_key, derived_key))
+    encrypted_key = aes_key_wrap(kek, aes_key)
     ephemeral_pub_bytes = ephemeral_key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
     )
@@ -125,16 +132,21 @@ def _decrypt_aes_key_rsa(privkey, cipher_blob: dict) -> bytes:
 
 
 def _decrypt_aes_key_ec(privkey, cipher_blob: dict) -> bytes:
-    """Unwrap AES key with ECDH + HKDF."""
+    """Unwrap AES key with ECDH + HKDF + AES-KW (RFC 3394).
+
+    AES key unwrap raises ``cryptography.hazmat.primitives.keywrap.InvalidUnwrap``
+    on any tamper to the wrapped key bytes; the caller propagates as a
+    decryption failure.
+    """
     encrypted_key = _b64url_decode(cipher_blob["encrypted_key"])
     ephemeral_pub_pem = _b64url_decode(cipher_blob["ephemeral_pubkey"])
     ephemeral_pub = serialization.load_pem_public_key(ephemeral_pub_pem)
     shared_secret = privkey.exchange(ec.ECDH(), ephemeral_pub)
-    derived_key = HKDF(
+    kek = HKDF(
         algorithm=hashes.SHA256(), length=32,
-        salt=None, info=b"cullis-e2e-v1",
+        salt=None, info=b"cullis-e2e-v2-aeskw",
     ).derive(shared_secret)
-    return bytes(a ^ b for a, b in zip(encrypted_key, derived_key))
+    return aes_key_unwrap(kek, encrypted_key)
 
 
 def decrypt_from_agent(

@@ -3,7 +3,7 @@
  *
  * Encryption: AES-256-GCM (data)
  *   + RSA-OAEP-SHA256 (key wrapping, RSA recipients)
- *   + ECDH ephemeral + HKDF-SHA256 (key wrapping, EC recipients)
+ *   + ECDH ephemeral + HKDF-SHA256 + AES-KW (key wrapping, EC recipients)
  * Signing:    RSA-PSS-SHA256 (RSA keys) or ECDSA-SHA256 (EC keys)
  *
  * This mirrors app/e2e_crypto.py and app/auth/message_signer.py exactly,
@@ -28,8 +28,10 @@ import {
 import type { CipherBlob } from "./types.js";
 import { base64url, base64urlDecode, canonicalJson } from "./utils.js";
 
-const HKDF_INFO = Buffer.from("cullis-e2e-v1", "utf-8");
+const HKDF_INFO = Buffer.from("cullis-e2e-v2-aeskw", "utf-8");
 const HKDF_SALT = Buffer.alloc(0);
+// RFC 3394 default IV for AES Key Wrap.
+const AES_KW_DEFAULT_IV = Buffer.from("A6A6A6A6A6A6A6A6", "hex");
 
 // ── Message Signing (RSA-PSS-SHA256) ──────────────────────────────
 
@@ -141,18 +143,7 @@ export function verifyMessageSignature(
   return true;
 }
 
-// ── E2E Encryption (AES-256-GCM + RSA-OAEP or ECDH+HKDF) ────────
-
-function xorBuffers(a: Buffer, b: Buffer): Buffer {
-  if (a.length !== b.length) {
-    throw new Error("xor length mismatch");
-  }
-  const out = Buffer.alloc(a.length);
-  for (let i = 0; i < a.length; i++) {
-    out[i] = a[i]! ^ b[i]!;
-  }
-  return out;
-}
+// ── E2E Encryption (AES-256-GCM + RSA-OAEP or ECDH+HKDF+AES-KW) ──
 
 function wrapAesKeyRsa(
   recipientPubKey: KeyObject,
@@ -183,10 +174,11 @@ function wrapAesKeyEc(
     privateKey: ephemeral.privateKey,
     publicKey: recipientPubKey,
   });
-  const derived = Buffer.from(
+  const kek = Buffer.from(
     hkdfSync("sha256", sharedSecret, HKDF_SALT, HKDF_INFO, 32),
   );
-  const encryptedKey = xorBuffers(aesKey, derived);
+  const wrap = createCipheriv("aes256-wrap", kek, AES_KW_DEFAULT_IV);
+  const encryptedKey = Buffer.concat([wrap.update(aesKey), wrap.final()]);
   const ephemeralPubPem = ephemeral.publicKey
     .export({ type: "spki", format: "pem" })
     .toString();
@@ -226,11 +218,12 @@ function unwrapAesKeyEc(
     privateKey: recipientPrivKey,
     publicKey: ephemeralPub,
   });
-  const derived = Buffer.from(
+  const kek = Buffer.from(
     hkdfSync("sha256", sharedSecret, HKDF_SALT, HKDF_INFO, 32),
   );
   const encryptedKey = base64urlDecode(blob.encrypted_key);
-  return xorBuffers(encryptedKey, derived);
+  const unwrap = createDecipheriv("aes256-wrap", kek, AES_KW_DEFAULT_IV);
+  return Buffer.concat([unwrap.update(encryptedKey), unwrap.final()]);
 }
 
 
@@ -240,7 +233,7 @@ function unwrapAesKeyEc(
  * Schema: AES-256-GCM encrypts {payload, inner_signature} as JSON.
  * The AES key is wrapped with the recipient's public key:
  *   - RSA keys: RSA-OAEP-SHA256
- *   - EC keys:  ephemeral ECDH + HKDF-SHA256 (info="cullis-e2e-v1"), XOR wrap
+ *   - EC keys:  ephemeral ECDH + HKDF-SHA256 (info="cullis-e2e-v2-aeskw") + AES-KW (RFC 3394)
  * AAD binds the ciphertext to the session context.
  */
 export function encryptForAgent(
