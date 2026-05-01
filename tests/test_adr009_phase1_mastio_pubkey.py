@@ -283,16 +283,27 @@ async def test_mastio_leaf_chains_to_org_ca(tmp_path, monkeypatch):
     assert bc.ca is True
     assert bc.path_length == 0
 
-    # Verify the Org CA's signature over the Mastio CA.
-    org_ca.public_key().verify(
-        mastio_ca.signature,
-        mastio_ca.tbs_certificate_bytes,
-        padding=__import__(
-            "cryptography.hazmat.primitives.asymmetric.padding",
-            fromlist=["PKCS1v15"],
-        ).PKCS1v15(),
-        algorithm=mastio_ca.signature_hash_algorithm,
-    )
+    # Verify the Org CA's signature over the Mastio CA. M-crypto-2 made
+    # the Org CA EC P-256 by default (was RSA-2048), so the verify call
+    # must dispatch on key type — RSA-PSS/PKCS1v15 vs ECDSA.
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
+    from cryptography.hazmat.primitives.asymmetric import padding as _padding
+    from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+    org_pub = org_ca.public_key()
+    if isinstance(org_pub, _rsa.RSAPublicKey):
+        org_pub.verify(
+            mastio_ca.signature,
+            mastio_ca.tbs_certificate_bytes,
+            padding=_padding.PKCS1v15(),
+            algorithm=mastio_ca.signature_hash_algorithm,
+        )
+    else:
+        assert isinstance(org_pub, _ec.EllipticCurvePublicKey)
+        org_pub.verify(
+            mastio_ca.signature,
+            mastio_ca.tbs_certificate_bytes,
+            _ec.ECDSA(mastio_ca.signature_hash_algorithm),
+        )
 
     # Leaf SAN is spiffe://.../proxy/chain-org.
     san = leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value

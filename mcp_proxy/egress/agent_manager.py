@@ -83,7 +83,11 @@ class AgentManager:
     def __init__(self, org_id: str, trust_domain: str = "cullis.local"):
         self._org_id = org_id
         self._trust_domain = trust_domain
-        self._org_ca_key: rsa.RSAPrivateKey | None = None
+        # M-crypto-2 audit fix — Org CA generation defaults to EC P-256
+        # (see ``generate_self_signed_ca``) but legacy deployments may
+        # have an RSA Org CA on disk; the type annotation accepts both
+        # so loading legacy material doesn't trip a type guard.
+        self._org_ca_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey | None = None
         self._org_ca_cert: x509.Certificate | None = None
         # ADR-009 Phase 1 — Mastio CA (intermediate). Persisted in
         # ``proxy_config.mastio_ca_{key,cert}``, loaded lazily at boot
@@ -197,7 +201,14 @@ class AgentManager:
         if self.ca_loaded:
             raise RuntimeError("Org CA already loaded — refusing to overwrite")
 
-        ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        # M-crypto-2 audit fix — Org CA is a 10-year root, so it must
+        # use a key size that survives its full lifetime under NIST
+        # SP 800-57 (≥3072-bit RSA or EC P-256). EC P-256 is also the
+        # SPIFFE/SPIRE convention and matches what the Mastio
+        # intermediate (``_mint_mastio_ca``) and leaf (``leaf_key``)
+        # already use. Verifiers stay dual-stack; legacy Org CAs
+        # issued under RSA-2048 keep working until they expire.
+        ca_key = ec.generate_private_key(ec.SECP256R1())
 
         if derive_org_id:
             pubkey_der = ca_key.public_key().public_bytes(
@@ -520,7 +531,7 @@ class AgentManager:
     # ── Certificate generation ──────────────────────────────────────
 
     def _generate_agent_cert(self, agent_name: str) -> tuple[str, str]:
-        """Generate RSA-2048 key + x509 cert for an internal agent.
+        """Generate EC P-256 key + x509 cert for an internal agent.
 
         Cert fields:
           - CN: {org_id}::{agent_name}
@@ -530,12 +541,19 @@ class AgentManager:
           - Valid 365 days
 
         Returns (cert_pem, key_pem).
+
+        M-crypto-2 audit fix: agent leaves are EC P-256, matching the
+        Mastio leaf (``leaf_key``) and DPoP keypair. RSA-2048 was
+        below NIST SP 800-57's ≥3072-bit recommendation for new keys.
+        Verifiers stay dual-stack so existing RSA-issued agents keep
+        working until their cert expires (1 year), then auto-renew
+        in EC at the next enrollment.
         """
         if not self.ca_loaded:
             raise RuntimeError("Org CA not loaded — call load_org_ca() first")
 
         # Generate agent key pair
-        agent_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        agent_key = ec.generate_private_key(ec.SECP256R1())
 
         agent_id = f"{self._org_id}::{agent_name}"
         spiffe_uri = f"spiffe://{self._trust_domain}/{self._org_id}/{agent_name}"
