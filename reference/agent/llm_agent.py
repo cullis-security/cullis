@@ -178,17 +178,20 @@ def _load_prompt() -> str:
 
 
 def _wait_identity(timeout_s: float = 60.0) -> None:
-    """Block until bootstrap + bootstrap-mastio have written cert+key+dpop.jwk."""
+    """Block until bootstrap + bootstrap-mastio have written
+    cert+key+dpop.jwk plus the per-org Org CA chain at /state/<org>/ca.pem."""
     deadline = time.monotonic() + timeout_s
     cert = IDENTITY_DIR / "agent.pem"
     key = IDENTITY_DIR / "agent-key.pem"
     dpop = IDENTITY_DIR / "dpop.jwk"
+    ca_chain = pathlib.Path("/state") / ORG_ID / "ca.pem"
     while time.monotonic() < deadline:
-        if cert.exists() and key.exists() and dpop.exists():
+        if cert.exists() and key.exists() and dpop.exists() and ca_chain.exists():
             return
         time.sleep(0.5)
     raise SystemExit(
-        f"identity not provisioned at {IDENTITY_DIR} after {timeout_s:.0f}s"
+        f"identity not provisioned at {IDENTITY_DIR} (or ca chain at "
+        f"{ca_chain}) after {timeout_s:.0f}s"
     )
 
 
@@ -196,12 +199,16 @@ def _load_client() -> CullisClient:
     """Build a CullisClient from the on-disk credentials.
 
     ADR-014 — TLS client cert authenticates against the per-org nginx
-    sidecar on ``https://proxy-X:9443``. ``verify_tls=False`` because
-    the reference deployment's Org CA is self-signed.
+    sidecar on ``https://mastio-nginx-X:9443``. Server cert
+    verification uses the per-org Org CA at ``/state/<org>/ca.pem``
+    (the same root that signs the agent's leaf AND the per-org nginx
+    server leaf), so reference runs through the exact same mTLS path
+    as a production deploy.
     """
     _wait_identity()
     cert_path = IDENTITY_DIR / "agent.pem"
     key_path = IDENTITY_DIR / "agent-key.pem"
+    ca_chain_path = pathlib.Path("/state") / ORG_ID / "ca.pem"
     client = CullisClient.from_identity_dir(
         BROKER_URL,
         cert_path=cert_path,
@@ -209,7 +216,8 @@ def _load_client() -> CullisClient:
         dpop_key_path=IDENTITY_DIR / "dpop.jwk",
         agent_id=SELF_ID,
         org_id=ORG_ID,
-        verify_tls=False,
+        verify_tls=True,
+        ca_chain_path=ca_chain_path,
     )
     client.login_via_proxy()
     # send_oneshot signs each envelope with the agent's private key for

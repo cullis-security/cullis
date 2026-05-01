@@ -317,7 +317,7 @@ services:
       # includes ``proxy-a`` (the alias agents resolve over
       # orga-internal) and ``localhost`` (smoke + dev curl from host).
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
-      MCP_PROXY_NGINX_SAN: "proxy-a,localhost"
+      MCP_PROXY_NGINX_SAN: "mastio-nginx-a,proxy-a,localhost"
     volumes:
       - proxy-a-data:/data
       - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
@@ -597,7 +597,7 @@ services:
       MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
       # ADR-014 — see proxy-a rationale.
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
-      MCP_PROXY_NGINX_SAN: "proxy-b,localhost"
+      MCP_PROXY_NGINX_SAN: "mastio-nginx-b,proxy-b,localhost"
     volumes:
       - proxy-b-data:/data
       - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw

@@ -51,10 +51,12 @@ _inject_intra_orga() {
 import pathlib
 from cullis_sdk import CullisClient
 ID = pathlib.Path("/state/orga/agents/alice-byoca")
+CA = pathlib.Path("/state/orga/ca.pem")
 c = CullisClient.from_identity_dir("https://mastio-nginx-a:9443",
     cert_path=ID/"agent.pem", key_path=ID/"agent-key.pem",
     dpop_key_path=ID/"dpop.jwk",
-    agent_id="orga::alice-byoca", org_id="orga", verify_tls=False)
+    agent_id="orga::alice-byoca", org_id="orga",
+    verify_tls=True, ca_chain_path=CA)
 c.login_via_proxy()
 c._signing_key_pem = (ID/"agent-key.pem").read_text()
 r = c.send_oneshot("orga::alice-spiffe",
@@ -69,10 +71,12 @@ _inject_intra_orgb() {
 import pathlib
 from cullis_sdk import CullisClient
 ID = pathlib.Path("/state/orgb/agents/bob-byoca")
+CA = pathlib.Path("/state/orgb/ca.pem")
 c = CullisClient.from_identity_dir("https://mastio-nginx-b:9443",
     cert_path=ID/"agent.pem", key_path=ID/"agent-key.pem",
     dpop_key_path=ID/"dpop.jwk",
-    agent_id="orgb::bob-byoca", org_id="orgb", verify_tls=False)
+    agent_id="orgb::bob-byoca", org_id="orgb",
+    verify_tls=True, ca_chain_path=CA)
 c.login_via_proxy()
 c._signing_key_pem = (ID/"agent-key.pem").read_text()
 r = c.send_oneshot("orgb::bob-spiffe",
@@ -87,10 +91,12 @@ _inject_cross_org() {
 import pathlib
 from cullis_sdk import CullisClient
 ID = pathlib.Path("/state/orga/agents/alice-connector")
+CA = pathlib.Path("/state/orga/ca.pem")
 c = CullisClient.from_identity_dir("https://mastio-nginx-a:9443",
     cert_path=ID/"agent.pem", key_path=ID/"agent-key.pem",
     dpop_key_path=ID/"dpop.jwk",
-    agent_id="orga::alice-connector", org_id="orga", verify_tls=False)
+    agent_id="orga::alice-connector", org_id="orga",
+    verify_tls=True, ca_chain_path=CA)
 c.login_via_proxy()
 c._signing_key_pem = (ID/"agent-key.pem").read_text()
 r = c.send_oneshot("orgb::bob-connector",
