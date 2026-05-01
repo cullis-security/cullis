@@ -80,6 +80,19 @@ async def _make_binding(
 
 
 async def test_bindings_page_renders_empty(client: AsyncClient):
+    """Render check on a freshly-cleared bindings table.
+
+    The session-scope ``setup_db`` fixture means earlier shards may have
+    seeded rows that survive into this test. Truncate first so the
+    'no bindings registered' empty state is what we actually render.
+    """
+    from sqlalchemy import delete
+    from app.registry.binding_store import BindingRecord
+    from tests.conftest import TestSessionLocal
+    async with TestSessionLocal() as s:
+        await s.execute(delete(BindingRecord))
+        await s.commit()
+
     cookies, _ = await _admin_ctx(client)
     resp = await client.get("/dashboard/bindings", cookies=cookies)
     assert resp.status_code == 200
