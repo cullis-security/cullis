@@ -146,6 +146,65 @@ async def start_enrollment(
     )
 
 
+_ENROLLMENT_STATUS_PROOF_HEADER = "X-Enrollment-Proof"
+_ENROLLMENT_STATUS_PROOF_DOMAIN = "enrollment-status:v1"
+
+
+def _verify_enrollment_proof(
+    pubkey_pem: str, session_id: str, signature_b64: str,
+) -> bool:
+    """M-onb-1 audit fix — proof of possession over the original
+    enrolment keypair.
+
+    The Connector signs ``"enrollment-status:v1|{session_id}"`` with
+    the same private key whose public half it submitted at
+    ``POST /v1/enrollment/start``. The server, holding the public
+    key on the row, can verify without storing or trusting any
+    fresh credential. Without a valid proof the status endpoint
+    returns ONLY ``status`` + ``session_id`` so an attacker who
+    guesses or steals a session_id cannot exfiltrate the issued
+    cert / agent_id / capabilities of an approved enrolment.
+    """
+    import base64 as _b64
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    try:
+        sig = _b64.urlsafe_b64decode(
+            signature_b64 + "=" * (-len(signature_b64) % 4),
+        )
+    except Exception:
+        return False
+    try:
+        pub_key = serialization.load_pem_public_key(pubkey_pem.encode())
+    except Exception:
+        return False
+    canonical = (
+        f"{_ENROLLMENT_STATUS_PROOF_DOMAIN}|{session_id}".encode("utf-8")
+    )
+    try:
+        if isinstance(pub_key, rsa.RSAPublicKey):
+            pub_key.verify(
+                sig, canonical,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+        elif isinstance(pub_key, ec.EllipticCurvePublicKey):
+            pub_key.verify(sig, canonical, ec.ECDSA(hashes.SHA256()))
+        else:
+            return False
+        return True
+    except InvalidSignature:
+        return False
+    except Exception:
+        return False
+
+
 @router.get(
     "/v1/enrollment/{session_id}/status",
     response_model=EnrollmentStatusResponse,
@@ -173,7 +232,24 @@ async def enrollment_status(
         session_id=record["session_id"],
         status=record["status"],  # type: ignore[arg-type]
     )
-    if record["status"] == "approved":
+
+    # M-onb-1 audit fix — gate the sensitive fields (cert_pem, agent_id,
+    # capabilities) behind a proof-of-possession over the keypair the
+    # Connector registered at start_enrollment. The endpoint stays
+    # callable without proof so the Connector can poll the status
+    # field cheaply, but only the legitimate enroller (who holds the
+    # private key) can pull the issued cert.
+    proof_header = request.headers.get(_ENROLLMENT_STATUS_PROOF_HEADER, "")
+    enroller_pubkey = record.get("pubkey_pem") or ""
+    has_valid_proof = bool(
+        proof_header
+        and enroller_pubkey
+        and _verify_enrollment_proof(
+            enroller_pubkey, session_id, proof_header,
+        )
+    )
+
+    if record["status"] == "approved" and has_valid_proof:
         response.agent_id = record["agent_id_assigned"]
         response.cert_pem = record["cert_pem"]
         caps_raw = record.get("capabilities_assigned") or "[]"
@@ -181,7 +257,7 @@ async def enrollment_status(
             response.capabilities = json.loads(caps_raw)
         except json.JSONDecodeError:
             response.capabilities = []
-    elif record["status"] == "rejected":
+    elif record["status"] == "rejected" and has_valid_proof:
         response.rejection_reason = record["rejection_reason"]
     return response
 

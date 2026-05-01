@@ -121,6 +121,7 @@ def enroll(
         verify_tls=verify_tls,
         timeout_s=request_timeout_s,
         poll_sink=poll_sink,
+        private_key=private_key,
     )
 
     status = record.get("status")
@@ -209,6 +210,40 @@ def _start(
     return response.json()
 
 
+def _build_enrollment_proof(private_key, session_id: str) -> str:
+    """M-onb-1 audit fix — sign the canonical proof string with the
+    enrollment keypair so the server can verify the poller is the
+    same client that called ``/v1/enrollment/start``.
+
+    Without this header the server returns the bare status flag and
+    withholds ``cert_pem`` / ``agent_id`` / ``capabilities`` — an
+    attacker who guesses or steals a session_id no longer pulls the
+    issued cert.
+    """
+    import base64 as _b64
+
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    canonical = f"enrollment-status:v1|{session_id}".encode("utf-8")
+    if isinstance(private_key, rsa.RSAPrivateKey):
+        sig = private_key.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    elif isinstance(private_key, ec.EllipticCurvePrivateKey):
+        sig = private_key.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        raise EnrollmentFailed(
+            f"Unsupported enrollment key type: {type(private_key).__name__}"
+        )
+    return _b64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
 def _poll_until_resolved(
     *,
     site_url: str,
@@ -218,14 +253,22 @@ def _poll_until_resolved(
     verify_tls: bool | str,
     timeout_s: float,
     poll_sink,
+    private_key,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max_wait_s
     poll_url = f"{site_url}/v1/enrollment/{session_id}/status"
     last_printed = 0.0
+    proof = _build_enrollment_proof(private_key, session_id)
+    proof_headers = {"X-Enrollment-Proof": proof}
 
     while True:
         try:
-            response = httpx.get(poll_url, verify=verify_tls, timeout=timeout_s)
+            response = httpx.get(
+                poll_url,
+                headers=proof_headers,
+                verify=verify_tls,
+                timeout=timeout_s,
+            )
         except httpx.HTTPError as exc:
             _log.warning("poll transient error", extra={"err": str(exc)})
             if time.monotonic() >= deadline:
