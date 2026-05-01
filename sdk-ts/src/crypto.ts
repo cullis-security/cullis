@@ -23,10 +23,67 @@ import {
   diffieHellman,
   hkdfSync,
   constants,
+  X509Certificate,
   type KeyObject,
 } from "node:crypto";
 import type { CipherBlob } from "./types.js";
 import { base64url, base64urlDecode, canonicalJson } from "./utils.js";
+
+/**
+ * H7 audit: parse a PEM string strictly as an X.509 certificate.
+ * Bare SPKI public keys are rejected — the cert subject is what binds
+ * the verifying key to ``senderAgentId``, and a bare SPKI carries no
+ * identity. Returns ``null`` on parse failure or if the input is not a
+ * CERTIFICATE PEM.
+ */
+function loadCertStrict(certPem: string): X509Certificate | null {
+  if (!certPem || !certPem.includes("-----BEGIN CERTIFICATE-----")) {
+    return null;
+  }
+  try {
+    return new X509Certificate(certPem);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * H7 audit: bind the cert to ``expectedAgentId``. Mirrors the Python
+ * ``_cert_trust.cert_binds_agent_id`` rule:
+ *   - cert with CN: CN must equal the full ``{org}::{name}`` agent_id
+ *   - cert with no CN, SPIFFE URI SAN: path tail must equal the
+ *     short name (after the ``::`` split)
+ */
+function certBindsAgentId(cert: X509Certificate, expectedAgentId: string): boolean {
+  if (!expectedAgentId) {
+    return false;
+  }
+  // ``X509Certificate.subject`` is a multi-line string of the form
+  // ``CN=acme::alice\nO=acme``. Walk it for a CN line.
+  const subject = cert.subject ?? "";
+  for (const line of subject.split("\n")) {
+    const match = /^\s*CN=(.+?)\s*$/.exec(line);
+    if (match) {
+      return match[1] === expectedAgentId;
+    }
+  }
+  // SPIFFE SAN fallback. ``subjectAltName`` is the comma-separated
+  // OpenSSL-style string, e.g. ``URI:spiffe://td/org/agent``.
+  const san = cert.subjectAltName ?? "";
+  const expectedTail = expectedAgentId.includes("::")
+    ? expectedAgentId.split("::").slice(-1)[0]
+    : expectedAgentId;
+  for (const entry of san.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed.startsWith("URI:spiffe://")) continue;
+    const uri = trimmed.slice("URI:".length);
+    const tail = uri.split("/").pop() ?? "";
+    if (tail === expectedTail) {
+      return true;
+    }
+  }
+  return false;
+}
 
 const HKDF_INFO = Buffer.from("cullis-e2e-v2-aeskw", "utf-8");
 const HKDF_SALT = Buffer.alloc(0);
@@ -100,9 +157,14 @@ export function signMessage(
 /**
  * Verify a message signature. Algorithm is dispatched from the public key
  * type (RSA-PSS-SHA256 or ECDSA-SHA256). Returns true, throws on failure.
+ *
+ * H7 audit fix: ``certPem`` MUST be a full X.509 certificate PEM. Bare
+ * SPKI public keys are rejected, and the cert subject must identify
+ * ``senderAgentId``. See the Python ``_cert_trust`` module for the
+ * full rationale.
  */
 export function verifyMessageSignature(
-  publicKeyPem: string,
+  certPem: string,
   signatureB64: string,
   sessionId: string,
   senderAgentId: string,
@@ -111,11 +173,24 @@ export function verifyMessageSignature(
   payload: Record<string, unknown>,
   clientSeq?: number | null,
 ): boolean {
+  const cert = loadCertStrict(certPem);
+  if (cert === null) {
+    throw new Error(
+      "Message signature verification failed: expected an X.509 " +
+        "CERTIFICATE PEM (bare SPKI public keys are no longer accepted)",
+    );
+  }
+  if (!certBindsAgentId(cert, senderAgentId)) {
+    throw new Error(
+      "Message signature verification failed: cert subject does not " +
+        `bind sender_agent_id ${senderAgentId}`,
+    );
+  }
   const canonical = buildCanonical(
     sessionId, senderAgentId, nonce, timestamp, payload, clientSeq,
   );
   const sig = base64urlDecode(signatureB64);
-  const keyObj = createPublicKey(publicKeyPem);
+  const keyObj = cert.publicKey;
   const verifier = createVerify("SHA256");
   verifier.update(canonical);
 

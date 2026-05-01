@@ -8,15 +8,23 @@ Schema:
 
 The canonical JSON is deterministic: sort_keys=True, no spaces, ensure_ascii=True.
 Any modification to the payload, session_id, nonce, or sender invalidates the signature.
+
+H7 audit fix: ``verify_signature`` and ``verify_oneshot_envelope_signature``
+no longer accept a bare SPKI public key, always bind the cert subject to
+the claimed ``sender_agent_id``, and accept an optional ``trust_anchors_pem``
+to chain-validate the cert against the Org CA. See ``_cert_trust`` for the
+full rationale.
 """
 import base64
 import json
 import re
+from collections.abc import Sequence
 
-from cryptography import x509 as crypto_x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec as ec_alg, padding, rsa as rsa_alg
+
+from cullis_sdk.crypto._cert_trust import verify_cert_for_sender
 
 _PSS_PADDING = padding.PSS(
     mgf=padding.MGF1(hashes.SHA256()),
@@ -149,7 +157,7 @@ def sign_oneshot_envelope(
 
 
 def verify_oneshot_envelope_signature(
-    cert_or_pubkey_pem: str,
+    cert_pem: str,
     signature_b64: str,
     *,
     correlation_id: str,
@@ -159,19 +167,35 @@ def verify_oneshot_envelope_signature(
     mode: str,
     reply_to: str | None,
     payload: dict,
+    trust_anchors_pem: Sequence[str] | None = None,
 ) -> bool:
-    """Return True if the v2 envelope signature verifies, False otherwise."""
-    pem_bytes = cert_or_pubkey_pem.encode()
+    """Return True if the v2 envelope signature verifies, else False.
+
+    H7 audit fix: ``cert_pem`` MUST be a full X.509 certificate PEM.
+    Bare SPKI public keys (the silent-fallback the audit flagged) are
+    rejected because a bare SPKI carries no identity, so the verifying
+    key cannot be bound to ``sender_agent_id``.
+
+    The cert subject (CN or SPIFFE SAN) must identify
+    ``sender_agent_id`` — without that bind any valid signature from
+    any cert would be accepted as proof the claimed agent sent the
+    message.
+
+    When ``trust_anchors_pem`` is supplied (e.g. by the SDK consumer
+    threading the operator-pinned Org CA bundle), the cert must also
+    chain to one of the anchors. Without anchors the verifier still
+    enforces the parse + bind step, which is enough to stop the
+    substitution attacks the audit flagged.
+    """
+    cert = verify_cert_for_sender(cert_pem, sender_agent_id, trust_anchors_pem)
+    if cert is None:
+        return False
+    pub_key = cert.public_key()
+
     try:
-        if b"CERTIFICATE" in pem_bytes:
-            cert = crypto_x509.load_pem_x509_certificate(pem_bytes)
-            pub_key = cert.public_key()
-        else:
-            pub_key = serialization.load_pem_public_key(pem_bytes)
+        sig = _b64url_decode(signature_b64)
     except Exception:
         return False
-
-    sig = _b64url_decode(signature_b64)
     canonical = compute_oneshot_envelope_sig_input(
         correlation_id=correlation_id,
         sender_agent_id=sender_agent_id,
@@ -194,7 +218,7 @@ def verify_oneshot_envelope_signature(
 
 
 def verify_signature(
-    cert_or_pubkey_pem: str,
+    cert_pem: str,
     signature_b64: str,
     session_id: str,
     sender_agent_id: str,
@@ -202,23 +226,26 @@ def verify_signature(
     timestamp: int,
     payload: dict,
     client_seq: int | None = None,
+    *,
+    trust_anchors_pem: Sequence[str] | None = None,
 ) -> bool:
     """
     Verify a message signature. Returns True if valid, False if invalid.
 
-    Accepts either a PEM certificate or a PEM public key.
+    H7 audit fix: ``cert_pem`` MUST be a full X.509 certificate PEM.
+    Bare SPKI public keys are rejected. The cert subject (CN or SPIFFE
+    SAN) must identify ``sender_agent_id``. When ``trust_anchors_pem``
+    is supplied, the cert must also chain to one of the anchors.
     """
-    pem_bytes = cert_or_pubkey_pem.encode()
+    cert = verify_cert_for_sender(cert_pem, sender_agent_id, trust_anchors_pem)
+    if cert is None:
+        return False
+    pub_key = cert.public_key()
+
     try:
-        if b"CERTIFICATE" in pem_bytes:
-            cert = crypto_x509.load_pem_x509_certificate(pem_bytes)
-            pub_key = cert.public_key()
-        else:
-            pub_key = serialization.load_pem_public_key(pem_bytes)
+        sig = _b64url_decode(signature_b64)
     except Exception:
         return False
-
-    sig = _b64url_decode(signature_b64)
     canonical = _canonical(session_id, sender_agent_id, nonce, timestamp, payload, client_seq)
     try:
         if isinstance(pub_key, rsa_alg.RSAPublicKey):

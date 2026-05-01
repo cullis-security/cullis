@@ -50,6 +50,39 @@ def _pem_keypair(kind: str) -> tuple[str, str]:
     return priv_pem, pub_pem
 
 
+def _self_signed_cert(priv_pem: str, agent_id: str, org_id: str) -> str:
+    """Build a self-signed cert for ``agent_id`` from the given private key.
+
+    H7 audit: ``verifyMessageSignature`` rejects bare SPKI public keys
+    and binds the cert subject to ``senderAgentId``. Test fixtures that
+    used to ship a bare pubkey now ship a self-signed cert with
+    ``CN=agent_id`` and ``O=org_id`` to mirror the production identity
+    binding (see ``cullis_sdk.crypto._cert_trust``).
+    """
+    import datetime as _dt
+
+    from cryptography import x509 as _x509
+    from cryptography.hazmat.primitives import hashes as _hashes
+    from cryptography.x509.oid import NameOID
+
+    priv = serialization.load_pem_private_key(priv_pem.encode(), password=None)
+    subject = _x509.Name([
+        _x509.NameAttribute(NameOID.COMMON_NAME, agent_id),
+        _x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
+    ])
+    builder = (
+        _x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(priv.public_key())
+        .serial_number(_x509.random_serial_number())
+        .not_valid_before(_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=5))
+        .not_valid_after(_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=1))
+    )
+    cert = builder.sign(priv, _hashes.SHA256())
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
 def _run_node(mode: str, payload: dict) -> dict:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(payload, f)
@@ -125,7 +158,8 @@ def test_python_sign_ts_verify(kind: str) -> None:
     auto-dispatch matches Python's RSA-PSS / ECDSA selection."""
     from app.auth.message_signer import sign_message
 
-    priv_pem, pub_pem = _pem_keypair(kind)
+    priv_pem, _ = _pem_keypair(kind)
+    cert_pem = _self_signed_cert(priv_pem, "orgA::alice", "orgA")
     payload = {"kind": kind, "k": "py-sign"}
     nonce = "n-py-ts"
     ts = 1700000000
@@ -133,7 +167,7 @@ def test_python_sign_ts_verify(kind: str) -> None:
     out = _run_node(
         "verify",
         {
-            "sender_pub_pem": pub_pem,
+            "sender_pub_pem": cert_pem,
             "signature": signature,
             "session_id": "s1",
             "sender_agent_id": "orgA::alice",
@@ -241,14 +275,15 @@ def test_python_sign_ts_verify_non_ascii(label: str, payload: dict) -> None:
     """Python signs a non-ASCII payload; TS must verify (F-A-2 regression)."""
     from app.auth.message_signer import sign_message
 
-    priv_pem, pub_pem = _pem_keypair("ec")
+    priv_pem, _ = _pem_keypair("ec")
+    cert_pem = _self_signed_cert(priv_pem, "orgA::alice", "orgA")
     nonce = f"n-py-ts-{label}"
     ts = 1700000100
     signature = sign_message(priv_pem, "s1", "orgA::alice", nonce, ts, payload, 5)
     out = _run_node(
         "verify",
         {
-            "sender_pub_pem": pub_pem,
+            "sender_pub_pem": cert_pem,
             "signature": signature,
             "session_id": "s1",
             "sender_agent_id": "orgA::alice",

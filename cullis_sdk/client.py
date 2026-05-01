@@ -294,6 +294,17 @@ class CullisClient:
         # tools that need it must handle that case.
         self.identity: Any = None
 
+        # H7 audit fix — operator-pinned Org CA bundle path. When set,
+        # ``_resolve_trust_anchors()`` reads the file and threads its
+        # contents through ``verify_oneshot_envelope_signature`` /
+        # ``verify_inner_signature`` so the sender's cert must chain to
+        # one of these anchors, not just be a syntactically valid cert
+        # whose subject happens to match. ``from_connector`` /
+        # ``from_identity_dir`` / ``from_enrollment`` populate this
+        # from ``identity/ca-chain.pem`` (ADR-015 TOFU pin) when
+        # available.
+        self._ca_chain_path: "Path | None" = None
+
     def __enter__(self) -> CullisClient:
         return self
 
@@ -303,6 +314,27 @@ class CullisClient:
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._http.close()
+
+    def _resolve_trust_anchors(self) -> "list[str] | None":
+        """Read the operator-pinned Org CA bundle for sender-cert chain checks.
+
+        Returns the PEM contents of ``self._ca_chain_path`` as a
+        single-element list when the file exists and is readable, else
+        ``None``. ``verify_oneshot_envelope_signature`` and
+        ``verify_inner_signature`` use this to enforce that the
+        sender's cert chains to the operator-pinned Org CA (H7 audit).
+
+        ``None`` means "no anchors available" — the verify helpers then
+        fall back to bare-cert + identity-binding checks. SDK callers
+        that hold an Org CA bundle from another source can pass it
+        explicitly to the verify helpers and bypass this method.
+        """
+        if self._ca_chain_path is None:
+            return None
+        try:
+            return [self._ca_chain_path.read_text()]
+        except OSError:
+            return None
 
     # ── Internal helpers ────────────────────────────────────────────
 
@@ -1022,6 +1054,11 @@ class CullisClient:
             key_path=_mtls_key,
             ca_chain_path=_pinned_ca if _pinned_ca.exists() else None,
         )
+        # H7 audit fix — share the TOFU-pinned Org CA with the sender-cert
+        # verifier. ``decrypt_oneshot`` and the inner-signature path
+        # then chain-validate the sender's leaf cert against the
+        # operator-confirmed CA, not just any syntactically valid cert.
+        instance._ca_chain_path = _pinned_ca if _pinned_ca.exists() else None
         instance._pubkey_cache = {}
         instance._client_seq = {}
         instance._dpop_privkey = None
@@ -1971,6 +2008,7 @@ class CullisClient:
                     m["timestamp"],
                     m["payload"],
                     client_seq=m.get("sender_seq"),
+                    trust_anchors_pem=self._resolve_trust_anchors(),
                 )
                 if not ok:
                     raise ValueError(
@@ -2243,6 +2281,7 @@ class CullisClient:
             else self._fetch_pubkey_proxy_then_broker
         )
         sender_cert_pem = fetch(sender)
+        trust_anchors = self._resolve_trust_anchors()
         ok = verify_oneshot_envelope_signature(
             sender_cert_pem,
             envelope["signature"],
@@ -2253,6 +2292,7 @@ class CullisClient:
             mode=mode,
             reply_to=envelope.get("reply_to"),
             payload=envelope["payload"],
+            trust_anchors_pem=trust_anchors,
         )
         if not ok:
             raise ValueError(
@@ -2285,6 +2325,7 @@ class CullisClient:
             f"oneshot:{corr}", sender,
             envelope["nonce"], envelope["timestamp"], plaintext,
             client_seq=0,
+            trust_anchors_pem=trust_anchors,
         )
         return {
             "payload": plaintext,
