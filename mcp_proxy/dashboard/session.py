@@ -34,13 +34,27 @@ _COOKIE_MAX_AGE = 8 * 3600  # 8 hours
 
 @dataclass
 class ProxyDashboardSession:
-    """Dashboard session payload."""
-    role: str  # "admin" only for now
+    """Dashboard session payload.
+
+    ``role`` is the primary display role used by templates / the UI badge.
+    ``roles`` is the full authorization tuple consulted by ``require_role``
+    (see ``mcp_proxy.rbac``). Default ``roles=()`` is filled to ``(role,)``
+    in ``__post_init__`` so single-role callers (community deploys, legacy
+    cookies issued before multi-role) keep working unchanged.
+    """
+    role: str
     csrf_token: str = ""
     logged_in: bool = True
+    roles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.roles:
+            self.roles = (self.role,) if self.role else ()
 
 
-_NO_SESSION = ProxyDashboardSession(role="none", csrf_token="", logged_in=False)
+_NO_SESSION = ProxyDashboardSession(
+    role="none", csrf_token="", logged_in=False, roles=(),
+)
 
 _auto_key: str = ""
 
@@ -151,18 +165,40 @@ def get_session(request: Request) -> ProxyDashboardSession:
     if data.get("exp", 0) < time.time():
         return _NO_SESSION
 
+    raw_roles = data.get("roles")
+    parsed_roles: tuple[str, ...] = ()
+    if isinstance(raw_roles, list):
+        parsed_roles = tuple(str(r) for r in raw_roles if isinstance(r, str) and r)
+
     return ProxyDashboardSession(
         role=data.get("role", "none"),
         csrf_token=data.get("csrf_token", ""),
         logged_in=True,
+        roles=parsed_roles,
     )
 
 
-def set_session(response: Response, role: str = "admin") -> str:
-    """Set a signed session cookie on the response. Returns the CSRF token."""
+def set_session(
+    response: Response,
+    role: str = "admin",
+    roles: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    """Set a signed session cookie on the response. Returns the CSRF token.
+
+    ``roles`` is the full set of authorization roles attached to the session.
+    When omitted, falls back to ``(role,)`` so single-role callers keep their
+    pre-existing behaviour. When provided, ``role`` remains the primary
+    display role; the dashboard UI shows it in the badge while
+    ``require_role`` checks against the wider ``roles`` tuple.
+    """
     csrf_token = os.urandom(16).hex()
+    if roles is None:
+        roles_tuple: tuple[str, ...] = (role,) if role else ()
+    else:
+        roles_tuple = tuple(str(r) for r in roles if r)
     payload = json.dumps({
         "role": role,
+        "roles": list(roles_tuple),
         "csrf_token": csrf_token,
         "exp": int(time.time()) + _COOKIE_MAX_AGE,
     })
