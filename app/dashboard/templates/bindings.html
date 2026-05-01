@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Bindings{% endblock %}
+{% block header_title %}Org ↔ Agent Bindings{% endblock %}
+{% block content %}
+<div id="page-content" data-sse-page="bindings" class="max-w-7xl">
+
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Bindings</h2>
+            <p class="text-xs text-gray-600 mt-0.5">
+                {{ bindings | length }} total
+                <span class="text-emerald-400">{{ counts.approved }} approved</span> ·
+                <span class="text-amber-400">{{ counts.pending }} pending</span> ·
+                <span class="text-gray-500">{{ counts.revoked }} revoked</span>
+            </p>
+        </div>
+        <div class="flex items-center gap-2">
+            <a href="/dashboard/bindings"
+               class="px-3 py-1.5 text-[10px] uppercase tracking-wider rounded border {% if not current_filter %}border-accent-400 text-accent-400 bg-accent-400/10{% else %}border-gray-700 text-gray-500{% endif %}">All</a>
+            <a href="/dashboard/bindings?status_filter=approved"
+               class="px-3 py-1.5 text-[10px] uppercase tracking-wider rounded border {% if current_filter == 'approved' %}border-emerald-400 text-emerald-400 bg-emerald-500/10{% else %}border-gray-700 text-gray-500{% endif %}">Approved</a>
+            <a href="/dashboard/bindings?status_filter=pending"
+               class="px-3 py-1.5 text-[10px] uppercase tracking-wider rounded border {% if current_filter == 'pending' %}border-amber-400 text-amber-400 bg-amber-500/10{% else %}border-gray-700 text-gray-500{% endif %}">Pending</a>
+            <a href="/dashboard/bindings?status_filter=revoked"
+               class="px-3 py-1.5 text-[10px] uppercase tracking-wider rounded border {% if current_filter == 'revoked' %}border-red-400 text-red-400 bg-red-500/10{% else %}border-gray-700 text-gray-500{% endif %}">Revoked</a>
+        </div>
+    </div>
+
+    <div class="bg-surface-900/40 border border-gray-800/40 rounded-lg p-4 mb-6 text-xs text-gray-400">
+        <p>
+            A binding is the per-org grant: <span class="text-white font-mono">org_id</span> approves
+            <span class="text-white font-mono">agent_id</span> with a specific
+            <span class="text-white">scope</span> (subset of capabilities the agent declared).
+            Bindings are <span class="text-white">directional</span>; A↔B requires two rows.
+            Revoke one verso to pin one-way traffic.
+        </p>
+    </div>
+
+    <div class="bg-surface-900/80 border border-gray-800/60 rounded-lg overflow-hidden backdrop-blur-sm">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">ID</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Granting Org</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Caller Agent</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Scope</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Approved By</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for b in bindings %}
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-5 py-4">
+                        <span class="text-xs font-mono text-gray-500">#{{ b.id }}</span>
+                    </td>
+                    <td class="px-5 py-4">
+                        <span class="text-xs font-mono text-white">{{ b.org_id }}</span>
+                    </td>
+                    <td class="px-5 py-4">
+                        <span class="text-xs font-mono text-white">{{ b.agent_id }}</span>
+                        {% if b.agent_org_id and b.agent_org_id != b.org_id %}
+                        <span class="ml-1 text-[10px] text-gray-600">(from {{ b.agent_org_id }})</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        <div class="flex flex-wrap gap-1 max-w-md">
+                        {% for cap in b.scope %}
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-info-400/10 text-info-400">{{ cap }}</span>
+                        {% endfor %}
+                        {% if not b.scope %}
+                            <span class="text-[10px] text-gray-600 uppercase tracking-wider">empty (no capabilities granted)</span>
+                        {% endif %}
+                        </div>
+                        {% if b.agent_capabilities %}
+                        <details class="mt-2">
+                            <summary class="text-[10px] text-gray-600 cursor-pointer hover:text-gray-400 uppercase tracking-wider">edit scope</summary>
+                            <form method="post" action="/dashboard/bindings/{{ b.id }}/scope" class="mt-2 p-3 bg-surface-950/60 rounded border border-gray-800/40">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-2">capabilities declared by {{ b.agent_id }}</p>
+                                <div class="flex flex-wrap gap-2 mb-3">
+                                    {% for cap in b.agent_capabilities %}
+                                    <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                                        <input type="checkbox" name="scope" value="{{ cap }}"
+                                               {% if cap in b.scope %}checked{% endif %}
+                                               class="accent-accent-400">
+                                        <span class="font-mono text-gray-300">{{ cap }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                                <button type="submit"
+                                        class="px-3 py-1 text-[10px] uppercase tracking-wider rounded bg-accent-400/10 text-accent-400 border border-accent-400/40 hover:bg-accent-400/20">
+                                    Save scope
+                                </button>
+                            </form>
+                        </details>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if b.status == 'approved' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Approved
+                        </span>
+                        {% elif b.status == 'pending' %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Pending
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-red-600"></span>Revoked
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if b.approved_by %}
+                        <span class="text-[11px] text-gray-400">{{ b.approved_by }}</span>
+                        {% if b.approved_at %}
+                        <div class="text-[10px] text-gray-600">{{ b.approved_at.strftime('%Y-%m-%d %H:%M') if b.approved_at.strftime else b.approved_at }}</div>
+                        {% endif %}
+                        {% else %}
+                        <span class="text-[10px] text-gray-600">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        <div class="flex items-center gap-2">
+                        {% if b.status == 'pending' or b.status == 'revoked' %}
+                            <form method="post" action="/dashboard/bindings/{{ b.id }}/approve" class="inline"
+                                  onsubmit="return confirm('Approve binding {{ b.org_id }} ← {{ b.agent_id }}?')">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit"
+                                        class="px-2.5 py-1 text-[10px] uppercase tracking-wider border border-emerald-500/40 text-emerald-400 rounded hover:bg-emerald-500/10 transition-colors">Approve</button>
+                            </form>
+                        {% endif %}
+                        {% if b.status == 'approved' %}
+                            <form method="post" action="/dashboard/bindings/{{ b.id }}/revoke" class="inline"
+                                  onsubmit="return confirm('Revoke binding {{ b.org_id }} ← {{ b.agent_id }}?\nThis closes active sessions for this agent and invalidates their tokens.')">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit"
+                                        class="px-2.5 py-1 text-[10px] uppercase tracking-wider border border-red-500/40 text-red-400 rounded hover:bg-red-500/10 transition-colors">Revoke</button>
+                            </form>
+                        {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not bindings %}
+                <tr><td colspan="7" class="px-5 py-16 text-center">
+                    <p class="text-sm text-gray-600">
+                        {% if current_filter %}
+                            No bindings with status <span class="text-white font-mono">{{ current_filter }}</span>.
+                        {% else %}
+                            No bindings registered yet.
+                        {% endif %}
+                    </p>
+                </td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

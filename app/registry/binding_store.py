@@ -158,3 +158,33 @@ async def list_bindings(db: AsyncSession, org_id: str) -> list[BindingRecord]:
         select(BindingRecord).where(BindingRecord.org_id == org_id)
     )
     return list(result.scalars().all())
+
+
+async def list_all_bindings(
+    db: AsyncSession, status_filter: str | None = None,
+) -> list[BindingRecord]:
+    """Return every binding across orgs. Network-admin only — used by the
+    Court dashboard to render a full registry view; regular org-scoped
+    callers must use ``list_bindings(org_id=...)`` to stay tenant-bound."""
+    stmt = select(BindingRecord).order_by(BindingRecord.created_at.desc())
+    if status_filter:
+        stmt = stmt.where(BindingRecord.status == status_filter)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def update_binding_scope(
+    db: AsyncSession, binding_id: int, scope: list[str],
+) -> BindingRecord | None:
+    """Update an existing binding's scope subset. Caller is responsible
+    for validating that ``scope`` is a subset of the agent's declared
+    capabilities — the binding store does not re-fetch the agent here so
+    the same helper works whether the caller has the agent record loaded
+    or not. Returns the refreshed binding or None if missing."""
+    binding = await get_binding(db, binding_id)
+    if not binding:
+        return None
+    binding.scope_json = json.dumps(scope)
+    await db.commit()
+    await db.refresh(binding)
+    return binding
