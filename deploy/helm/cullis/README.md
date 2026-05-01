@@ -212,7 +212,7 @@ spec:
 | `nameOverride` | `""` | Override chart name (per release). |
 | `fullnameOverride` | `""` | Override fully qualified name. |
 | `imagePullSecrets` | `[]` | Image pull secrets applied to every pod. |
-| `broker.image.repository` | `ghcr.io/daenaihax/cullis` | Broker image repo. |
+| `broker.image.repository` | `ghcr.io/cullis-security/cullis` | Broker image repo. |
 | `broker.image.tag` | `""` | Image tag (defaults to chart `appVersion`). |
 | `broker.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `broker.replicaCount` | `2` | Static replica count when HPA disabled. |

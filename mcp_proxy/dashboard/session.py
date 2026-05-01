@@ -178,6 +178,26 @@ def get_session(request: Request) -> ProxyDashboardSession:
     )
 
 
+def _should_set_secure_cookie() -> bool:
+    """Decide the ``Secure`` flag for the dashboard session cookie.
+
+    M-dash audit fix: the previous heuristic looked only at
+    ``proxy_public_url.startswith("https")``. If the operator forgot
+    to set the env var, or pointed it at an internal HTTP URL while
+    the dashboard sits behind an HTTPS-terminating reverse proxy, the
+    cookie shipped without ``Secure`` and could leak over HTTP. The
+    new rule pins ``Secure=True`` whenever ``environment=production``
+    regardless of the URL hint, and falls back to the URL heuristic
+    only in development where HTTP-only loopback is the norm.
+    """
+    from mcp_proxy.config import get_settings as _proxy_settings
+    settings = _proxy_settings()
+    if settings.environment == "production":
+        return True
+    pub_url = settings.proxy_public_url
+    return pub_url.startswith("https") if pub_url else False
+
+
 def set_session(
     response: Response,
     role: str = "admin",
@@ -203,9 +223,7 @@ def set_session(
         "exp": int(time.time()) + _COOKIE_MAX_AGE,
     })
     signed = _sign(payload)
-    from mcp_proxy.config import get_settings as _proxy_settings
-    _pub_url = _proxy_settings().proxy_public_url
-    _use_secure = _pub_url.startswith("https") if _pub_url else False
+    _use_secure = _should_set_secure_cookie()
     response.set_cookie(
         _COOKIE_NAME, signed,
         max_age=_COOKIE_MAX_AGE,
@@ -218,10 +236,9 @@ def set_session(
 
 def clear_session(response: Response) -> None:
     """Delete the session cookie."""
-    from mcp_proxy.config import get_settings as _proxy_settings
-    _pub_url = _proxy_settings().proxy_public_url
-    _use_secure = _pub_url.startswith("https") if _pub_url else False
-    response.delete_cookie(_COOKIE_NAME, samesite="lax", secure=_use_secure)
+    response.delete_cookie(
+        _COOKIE_NAME, samesite="lax", secure=_should_set_secure_cookie(),
+    )
 
 
 def require_login(request: Request) -> ProxyDashboardSession | RedirectResponse:
@@ -260,15 +277,12 @@ def set_oidc_state(response: Response, flow_state: dict) -> None:
     payload_data["exp"] = int(time.time()) + _OIDC_STATE_MAX_AGE
     payload = json.dumps(payload_data)
     signed = _sign(payload)
-    from mcp_proxy.config import get_settings as _proxy_settings
-    _pub_url = _proxy_settings().proxy_public_url
-    _use_secure = _pub_url.startswith("https") if _pub_url else False
     response.set_cookie(
         _OIDC_STATE_COOKIE, signed,
         max_age=_OIDC_STATE_MAX_AGE,
         httponly=True,
         samesite="lax",
-        secure=_use_secure,
+        secure=_should_set_secure_cookie(),
     )
 
 
@@ -291,11 +305,8 @@ def get_oidc_state(request: Request) -> dict | None:
 
 def clear_oidc_state(response: Response) -> None:
     """Delete the OIDC state cookie."""
-    from mcp_proxy.config import get_settings as _proxy_settings
-    _pub_url = _proxy_settings().proxy_public_url
-    _use_secure = _pub_url.startswith("https") if _pub_url else False
     response.delete_cookie(
-        _OIDC_STATE_COOKIE, samesite="lax", secure=_use_secure,
+        _OIDC_STATE_COOKIE, samesite="lax", secure=_should_set_secure_cookie(),
     )
 
 
@@ -361,6 +372,9 @@ async def verify_admin_password(plaintext: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_force_local_password_audited: bool = False
+
+
 async def is_local_password_login_enabled() -> bool:
     """Return True when /proxy/login is allowed to accept a password.
 
@@ -372,9 +386,43 @@ async def is_local_password_login_enabled() -> bool:
 
     The toggle is consulted on every request; no caching — the admin
     must be able to flip it off and see the form vanish immediately.
+
+    M-dash audit fix: when the env break-glass is the deciding factor
+    AND the stored flag says disabled, the override gets a one-shot
+    audit row (``auth.local_password.break_glass``) so a Mastio admin
+    auditing post-incident can see when SSO-only hardening was bypassed.
+    The flag is per-process; a worker restart re-emits the row, which
+    is the right cadence — anyone triaging an incident wants to know
+    the override is active right now.
     """
     from mcp_proxy.config import get_settings
     if get_settings().force_local_password:
+        global _force_local_password_audited
+        if not _force_local_password_audited:
+            _force_local_password_audited = True
+            try:
+                from mcp_proxy.db import get_config, log_audit
+                stored = await get_config(LOCAL_PASSWORD_ENABLED_KEY)
+                # Only audit when the env IS overriding a "disabled"
+                # DB toggle. When the DB toggle is also enabled (or
+                # unset) the env adds nothing surprising and the
+                # noise hides real break-glass events.
+                if stored == "0":
+                    await log_audit(
+                        agent_id="admin",
+                        action="auth.local_password.break_glass",
+                        status="active",
+                        detail=(
+                            "MCP_PROXY_FORCE_LOCAL_PASSWORD=1 env override "
+                            "is restoring password login while the DB "
+                            "toggle says disabled. Unset the env var when "
+                            "SSO is back to re-enable hardening."
+                        ),
+                    )
+            except Exception:
+                # Audit best-effort: a DB outage during break-glass
+                # must not block the operator from logging in.
+                _force_local_password_audited = False
         return True
 
     from mcp_proxy.db import get_config

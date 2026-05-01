@@ -24,7 +24,7 @@ imagePullSecrets: []
 broker:
   image:
     # -- Container image repository for the broker.
-    repository: ghcr.io/daenaihax/cullis
+    repository: ghcr.io/cullis-security/cullis
     # -- Image tag. When empty the chart appVersion is used.
     tag: ""
     # -- Image pull policy.
