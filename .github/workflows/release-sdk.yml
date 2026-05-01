@@ -204,13 +204,11 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
 
   # ── 4. Publish to PyPI ───────────────────────────────────────────────
-  # No `if:` on `secrets.PYPI_TOKEN`: the `secrets` context cannot be
-  # referenced in any `if:` expression when the workflow is invoked via
-  # `workflow_dispatch` (parser error: "Unrecognized named-value:
-  # 'secrets'"). The token is consumed via `with: password:
-  # ${{ secrets.PYPI_TOKEN }}` below — that form is always valid. If
-  # the secret is unset, the publish action fails with a clear error;
-  # provision PYPI_TOKEN as a repo secret to enable publishing.
+  # PyPI trusted publishing (OIDC). The PyPI project `cullis-sdk` is
+  # configured with this repo + workflow as a trusted publisher, so
+  # the action mints a short-lived OIDC token at runtime instead of
+  # using a long-lived PYPI_TOKEN. `id-token: write` and the `pypi`
+  # environment together unlock the OIDC exchange.
   publish-pypi:
     name: Publish to PyPI
     needs: build-python
@@ -219,7 +217,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/cullis-sdk
     permissions:
-      id-token: write  # for PyPI trusted publishing once configured
+      id-token: write  # required for PyPI trusted publishing OIDC exchange
     steps:
       - name: Download wheel + sdist
         uses: actions/download-artifact@v4
@@ -231,7 +229,3 @@ jobs:
         # Pinned to SHA (was @release/v1 moving alias) — audit 2026-04-30
         # lane 8 M3. Most-exposed step in the entire release flow.
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
-        with:
-          password: ${{ secrets.PYPI_TOKEN }}
-          # Switch to trusted publishing (OIDC) once the PyPI project
-          # is configured; then `password` can be dropped.
