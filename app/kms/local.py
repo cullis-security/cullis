@@ -42,9 +42,71 @@ class LocalKMSProvider:
 
     async def get_broker_private_key_pem(self) -> str:
         if self._private_key_pem is None:
-            self._private_key_pem = Path(self._key_path).read_text()
+            path = Path(self._key_path)
+            self._check_key_file_perms(path)
+            self._private_key_pem = path.read_text()
             _log.info("KMS[local] broker private key loaded from %s", self._key_path)
         return self._private_key_pem
+
+    @staticmethod
+    def _check_key_file_perms(path: Path) -> None:
+        """Refuse to load the Org CA private key from a world/group-readable file.
+
+        H-kms-perms audit fix: the broker CA private key signs every
+        agent cert and JWT the Mastio issues; its compromise blasts
+        the entire Org's trust. A POSIX file with mode ``0644`` (or
+        anything with bits set in ``0o077``) lets every local process
+        on the host read it — the file system stops being a defence.
+
+        Production deployments fail-closed: refuse to read and raise.
+        Development can opt out via
+        ``MCP_PROXY_ALLOW_LOOSE_CA_KEY_PERMS=1`` for shared-fs
+        scenarios where the operator accepts the trade-off.
+        """
+        import os
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot stat Org CA private key at {path}: {exc}",
+            ) from exc
+
+        loose_bits = mode & 0o077
+        if loose_bits == 0:
+            return
+
+        env_override = os.environ.get(
+            "MCP_PROXY_ALLOW_LOOSE_CA_KEY_PERMS", "",
+        ).lower() in ("1", "true", "yes")
+
+        msg = (
+            f"Org CA private key {path} has loose POSIX perms {oct(mode)}. "
+            "Tighten with `chmod 0600 %s` so only the Mastio process "
+            "user can read it. Loose perms let any local process steal "
+            "the key that signs every Org cert."
+        ) % path
+
+        from app.config import get_settings as _get_settings
+        settings = _get_settings()
+        is_production = getattr(settings, "environment", "") == "production"
+
+        if env_override:
+            _log.warning(
+                "%s — MCP_PROXY_ALLOW_LOOSE_CA_KEY_PERMS=1 override "
+                "in effect, accepting the trade-off.", msg,
+            )
+            return
+        if is_production:
+            _log.critical(msg)
+            raise RuntimeError(
+                f"Refusing to load Org CA private key with loose perms "
+                f"{oct(mode)} in production. Set "
+                "MCP_PROXY_ALLOW_LOOSE_CA_KEY_PERMS=1 to override "
+                "(not recommended).",
+            )
+        _log.warning(
+            "%s — proceeding because environment != production.", msg,
+        )
 
     async def get_broker_public_key_pem(self) -> str:
         if self._public_key_pem is None:

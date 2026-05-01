@@ -49,16 +49,22 @@ _JWKS_RATE_LIMIT_PER_MINUTE = 30
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort IP extraction for the rate-limit subject.
+    """Return the rate-limit subject for this request.
 
-    Honours ``X-Forwarded-For`` (first hop) when the proxy is behind
-    a trusted edge, falls back to the socket peer. Same precedence
-    as ``app.rate_limit.limiter.get_client_ip`` — kept local because
-    ``mcp_proxy`` does not import from ``app/``.
+    H-xff audit fix: the previous implementation read the first
+    entry from ``X-Forwarded-For`` directly, which is fully
+    attacker-controlled when nginx is bypassed (host port exposed,
+    misconfigured deploy) or when nginx forwards the upstream XFF
+    as-is. An attacker could spray ``X-Forwarded-For: 1.2.3.4`` with
+    a different value per request and never trip the JWKS limiter.
+
+    The deployed shape runs uvicorn behind nginx with
+    ``--proxy-headers --forwarded-allow-ips=<nginx>`` so
+    ``ProxyHeadersMiddleware`` rewrites ``request.client`` from the
+    last trusted XFF hop. Using ``request.client.host`` directly
+    matches ``app.rate_limit.limiter.get_client_ip`` and the
+    post-H9 dashboard login handler.
     """
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
     client = request.client
     return client.host if client is not None else "unknown"
 

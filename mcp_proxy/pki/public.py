@@ -44,9 +44,22 @@ _PKI_CA_RATE_LIMIT_PER_MINUTE = 30
 
 
 def _client_ip(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    """Return the rate-limit subject for this request.
+
+    H-xff audit fix: the previous implementation read the first
+    entry from ``X-Forwarded-For`` directly, which is fully
+    attacker-controlled when nginx is bypassed (host port exposed,
+    misconfigured deploy) or when nginx forwards the upstream
+    XFF as-is. An attacker could spray ``X-Forwarded-For: 1.2.3.4``
+    with a different value per request and never trip the limiter.
+
+    The deployed shape runs uvicorn behind nginx with
+    ``--proxy-headers --forwarded-allow-ips=<nginx>`` so
+    ``ProxyHeadersMiddleware`` rewrites ``request.client`` from the
+    last trusted XFF hop. Using ``request.client.host`` directly
+    is the same pattern as ``app.rate_limit.limiter.get_client_ip``
+    and the dashboard login handler post-H9.
+    """
     client = request.client
     return client.host if client is not None else "unknown"
 
