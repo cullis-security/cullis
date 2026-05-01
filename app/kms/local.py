@@ -5,6 +5,8 @@ Used for development, tests, and environments without a KMS backend.
 KMS_BACKEND=local (default when VAULT_ADDR is not set).
 """
 import logging
+import os
+import secrets
 from pathlib import Path
 
 from cryptography import x509 as crypto_x509
@@ -16,12 +18,27 @@ _log = logging.getLogger("agent_trust")
 class LocalKMSProvider:
     """Reads the broker CA private key and certificate from disk."""
 
-    def __init__(self, key_path: str, cert_path: str) -> None:
+    def __init__(
+        self,
+        key_path: str,
+        cert_path: str,
+        secret_encryption_key_path: str | None = None,
+    ) -> None:
         self._key_path = key_path
         self._cert_path = cert_path
+        # H8 audit fix — separate master key for at-rest secret
+        # encryption. Defaults to a sibling of the CA private key when
+        # the operator hasn't pinned a path, so a fresh deploy gets a
+        # working setup without extra config.
+        if secret_encryption_key_path is None:
+            secret_encryption_key_path = str(
+                Path(key_path).parent / "secret_encryption.key",
+            )
+        self._secret_encryption_key_path = secret_encryption_key_path
         # Cached values — loaded once on first access
         self._private_key_pem: str | None = None
         self._public_key_pem: str | None = None
+        self._secret_encryption_key: bytes | None = None
 
     async def get_broker_private_key_pem(self) -> str:
         if self._private_key_pem is None:
@@ -41,12 +58,73 @@ class LocalKMSProvider:
             _log.info("KMS[local] broker public key loaded from %s", self._cert_path)
         return self._public_key_pem
 
+    async def get_secret_encryption_key(self) -> bytes:
+        """Load or generate the 32-byte secret-encryption master key.
+
+        H8 audit fix: the master key is decoupled from the Org CA. On
+        first boot we generate 32 random bytes, write them to
+        ``secret_encryption.key`` with 0600 perms, and reuse that file
+        on subsequent boots. Operators wanting deterministic keys for
+        backup/restore can pre-populate the file (must be 32 bytes
+        binary or 64 hex chars).
+        """
+        if self._secret_encryption_key is not None:
+            return self._secret_encryption_key
+        path = Path(self._secret_encryption_key_path)
+        if path.exists():
+            raw = path.read_bytes().strip()
+            # Allow either raw 32-byte binary OR a 64-char hex string
+            # (operators commonly paste hex from `openssl rand -hex 32`).
+            if len(raw) == 32:
+                key = bytes(raw)
+            elif len(raw) == 64 and all(0x30 <= b <= 0x66 for b in raw):
+                try:
+                    key = bytes.fromhex(raw.decode("ascii"))
+                except ValueError:
+                    key = bytes(raw)
+            else:
+                raise RuntimeError(
+                    f"KMS[local] {path} must be 32 raw bytes or 64 hex "
+                    f"chars (got {len(raw)} bytes). Regenerate with "
+                    "`openssl rand -out secret_encryption.key 32`.",
+                )
+            _log.info("KMS[local] secret-encryption master key loaded from %s", path)
+        else:
+            key = secrets.token_bytes(32)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Write atomically with restrictive perms — the master key
+            # has the same sensitivity as the broker CA private key.
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_bytes(key)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+            _log.warning(
+                "KMS[local] generated new secret-encryption master key at %s "
+                "(0600). Back this up alongside the broker CA private key — "
+                "losing it makes every enc:v2 stored secret unrecoverable.",
+                path,
+            )
+        self._secret_encryption_key = key
+        return key
+
     async def encrypt_secret(self, plaintext: str) -> str:
-        from app.kms.secret_encrypt import encrypt_secret
-        pem = await self.get_broker_private_key_pem()
-        return encrypt_secret(pem, plaintext)
+        from app.kms.secret_encrypt import encrypt_secret_v2
+        master_key = await self.get_secret_encryption_key()
+        return encrypt_secret_v2(master_key, plaintext)
 
     async def decrypt_secret(self, stored: str) -> str:
-        from app.kms.secret_encrypt import decrypt_secret
+        """Decrypt a stored secret. Tries v2 (master-key derived) first
+        and falls back to v1 (legacy CA-derived) so existing data
+        keeps decrypting through the H8 cutover.
+        """
+        from app.kms.secret_encrypt import (
+            _ENC_PREFIX_V2,
+            decrypt_secret,
+            decrypt_secret_v2,
+        )
+        if stored.startswith(_ENC_PREFIX_V2):
+            master_key = await self.get_secret_encryption_key()
+            return decrypt_secret_v2(master_key, stored)
+        # Legacy enc:v1 or plaintext — keep using the CA private key.
         pem = await self.get_broker_private_key_pem()
         return decrypt_secret(pem, stored)
