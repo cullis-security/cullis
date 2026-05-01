@@ -135,6 +135,16 @@ class ProxySettings(BaseSettings):
     # that keeps the system responsive.)
     rate_limit_per_minute: int = 1800
 
+    # Shared secret the proxy uses to verify the X-ATN-Signature HMAC
+    # on inbound /pdp/policy webhook calls (audit 2026-04-30 lane 3 H3).
+    # When set, every POST to /pdp/policy must carry a valid
+    # HMAC-SHA256 over the raw request body, keyed with this secret.
+    # When unset, the endpoint logs a warning at startup but still
+    # accepts unsigned calls — eases mid-rollout while operators
+    # configure the secret on both sides. Set the matching value on
+    # the broker via ``POLICY_WEBHOOK_HMAC_SECRET`` to enable.
+    pdp_webhook_hmac_secret: str = ""
+
     # ADR-013 layer 2 — global Mastio rate limit. Token bucket shared
     # across every request (not per-agent), so coordinated compromise
     # across many stolen credentials cannot outrun the aggregate cap.

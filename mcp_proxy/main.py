@@ -812,10 +812,30 @@ async def pdp_policy(request: Request):
     Evaluates rules from the dashboard Policies page (proxy_config DB).
     Default: allow all (empty rules = no restrictions).
     """
+    import hashlib
+    import hmac
     import json as _json
+    from fastapi import HTTPException
     from mcp_proxy.db import get_config
 
-    body = await request.json()
+    # Audit 2026-04-30 lane 3 H3 — verify the X-ATN-Signature HMAC over
+    # the raw body. Without this, any host that can reach the proxy on
+    # the PDP plane could (a) probe ``policy_rules`` via differential
+    # responses (which agents are blocked, allowed orgs, allowed caps)
+    # and (b) inject log lines via attacker-controlled
+    # ``initiator``/``target``/``context`` strings.
+    raw_body = await request.body()
+    expected_secret = settings.pdp_webhook_hmac_secret
+    if expected_secret:
+        provided = request.headers.get("x-atn-signature", "")
+        expected = hmac.new(
+            expected_secret.encode(), raw_body, hashlib.sha256,
+        ).hexdigest()
+        if not provided or not hmac.compare_digest(provided, expected):
+            _log.warning("pdp /policy rejected: bad or missing X-ATN-Signature")
+            raise HTTPException(status_code=401, detail="invalid signature")
+
+    body = _json.loads(raw_body)
     initiator = body.get("initiator_agent_id", "?")
     target = body.get("target_agent_id", "?")
     context = body.get("session_context", "?")

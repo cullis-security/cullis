@@ -25,7 +25,10 @@ Webhook contract:
             200 OK  { "decision": "deny", "reason": "..." }
             any non-200 or timeout → treated as DENY
 """
+import hashlib
+import hmac
 import ipaddress
+import json
 import logging
 import socket
 import time
@@ -201,6 +204,23 @@ async def call_pdp_webhook(
         "session_context":    session_context,
     }
 
+    # Audit 2026-04-30 lane 3 H3 — sign the body with the shared
+    # secret so the receiving PDP can verify the call originated
+    # from the broker. We hash the exact bytes we send on the wire,
+    # not ``payload`` re-serialised, to avoid sender/receiver
+    # canonicalisation drift. ``json.dumps`` defaults match httpx's
+    # ``json=`` serialisation closely enough that we serialise once
+    # and reuse the bytes for both the body and the signature.
+    body_bytes = json.dumps(payload).encode()
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    from app.config import get_settings as _get_settings
+    secret = _get_settings().policy_webhook_hmac_secret
+    if secret:
+        sig = hmac.new(
+            secret.encode(), body_bytes, hashlib.sha256,
+        ).hexdigest()
+        headers["X-ATN-Signature"] = sig
+
     t0 = time.monotonic()
     try:
         with tracer.start_as_current_span("pdp.webhook_call") as span:
@@ -223,7 +243,9 @@ async def call_pdp_webhook(
                 follow_redirects=False,
                 transport=transport,
             ) as client:
-                resp = await client.post(webhook_url, json=payload)
+                resp = await client.post(
+                    webhook_url, content=body_bytes, headers=headers,
+                )
 
             # Post-request safety check (belt and suspenders)
             _validate_response_ip(resp)

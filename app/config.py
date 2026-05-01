@@ -99,6 +99,17 @@ class Settings(BaseSettings):
     # on the same private docker network as the broker.
     policy_webhook_allow_private_ips: bool = False
 
+    # Shared secret used to sign the X-ATN-Signature HMAC on outbound
+    # PDP webhook calls (audit 2026-04-30 lane 3 H3). When set, every
+    # ``call_pdp_webhook`` body is HMAC-SHA256-signed and the receiving
+    # PDP can verify the call originated from the broker. When unset
+    # (legacy deployments mid-rollout) the broker logs a warning at
+    # startup and skips signing — the receiver still has the option
+    # to fail-closed on its end. The dominant deployment shape is a
+    # single shared secret broker↔Mastio; multi-org per-secret is a
+    # follow-up.
+    policy_webhook_hmac_secret: str = ""
+
     # mTLS binding (RFC 8705 §3) — defense-in-depth at /auth/token.
     # When the broker sits behind a reverse proxy that terminates mTLS,
     # the proxy forwards the client certificate via an HTTP header. The
