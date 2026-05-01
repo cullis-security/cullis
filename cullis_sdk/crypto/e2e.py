@@ -14,6 +14,7 @@ import base64
 import json
 import os
 import re
+from collections.abc import Sequence
 
 # url-safe base64 alphabet (RFC 4648 section 5).
 _B64URL_ALPHABET_RE = re.compile(r"^[A-Za-z0-9_-]*$")
@@ -215,28 +216,32 @@ def verify_inner_signature(
     timestamp: int,
     payload: dict,
     client_seq: int | None = None,
+    *,
+    trust_anchors_pem: "Sequence[str] | None" = None,
 ) -> bool:
     """
     Verify the inner (plaintext) signature after E2E decryption.
 
     This provides non-repudiation: the recipient can prove the sender
-    signed the plaintext, not just the ciphertext. Returns True if valid,
-    raises ValueError if invalid.
-    """
-    from cryptography import x509 as crypto_x509
-    from cryptography.hazmat.primitives import serialization
+    signed the plaintext, not just the ciphertext. Returns True if
+    valid, raises ValueError if invalid.
 
-    # Accept either a full X.509 certificate PEM or a bare SPKI public
-    # key PEM — different Cullis surfaces return one or the other (the
-    # Mastio public-key endpoint returns SPKI, the broker registry
-    # historically returned the cert). Matches the pattern in
-    # ``message_signer.verify_oneshot_envelope_signature``.
-    pem_bytes = sender_cert_pem.encode()
-    if b"CERTIFICATE" in pem_bytes:
-        cert = crypto_x509.load_pem_x509_certificate(pem_bytes)
-        pub_key = cert.public_key()
-    else:
-        pub_key = serialization.load_pem_public_key(pem_bytes)
+    H7 audit fix: ``sender_cert_pem`` MUST be a full X.509 certificate
+    PEM (bare SPKI rejected), the cert subject must identify
+    ``sender_agent_id``, and when ``trust_anchors_pem`` is supplied
+    the cert must chain to one of the anchors. See
+    ``cullis_sdk.crypto._cert_trust`` for the rationale.
+    """
+    from cullis_sdk.crypto._cert_trust import verify_cert_for_sender
+
+    cert = verify_cert_for_sender(sender_cert_pem, sender_agent_id, trust_anchors_pem)
+    if cert is None:
+        raise ValueError(
+            "Inner signature verification failed — cert is not a valid "
+            "certificate, does not bind sender_agent_id, or does not "
+            "chain to a trust anchor",
+        )
+    pub_key = cert.public_key()
     sig = _b64url_decode(inner_signature_b64)
 
     # Canonical format must match sign_message() in message_signer.py
