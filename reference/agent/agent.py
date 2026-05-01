@@ -47,9 +47,12 @@ def _record(nonce: str) -> None:
 
 
 def wait_for_http(url: str, timeout: float = 60.0) -> bool:
-    # ADR-014 — Mastio's https endpoint behind the per-org nginx
-    # sidecar uses a self-signed Org CA, so verify=False (matches the
-    # SDK's ``verify_tls=False``).
+    # Boot-time /health probe runs BEFORE the per-org Org CA file is
+    # guaranteed on disk (bootstrap-mastio writes ca.pem alongside the
+    # agent identity). verify=False is intentional here and does not
+    # weaken the runtime auth path: no client cert is presented and no
+    # data flows. Real traffic goes through CullisClient with
+    # verify_tls=True + ca_chain_path (see _auth_identity_dir).
     import httpx
     deadline = time.monotonic() + timeout
     with httpx.Client(verify=False, timeout=2.0) as client:
@@ -140,21 +143,33 @@ def _auth_identity_dir(mastio_url: str, identity_dir: str, self_id: str) -> Cull
     ``/state/{org}/agents/{name}/``: ``agent.pem`` (cert) +
     ``agent-key.pem`` (private key) + ``dpop.jwk`` (egress proof key).
 
-    ``verify_tls=False`` because the reference deployment's Org CA is
-    self-signed.
+    Server cert verification uses the per-org Org CA at
+    ``/state/{org}/ca.pem`` (the same root that signs the agent's leaf
+    AND the per-org nginx server leaf), so reference runs through the
+    exact same mTLS path as a production deploy. No
+    ``verify_tls=False`` shortcut: a regression in client-cert
+    presentation now fails reference loudly instead of silently
+    falling back to a no-cert TLS handshake.
     """
     cert_path = pathlib.Path(identity_dir) / "agent.pem"
     key_path = pathlib.Path(identity_dir) / "agent-key.pem"
     dpop_key_path = pathlib.Path(identity_dir) / "dpop.jwk"
+    org_id = self_id.split("::", 1)[0]
+    ca_chain_path = pathlib.Path("/state") / org_id / "ca.pem"
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        if cert_path.exists() and key_path.exists() and dpop_key_path.exists():
+        if (
+            cert_path.exists()
+            and key_path.exists()
+            and dpop_key_path.exists()
+            and ca_chain_path.exists()
+        ):
             break
         time.sleep(0.5)
     else:
         raise RuntimeError(
             f"[{self_id}] missing identity material under {identity_dir} "
-            "(need agent.pem, agent-key.pem, dpop.jwk) — "
+            f"(need agent.pem, agent-key.pem, dpop.jwk, {ca_chain_path}) — "
             "did bootstrap-mastio + bootstrap run?"
         )
     client = CullisClient.from_identity_dir(
@@ -163,8 +178,9 @@ def _auth_identity_dir(mastio_url: str, identity_dir: str, self_id: str) -> Cull
         key_path=key_path,
         dpop_key_path=dpop_key_path,
         agent_id=self_id,
-        org_id=self_id.split("::", 1)[0],
-        verify_tls=False,
+        org_id=org_id,
+        verify_tls=True,
+        ca_chain_path=ca_chain_path,
     )
     # Session APIs (``list_sessions`` / ``open_session`` / ``send``)
     # require a broker JWT. ``login_via_proxy`` asks the Mastio to mint
