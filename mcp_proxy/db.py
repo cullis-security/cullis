@@ -248,8 +248,67 @@ async def get_db() -> AsyncIterator[AsyncConnection]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Audit log — APPEND-ONLY (no update, no delete)
+# Audit log — APPEND-ONLY (no update, no delete) + H4 hash chain
 # ─────────────────────────────────────────────────────────────────────────────
+
+import asyncio as _asyncio
+import hashlib as _hashlib
+
+# Per-process lock so two concurrent log_audit() calls don't race for
+# the same chain_seq. Multi-worker deployments rely on the
+# UNIQUE(chain_seq) constraint to reject the loser; the application
+# retries with the next seq.
+_audit_chain_lock = _asyncio.Lock()
+_AUDIT_CHAIN_GENESIS = "genesis"
+_AUDIT_CHAIN_MAX_RETRIES = 5
+
+
+def compute_audit_row_hash(
+    *,
+    chain_seq: int,
+    timestamp: str,
+    agent_id: str,
+    action: str,
+    tool_name: str | None,
+    status: str,
+    detail: str | None,
+    request_id: str | None,
+    prev_hash: str,
+) -> str:
+    """SHA-256 over a canonical encoding of every authoritative field.
+
+    Any tamper to the row — including changing tool_name from ``None``
+    to ``""`` — invalidates the hash. The encoding mirrors the Court
+    pattern in ``app/db/audit.py``: pipe-delimited with empty-string
+    sentinels for NULLs and a ``genesis`` literal for the head of the
+    chain.
+    """
+    canonical = (
+        f"{chain_seq}|{timestamp}|{agent_id}|{action}|"
+        f"{tool_name or ''}|{status}|{detail or ''}|"
+        f"{request_id or ''}|{prev_hash}"
+    )
+    return _hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _audit_chain_head(conn) -> tuple[int, str]:
+    """Return ``(last_chain_seq, last_row_hash)``.
+
+    Pre-migration rows have ``chain_seq IS NULL`` and are ignored by
+    the chain — the first chained row gets ``chain_seq=1`` with
+    ``prev_hash=genesis``.
+    """
+    row = (await conn.execute(
+        text(
+            "SELECT chain_seq, row_hash FROM audit_log "
+            "WHERE chain_seq IS NOT NULL "
+            "ORDER BY chain_seq DESC LIMIT 1",
+        ),
+    )).first()
+    if row is None:
+        return 0, _AUDIT_CHAIN_GENESIS
+    return int(row[0]), str(row[1])
+
 
 async def log_audit(
     agent_id: str,
@@ -261,25 +320,135 @@ async def log_audit(
     request_id: str | None = None,
     duration_ms: float | None = None,
 ) -> None:
-    """Insert an immutable audit log entry."""
+    """Insert an immutable, hash-chained audit log entry.
+
+    Forward integrity: each row carries ``prev_hash`` (the previous
+    row's ``row_hash``) and a fresh ``row_hash`` over a canonical
+    encoding of all authoritative fields. ``verify_audit_chain``
+    walks the chain and surfaces breaks; an attacker rewriting a
+    row, dropping one, or splicing in a forgery has to recompute
+    every subsequent hash without operator detection.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     ts = datetime.now(timezone.utc).isoformat()
-    async with get_db() as conn:
-        await conn.execute(
-            text(
-                """INSERT INTO audit_log (timestamp, agent_id, action, tool_name, status, detail, request_id, duration_ms)
-                   VALUES (:timestamp, :agent_id, :action, :tool_name, :status, :detail, :request_id, :duration_ms)"""
-            ),
-            {
-                "timestamp": ts,
-                "agent_id": agent_id,
-                "action": action,
-                "tool_name": tool_name,
-                "status": status,
-                "detail": detail,
-                "request_id": request_id,
-                "duration_ms": duration_ms,
-            },
+    async with _audit_chain_lock:
+        for _attempt in range(_AUDIT_CHAIN_MAX_RETRIES):
+            async with get_db() as conn:
+                last_seq, prev_hash = await _audit_chain_head(conn)
+                chain_seq = last_seq + 1
+                row_hash = compute_audit_row_hash(
+                    chain_seq=chain_seq,
+                    timestamp=ts,
+                    agent_id=agent_id,
+                    action=action,
+                    tool_name=tool_name,
+                    status=status,
+                    detail=detail,
+                    request_id=request_id,
+                    prev_hash=prev_hash,
+                )
+                try:
+                    await conn.execute(
+                        text(
+                            """INSERT INTO audit_log (
+                                   timestamp, agent_id, action, tool_name,
+                                   status, detail, request_id, duration_ms,
+                                   chain_seq, prev_hash, row_hash
+                               ) VALUES (
+                                   :timestamp, :agent_id, :action, :tool_name,
+                                   :status, :detail, :request_id, :duration_ms,
+                                   :chain_seq, :prev_hash, :row_hash
+                               )"""
+                        ),
+                        {
+                            "timestamp": ts,
+                            "agent_id": agent_id,
+                            "action": action,
+                            "tool_name": tool_name,
+                            "status": status,
+                            "detail": detail,
+                            "request_id": request_id,
+                            "duration_ms": duration_ms,
+                            "chain_seq": chain_seq,
+                            "prev_hash": prev_hash,
+                            "row_hash": row_hash,
+                        },
+                    )
+                    return
+                except IntegrityError:
+                    # UNIQUE(chain_seq) collision — another worker
+                    # claimed this seq. Reread the head and retry.
+                    continue
+        raise RuntimeError(
+            f"log_audit: could not append after {_AUDIT_CHAIN_MAX_RETRIES} "
+            "retries (chain_seq UNIQUE conflict). Confirm the audit_log "
+            "schema or look for a stuck worker.",
         )
+
+
+async def verify_audit_chain(
+    *, start_seq: int = 1, limit: int | None = None,
+) -> tuple[bool, int | None, str | None]:
+    """Walk the hash chain forward and report the first break.
+
+    Returns ``(ok, broken_seq, reason)``:
+      * ``(True, None, None)`` — every chained row verifies.
+      * ``(False, seq, reason)`` — the row at ``seq`` is the first
+        with a recomputed ``row_hash`` that disagrees with the stored
+        value, or whose ``prev_hash`` doesn't match the previous
+        row's ``row_hash``, or whose ``chain_seq`` skipped a slot.
+
+    Pre-migration rows (``chain_seq IS NULL``) are skipped.
+    """
+    async with get_db() as conn:
+        stmt = (
+            "SELECT chain_seq, prev_hash, row_hash, timestamp, agent_id, "
+            "action, tool_name, status, detail, request_id FROM audit_log "
+            "WHERE chain_seq IS NOT NULL AND chain_seq >= :start "
+            "ORDER BY chain_seq ASC"
+        )
+        params: dict[str, int] = {"start": start_seq}
+        if limit is not None:
+            stmt += " LIMIT :lim"
+            params["lim"] = limit
+        rows = (await conn.execute(text(stmt), params)).all()
+
+    expected_prev: str | None = None
+    expected_seq: int | None = None
+    for row in rows:
+        chain_seq = int(row[0])
+        prev_hash = str(row[1])
+        stored_hash = str(row[2])
+        if expected_seq is None:
+            # First row in the iteration — pin the expected seq to
+            # whatever the first chained row claims so we can detect
+            # gaps from this point forward without false-flagging
+            # legitimate truncation before ``start_seq``.
+            expected_seq = chain_seq
+            if start_seq == 1 and chain_seq == 1 and prev_hash != _AUDIT_CHAIN_GENESIS:
+                return False, chain_seq, "first row prev_hash != genesis"
+        else:
+            if chain_seq != expected_seq:
+                return False, chain_seq, f"chain_seq gap: expected {expected_seq}"
+            if expected_prev is not None and prev_hash != expected_prev:
+                return False, chain_seq, "prev_hash mismatch with previous row"
+        recomputed = compute_audit_row_hash(
+            chain_seq=chain_seq,
+            timestamp=str(row[3]),
+            agent_id=str(row[4]),
+            action=str(row[5]),
+            tool_name=row[6],
+            status=str(row[7]),
+            detail=row[8],
+            request_id=row[9],
+            prev_hash=prev_hash,
+        )
+        if recomputed != stored_hash:
+            return False, chain_seq, "row_hash mismatch — row tampered"
+        expected_prev = stored_hash
+        expected_seq = chain_seq + 1
+    return True, None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

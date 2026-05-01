@@ -89,11 +89,21 @@ class AuditLogEntry(Base):
     detail = Column(Text, nullable=True)
     request_id = Column(Text, nullable=True)
     duration_ms = Column(String, nullable=True)  # REAL in SQLite — stored as text-safe numeric
+    # H4 lane7 audit fix — forward-integrity hash chain. ``chain_seq``
+    # is monotonically increasing per Mastio, ``prev_hash`` is the
+    # previous row's ``row_hash`` (or ``"genesis"`` for the first
+    # chained row), and ``row_hash`` is SHA-256 over a canonical
+    # encoding of every authoritative field. Pre-migration rows leave
+    # the columns NULL; verify_audit_chain() skips them.
+    chain_seq = Column(Integer, nullable=True)
+    prev_hash = Column(Text, nullable=True)
+    row_hash = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_audit_log_agent_id", "agent_id"),
         Index("idx_audit_log_timestamp", "timestamp"),
         Index("idx_audit_log_request_id", "request_id"),
+        Index("idx_audit_log_chain_seq", "chain_seq", unique=True),
     )
 
 
