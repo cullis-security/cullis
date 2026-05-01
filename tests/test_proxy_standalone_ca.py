@@ -61,9 +61,13 @@ async def test_standalone_ca_persisted_to_proxy_config(standalone_proxy):
     ca_cert_pem = await get_config("org_ca_cert")
     assert ca_key_pem and "BEGIN PRIVATE KEY" in ca_key_pem
     assert ca_cert_pem and "BEGIN CERTIFICATE" in ca_cert_pem
-    # Key is a valid RSA-2048
+    # M-crypto-2 audit: Org CA is now EC P-256 (was RSA-2048). Loading
+    # legacy RSA Org CAs from disk still works via the dual-stack
+    # verifier; this test exercises the freshly-minted path.
+    from cryptography.hazmat.primitives.asymmetric import ec as _ec
     key = serialization.load_pem_private_key(ca_key_pem.encode(), password=None)
-    assert key.key_size == 2048
+    assert isinstance(key, _ec.EllipticCurvePrivateKey)
+    assert isinstance(key.curve, _ec.SECP256R1)
 
 
 @pytest.mark.asyncio
