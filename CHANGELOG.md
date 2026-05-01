@@ -7,6 +7,31 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.3.6] — 2026-05-01
+
+### Security
+- **Dashboard CSRF / cross-origin guard** ([#371]): middleware checks
+  `Origin` and `Referer` on POST/PUT/DELETE/PATCH to the local
+  Connector dashboard, with a Bearer-token exemption for the
+  statusline integration. Mitigates DNS-rebinding attacks against
+  `127.0.0.1:7777` from a hostile webpage in the same browser.
+- **Proof-of-possession on enrollment status polling** ([#389]): the
+  `/enroll/status` polling loop now signs each request with the
+  enrollment keypair, so a network attacker who learns the
+  enrollment ID can no longer substitute their own approval result.
+- **Proof-of-possession on enrollment start** ([#393]): the initial
+  `/enroll/start` request is now also bound to the keypair, closing
+  the matching gap on the create side.
+
+### Changed
+- This is the first connector release published to PyPI via OIDC
+  trusted publishing instead of a long-lived `PYPI_TOKEN` (#394).
+
+[#371]: https://github.com/cullis-security/cullis/pull/371
+[#389]: https://github.com/cullis-security/cullis/pull/389
+[#393]: https://github.com/cullis-security/cullis/pull/393
+[#394]: https://github.com/cullis-security/cullis/pull/394
+
 ## [v0.3.5] — 2026-04-30
 
 ### Fixed

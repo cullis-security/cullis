@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cullis-connector"
-version = "0.3.5"
+version = "0.3.6"
 description = "MCP server bridging local MCP clients (Claude Code, Cursor, Claude Desktop, ToolHive) to the Cullis federated agent-trust network."
 readme = "README_PKG.md"
 requires-python = ">=3.10"
