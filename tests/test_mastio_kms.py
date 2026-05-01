@@ -5,8 +5,6 @@ the plugin dispatch path used by cullis-enterprise cloud KMS providers.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from mcp_proxy import db as core_db
