@@ -287,8 +287,8 @@ import Layout from '../layouts/Layout.astro';
       <div class="install-grid">
         <article class="install-card reveal" data-delay="1">
           <div class="install-head">
-            <div class="install-label">For developers</div>
-            <h3>Docker Compose</h3>
+            <div class="install-label">For evaluation</div>
+            <h3>Sandbox demo</h3>
           </div>
           <pre><code>git clone https://github.com/cullis-security/cullis
 cd cullis
@@ -308,43 +308,48 @@ cd cullis
 
         <article class="install-card featured reveal" data-delay="2">
           <div class="install-head">
-            <div class="install-label">For production</div>
-            <h3>Kubernetes · Helm</h3>
+            <div class="install-label">For a single host</div>
+            <h3>Self-host · Compose</h3>
           </div>
-          <pre><code>helm repo add cullis https://cullis.io/charts
-helm install mastio cullis/mastio \
-  --set org.name=acme \
-  --set ingress.host=mastio.acme.internal</code></pre>
+          <pre><code>git clone https://github.com/cullis-security/cullis
+cd cullis
+./deploy_broker.sh --prod-acme \
+  --domain mastio.acme.com \
+  --email ops@acme.com</code></pre>
           <p>
-            Helm chart handles Org CA bootstrap, Vault KV v2 integration,
-            Postgres for audit, OpenTelemetry wiring, and OIDC admin login.
-            Standalone by default; <code>attach-ca</code> post-install.
+            Wraps a production Docker Compose stack with three TLS profiles —
+            self-signed dev, Let's Encrypt ACME, or bring-your-own CA. nginx,
+            Vault, Postgres, and the Mastio come up wired together. First-boot
+            wizard at <code>/proxy/first-boot</code>.
           </p>
           <ul class="install-specs">
-            <li><span class="k">Time</span><span>~10 min first boot</span></li>
-            <li><span class="k">Requires</span><span>K8s 1.28+ · Vault · Postgres</span></li>
-            <li><span class="k">Best for</span><span>production</span></li>
+            <li><span class="k">Time</span><span>~5 min first boot</span></li>
+            <li><span class="k">Requires</span><span>Docker + Compose v2 · DNS · TLS</span></li>
+            <li><span class="k">Best for</span><span>single-VM production</span></li>
           </ul>
         </article>
 
         <article class="install-card reveal" data-delay="3">
           <div class="install-head">
-            <div class="install-label">For edge / lightweight</div>
-            <h3>Single binary</h3>
+            <div class="install-label">For Kubernetes</div>
+            <h3>Helm chart</h3>
           </div>
-          <pre><code>curl -L https://cullis.io/get | sh
-cullis-mastio init --standalone
-cullis-mastio start</code></pre>
+          <pre><code>git clone https://github.com/cullis-security/cullis
+helm install cullis-mastio \
+  ./cullis/deploy/helm/cullis-mastio \
+  --namespace cullis --create-namespace \
+  --set ingress.host=mastio.acme.internal</code></pre>
           <p>
-            A statically-linked binary, SQLite for audit, filesystem KMS.
-            Zero external dependencies. Ideal for edge deployments, air-gapped
-            datacenters, or regulatory environments where every dependency is
-            a compliance question.
+            Chart in the repo at <code>deploy/helm/cullis-mastio/</code>. Wires
+            Org CA bootstrap, Vault KV v2, Postgres for audit, ingress, and HPA.
+            <code>values-dev.yaml</code> for kind/k3d evaluation;
+            <code>values.yaml</code> for production. Pre-1.0 — fork and harden
+            for your environment.
           </p>
           <ul class="install-specs">
-            <li><span class="k">Time</span><span>&lt; 30 seconds</span></li>
-            <li><span class="k">Requires</span><span>Linux · nothing else</span></li>
-            <li><span class="k">Best for</span><span>edge, air-gapped</span></li>
+            <li><span class="k">Time</span><span>~10 min first boot</span></li>
+            <li><span class="k">Requires</span><span>K8s 1.28+ · Helm 3.14+</span></li>
+            <li><span class="k">Best for</span><span>multi-node clusters</span></li>
           </ul>
         </article>
       </div>

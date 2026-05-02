@@ -122,9 +122,9 @@ curl -H "Host: broker.your-org.com" http://<INGRESS-IP>/readyz
 The Mastio is stateless from the Court's perspective and uses its own small SQLite database. Point it at the Court's public base URL + JWKS URL:
 
 ```bash
-helm install cullis-proxy deploy/helm/cullis-proxy/ \
+helm install cullis-mastio deploy/helm/cullis-mastio/ \
     --namespace cullis \
-    --values deploy/helm/cullis-proxy/values-dev.yaml \
+    --values deploy/helm/cullis-mastio/values-dev.yaml \
     --set ingress.host=proxy.your-org.com \
     --wait --timeout 5m
 ```

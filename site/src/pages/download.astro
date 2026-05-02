@@ -1,11 +1,13 @@
 ---
 import Layout from '../layouts/Layout.astro';
 
-// `releases/latest/download/<file>` is GitHub's stable redirect: it always
-// resolves to the latest published (non-prerelease) Connector release. No
-// need to bump this on every tag — push a new release and the site picks
-// it up automatically.
-const BASE = 'https://github.com/cullis-security/cullis/releases/latest/download';
+// Pinned to the current Connector tag. Bump on every Connector release.
+// We can't use `releases/latest/download/<file>` because GitHub's "latest"
+// flag is shared across Connector / SDK / Mastio tags in this repo and
+// often resolves to a non-Connector release.
+const CONNECTOR_VERSION = '0.3.6';
+const CONNECTOR_TAG = `connector-v${CONNECTOR_VERSION}`;
+const BASE = `https://github.com/cullis-security/cullis/releases/download/${CONNECTOR_TAG}`;
 
 const platforms = [
   {
@@ -44,8 +46,8 @@ const platforms = [
         </aside>
         <div>
           <div class="eyebrow reveal" data-delay="1">
-            <span class="eyebrow-number">Latest release</span>
-            <a class="v-badge" href="https://github.com/cullis-security/cullis/releases/latest">view on GitHub →</a>
+            <span class="eyebrow-number">{CONNECTOR_TAG}</span>
+            <a class="v-badge" href={`https://github.com/cullis-security/cullis/releases/tag/${CONNECTOR_TAG}`}>view on GitHub →</a>
           </div>
           <h1 class="reveal" data-delay="2">
             Get the <em>Connector</em>.
@@ -122,9 +124,11 @@ const platforms = [
           <pre><code>pip install cullis-connector</code></pre>
           <p>Wheel and source tarball published on every release. Use it to embed the Connector in a Python process, write integration tests, or build your own CLI on top.</p>
           <div class="dev-links">
-            <a href={`${BASE}/cullis_connector-0.1.0-py3-none-any.whl`} download>wheel</a>
+            <a href={`${BASE}/cullis_connector-${CONNECTOR_VERSION}-py3-none-any.whl`} download>wheel</a>
             <span class="sep">·</span>
-            <a href={`${BASE}/cullis_connector-0.1.0.tar.gz`} download>sdist</a>
+            <a href={`${BASE}/cullis_connector-${CONNECTOR_VERSION}.tar.gz`} download>sdist</a>
+            <span class="sep">·</span>
+            <a href="https://pypi.org/project/cullis-connector/" target="_blank" rel="noopener">PyPI</a>
           </div>
         </article>
 
