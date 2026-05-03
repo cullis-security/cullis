@@ -628,3 +628,41 @@ async def test_audit_hash_chain_intact_after_resource_calls(
 
     ok, broken_at = await verify_local_chain("acme")
     assert ok, f"hash chain broken at seq={broken_at}"
+
+
+# ── Three-backend smoke (github / slack / postgres) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_three_backends_visible_after_seed_and_binding(
+    proxy_db, clean_registry, app_client,
+):
+    """The sandbox-mcp setup registers three backends with distinct
+    auth_type and capability values. Once the agent is bound to all
+    three, tools/list must surface them as a single set the proxy
+    presents to the agent."""
+    backends = [
+        ("res-gh", "github", "bearer", "github.write"),
+        ("res-sl", "slack", "bearer", "slack.post"),
+        ("res-pg", "postgres", "api_key", "sql.read"),
+    ]
+    for rid, name, auth_type, cap in backends:
+        await _seed_resource(
+            resource_id=rid, name=name,
+            endpoint_url=f"http://mock-mcp:9100/{name}",
+            auth_type=auth_type,
+            required_capability=cap,
+            allowed_domains='["mock-mcp:9100"]',
+        )
+        await _seed_binding(agent_id="acme::buyer", resource_id=rid)
+
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    body = client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 100, "method": "tools/list",
+    }).json()
+    names = sorted(t["name"] for t in body["result"]["tools"])
+    assert "github" in names
+    assert "slack" in names
+    assert "postgres" in names

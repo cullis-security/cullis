@@ -2797,6 +2797,59 @@ class CullisClient:
         resp.raise_for_status()
         return resp.json()
 
+    # ── ADR-007 — MCP aggregator (proxy-side only) ─────────────────
+    def list_mcp_tools(self) -> list[dict]:
+        """List the MCP tools the authenticated agent can call.
+
+        Calls ``POST /v1/mcp`` JSON-RPC ``tools/list`` on the proxy.
+        The proxy filters to backends the agent has an active binding
+        for, so the returned list is already authorization-scoped.
+
+        Requires ``self.base`` to point at the **mcp_proxy** (not
+        Mastio directly): the aggregator endpoint lives there. Returns
+        the raw ``tools`` array from the JSON-RPC ``result``.
+        """
+        resp = self._authed_request(
+            "POST", "/v1/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if "error" in body:
+            raise RuntimeError(f"tools/list error: {body['error']}")
+        return body.get("result", {}).get("tools", [])
+
+    def call_mcp_tool(self, name: str, arguments: dict | None = None) -> dict:
+        """Invoke an MCP tool by name through the proxy aggregator.
+
+        The proxy validates the caller's binding, audits the call,
+        injects the configured auth header from the SecretProvider
+        and forwards JSON-RPC ``tools/call`` to the upstream MCP
+        server. Returns the raw ``result`` object (typically with
+        ``content`` array and ``isError`` flag).
+
+        Raises ``RuntimeError`` on JSON-RPC error (binding missing,
+        upstream unreachable, schema mismatch).
+        """
+        resp = self._authed_request(
+            "POST", "/v1/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments or {}},
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if "error" in body:
+            err = body["error"]
+            raise RuntimeError(
+                f"tools/call error code={err.get('code')} "
+                f"message={err.get('message')!r}"
+            )
+        return body.get("result", {})
+
 
 class WebSocketConnection:
     """Authenticated WebSocket connection with heartbeat + auto-reconnect (M2).
