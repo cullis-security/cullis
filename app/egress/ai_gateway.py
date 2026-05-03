@@ -24,6 +24,12 @@ import httpx
 from app.config import Settings
 from app.egress.schemas import ChatCompletionRequest, ChatCompletionResponse
 
+
+# LiteLLM is imported lazily inside _call_litellm_embedded so deployments
+# that pin ai_gateway_backend != "litellm_embedded" do not pay the import
+# cost on startup. Spike validated 2026-05-03 against Anthropic Haiku 4.5
+# (see imp/sandbox-gateways/test/spike_litellm_acompletion.py).
+
 _log = logging.getLogger("agent_trust.egress")
 
 
@@ -63,6 +69,14 @@ async def dispatch(
     http_client: httpx.AsyncClient | None = None,
 ) -> GatewayResult:
     backend = settings.ai_gateway_backend.lower()
+    if backend == "litellm_embedded":
+        return await _call_litellm_embedded(
+            req=req,
+            agent_id=agent_id,
+            org_id=org_id,
+            trace_id=trace_id,
+            settings=settings,
+        )
     if backend == "portkey":
         return await _call_portkey(
             req=req,
@@ -75,7 +89,7 @@ async def dispatch(
     raise GatewayError(
         501,
         f"backend_not_implemented:{backend}",
-        detail=f"AI gateway backend '{backend}' is not wired in Phase 1.",
+        detail=f"AI gateway backend '{backend}' is not wired.",
     )
 
 
@@ -181,5 +195,173 @@ async def _call_portkey(
         latency_ms=latency_ms,
         upstream_request_id=upstream_request_id,
         backend="portkey",
+        provider=provider,
+    )
+
+
+# ── LiteLLM embedded backend (ADR-017 Phase 3) ─────────────────────────
+
+
+# Map LiteLLM exception class names to (status_code, reason) tuples.
+# We compare by class name rather than isinstance() so the import of
+# litellm stays lazy (the dispatcher must boot in deployments that pin
+# a non-LiteLLM backend without litellm installed).
+_LITELLM_ERROR_MAP: dict[str, tuple[int, str]] = {
+    "AuthenticationError": (401, "provider_auth_failed"),
+    "PermissionDeniedError": (403, "provider_permission_denied"),
+    "NotFoundError": (404, "provider_not_found"),
+    "RateLimitError": (429, "provider_rate_limited"),
+    "BadRequestError": (400, "provider_bad_request"),
+    "UnprocessableEntityError": (422, "provider_unprocessable"),
+    "Timeout": (504, "provider_timeout"),
+    "APIConnectionError": (502, "provider_unreachable"),
+    "ContextWindowExceededError": (400, "provider_context_too_long"),
+    "ContentPolicyViolationError": (400, "provider_content_policy"),
+    "InternalServerError": (502, "provider_internal_error"),
+    "ServiceUnavailableError": (502, "provider_unavailable"),
+    "APIError": (502, "provider_api_error"),
+}
+
+
+def _map_litellm_exception(exc: Exception) -> GatewayError:
+    cls = type(exc).__name__
+    status, reason = _LITELLM_ERROR_MAP.get(cls, (502, "provider_unknown_error"))
+    detail = (str(exc) or cls)[:512]
+    return GatewayError(status, reason, detail=detail)
+
+
+async def _call_litellm_embedded(
+    *,
+    req: ChatCompletionRequest,
+    agent_id: str,
+    org_id: str,
+    trace_id: str,
+    settings: Settings,
+) -> GatewayResult:
+    """Call the upstream provider via the LiteLLM library, in-process.
+
+    The model id from the request is forwarded as-is. For Anthropic
+    we expect the caller to pass either ``claude-haiku-4-5`` (LiteLLM
+    auto-detects the provider from the catalogue) or
+    ``anthropic/claude-haiku-4-5`` (explicit). The Mastio metadata is
+    attached via the ``metadata`` kwarg so any LiteLLM callback the
+    operator wires up (Datadog, Langfuse, Postgres) sees the agent
+    identity without us doing extra plumbing.
+    """
+    provider = settings.ai_gateway_provider.lower()
+    if provider != "anthropic":
+        raise GatewayError(
+            501,
+            f"provider_not_implemented:{provider}",
+            detail="Phase 3 only validates provider='anthropic' via LiteLLM.",
+        )
+    if not settings.anthropic_api_key:
+        raise GatewayError(503, "provider_key_missing")
+
+    try:
+        import litellm
+        from litellm import acompletion
+    except ImportError as exc:
+        raise GatewayError(
+            503,
+            "litellm_not_installed",
+            detail=(
+                "ai_gateway_backend='litellm_embedded' requires the litellm "
+                "package. Install it via requirements.txt."
+            ),
+        ) from exc
+
+    # Drop unsupported params silently rather than raising — keeps the
+    # OpenAI-compat contract usable across providers that vary on minor
+    # fields (e.g. Anthropic does not accept all OpenAI knobs).
+    litellm.drop_params = True
+
+    body = req.model_dump(exclude_none=True)
+    # LiteLLM uses provider-prefixed model ids when ambiguous; pass
+    # through whatever the caller sent.
+    model = body.pop("model")
+
+    metadata = {
+        "cullis_agent_id": agent_id,
+        "cullis_org_id": org_id,
+        "cullis_trace_id": trace_id,
+    }
+
+    started = time.perf_counter()
+    try:
+        response = await acompletion(
+            model=model,
+            api_key=settings.anthropic_api_key,
+            metadata=metadata,
+            **body,
+        )
+    except Exception as exc:
+        # Only the LiteLLM-shaped exceptions land in the map; anything
+        # else (e.g. ValueError on bad input) becomes provider_unknown.
+        gw_err = _map_litellm_exception(exc)
+        _log.warning(
+            "litellm_embedded error agent=%s model=%s reason=%s detail=%s",
+            agent_id, model, gw_err.reason, gw_err.detail,
+        )
+        raise gw_err from exc
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+
+    usage = getattr(response, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+
+    # response_cost is not on every LiteLLM build; compute it on demand
+    # so we always surface a number in the audit row when the model is
+    # in the LiteLLM cost catalogue. Failures here are informational —
+    # the call succeeded, the cost is just unknown.
+    cost_usd: float | None = None
+    try:
+        cost_usd = litellm.completion_cost(completion_response=response)
+    except Exception as exc:
+        _log.debug("litellm.completion_cost failed for model=%s: %s", model, exc)
+
+    payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+    payload.setdefault("id", f"chatcmpl-{uuid.uuid4().hex[:24]}")
+    payload.setdefault("object", "chat.completion")
+    payload.setdefault("created", int(time.time()))
+    payload.setdefault("model", model)
+    payload["cullis_trace_id"] = trace_id
+    # Force usage shape so Mastio's schema sees the canonical fields
+    # even when LiteLLM adds provider-specific extras (cached_tokens,
+    # reasoning_tokens) that our pydantic model would reject.
+    payload["usage"] = {
+        "prompt_tokens": int(prompt_tokens),
+        "completion_tokens": int(completion_tokens),
+        "total_tokens": int(prompt_tokens + completion_tokens),
+    }
+
+    try:
+        parsed = ChatCompletionResponse.model_validate(payload)
+    except Exception as exc:
+        raise GatewayError(
+            502,
+            "schema_mismatch",
+            detail=f"LiteLLM response failed Mastio schema: {exc}",
+        ) from exc
+
+    upstream_request_id = (
+        getattr(response, "id", None)
+        or (response.get("id") if isinstance(response, dict) else None)
+    )
+
+    _log.info(
+        "egress.llm dispatched backend=litellm_embedded provider=%s agent=%s "
+        "org=%s model=%s latency_ms=%d tokens_in=%d tokens_out=%d cost_usd=%s",
+        provider, agent_id, org_id, model, latency_ms,
+        prompt_tokens, completion_tokens,
+        f"{cost_usd:.6f}" if cost_usd is not None else "n/a",
+    )
+
+    return GatewayResult(
+        response=parsed,
+        latency_ms=latency_ms,
+        upstream_request_id=upstream_request_id,
+        backend="litellm_embedded",
         provider=provider,
     )

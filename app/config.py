@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     # toward the gateway. The provider key (e.g. ANTHROPIC_API_KEY) is
     # passed via Bearer in this spike; KMS-stored managed-virtual-keys are
     # the Phase 3 hardening (see imp/portkey-integration-mapping.md).
-    ai_gateway_backend: str = "portkey"          # "portkey" | "litellm" | "kong"
-    ai_gateway_url: str = "http://localhost:8787"
+    ai_gateway_backend: str = "litellm_embedded"  # "litellm_embedded" | "portkey" | "litellm_proxy" | "kong"
+    ai_gateway_url: str = "http://localhost:8787"  # only consulted when backend != litellm_embedded
     ai_gateway_provider: str = "anthropic"       # gateway-side provider slug
     ai_gateway_request_timeout_s: float = 30.0
 

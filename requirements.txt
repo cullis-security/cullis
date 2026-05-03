@@ -14,6 +14,12 @@ websockets>=14.1
 python-dotenv>=1.0.1
 anthropic>=0.40.0
 openai>=1.0.0
+# ADR-017 Phase 3 — embedded LiteLLM as default AI gateway backend.
+# Pinned to <2.0 to avoid major-version churn (BerriAI ships frequently).
+# The dispatcher in app/egress/ai_gateway.py routes around it when
+# ai_gateway_backend != "litellm_embedded", so deployments that pin a
+# different backend are insulated from breakage in this dep.
+litellm>=1.83,<2.0
 cryptography>=46.0.6
 authlib>=1.3.0
 redis>=5.0.0
