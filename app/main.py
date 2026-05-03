@@ -47,6 +47,7 @@ from app.broker.router import router as broker_router
 from app.policy.router import router as policy_router
 from app.onboarding.router import onboarding_router, admin_router
 from app.dashboard.router import router as dashboard_router
+from app.egress.router import router as egress_router
 
 settings = get_settings()
 
@@ -376,6 +377,7 @@ v1.include_router(broker_router)
 v1.include_router(policy_router)
 v1.include_router(onboarding_router)
 v1.include_router(admin_router)
+v1.include_router(egress_router)
 
 # ADR-001 Phase 4a — federation event stream for proxies to mirror
 # broker state (agent lifecycle, policies, bindings) via SSE.

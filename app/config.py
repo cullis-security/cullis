@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     injection_llm_judge_enabled: bool = True
     injection_llm_confidence_threshold: float = 0.7
 
+    # ADR-017 Phase 1 — AI gateway egress (LLM calls forwarded to a managed
+    # gateway like Portkey / LiteLLM / Kong). Mastio reconstructs the agent
+    # identity from the DPoP-bound cert and injects it as a trusted header
+    # toward the gateway. The provider key (e.g. ANTHROPIC_API_KEY) is
+    # passed via Bearer in this spike; KMS-stored managed-virtual-keys are
+    # the Phase 3 hardening (see imp/portkey-integration-mapping.md).
+    ai_gateway_backend: str = "portkey"          # "portkey" | "litellm" | "kong"
+    ai_gateway_url: str = "http://localhost:8787"
+    ai_gateway_provider: str = "anthropic"       # gateway-side provider slug
+    ai_gateway_request_timeout_s: float = 30.0
+
     # Redis — used for DPoP JTI store, rate limiting, and WebSocket pub/sub.
     # Empty string disables Redis; all components fall back to in-memory.
     redis_url: str = ""
