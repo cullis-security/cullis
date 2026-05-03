@@ -2779,6 +2779,24 @@ class CullisClient:
             resp.raise_for_status()
             return resp.json()
 
+    # ── ADR-017 — AI gateway egress ────────────────────────────────
+    def chat_completion(self, request: dict) -> dict:
+        """Forward an OpenAI-compatible chat completion to Mastio's
+        ``/v1/llm/chat`` endpoint, which dispatches to the configured
+        AI gateway (Phase 1: Portkey).
+
+        ``request`` is the OpenAI ChatCompletion body (model, messages,
+        max_tokens, temperature). Returns the parsed response dict
+        including ``cullis_trace_id`` injected by Mastio.
+
+        Raises ``httpx.HTTPStatusError`` on non-2xx with the upstream
+        body intact so callers can distinguish 401 (unauth), 502
+        (gateway upstream), 504 (timeout), 501 (not implemented).
+        """
+        resp = self._authed_request("POST", "/v1/llm/chat", json=request)
+        resp.raise_for_status()
+        return resp.json()
+
 
 class WebSocketConnection:
     """Authenticated WebSocket connection with heartbeat + auto-reconnect (M2).

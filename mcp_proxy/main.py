@@ -985,6 +985,11 @@ app.include_router(mcp_aggregator_router)
 from mcp_proxy.egress.router import router as egress_router
 app.include_router(egress_router)
 
+# ADR-017 Phase 2 — OpenAI-compatible /v1/chat/completions on the proxy.
+# Routes through Mastio /v1/llm/chat to the configured AI gateway.
+from mcp_proxy.egress.llm_chat_router import router as llm_chat_router
+app.include_router(llm_chat_router)
+
 # ADR-008 Phase 1 PR #1 — sessionless one-shot endpoints.
 from mcp_proxy.egress.oneshot import router as oneshot_router
 app.include_router(oneshot_router)
