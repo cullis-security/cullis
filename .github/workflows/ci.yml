@@ -110,11 +110,30 @@ jobs:
         env:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
+        # ``tests/test_e2e.py`` is order-dependent (module-level _state
+        # dict shared across step1..step10). pytest-split's
+        # duration-based distribution scatters those steps across shards
+        # whenever the suite's overall timing shifts (e.g. a PR adds
+        # tests). When step1 lands in one shard and step5 in another,
+        # step5 can't read state step1 wrote and the suite fails with
+        # "State 'session_id' not found — tests must run in order".
+        # Excluded here and re-run as a single block in shard 1.
         run: |
           pytest tests/ \
               --tb=short \
               --ignore=tests/test_postgres_integration.py \
+              --ignore=tests/test_e2e.py \
               --splits 3 --group ${{ matrix.split-group }}
+
+      - name: Run tests/test_e2e.py (order-dependent, no split)
+        if: matrix.split-group == 1
+        env:
+          OTEL_ENABLED: "false"
+          DATABASE_URL: "sqlite+aiosqlite://"
+        # Pinned to shard 1 so the ordered step1..step10 chain runs
+        # inside a single pytest invocation. ~30s extra in shard 1.
+        run: |
+          pytest tests/test_e2e.py --tb=short
 
       - name: Anti-flaky concurrency gate (10× rotation race tests)
         if: matrix.split-group == 1
