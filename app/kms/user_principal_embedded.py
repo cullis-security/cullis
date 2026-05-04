@@ -25,10 +25,12 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cryptography import x509
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.x509.oid import NameOID
 
 from app.kms.user_principal import (
     ALG_ES256,
@@ -321,6 +323,78 @@ class EmbeddedUserPrincipalKMS:
             return priv.sign(payload, ec.ECDSA(hashes.SHA256()))
         # Defensive: schema constrains alg, but be explicit.
         raise ValueError(f"stored alg '{alg}' not supported by this backend")
+
+    # ── backend-specific helper (NOT part of the Protocol) ─────────
+
+    async def build_csr(
+        self,
+        principal_id: str,
+        *,
+        common_name: str,
+        spiffe_uri: str,
+    ) -> str:
+        """Construct a CSR signed by the principal's private key.
+
+        Returns the CSR as PEM. The CSR's SAN includes the supplied
+        SPIFFE URI; the caller (Ambassador provisioning flow) then
+        ships this CSR to Mastio for signing.
+
+        Kept off the UserPrincipalKMS Protocol because in-KMS CSR
+        construction is not portable across backends — Vault Transit
+        signs CSRs through a different API surface, and PR3 will
+        either add an equivalent helper to that backend or push the
+        CSR construction one layer up.
+        """
+        _validate_principal_id(principal_id)
+        if not common_name or len(common_name) > 64:
+            raise ValueError("common_name must be 1-64 chars")
+        if not spiffe_uri.startswith("spiffe://"):
+            raise ValueError("spiffe_uri must start with 'spiffe://'")
+        return await asyncio.to_thread(
+            self._build_csr_sync, principal_id, common_name, spiffe_uri,
+        )
+
+    def _build_csr_sync(
+        self, principal_id: str, common_name: str, spiffe_uri: str,
+    ) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT encrypted_private_key, alg, revoked_at "
+                "FROM user_principals_keys WHERE principal_id = ?",
+                (principal_id,),
+            ).fetchone()
+        if row is None:
+            raise PrincipalNotFoundError(principal_id)
+        encrypted_pk, alg, revoked_at = row
+        if revoked_at is not None:
+            raise PrincipalRevokedError(principal_id)
+
+        priv_pem = self._unwrap(encrypted_pk, principal_id)
+        try:
+            priv = serialization.load_pem_private_key(priv_pem, password=None)
+        finally:
+            priv_pem = b"\x00" * len(priv_pem)
+            del priv_pem
+
+        if alg != ALG_ES256:
+            raise ValueError(f"stored alg '{alg}' not supported by build_csr")
+
+        csr = (
+            x509.CertificateSigningRequestBuilder()
+            .subject_name(x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+            ]))
+            .add_extension(
+                x509.SubjectAlternativeName([
+                    x509.UniformResourceIdentifier(spiffe_uri),
+                ]),
+                critical=False,
+            )
+            .sign(priv, hashes.SHA256())
+        )
+        return csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+    # ── Protocol implementation continues ──────────────────────────
 
     async def revoke_principal(self, principal_id: str) -> None:
         _validate_principal_id(principal_id)
