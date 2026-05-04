@@ -57,6 +57,31 @@ npm run test:e2e:install   # one-time chromium download
 npm run test:e2e           # Playwright e2e suite
 ```
 
+The Playwright config spawns the mock Ambassador on `:7777` and the
+Astro dev server on `:4321` automatically (`webServer:`). The dev
+server is fed `CULLIS_LOCAL_TOKEN=test-token` so `/api/session/init`
+can mint a cookie without a real Connector profile on disk.
+
+Six specs (8 tests):
+- `chat-happy-path.spec.ts`: empty state → send → streamed answer
+- `tool-indicator.spec.ts`: pending → resolved chip with latency
+- `audit-panel.spec.ts`: trace_id + latency + ADR-020 principal,
+  cross-highlight on click
+- `markdown-xss.spec.ts`: `__xss__` fixture, asserts DOMPurify strips
+  every dangerous tag and no `dialog` event fires
+- `model-picker.spec.ts`: 3 routed models, selection persists across
+  reload via localStorage
+- `csp-strict.spec.ts`: response headers on `/`, CSRF 403 on
+  cross-origin `/api/session/init`, 401 on `/api/session/whoami`
+  without cookie
+
+NixOS / non-Ubuntu hosts: Chromium needs shared libraries that
+`playwright install --with-deps` requires sudo to fetch. On NixOS
+those libs aren't on the standard path, so the browser-driven tests
+fail to launch locally. CI (Ubuntu in GitHub Actions) runs the full
+suite. The 2 pure HTTP-request specs (`csp-strict` minus its first
+test) pass on NixOS too.
+
 ## Deployment notes
 
 The `output: 'server'` mode of Astro is required: the cookie-issuance and

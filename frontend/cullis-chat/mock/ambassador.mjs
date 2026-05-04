@@ -55,6 +55,7 @@ async function readJson(req) {
 
 function pickFixture(messages) {
   const last = messages?.at(-1)?.content ?? '';
+  if (/__xss__/i.test(last)) return 'xss';
   if (/gdpr|training|postgres|compliance/i.test(last)) return 'tool';
   if (/sessions?|active/i.test(last)) return 'sessions';
   return 'plain';
@@ -83,6 +84,20 @@ const FIXTURES = {
     tools: [
       { name: 'postgres.query', latency_ms: 286 },
     ],
+  },
+  xss: {
+    // Used by Playwright to verify DOMPurify strips dangerous tags from
+    // assistant content. Triggered by the literal `__xss__` string.
+    answer:
+      '# XSS test heading\n\n' +
+      'Inline script: <script>window.__cullis_xss = true; alert(1);</script>\n\n' +
+      '![pwn](javascript:alert(2))\n\n' +
+      '<img src=x onerror="window.__cullis_xss_img = true; alert(3)">\n\n' +
+      '<a href="javascript:alert(4)">unsafe link</a>\n\n' +
+      '<iframe src="javascript:alert(5)"></iframe>\n\n' +
+      '<p onclick="alert(6)">click trap</p>\n\n' +
+      'OK ' + 'final.',
+    tools: [],
   },
   sessions: {
     answer:
