@@ -1,18 +1,17 @@
-"""REST endpoints for the user_principals mapping (ADR-021 PR2).
+"""REST endpoints for the user_principals mapping (ADR-021 PR2 + PR4a).
 
-The Cullis Frontdesk Ambassador (PR4) is the primary caller. On
-every authenticated user request it needs to map an SSO subject
-back to its Cullis principal_id; this endpoint is the lookup.
+The Cullis Frontdesk Ambassador (PR4b) is the primary caller. Two
+phases per user session:
 
-PR2 ships only the ``GET /v1/principals/by-sso`` lookup. Provisioning
-endpoints (POST + cert-attach) will land alongside the Ambassador
-in PR4 — that PR drives both ends of the API and shape choices.
+  * Lookup (PR2): ``GET /v1/principals/by-sso`` — given an SSO
+    subject, return the principal_id if already provisioned.
+  * Provisioning (PR4a): ``POST /v1/principals/csr`` — given a CSR
+    built around a fresh KMS-generated public key, return a Mastio-
+    signed cert. The Ambassador then attaches it to the KMS and
+    registers the (sso, principal_id) mapping via the registry CRUD.
 
-Authentication uses the existing ``Depends(get_current_agent)``
-DPoP-bound JWT. RBAC: the caller may only look up principals in
-its own ``org_id``. Cross-org SSO lookups are forbidden because
-SSO subjects are per-org PII; cross-org user federation has its
-own discovery story (deferred to ADR-020 v0.5).
+Authentication: ``Depends(get_current_agent)`` DPoP-bound JWT. RBAC:
+the caller may only operate on principals in its own ``org_id``.
 """
 from __future__ import annotations
 
@@ -27,6 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt import get_current_agent
 from app.auth.models import TokenPayload
 from app.db.database import get_db
+from app.registry.principals_csr import (
+    CsrValidationError,
+    parse_principal_id_to_spiffe,
+    sign_user_csr,
+)
 from app.registry.user_principals import (
     UserPrincipalView,
     get_by_sso,
@@ -105,3 +109,85 @@ async def lookup_by_sso(
             detail=f"no principal mapped to sso_subject={subject!r} in org={org!r}",
         )
     return _to_response(view)
+
+
+# ── /v1/principals/csr (ADR-021 PR4a) ────────────────────────────────
+
+
+class CsrSignRequest(BaseModel):
+    """Body for ``POST /v1/principals/csr``."""
+
+    principal_id: str = Field(
+        ..., min_length=7, max_length=255,
+        description="<trust-domain>/<org>/<principal-type>/<name>",
+    )
+    csr_pem: str = Field(
+        ..., min_length=128, max_length=8192,
+        description="PEM-encoded CSR; SAN must contain the SPIFFE URI of principal_id",
+    )
+
+
+class CsrSignResponse(BaseModel):
+    """Body returned by ``POST /v1/principals/csr``."""
+
+    cert_pem: str
+    cert_thumbprint: str = Field(
+        ..., description="SHA-256 hex digest of the DER-encoded cert",
+    )
+    cert_not_after: datetime
+
+
+@router.post(
+    "/csr",
+    response_model=CsrSignResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def sign_csr(
+    body: CsrSignRequest,
+    token: TokenPayload = Depends(get_current_agent),
+) -> CsrSignResponse:
+    """Sign a user-principal CSR with the Mastio broker CA.
+
+    The cert is short-lived (1h, see ``USER_CERT_TTL``). The Ambassador
+    refreshes by calling this endpoint again at the next SSO touch.
+
+    Errors:
+      - 400 ``CsrValidationError`` — malformed CSR / SAN / weak key /
+        SPIFFE id mismatch / bad principal_id format.
+      - 403 ``token.org != principal_id_org`` — caller may only mint
+        certs for principals in its own org.
+    """
+    try:
+        _spiffe_uri, principal_org = parse_principal_id_to_spiffe(body.principal_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid principal_id: {exc}",
+        ) from exc
+
+    if token.org != principal_org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="cannot sign a CSR for a principal in a different org",
+        )
+
+    try:
+        cert_pem, thumbprint, not_after = await sign_user_csr(
+            csr_pem=body.csr_pem,
+            principal_id=body.principal_id,
+        )
+    except CsrValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    _log.info(
+        "principals.csr signed principal_id=%s thumbprint=%s not_after=%s",
+        body.principal_id, thumbprint, not_after.isoformat(),
+    )
+    return CsrSignResponse(
+        cert_pem=cert_pem,
+        cert_thumbprint=thumbprint,
+        cert_not_after=not_after,
+    )
