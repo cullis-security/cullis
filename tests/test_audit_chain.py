@@ -242,3 +242,128 @@ async def test_cross_org_mixed_with_intra_org(audit_db):
 
     ok, total, _ = await verify_chain(audit_db, org_id="acme")
     assert ok is True and total == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ADR-020 Phase 2 — principal_type column
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def test_adr020_default_principal_type_is_agent(audit_db):
+    """log_event without principal_type stores 'agent' (back-compat default)."""
+    entry = await log_event(audit_db, "test.default", "ok", org_id="acme")
+    assert entry.principal_type == "agent"
+
+
+async def test_adr020_explicit_user_principal_type(audit_db):
+    """A user-attributed event records principal_type='user'."""
+    entry = await log_event(
+        audit_db, "test.user", "ok",
+        agent_id="acme::mario", org_id="acme",
+        principal_type="user",
+    )
+    assert entry.principal_type == "user"
+
+
+async def test_adr020_explicit_workload_principal_type(audit_db):
+    entry = await log_event(
+        audit_db, "test.workload", "ok",
+        agent_id="acme::byoca-haiku", org_id="acme",
+        principal_type="workload",
+    )
+    assert entry.principal_type == "workload"
+
+
+async def test_adr020_agent_hash_unchanged_vs_pre_adr020(audit_db):
+    """Crucially: an 'agent' row's entry_hash is byte-for-byte equal
+    to what compute_entry_hash would produce WITHOUT principal_type
+    (i.e. the pre-ADR-020 algorithm). This is the back-compat property
+    that lets the column be added with no chain rewrite."""
+    from datetime import timezone
+
+    entry = await log_event(audit_db, "test.compat", "ok", org_id="acme",
+                            principal_type="agent")
+    ts = entry.timestamp
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+
+    recomputed_pre_adr = compute_entry_hash(
+        entry.id, ts, entry.event_type,
+        entry.agent_id, entry.session_id, entry.org_id,
+        entry.result, entry.details, entry.previous_hash,
+        chain_seq=entry.chain_seq,
+        peer_org_id=entry.peer_org_id,
+        # principal_type omitted — exactly the pre-ADR-020 call shape
+    )
+    recomputed_agent = compute_entry_hash(
+        entry.id, ts, entry.event_type,
+        entry.agent_id, entry.session_id, entry.org_id,
+        entry.result, entry.details, entry.previous_hash,
+        chain_seq=entry.chain_seq,
+        peer_org_id=entry.peer_org_id,
+        principal_type="agent",
+    )
+    assert recomputed_pre_adr == recomputed_agent == entry.entry_hash
+
+
+async def test_adr020_user_hash_includes_principal_type_marker(audit_db):
+    """A user row's canonical includes |pt=user, so its hash differs
+    from the same row hashed as 'agent'. This is the chain-v2 marker."""
+    from datetime import timezone
+
+    entry = await log_event(
+        audit_db, "test.usermark", "ok",
+        agent_id="acme::mario", org_id="acme",
+        principal_type="user",
+    )
+    ts = entry.timestamp
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+
+    hash_user = compute_entry_hash(
+        entry.id, ts, entry.event_type,
+        entry.agent_id, entry.session_id, entry.org_id,
+        entry.result, entry.details, entry.previous_hash,
+        chain_seq=entry.chain_seq,
+        peer_org_id=entry.peer_org_id,
+        principal_type="user",
+    )
+    hash_as_agent = compute_entry_hash(
+        entry.id, ts, entry.event_type,
+        entry.agent_id, entry.session_id, entry.org_id,
+        entry.result, entry.details, entry.previous_hash,
+        chain_seq=entry.chain_seq,
+        peer_org_id=entry.peer_org_id,
+        principal_type="agent",
+    )
+    assert hash_user == entry.entry_hash
+    assert hash_user != hash_as_agent  # type marker actually changed the hash
+
+
+async def test_adr020_verify_chain_mixed_principals(audit_db):
+    """A chain that mixes user, agent, workload rows still verifies."""
+    await log_event(audit_db, "e1", "ok", org_id="acme")  # agent default
+    await log_event(audit_db, "e2", "ok", org_id="acme",
+                    principal_type="user")
+    await log_event(audit_db, "e3", "ok", org_id="acme",
+                    principal_type="workload")
+    await log_event(audit_db, "e4", "ok", org_id="acme",
+                    principal_type="user")
+    is_valid, total, broken_id = await verify_chain(audit_db, org_id="acme")
+    assert is_valid is True
+    assert total == 4
+    assert broken_id == 0
+
+
+async def test_adr020_cross_org_propagates_principal_type(audit_db):
+    """log_event_cross_org tags both rows with the same principal_type."""
+    from app.db.audit import log_event_cross_org
+
+    row_a, row_b = await log_event_cross_org(
+        audit_db, "u2u.message", "ok",
+        org_a="acme", org_b="bravo",
+        agent_id="acme::mario",
+        principal_type="user",
+    )
+    assert row_a.principal_type == "user"
+    assert row_b.principal_type == "user"

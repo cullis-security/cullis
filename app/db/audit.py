@@ -84,6 +84,13 @@ class AuditLog(Base):
     # Cross-org linkage: on dual-write these point to the companion row.
     peer_org_id = Column(String(128), nullable=True, index=True)
     peer_row_hash = Column(String(64), nullable=True)
+    # ADR-020 — taxonomy of the acting principal. ``agent`` is the
+    # back-compat default so every existing query continues to work
+    # without filter; ``user`` / ``workload`` are filtered explicitly
+    # by reach policy and dashboard views once Phase 3+ ship.
+    principal_type = Column(
+        String(16), nullable=False, server_default="agent", index=True,
+    )
 
 
 class AuditTsaAnchor(Base):
@@ -124,6 +131,7 @@ def compute_entry_hash(
     previous_hash: str | None,
     chain_seq: int | None = None,
     peer_org_id: str | None = None,
+    principal_type: str | None = None,
 ) -> str:
     """Compute the SHA-256 hash of an audit log entry.
 
@@ -131,6 +139,20 @@ def compute_entry_hash(
     the hash. When `chain_seq` is None (legacy row) the hash format is
     identical to the pre-per-org version so existing rows stay
     verifiable against the original algorithm.
+
+    ADR-020 ``principal_type`` rule: a NEW field is appended to the
+    canonical only when it is *non-default*. ``principal_type='agent'``
+    (and ``None``, treated as agent) leaves the hash byte-for-byte
+    identical to the pre-ADR-020 algorithm, so:
+
+      - existing chains keep verifying with the original code path
+      - the column can be backfilled to 'agent' with no chain rewrite
+      - new ``user`` / ``workload`` rows produce a distinct, auditable
+        hash that includes the principal type
+
+    This is the chain-v2 marker: a row whose canonical includes
+    ``|pt=<x>`` is unambiguously v2; a row without is v1-or-agent. Both
+    verify with the same code path.
     """
     base = (
         f"{entry_id}|{timestamp.isoformat()}|{event_type}|"
@@ -143,6 +165,10 @@ def compute_entry_hash(
         # New rows bind chain_seq + peer_org_id into the hash so either
         # field cannot be rewritten without detection.
         canonical = f"{base}|seq={chain_seq}|peer={peer_org_id or ''}"
+    # ADR-020 — append principal_type only when non-default to preserve
+    # back-compat with rows produced before this column existed.
+    if principal_type and principal_type != "agent":
+        canonical = f"{canonical}|pt={principal_type}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -188,9 +214,16 @@ async def _append_row(
     details_json: str | None,
     peer_org_id: str | None,
     peer_row_hash: str | None,
+    principal_type: str = "agent",
 ) -> AuditLog:
     """Insert one audit row in the org's chain. Caller must hold the
-    per-org lock and will commit. Does NOT commit itself."""
+    per-org lock and will commit. Does NOT commit itself.
+
+    ``principal_type`` defaults to ``agent`` so callers that have not
+    migrated to ADR-020 keep producing rows identical to pre-ADR-020
+    output. Pass ``user`` / ``workload`` explicitly to record the new
+    taxonomy.
+    """
     previous_hash, last_seq = await _last_per_org(db, org_id)
     new_seq = last_seq + 1
 
@@ -205,6 +238,7 @@ async def _append_row(
         chain_seq=new_seq,
         peer_org_id=peer_org_id,
         peer_row_hash=peer_row_hash,
+        principal_type=principal_type,
     )
     db.add(entry)
     await db.flush()  # assigns auto-incremented id
@@ -218,6 +252,7 @@ async def _append_row(
         details_json, previous_hash,
         chain_seq=new_seq,
         peer_org_id=peer_org_id,
+        principal_type=principal_type,
     )
     return entry
 
@@ -230,6 +265,7 @@ async def log_event(
     session_id: str | None = None,
     org_id: str | None = None,
     details: dict | None = None,
+    principal_type: str = "agent",
 ) -> AuditLog:
     """Append a single entry to the caller's org chain.
 
@@ -262,6 +298,7 @@ async def log_event(
                     details_json=details_json,
                     peer_org_id=None,
                     peer_row_hash=None,
+                    principal_type=principal_type,
                 )
                 await db.commit()
                 break
@@ -305,6 +342,7 @@ async def log_event_cross_org(
     agent_id: str | None = None,
     session_id: str | None = None,
     details: dict | None = None,
+    principal_type: str = "agent",
 ) -> tuple[AuditLog, AuditLog]:
     """Append the same event to both org chains atomically.
 
@@ -347,6 +385,7 @@ async def log_event_cross_org(
                     details_json=details_json,
                     peer_org_id=second,
                     peer_row_hash=None,  # filled in after row_second is hashed
+                    principal_type=principal_type,
                 )
                 row_second = await _append_row(
                     db,
@@ -358,6 +397,7 @@ async def log_event_cross_org(
                     details_json=details_json,
                     peer_org_id=first,
                     peer_row_hash=row_first.entry_hash,
+                    principal_type=principal_type,
                 )
                 # Back-fill peer_row_hash on the first row now that the
                 # second row's hash exists. This closes the
@@ -493,6 +533,7 @@ async def verify_chain(
                 entry.result, entry.details, entry.previous_hash,
                 chain_seq=entry.chain_seq,
                 peer_org_id=entry.peer_org_id,
+                principal_type=entry.principal_type,
             )
             if entry.entry_hash != expected_hash:
                 AUDIT_CHAIN_VERIFY_FAILED_COUNTER.add(
