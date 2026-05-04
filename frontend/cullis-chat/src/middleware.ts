@@ -67,16 +67,20 @@ export const onRequest = defineMiddleware(async (context, next) => {
   const response = await next();
 
   // CSP — built once per response, varies dev vs prod.
-  const scriptSrc = ["'self'", `'nonce-${nonce}'`];
-  const styleSrc = [
-    "'self'",
-    'https://fonts.googleapis.com',
-    'https://api.fontshare.com',
-    `'nonce-${nonce}'`,
-  ];
+  //
+  // CSP Level 3 quirk: when a nonce/hash source is present, `'unsafe-inline'`
+  // is ignored. Vite's HMR injects `<style>` and `<script>` tags without our
+  // nonce, so in dev we must drop the nonce sources and keep `'unsafe-inline'`
+  // for the Vite-injected blocks. In prod, Astro emits external assets and
+  // any deliberate inline carries the nonce — strict policy applies.
+  const scriptSrc = ["'self'"];
+  const styleSrc = ["'self'", 'https://fonts.googleapis.com', 'https://api.fontshare.com'];
   if (IS_DEV) {
     scriptSrc.push("'unsafe-eval'", "'unsafe-inline'");
     styleSrc.push("'unsafe-inline'");
+  } else {
+    scriptSrc.push(`'nonce-${nonce}'`);
+    styleSrc.push(`'nonce-${nonce}'`);
   }
 
   const csp = [
