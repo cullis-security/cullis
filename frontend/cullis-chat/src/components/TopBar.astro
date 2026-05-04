@@ -154,6 +154,15 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     opacity: 0.7;
   }
 
+  /* Native <option> rendering ignores the parent <select> background
+     in Chromium/WebKit, leaving the dropdown panel white-on-white on
+     dark themes. Force the option styling explicitly. Firefox honours
+     this; Safari uses the system theme regardless and we accept that. */
+  :global(.model-picker option) {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+  }
+
   /* Right — status + identity badge */
   .topbar-right {
     display: flex;
