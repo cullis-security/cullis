@@ -12,6 +12,9 @@
 <aside class="sidebar-left" aria-label="Conversation history">
   <header class="sl-head">
     <span class="eyebrow">conversations</span>
+    <a class="sl-new" href="/" aria-label="Start a new chat" title="New chat">
+      <span aria-hidden="true">+</span> new
+    </a>
   </header>
 
   <div class="sl-empty">
@@ -39,6 +42,31 @@
   .sl-head {
     padding: 1.25rem 1.25rem 0.9rem;
     border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  /* "+ new" — full-page navigation to / so React island state resets
+     cleanly. v0.1 has no server-side history; v0.5 will swap this for
+     a real "spawn new conversation" action that also persists. */
+  .sl-new {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    text-decoration: none;
+    padding: 0.25rem 0.55rem;
+    border: 1px solid var(--border-medium);
+    border-left: 2px solid var(--accent-cyan);
+    transition: color var(--t-base) ease, border-color var(--t-base) ease;
+  }
+
+  .sl-new:hover, .sl-new:focus-visible {
+    color: var(--accent-cyan);
+    border-color: var(--accent-cyan);
   }
 
   .sl-empty {
