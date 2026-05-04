@@ -14,11 +14,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
 
-from app.db.audit import AuditLog, log_event, verify_chain
+from app.db.audit import AuditLog, verify_chain
 from app.policy.reach import (
     ANY_NAME,
-    PRINCIPAL_TYPES,
-    PolicyDecision,
     PrincipalRef,
     ReachConsent,
     ReachContext,
