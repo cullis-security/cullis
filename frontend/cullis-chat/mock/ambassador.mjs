@@ -64,23 +64,23 @@ function pickFixture(messages) {
 const FIXTURES = {
   plain: {
     answer:
-      "Ciao. Sono **Cullis Chat**, l'interfaccia di Cullis Frontdesk. " +
-      "Posso rispondere a domande operative sui dati della tua organizzazione " +
-      "tramite i tool MCP collegati. Prova a chiedermi qualcosa sulle compliance, " +
-      'sulle sessioni attive, o sui training GDPR.',
+      "Hi. I'm **Cullis Chat**, the Cullis Frontdesk interface. " +
+      "I can answer operational questions about your organisation's data " +
+      "through the connected MCP tools. Try asking me about compliance, " +
+      'active sessions, or GDPR training.',
     tools: [],
   },
   tool: {
     answer:
-      "Sì. **Anna Bianchi** ha completato il training GDPR il *2025-09-12* (fonte: " +
-      "tabella `gdpr_training_records` sul DB compliance).\n\n" +
+      "Yes. **Anna Bianchi** completed her GDPR training on *2025-09-12* (source: " +
+      "the `gdpr_training_records` table in the compliance DB).\n\n" +
       "```sql\n" +
       "select employee, completion_date\n" +
       "  from gdpr_training_records\n" +
       "  where employee = 'Anna Bianchi';\n" +
       "```\n\n" +
-      'Lo scan completo dei dipendenti dell\'unità Sales mostra **3 ritardatari** ' +
-      'oltre la scadenza di 12 mesi. Posso aprirti il dettaglio se vuoi.',
+      "A full scan across the Sales team shows **3 employees** past " +
+      'the 12-month deadline. I can pull up the details if you want.',
     tools: [
       { name: 'postgres.query', latency_ms: 286 },
     ],
@@ -101,14 +101,14 @@ const FIXTURES = {
   },
   sessions: {
     answer:
-      'Risultano **4 sessioni attive** nelle ultime 24h:\n\n' +
-      '| Agente | Org | Apertura | Stato |\n' +
+      '**4 active sessions** in the last 24h:\n\n' +
+      '| Agent | Org | Opened | State |\n' +
       '|---|---|---|---|\n' +
       '| `payments-bot` | acme | 2026-05-04 09:12 | live |\n' +
       '| `procurement-bot` | acme | 2026-05-04 10:48 | live |\n' +
       '| `risk-monitor` | acme | 2026-05-04 11:03 | live |\n' +
       '| `mario-laptop` | acme | 2026-05-04 12:21 | idle |\n\n' +
-      'Ogni riga è ancorata a un trace_id verificabile in audit chain.',
+      'Each row is anchored to a trace_id verifiable in the audit chain.',
     tools: [
       { name: 'mastio.list_sessions', latency_ms: 142 },
     ],
