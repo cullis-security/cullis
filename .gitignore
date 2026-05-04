@@ -70,6 +70,7 @@ shell.nix
 node_modules/
 package-lock.json
 !site/package-lock.json
+!frontend/cullis-chat/package-lock.json
 app/static/css/tailwind.css
 mcp_proxy/dashboard/static/css/tailwind.css
 

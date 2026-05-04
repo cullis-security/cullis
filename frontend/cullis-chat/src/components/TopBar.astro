@@ -1,0 +1,256 @@
+---
+// TopBar — fixed at the top of the chat shell.
+//
+// Three slots: brand lockup (left), model picker (centre, live React
+// island fed by /v1/models), identity badge (right, live React island
+// fed by /api/session/whoami) plus the audit toggle button.
+//
+// Style mirrors `site/src/components/Nav.astro`: monospace nav links,
+// Chakra Petch wordmark, drop-shadow cyan glow on the mark.
+
+import IdentityBadge from './IdentityBadge.tsx';
+import ModelPicker from './ModelPicker.tsx';
+---
+
+<header class="topbar">
+  <a class="brand" href="/" aria-label="Cullis Chat home">
+    <img src="/cullis-mark.svg" alt="" width="26" height="26" />
+    <span class="wordmark">
+      Cullis <span class="brand-tail">Chat</span>
+    </span>
+  </a>
+
+  <div class="topbar-center">
+    <ModelPicker client:load />
+  </div>
+
+  <div class="topbar-right">
+    <span class="status">
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <span class="status-label">connected</span>
+    </span>
+    <IdentityBadge client:load />
+    <button
+      type="button"
+      class="audit-toggle"
+      aria-label="Toggle audit panel"
+      data-action="toggle-audit"
+    >
+      <span class="folio">audit</span>
+      <span class="audit-toggle-icon" aria-hidden="true">▦</span>
+    </button>
+  </div>
+</header>
+
+<script nonce={Astro.locals.cspNonce}>
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t) return;
+    var btn = t.closest && t.closest('[data-action="toggle-audit"]');
+    if (!btn) return;
+    document.dispatchEvent(new CustomEvent('cullis:toggle-audit'));
+  });
+</script>
+
+<style>
+  .topbar {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(200px, auto) minmax(200px, 1fr);
+    align-items: center;
+    height: var(--topbar-h);
+    padding: 0 1.4rem;
+    background: rgba(5, 5, 8, 0.85);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--border-subtle);
+    position: relative;
+    z-index: 10;
+  }
+
+  /* Brand — Chakra Petch wordmark with cyan glow on mark, mirrors site Nav */
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    color: var(--text-primary);
+    text-decoration: none;
+    width: max-content;
+  }
+
+  .brand img {
+    filter: drop-shadow(0 0 10px rgba(0, 229, 199, 0.35));
+    transition: filter var(--t-slow) var(--ease-soft);
+  }
+
+  .brand:hover img {
+    filter: drop-shadow(0 0 14px rgba(0, 229, 199, 0.6));
+  }
+
+  .wordmark {
+    font-family: var(--font-brand);
+    font-weight: 600;
+    font-size: 1rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    line-height: 1;
+  }
+
+  .brand-tail {
+    color: var(--accent-cyan);
+    font-weight: 500;
+  }
+
+  /* Center — model picker placeholder */
+  .topbar-center {
+    display: flex;
+    justify-content: center;
+  }
+
+  /* ModelPicker — global rules so they apply to the React island
+     (Astro scoped styles don't reach into mounted React subtrees). */
+  :global(.model-picker) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-medium);
+    transition: border-color var(--t-base) ease;
+  }
+
+  :global(.model-picker:hover),
+  :global(.model-picker:focus-within) {
+    border-color: var(--accent-cyan);
+  }
+
+  :global(.model-picker .folio) {
+    border-right: 1px solid var(--border-subtle);
+    padding-right: 0.55rem;
+  }
+
+  :global(.model-picker select) {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    padding: 0.1rem 1.5rem 0.1rem 0;
+    background-image: linear-gradient(45deg, transparent 50%, var(--accent-cyan) 50%),
+                      linear-gradient(135deg, var(--accent-cyan) 50%, transparent 50%);
+    background-position: calc(100% - 12px) 50%, calc(100% - 6px) 50%;
+    background-size: 6px 6px;
+    background-repeat: no-repeat;
+  }
+
+  :global(.model-picker[data-loaded='false']) {
+    opacity: 0.7;
+  }
+
+  /* Right — status + identity badge */
+  .topbar-right {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 1.2rem;
+  }
+
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .status-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  /* IdentityBadge — global rules (React island, see comment above). */
+  :global(.identity-badge) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--border-medium);
+    border-left: 2px solid var(--accent-cyan);
+  }
+
+  :global(.identity-badge-loading) {
+    border-left-color: var(--text-tertiary);
+  }
+
+  :global(.identity-badge-error) {
+    border-left-color: var(--accent-amber);
+  }
+
+  :global(.identity-badge .folio) {
+    border-right: 1px solid var(--border-subtle);
+    padding-right: 0.55rem;
+  }
+
+  :global(.identity-name) {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    letter-spacing: 0.04em;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  /* `<em>` borrowed from site headings — italic display serif accent */
+  :global(.identity-name em) {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 1.1em;
+    color: var(--accent-cyan);
+    letter-spacing: 0;
+  }
+
+  :global(.identity-sep) {
+    color: var(--text-tertiary);
+  }
+
+  /* Audit toggle — slim icon button matching `.comp-download` family */
+  .audit-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.35rem 0.65rem;
+    background: transparent;
+    border: 1px solid var(--border-medium);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--t-base) ease;
+    font-family: var(--font-mono);
+  }
+
+  .audit-toggle:hover {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+  }
+
+  .audit-toggle-icon {
+    color: var(--accent-cyan);
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  @media (max-width: 1100px) {
+    .topbar { grid-template-columns: auto 1fr auto; gap: 1rem; }
+    .topbar-center { justify-content: flex-end; }
+  }
+
+  @media (max-width: 760px) {
+    .status { display: none; }
+    .topbar-center { display: none; }
+    .topbar { grid-template-columns: auto 1fr; }
+  }
+</style>

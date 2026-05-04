@@ -1,0 +1,84 @@
+/* Cullis Chat — design tokens
+ *
+ * Palette, fonts, spacing rules mirrored from cullis.io
+ * (`site/src/styles/global.css`). Edit there first if a token applies
+ * to both surfaces. Tokens marked `new for cullis-chat` are
+ * candidates for back-port to the site once stable.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Chakra+Petch:wght@400;500;600;700&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,700,900&display=swap');
+
+:root {
+  /* ---- Mirrored from cullis.io ---- */
+
+  /* Palette */
+  --bg-void: #050508;
+  --bg-surface: #0a0b10;
+  --bg-elevated: #10121a;
+  --bg-card: #13151f;
+  --bg-card-hover: #161923;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-medium: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --text-primary: #e8e9ed;
+  --text-secondary: #8a8d9b;
+  --text-tertiary: #6e7180;
+  --accent-cyan: #00e5c7;
+  --accent-cyan-dim: rgba(0, 229, 199, 0.15);
+  --accent-cyan-glow: rgba(0, 229, 199, 0.08);
+  --accent-amber: #f0a500;
+  --accent-blue: #3d7aed;
+  --accent-teal: #00b8a9;
+
+  /* Fonts */
+  --font-display: 'Instrument Serif', Georgia, serif;
+  --font-body: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'DM Mono', 'SF Mono', Menlo, monospace;
+  --font-brand: 'Chakra Petch', sans-serif;
+
+  /* Motion (mirrored from site Nav/buttons) */
+  --ease-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast: 0.2s;
+  --t-base: 0.25s;
+  --t-slow: 0.35s;
+
+  /* ---- new for cullis-chat, candidate for site backport ---- */
+
+  /* App shell — chat surface only */
+  --topbar-h: 56px;
+  --sidebar-w: 240px;
+  --audit-w: 320px;
+
+  /* Chat-message rhythm */
+  --msg-pad-x: 1.4rem;
+  --msg-pad-y: 1.1rem;
+  --msg-gap: 1.4rem;
+  --msg-radius: 0;          /* Cullis is zero-radius — sharp edges, like the site buttons */
+
+  /* Roles. Assistant uses card surface with cyan border-left like site .comp-aside.
+     User reads as a "sent" line — no card, just a folio + text. */
+  --msg-assistant-bg: var(--bg-card);
+  --msg-assistant-border: var(--accent-cyan);
+
+  /* Stream caret — used by streaming markdown in commit 6 */
+  --caret-color: var(--accent-cyan);
+  --caret-blink: 1.05s;
+
+  /* Audit panel — same family as site `.comp-aside` */
+  --audit-bg: var(--bg-surface);
+  --audit-border: var(--border-subtle);
+  --audit-accent: var(--accent-cyan);
+
+  /* Tool-call indicator — marginalia variant */
+  --tool-bg: rgba(0, 229, 199, 0.04);
+  --tool-border: var(--accent-cyan-dim);
+
+  /* Input box terminal */
+  --input-bg: var(--bg-elevated);
+  --input-border: var(--border-medium);
+  --input-border-focus: var(--accent-cyan);
+
+  /* Pulse-dot reused from site */
+  --pulse-color: var(--accent-cyan);
+}

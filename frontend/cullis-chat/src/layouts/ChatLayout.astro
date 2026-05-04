@@ -1,0 +1,91 @@
+---
+// ChatLayout — full-viewport shell for the Cullis Chat SPA.
+//
+// CSP is set on the response by `src/middleware.ts` (per-request
+// nonce, strict in prod). The layout itself only inlines a tiny
+// boot script (audit-collapse hydration from localStorage) carrying
+// the nonce.
+
+import '../styles/tokens.css';
+import '../styles/globals.css';
+import TopBar from '../components/TopBar.astro';
+import SidebarLeft from '../components/SidebarLeft.astro';
+import ChatApp from '../components/ChatApp.tsx';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Cullis Chat',
+  description = 'Identity-aware chat for Cullis Frontdesk. Every message is signed, audited, and traceable.',
+} = Astro.props;
+
+const nonce = Astro.locals.cspNonce;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#050508" />
+    <meta name="description" content={description} />
+    <meta name="referrer" content="same-origin" />
+    <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/cullis-mark.svg" />
+  </head>
+  <body class="app-shell">
+    <TopBar />
+    <div class="app-body">
+      <SidebarLeft />
+      <ChatApp client:load />
+    </div>
+
+    <script nonce={nonce}>
+      // Hydrate the audit-pane collapsed state from localStorage before
+      // first paint of the React island, so the layout doesn't shift.
+      (function () {
+        try {
+          var collapsed =
+            window.localStorage.getItem('cullis-chat:audit-collapsed') === 'true';
+          var observer = new MutationObserver(function (muts) {
+            for (var i = 0; i < muts.length; i++) {
+              var node = muts[i].addedNodes;
+              for (var j = 0; j < node.length; j++) {
+                var n = node[j];
+                if (n && n.classList && n.classList.contains('chat-app')) {
+                  n.setAttribute('data-audit-collapsed', collapsed ? 'true' : 'false');
+                  observer.disconnect();
+                  return;
+                }
+              }
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        } catch (e) {
+          /* localStorage unavailable: leave default expanded */
+        }
+
+        // Listen for toggle clicks bubbling up from TopBar.
+        document.addEventListener('cullis:toggle-audit', function () {
+          var el = document.querySelector('.chat-app');
+          if (!el) return;
+          var now = el.getAttribute('data-audit-collapsed') === 'true';
+          var next = !now;
+          el.setAttribute('data-audit-collapsed', next ? 'true' : 'false');
+          try {
+            window.localStorage.setItem(
+              'cullis-chat:audit-collapsed',
+              next ? 'true' : 'false',
+            );
+          } catch (e) {
+            /* ignore */
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,773 @@
+/* Cullis Chat — chat surface.
+ *
+ * Imported by `ChatWindow.tsx` (React island). Visually identical to
+ * the static placeholder shipped in commit 2 (`ChatMain.astro`),
+ * extended with the dynamic states: list of message turns, sending
+ * spinner, error banner.
+ */
+
+.chat-shell {
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  height: 100%;
+  padding: 1.5rem 1.75rem 1rem;
+  gap: 1rem;
+  min-height: 0;
+}
+
+/* Stream */
+.chat-stream {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--msg-gap);
+}
+
+.chat-stream-inner {
+  margin: 0 auto;
+  width: 100%;
+  max-width: 64ch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--msg-gap);
+}
+
+/* Empty state */
+.chat-empty {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-top: 2rem;
+}
+
+.chat-empty-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(2rem, 4.5vw, 3.2rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0.4rem 0 0.2rem;
+}
+
+.chat-empty-title em {
+  font-style: italic;
+  color: var(--accent-cyan);
+}
+
+.chat-empty-sub {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 48ch;
+  margin: 0;
+}
+
+.chat-empty-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.hint {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  letter-spacing: 0.01em;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  transition: color var(--t-base) ease;
+}
+
+.hint:hover {
+  color: var(--accent-cyan);
+}
+
+/* Messages */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.msg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.msg-role {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+}
+
+.msg-role-user {
+  color: var(--text-secondary);
+}
+
+.msg-folio {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+
+.msg-folio em {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.1em;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-secondary);
+}
+
+.msg-body {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.msg-body-assistant {
+  background: var(--msg-assistant-bg);
+  border-left: 3px solid var(--msg-assistant-border);
+  padding: var(--msg-pad-y) var(--msg-pad-x);
+}
+
+.msg-body-user {
+  color: var(--text-primary);
+  padding: 0 0 0 var(--msg-pad-x);
+  border-left: 1px dashed var(--border-medium);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Cross-highlight (audit row click → chat message + vice versa). */
+.msg-selected .msg-body-assistant {
+  border-left-color: var(--accent-amber);
+  box-shadow: -0 0 0 1px var(--accent-amber-translucent, rgba(240, 165, 0, 0.25));
+  animation: msg-flash 1.2s var(--ease-soft);
+}
+
+@keyframes msg-flash {
+  0%   { box-shadow: -0 0 0 1px rgba(240, 165, 0, 0.6); }
+  100% { box-shadow: -0 0 0 1px rgba(240, 165, 0, 0); }
+}
+
+/* Tool-call marginalia chips above the body */
+.msg-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.1rem;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--tool-bg);
+  border-left: 2px solid var(--tool-border);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  width: max-content;
+  max-width: 100%;
+}
+
+.tool-chip code {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.05em 0.4em;
+  color: var(--accent-cyan);
+}
+
+.tool-chip-pending {
+  border-left-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.tool-chip-done {
+  border-left-color: var(--accent-cyan-dim);
+  color: var(--text-secondary);
+}
+
+.tool-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-cyan);
+  display: inline-block;
+}
+
+.tool-dot-pulsing {
+  box-shadow: 0 0 8px var(--accent-cyan);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.tool-latency {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 0.86em;
+  letter-spacing: 0.05em;
+}
+
+/* Audit pane — populated state (placeholder rules in AuditPanel.astro
+ * are gone; the React component reuses the same class names). */
+
+.audit-pane {
+  background: var(--audit-bg);
+  border-left: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+}
+
+.ap-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ap-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ap-state-label {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.ap-body {
+  flex: 1;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+
+  background: linear-gradient(var(--accent-cyan-dim), var(--accent-cyan-dim))
+    left top / 2px 100% no-repeat;
+  padding-left: 1.5rem;
+}
+
+.ap-empty {
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  margin: 0;
+  max-width: 28ch;
+}
+
+.ap-empty em {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--accent-cyan);
+  font-size: 1.05em;
+}
+
+.ap-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.55rem 1rem;
+  margin: 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ap-meta dt {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding-top: 0.15rem;
+}
+
+.ap-meta dd {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.ap-meta dd code,
+.ae-meta dd code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--accent-cyan);
+  padding: 0.05em 0.35em;
+}
+
+.ap-foot {
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.ap-foot em {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--text-secondary);
+  font-size: 1.1em;
+}
+
+/* Audit entry — clickable card per assistant turn. Mirrors the site
+ * `.comp-aside` shape: cyan border-left, bg-card, dl/dt/dd metadata. */
+.audit-entry {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent-cyan-dim);
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  font-family: var(--font-body);
+  color: inherit;
+  transition: border-color var(--t-base) ease, background var(--t-base) ease;
+}
+
+.audit-entry:hover {
+  background: var(--bg-card-hover);
+  border-left-color: var(--accent-cyan);
+}
+
+.audit-entry.is-selected {
+  border-left-color: var(--accent-amber);
+  border-left-width: 3px;
+}
+
+.ae-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 0.6rem;
+}
+
+.ae-folio {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  color: var(--text-tertiary);
+}
+
+.ae-folio em {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.1em;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-secondary);
+}
+
+.ae-trace {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--accent-cyan);
+  letter-spacing: 0.04em;
+  word-break: break-all;
+  text-align: right;
+}
+
+.ae-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem 0.9rem;
+  margin: 0;
+}
+
+.ae-meta dt {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding-top: 0.15rem;
+}
+
+.ae-meta dd {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.ae-principal em {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--accent-cyan);
+  font-size: 1.05em;
+  margin-right: 0.3rem;
+}
+
+.ae-sep {
+  color: var(--text-tertiary);
+  margin: 0 0.3rem;
+}
+
+.ae-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.ae-tools li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.ae-tool-latency {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  color: var(--text-tertiary);
+}
+
+/* "Thinking" — shown after the user pressed Enter but no content
+ * delta has yet arrived. Italic display serif accent, cyan, with
+ * an animated trail dot. */
+.msg-empty-pending {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.msg-empty-pending em {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.15rem;
+  color: var(--accent-cyan);
+}
+
+.msg-empty-pending::after {
+  content: '...';
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  animation: ellipsis-pulse 1.2s steps(4, end) infinite;
+  letter-spacing: 0.2em;
+}
+
+@keyframes ellipsis-pulse {
+  0%   { opacity: 0.2; }
+  50%  { opacity: 1.0; }
+  100% { opacity: 0.2; }
+}
+
+/* Streaming caret — appended at the end of the markdown body while
+ * `pending` is true. Idle until the first chunk lands; once content
+ * is visible the caret blinks at the trailing position. */
+.markdown-body.is-pending::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--caret-color);
+  animation: caret-blink var(--caret-blink) steps(1, end) infinite;
+  vertical-align: baseline;
+}
+
+@keyframes caret-blink {
+  0%, 50%   { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Sanitised markdown — DOMPurify output. All selectors are scoped to
+ * `.markdown-body` so the rules can't escape into the rest of the UI. */
+.markdown-body {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+
+.markdown-body p {
+  margin: 0 0 0.85em;
+}
+
+.markdown-body p:last-child { margin-bottom: 0; }
+
+.markdown-body a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--t-base) ease;
+}
+.markdown-body a:hover {
+  border-bottom-color: var(--accent-cyan);
+}
+
+.markdown-body strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.markdown-body em {
+  font-style: italic;
+  color: var(--accent-cyan);
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  margin: 1.4em 0 0.6em;
+  color: var(--text-primary);
+}
+.markdown-body h1 { font-size: 1.6rem; }
+.markdown-body h2 { font-size: 1.4rem; }
+.markdown-body h3 { font-size: 1.2rem; }
+.markdown-body h4 { font-size: 1.05rem; }
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: 1.4em;
+  margin: 0 0 0.85em;
+}
+.markdown-body li {
+  margin-bottom: 0.25em;
+  line-height: 1.6;
+}
+.markdown-body li::marker {
+  color: var(--accent-cyan);
+}
+
+.markdown-body blockquote {
+  margin: 0.85em 0;
+  padding: 0.4em 1em;
+  border-left: 2px solid var(--accent-cyan-dim);
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 1.5em 0;
+}
+
+/* Inline code */
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 0.08em 0.4em;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--accent-cyan);
+}
+
+/* Plain (un-highlighted) code blocks before Shiki replaces them. */
+.markdown-body pre {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.65;
+  margin: 0.85em 0;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  background: var(--bg-card);
+  border-left: 3px solid var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+/* Shiki override — Shiki's default theme paints its own background.
+ * One CSS rule to align it with the cullis card surface; the rest of
+ * the (github-dark-default) palette is "boring but correct" for v0.1.
+ * Custom 1:1 cullis theme is v0.5 (per design discussion). */
+.markdown-body pre.shiki,
+.markdown-body pre.shiki-block {
+  background: var(--bg-card) !important;
+  border-left: 3px solid var(--accent-cyan);
+  padding: 1rem 1.1rem;
+  margin: 0.85em 0;
+  font-size: 0.85rem;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+
+.markdown-body pre.shiki code,
+.markdown-body pre.shiki-block code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-family: var(--font-mono);
+  display: block;
+}
+
+/* Tables — match site `.ledger` aesthetic */
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.85em 0;
+  font-size: 0.9rem;
+  border-top: 1px solid var(--border-medium);
+  border-bottom: 1px solid var(--border-medium);
+}
+.markdown-body th, .markdown-body td {
+  padding: 0.55rem 0.8rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  color: var(--text-secondary);
+}
+.markdown-body th {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  background: var(--bg-surface);
+}
+.markdown-body tr:last-child td { border-bottom: none; }
+.markdown-body td:first-child { color: var(--text-primary); }
+
+/* Error banner */
+.chat-error {
+  background: rgba(240, 165, 0, 0.06);
+  border: 1px solid rgba(240, 165, 0, 0.3);
+  border-left: 3px solid var(--accent-amber);
+  color: var(--text-primary);
+  padding: 0.85rem 1rem;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+}
+
+.chat-error strong {
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-right: 0.5rem;
+}
+
+/* Input box — terminal */
+.chat-input {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: end;
+  gap: 0.7rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  transition: border-color var(--t-base) ease;
+}
+
+.chat-input:focus-within {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 24px var(--accent-cyan-glow);
+}
+
+.chat-input.is-sending {
+  border-color: var(--accent-cyan);
+  opacity: 0.85;
+}
+
+.prompt {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  font-size: 1rem;
+  line-height: 1.6;
+  padding-bottom: 0.05rem;
+  user-select: none;
+}
+
+.chat-input textarea {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  resize: none;
+  outline: none;
+  width: 100%;
+  padding: 0.1rem 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.chat-input textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--accent-cyan);
+  border: 1px solid var(--accent-cyan);
+  cursor: pointer;
+  transition: all var(--t-base) ease;
+}
+
+.send:not([disabled]):hover {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+}
+
+.send[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.send-arrow {
+  transition: transform var(--t-base) ease;
+}
+
+.send:not([disabled]):hover .send-arrow {
+  transform: translateX(3px);
+}
+
+.chat-foot {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding-top: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+}

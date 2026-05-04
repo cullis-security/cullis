@@ -1,0 +1,185 @@
+/* Cullis Chat — base reset + body. Reuses tokens from tokens.css.
+ *
+ * Only the pieces of cullis.io's global.css that apply to a chat
+ * surface ship here. The site's section padding, page-head grid,
+ * .ledger, .reveal etc. don't fit a fixed-viewport app.
+ */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-void);
+}
+
+body {
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+}
+
+/* Focus-visible — site doesn't define one explicitly, so we set the
+ * cullis-chat baseline here. Cyan ring, sharp, no border-radius. */
+:where(:focus-visible) {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+/* App shell — full-viewport grid */
+.app-shell {
+  display: grid;
+  grid-template-rows: var(--topbar-h) 1fr;
+  height: 100vh;
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* Each top-level pane scrolls independently. The chat-app is a
+ * sub-grid, its children scroll on their own. */
+.app-body > .sidebar-left {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Sub-grid managed by ChatApp: chat surface + audit pane. */
+.chat-app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--audit-w);
+  min-height: 0;
+  height: 100%;
+  transition: grid-template-columns var(--t-slow) var(--ease-soft);
+}
+
+.chat-app > .chat-main,
+.chat-app > .audit-pane {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Collapsed state — audit pane folds away, chat takes the full width.
+ * Animated via grid-template-columns transition. */
+.chat-app[data-audit-collapsed='true'] {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+
+.chat-app[data-audit-collapsed='true'] > .audit-pane {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Subtle grid background CONFINED to the main pane (sidebar + audit
+ * stay flat surface for legibility — different from the site, where
+ * the grid is global). */
+.chat-main {
+  position: relative;
+  background: var(--bg-void);
+}
+
+.chat-main::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
+  background-size: 80px 80px;
+  pointer-events: none;
+  mask-image: radial-gradient(ellipse 80% 100% at 50% 30%, black 30%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 100% at 50% 30%, black 30%, transparent 80%);
+  z-index: 0;
+}
+
+.chat-main > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Eyebrow — borrowed from site, used for pane headers */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.eyebrow::before {
+  content: '';
+  width: 24px;
+  height: 1px;
+  background: var(--accent-cyan);
+}
+
+/* Folio — borrowed from site, used as small breadcrumbs in messages */
+.folio {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.folio em {
+  font-family: var(--font-display);
+  font-style: italic;
+  text-transform: none;
+  font-size: 1.1em;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+/* Pulse-dot — site pattern, reused in TopBar status + tool indicators */
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pulse-color);
+  box-shadow: 0 0 10px var(--pulse-color);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; box-shadow: 0 0 12px var(--pulse-color); }
+  50%      { opacity: 0.5; box-shadow: 0 0 6px var(--pulse-color); }
+}
+
+/* Responsive — under 900px we'd collapse panes, but v0.1 only
+ * supports desktop. We just narrow the audit pane, hide sidebar. */
+@media (max-width: 1100px) {
+  .app-body { grid-template-columns: 200px minmax(0, 1fr); }
+  .chat-app { grid-template-columns: minmax(0, 1fr) 280px; }
+}
+
+@media (max-width: 900px) {
+  .app-body { grid-template-columns: minmax(0, 1fr); }
+  .chat-app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar-left { display: none; }
+  .chat-app > .audit-pane { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot { animation: none; }
+}

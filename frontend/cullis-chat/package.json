@@ -1,0 +1,37 @@
+{
+  "name": "cullis-chat",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cullis Chat — identity-aware SPA frontend for Cullis Frontdesk (ADR-019).",
+  "license": "FSL-1.1-Apache-2.0",
+  "scripts": {
+    "dev": "astro dev --port 4321",
+    "dev:mock": "node mock/ambassador.mjs",
+    "build": "astro build",
+    "preview": "astro preview",
+    "start": "node ./dist/server/entry.mjs",
+    "astro": "astro",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium"
+  },
+  "dependencies": {
+    "@astrojs/node": "^9.5.5",
+    "@astrojs/react": "^4.4.2",
+    "astro": "^5.18.1",
+    "dompurify": "^3.2.3",
+    "marked": "^15.0.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "shiki": "^1.24.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

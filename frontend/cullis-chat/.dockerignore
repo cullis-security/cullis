@@ -1,0 +1,14 @@
+node_modules
+dist
+.astro
+.env
+.env.local
+.git
+.gitignore
+.DS_Store
+playwright-report
+test-results
+mock
+tests
+README.md
+playwright.config.ts
