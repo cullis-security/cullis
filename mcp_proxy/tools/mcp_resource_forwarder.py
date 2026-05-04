@@ -22,6 +22,7 @@ Contract:
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any
@@ -36,6 +37,12 @@ from mcp_proxy.tools.registry import ToolDefinition
 _log = logging.getLogger("mcp_proxy.tools.mcp_resource_forwarder")
 
 DEFAULT_FORWARD_TIMEOUT = 15.0  # seconds — fail fast, no retry
+
+# Streamable HTTP MCP transport (2025-03 spec) requires the client to
+# advertise both JSON and SSE. Stateless servers reply with a single
+# JSON object; stateful or streaming servers may push SSE frames. We
+# accept both and only ever read the first JSON message.
+_MCP_ACCEPT = "application/json, text/event-stream"
 
 
 async def _build_auth_header(
@@ -77,6 +84,35 @@ async def _build_auth_header(
         return {"X-API-Key": secret}
     _log.warning("Unknown auth_type=%r — forwarding without auth header", auth_type)
     return {}
+
+
+def _decode_mcp_response(resp: httpx.Response) -> dict | None:
+    """Return the first JSON-RPC message in the response, or None if malformed.
+
+    Streamable HTTP MCP servers may answer with either:
+      - ``Content-Type: application/json`` and a single JSON-RPC object, or
+      - ``Content-Type: text/event-stream`` and one or more ``data: {...}``
+        SSE frames. The spec guarantees the first ``data:`` line for a
+        JSON-RPC reply contains the full envelope; we read only that.
+    """
+    ctype = resp.headers.get("content-type", "").lower()
+    if "text/event-stream" in ctype:
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                payload = line[len("data:"):].strip()
+                if not payload:
+                    continue
+                try:
+                    parsed = json.loads(payload)
+                except ValueError:
+                    return None
+                return parsed if isinstance(parsed, dict) else None
+        return None
+    try:
+        parsed = resp.json()
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 async def forward_to_mcp_resource(
@@ -124,12 +160,13 @@ async def forward_to_mcp_resource(
     }
 
     transport = WhitelistedTransport(allowed_domains=tool_def.allowed_domains)
+    request_headers = {"Accept": _MCP_ACCEPT, **auth_header}
     try:
         async with httpx.AsyncClient(
             transport=transport,
             timeout=DEFAULT_FORWARD_TIMEOUT,
         ) as client:
-            resp = await client.post(endpoint, json=payload, headers=auth_header)
+            resp = await client.post(endpoint, json=payload, headers=request_headers)
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
         await append_local_audit(
             event_type="resource_call",
@@ -163,9 +200,8 @@ async def forward_to_mcp_resource(
             f"MCP resource returned HTTP {resp.status_code}"
         )
 
-    try:
-        data = resp.json()
-    except ValueError as exc:
+    data = _decode_mcp_response(resp)
+    if data is None:
         await append_local_audit(
             event_type="resource_call",
             result="error",
@@ -173,7 +209,7 @@ async def forward_to_mcp_resource(
             org_id=ctx.org_id,
             details={**audit_details, "error": "malformed_json"},
         )
-        raise ToolExecutionError("MCP resource returned non-JSON body") from exc
+        raise ToolExecutionError("MCP resource returned non-JSON body")
 
     if isinstance(data, dict) and "error" in data:
         err = data["error"] if isinstance(data["error"], dict) else {"message": str(data["error"])}

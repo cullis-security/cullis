@@ -666,3 +666,116 @@ async def test_three_backends_visible_after_seed_and_binding(
     assert "github" in names
     assert "slack" in names
     assert "postgres" in names
+
+
+# ── Streamable HTTP forwarder behavior ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_forwarder_sends_streamable_http_accept_header(
+    proxy_db, clean_registry, app_client, monkeypatch,
+):
+    """Forwarder must advertise both JSON and SSE so Streamable HTTP
+    MCP servers (e.g. sparfenyuk mcp-proxy) accept the POST."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["accept"] = request.headers.get("accept")
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+        )
+
+    _patch_whitelist_transport(monkeypatch, handler)
+
+    await _seed_resource(
+        resource_id="res-shttp", name="shttp-svc",
+        endpoint_url="http://shttp-svc:8080/mcp",
+        allowed_domains='["shttp-svc:8080"]',
+    )
+    await _seed_binding(agent_id="acme::buyer", resource_id="res-shttp")
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "shttp-svc", "arguments": {}},
+    })
+
+    accept = captured.get("accept", "")
+    assert "application/json" in accept
+    assert "text/event-stream" in accept
+
+
+@pytest.mark.asyncio
+async def test_forwarder_decodes_sse_framed_response(
+    proxy_db, clean_registry, app_client, monkeypatch,
+):
+    """When the upstream replies with text/event-stream (single data:
+    frame), the forwarder must extract the JSON-RPC envelope from it."""
+    sse_body = (
+        'event: message\n'
+        'data: {"jsonrpc":"2.0","id":1,"result":'
+        '{"content":[{"type":"text","text":"sse-hello"}],"isError":false}}\n'
+        '\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=sse_body.encode("utf-8"),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_whitelist_transport(monkeypatch, handler)
+
+    await _seed_resource(
+        resource_id="res-sse", name="sse-svc",
+        endpoint_url="http://sse-svc:8080/mcp",
+        allowed_domains='["sse-svc:8080"]',
+    )
+    await _seed_binding(agent_id="acme::buyer", resource_id="res-sse")
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    body = client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "sse-svc", "arguments": {}},
+    }).json()
+
+    assert body["result"]["isError"] is False
+    text_out = body["result"]["content"][0]["text"]
+    assert "sse-hello" in text_out
+
+
+@pytest.mark.asyncio
+async def test_forwarder_rejects_malformed_sse_body(
+    proxy_db, clean_registry, app_client, monkeypatch,
+):
+    """A text/event-stream body with no parseable data: line is treated
+    as malformed and bubbles up as an error result."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"event: ping\n\n",
+            headers={"content-type": "text/event-stream"},
+        )
+
+    _patch_whitelist_transport(monkeypatch, handler)
+
+    await _seed_resource(
+        resource_id="res-sse-bad", name="sse-bad-svc",
+        endpoint_url="http://sse-bad:8080/mcp",
+        allowed_domains='["sse-bad:8080"]',
+    )
+    await _seed_binding(agent_id="acme::buyer", resource_id="res-sse-bad")
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    body = client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "sse-bad-svc", "arguments": {}},
+    }).json()
+
+    assert "error" in body
+    assert "non-JSON" in body["error"]["message"] or "malformed" in body["error"]["message"].lower()
