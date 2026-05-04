@@ -50,6 +50,22 @@ npm run build           # produces dist/server/entry.mjs and dist/client/*
 npm start               # serves on :4321 (override via HOST/PORT env)
 ```
 
+## Container
+
+```bash
+docker build -t cullis/cullis-chat:dev .
+docker run --rm -p 4321:4321 \
+  -e CULLIS_AMBASSADOR_URL=http://host.docker.internal:7777 \
+  -e CULLIS_LOCAL_TOKEN=dev-token \
+  cullis/cullis-chat:dev
+```
+
+Two-stage build: a Node 22 alpine builder produces the standalone
+Node bundle, the runtime stage drops to non-root (`cullis:cullis`)
+and serves `dist/server/entry.mjs` directly. The Frontdesk
+deployment image (future ADR-019 Step 4) will bundle this with the
+Connector daemon under a supervisor.
+
 ## Test
 
 ```bash
