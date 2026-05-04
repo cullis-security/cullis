@@ -21,7 +21,6 @@ from __future__ import annotations
 import pytest
 import httpx
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
 from fastapi import FastAPI
 
 from app.auth.jwt import get_current_agent
