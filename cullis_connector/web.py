@@ -145,6 +145,12 @@ async def _dashboard_lifespan(app: FastAPI):
     # means to read ``identity/agent.key`` anyway.
     app.state.statusline_token = ensure_statusline_token(config.config_dir)
 
+    # ADR-019 — install the Ambassador if enabled and an identity exists.
+    # We mount it lazily here (vs in build_app) because the identity may
+    # land mid-process (post enrollment), so a fresh dashboard start
+    # picks it up. If ``ambassador.enabled`` is false this is a no-op.
+    _maybe_install_ambassador(app, config)
+
     _ensure_inbox_poller_running(app)
     try:
         yield
@@ -231,6 +237,85 @@ def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
     return DashboardInboxPoller(client, poll_interval_s=interval_s)
 
 
+def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
+    """Mount Ambassador router if enabled and identity is on disk.
+
+    Silent no-op when ``ambassador.enabled`` is false or when there is
+    no identity yet (pre-enrollment dashboard). Logs the outcome
+    explicitly for operator visibility.
+    """
+    import logging
+    log = logging.getLogger("cullis_connector.web")
+
+    if not config.ambassador.enabled:
+        log.info("Ambassador disabled by config (ambassador.enabled=False)")
+        return
+    if not has_identity(config.config_dir):
+        log.info(
+            "Ambassador install deferred: no identity at %s yet",
+            config.config_dir,
+        )
+        return
+
+    try:
+        from cullis_connector.ambassador.auth import ensure_local_token
+        from cullis_connector.ambassador.client import AmbassadorClient
+        from cullis_connector.ambassador.router import install_ambassador
+        from cullis_connector.identity.store import load_identity
+    except ImportError:
+        log.exception("Ambassador module import failed; skipping mount")
+        return
+
+    bundle = load_identity(config.config_dir)
+    agent_id = bundle.metadata.agent_id
+    site_url = bundle.metadata.site_url or config.site_url
+    if "::" in agent_id:
+        org_id = agent_id.split("::", 1)[0]
+    else:
+        org_id = ""
+    if not site_url:
+        log.warning(
+            "Ambassador install skipped: site_url unknown "
+            "(metadata=%r config=%r)",
+            bundle.metadata.site_url, config.site_url,
+        )
+        return
+    if not agent_id:
+        log.warning("Ambassador install skipped: agent_id empty in identity")
+        return
+
+    bearer = ensure_local_token(config.config_dir)
+    # The SDK accepts the private key in PEM bytes via login_from_pem;
+    # serialise the in-memory PrivateKeyTypes object back to PEM here so
+    # we don't have to re-read the keyfile (which has the right perms).
+    from cryptography.hazmat.primitives import serialization
+    key_pem = bundle.private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+    holder = AmbassadorClient(
+        site_url=site_url,
+        agent_id=agent_id,
+        org_id=org_id,
+        cert_pem=bundle.cert_pem,
+        key_pem=key_pem,
+        verify_tls=config.verify_arg,
+    )
+    install_ambassador(
+        app,
+        bearer_token=bearer,
+        client=holder,
+        advertised_models=config.ambassador.advertised_models,
+        require_local_only=config.ambassador.require_local_only,
+    )
+    log.info(
+        "Ambassador mounted: agent=%s site=%s bearer=*** (saved at %s)",
+        agent_id, site_url, config.config_dir / "local.token",
+    )
+
+
 def build_app(config: ConnectorConfig) -> FastAPI:
     """Return a FastAPI app bound to the given connector config.
 
@@ -281,6 +366,14 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
     @app.middleware("http")
     async def _csrf_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # ADR-019 — Ambassador endpoints under /v1/* run their own
+        # auth (loopback + Bearer) and cannot rely on Origin/Referer
+        # since OpenAI clients (Cullis Chat / Cursor / OpenWebUI) do
+        # not always emit those headers. Skip the dashboard CSRF
+        # guard for that prefix; the Ambassador router enforces
+        # 401 on missing/invalid Bearer.
+        if request.url.path.startswith("/v1/"):
+            return await call_next(request)
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):
             authz = request.headers.get("authorization", "")
             if not authz.startswith("Bearer "):

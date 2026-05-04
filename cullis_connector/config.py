@@ -45,6 +45,33 @@ DEFAULT_CONFIG_FILENAME = "config.yaml"
 
 
 @dataclass
+class AmbassadorConfig:
+    """Connector Ambassador (ADR-019) settings.
+
+    The Ambassador exposes OpenAI-compatible endpoints on the same
+    FastAPI app as the dashboard so local chat clients (Cullis Chat,
+    Cursor, OpenWebUI, ...) can speak Bearer to localhost while
+    Cullis cloud keeps requiring DPoP+mTLS.
+    """
+
+    enabled: bool = True
+    """Mount /v1/chat/completions, /v1/mcp, /v1/models on the dashboard app."""
+
+    advertised_models: list[str] = field(
+        default_factory=lambda: [
+            "claude-haiku-4-5",
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+        ]
+    )
+    """Models surfaced via /v1/models. Must be supported by Mastio's egress."""
+
+    require_local_only: bool = True
+    """Reject any non-loopback peer regardless of bind. Defence-in-depth
+    against the operator overriding ``--host`` to 0.0.0.0."""
+
+
+@dataclass
 class ConnectorConfig:
     """Resolved runtime configuration for the connector process."""
 
@@ -77,6 +104,9 @@ class ConnectorConfig:
 
     request_timeout_s: float = 10.0
     """HTTP request timeout for diagnostic and tool calls."""
+
+    ambassador: AmbassadorConfig = field(default_factory=AmbassadorConfig)
+    """ADR-019 — OpenAI-compatible Bearer surface for local chat clients."""
 
     @property
     def identity_dir(self) -> Path:
