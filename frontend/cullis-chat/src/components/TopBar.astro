@@ -1,13 +1,15 @@
 ---
 // TopBar — fixed at the top of the chat shell.
 //
-// v0.1 surfaces three things: brand lockup (left), model picker
-// (centre, placeholder static select for now — wired to real models
-// in commit 8), identity badge (right, placeholder showing principal
-// type + name — wired to /api/session/whoami in commit 8).
+// Three slots: brand lockup (left), model picker (centre, live React
+// island fed by /v1/models), identity badge (right, live React island
+// fed by /api/session/whoami) plus the audit toggle button.
 //
 // Style mirrors `site/src/components/Nav.astro`: monospace nav links,
 // Chakra Petch wordmark, drop-shadow cyan glow on the mark.
+
+import IdentityBadge from './IdentityBadge.tsx';
+import ModelPicker from './ModelPicker.tsx';
 ---
 
 <header class="topbar">
@@ -19,12 +21,7 @@
   </a>
 
   <div class="topbar-center">
-    <label class="model-picker" aria-label="Active model">
-      <span class="folio">model</span>
-      <select disabled aria-disabled="true">
-        <option>claude-haiku-4-5</option>
-      </select>
-    </label>
+    <ModelPicker client:load />
   </div>
 
   <div class="topbar-right">
@@ -32,12 +29,7 @@
       <span class="pulse-dot" aria-hidden="true"></span>
       <span class="status-label">connected</span>
     </span>
-    <span class="identity-badge" data-placeholder="true">
-      <span class="folio">principal</span>
-      <span class="identity-name">
-        <em>user</em><span class="identity-sep">·</span>local
-      </span>
-    </span>
+    <IdentityBadge client:load />
     <button
       type="button"
       class="audit-toggle"
@@ -115,7 +107,9 @@
     justify-content: center;
   }
 
-  .model-picker {
+  /* ModelPicker — global rules so they apply to the React island
+     (Astro scoped styles don't reach into mounted React subtrees). */
+  :global(.model-picker) {
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
@@ -123,15 +117,19 @@
     background: var(--bg-elevated);
     border: 1px solid var(--border-medium);
     transition: border-color var(--t-base) ease;
-    cursor: not-allowed;
   }
 
-  .model-picker .folio {
+  :global(.model-picker:hover),
+  :global(.model-picker:focus-within) {
+    border-color: var(--accent-cyan);
+  }
+
+  :global(.model-picker .folio) {
     border-right: 1px solid var(--border-subtle);
     padding-right: 0.55rem;
   }
 
-  .model-picker select {
+  :global(.model-picker select) {
     appearance: none;
     background: transparent;
     border: none;
@@ -139,13 +137,17 @@
     font-family: var(--font-mono);
     font-size: 0.78rem;
     letter-spacing: 0.04em;
-    cursor: not-allowed;
+    cursor: pointer;
     padding: 0.1rem 1.5rem 0.1rem 0;
     background-image: linear-gradient(45deg, transparent 50%, var(--accent-cyan) 50%),
                       linear-gradient(135deg, var(--accent-cyan) 50%, transparent 50%);
     background-position: calc(100% - 12px) 50%, calc(100% - 6px) 50%;
     background-size: 6px 6px;
     background-repeat: no-repeat;
+  }
+
+  :global(.model-picker[data-loaded='false']) {
+    opacity: 0.7;
   }
 
   /* Right — status + identity badge */
@@ -170,7 +172,8 @@
     color: var(--text-secondary);
   }
 
-  .identity-badge {
+  /* IdentityBadge — global rules (React island, see comment above). */
+  :global(.identity-badge) {
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
@@ -179,12 +182,20 @@
     border-left: 2px solid var(--accent-cyan);
   }
 
-  .identity-badge .folio {
+  :global(.identity-badge-loading) {
+    border-left-color: var(--text-tertiary);
+  }
+
+  :global(.identity-badge-error) {
+    border-left-color: var(--accent-amber);
+  }
+
+  :global(.identity-badge .folio) {
     border-right: 1px solid var(--border-subtle);
     padding-right: 0.55rem;
   }
 
-  .identity-name {
+  :global(.identity-name) {
     font-family: var(--font-mono);
     font-size: 0.78rem;
     color: var(--text-primary);
@@ -195,7 +206,7 @@
   }
 
   /* `<em>` borrowed from site headings — italic display serif accent */
-  .identity-name em {
+  :global(.identity-name em) {
     font-family: var(--font-display);
     font-style: italic;
     font-size: 1.1em;
@@ -203,7 +214,7 @@
     letter-spacing: 0;
   }
 
-  .identity-sep {
+  :global(.identity-sep) {
     color: var(--text-tertiary);
   }
 

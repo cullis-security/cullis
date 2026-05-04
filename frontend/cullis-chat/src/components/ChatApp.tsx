@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { ChatContext, type ChatContextValue } from '../lib/chat-context';
-import { ApiError, chatCompletionStream, initSession } from '../lib/api';
-import type { ChatMessage, ToolCallEvent } from '../lib/types';
+import { ApiError, chatCompletionStream } from '../lib/api';
+import { ensureSession } from '../lib/session-singleton';
+import { readSelectedModel } from './ModelPicker';
+import type { ChatMessage } from '../lib/types';
 import { ChatWindow } from './ChatWindow';
 import { AuditPanel } from './AuditPanel';
 import '../styles/chat-window.css';
@@ -84,7 +86,6 @@ const INITIAL: ChatState = {
   selectedMessageId: null,
 };
 
-const DEFAULT_MODEL = 'claude-haiku-4-5';
 const FLUSH_MS = 60;
 
 function newId(prefix: string): string {
@@ -115,7 +116,7 @@ export default function ChatApp() {
   // Session init at mount.
   useEffect(() => {
     let cancelled = false;
-    initSession()
+    ensureSession()
       .then(() => !cancelled && setSessionReady(true))
       .catch((err) => {
         if (cancelled) return;
@@ -167,7 +168,7 @@ export default function ChatApp() {
 
     try {
       const history = state.messages.concat(userMsg).map((m) => ({ role: m.role, content: m.content }));
-      const events = chatCompletionStream({ model: DEFAULT_MODEL, messages: history });
+      const events = chatCompletionStream({ model: readSelectedModel(), messages: history });
 
       let traceId: string | undefined;
       for await (const ev of events) {
