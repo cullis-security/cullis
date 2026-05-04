@@ -1,0 +1,287 @@
+/* Cullis Chat — chat surface.
+ *
+ * Imported by `ChatWindow.tsx` (React island). Visually identical to
+ * the static placeholder shipped in commit 2 (`ChatMain.astro`),
+ * extended with the dynamic states: list of message turns, sending
+ * spinner, error banner.
+ */
+
+.chat-shell {
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  height: 100%;
+  padding: 1.5rem 1.75rem 1rem;
+  gap: 1rem;
+  min-height: 0;
+}
+
+/* Stream */
+.chat-stream {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 1rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--msg-gap);
+}
+
+.chat-stream-inner {
+  margin: 0 auto;
+  width: 100%;
+  max-width: 64ch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--msg-gap);
+}
+
+/* Empty state */
+.chat-empty {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding-top: 2rem;
+}
+
+.chat-empty-title {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(2rem, 4.5vw, 3.2rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0.4rem 0 0.2rem;
+}
+
+.chat-empty-title em {
+  font-style: italic;
+  color: var(--accent-cyan);
+}
+
+.chat-empty-sub {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 48ch;
+  margin: 0;
+}
+
+.chat-empty-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.hint {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  letter-spacing: 0.01em;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  transition: color var(--t-base) ease;
+}
+
+.hint:hover {
+  color: var(--accent-cyan);
+}
+
+/* Messages */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.msg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.msg-role {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-cyan);
+}
+
+.msg-role-user {
+  color: var(--text-secondary);
+}
+
+.msg-folio {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+
+.msg-folio em {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 1.1em;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-secondary);
+}
+
+.msg-body {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.msg-assistant .msg-body {
+  background: var(--msg-assistant-bg);
+  border-left: 3px solid var(--msg-assistant-border);
+  padding: var(--msg-pad-y) var(--msg-pad-x);
+}
+
+.msg-user .msg-body {
+  color: var(--text-primary);
+  padding: 0;
+  border-left: 1px dashed var(--border-medium);
+  padding-left: var(--msg-pad-x);
+}
+
+/* Pending indicator on streaming-or-loading assistant message */
+.msg-pending::after {
+  content: '▍';
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--caret-color);
+  animation: caret-blink var(--caret-blink) steps(1, end) infinite;
+}
+
+@keyframes caret-blink {
+  0%, 50%   { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Error banner */
+.chat-error {
+  background: rgba(240, 165, 0, 0.06);
+  border: 1px solid rgba(240, 165, 0, 0.3);
+  border-left: 3px solid var(--accent-amber);
+  color: var(--text-primary);
+  padding: 0.85rem 1rem;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+}
+
+.chat-error strong {
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-right: 0.5rem;
+}
+
+/* Input box — terminal */
+.chat-input {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: end;
+  gap: 0.7rem;
+  padding: 0.75rem 0.9rem;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  transition: border-color var(--t-base) ease;
+}
+
+.chat-input:focus-within {
+  border-color: var(--input-border-focus);
+  box-shadow: 0 0 24px var(--accent-cyan-glow);
+}
+
+.chat-input.is-sending {
+  border-color: var(--accent-cyan);
+  opacity: 0.85;
+}
+
+.prompt {
+  font-family: var(--font-mono);
+  color: var(--accent-cyan);
+  font-size: 1rem;
+  line-height: 1.6;
+  padding-bottom: 0.05rem;
+  user-select: none;
+}
+
+.chat-input textarea {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  resize: none;
+  outline: none;
+  width: 100%;
+  padding: 0.1rem 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.chat-input textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.send {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--accent-cyan);
+  border: 1px solid var(--accent-cyan);
+  cursor: pointer;
+  transition: all var(--t-base) ease;
+}
+
+.send:not([disabled]):hover {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+}
+
+.send[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.send-arrow {
+  transition: transform var(--t-base) ease;
+}
+
+.send:not([disabled]):hover .send-arrow {
+  transform: translateX(3px);
+}
+
+.chat-foot {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding-top: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+}
