@@ -10,6 +10,8 @@
 
 import IdentityBadge from './IdentityBadge.tsx';
 import ModelPicker from './ModelPicker.tsx';
+
+const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
 ---
 
 <header class="topbar">
@@ -30,15 +32,17 @@ import ModelPicker from './ModelPicker.tsx';
       <span class="status-label">connected</span>
     </span>
     <IdentityBadge client:load />
-    <button
-      type="button"
-      class="audit-toggle"
-      aria-label="Toggle audit panel"
-      data-action="toggle-audit"
-    >
-      <span class="folio">audit</span>
-      <span class="audit-toggle-icon" aria-hidden="true">▦</span>
-    </button>
+    {auditToggleEnabled && (
+      <button
+        type="button"
+        class="audit-toggle"
+        aria-label="Toggle audit panel"
+        data-action="toggle-audit"
+      >
+        <span class="folio">audit</span>
+        <span class="audit-toggle-icon" aria-hidden="true">▦</span>
+      </button>
+    )}
   </div>
 </header>
 

@@ -85,6 +85,13 @@ body {
   pointer-events: none;
 }
 
+/* Production mode (PUBLIC_DEV_AUDIT_PANEL unset): the audit pane is
+ * not rendered at all. Collapse the layout to a single column so the
+ * chat surface fills the available width. */
+.chat-app--no-audit {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* Subtle grid background CONFINED to the main pane (sidebar + audit
  * stay flat surface for legibility — different from the site, where
  * the grid is global). */

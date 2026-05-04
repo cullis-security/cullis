@@ -8,6 +8,11 @@ import { ChatWindow } from './ChatWindow';
 import { AuditPanel } from './AuditPanel';
 import '../styles/chat-window.css';
 
+// In production the audit chain belongs to the CISO/admin dashboard,
+// not to the end-user chat surface. The inline panel is dev-only and
+// gated by an Astro public env var. Default off.
+const AUDIT_PANEL_ENABLED = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
+
 interface ChatState {
   messages: ChatMessage[];
   status: 'idle' | 'sending';
@@ -232,15 +237,18 @@ export default function ChatApp() {
 
   // Initial collapse state from localStorage. The TopBar toggle script
   // mutates the data-attribute on this element directly; we just seed it.
-  const collapsed = readCollapsedFromLocalStorage();
+  // Only relevant when the audit panel is enabled.
+  const collapsed = AUDIT_PANEL_ENABLED ? readCollapsedFromLocalStorage() : false;
+
+  const className = AUDIT_PANEL_ENABLED ? 'chat-app' : 'chat-app chat-app--no-audit';
 
   return (
     <ChatContext.Provider value={value}>
-      <div className="chat-app" data-audit-collapsed={collapsed ? 'true' : 'false'}>
+      <div className={className} data-audit-collapsed={collapsed ? 'true' : 'false'}>
         <section className="chat-main" aria-label="Chat">
           <ChatWindow />
         </section>
-        <AuditPanel />
+        {AUDIT_PANEL_ENABLED ? <AuditPanel /> : null}
       </div>
     </ChatContext.Provider>
   );

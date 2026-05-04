@@ -13,12 +13,14 @@ as DPoP+mTLS and emits it to the Cullis cloud (proxy + Mastio).
 
 ## v0.1 surface
 
-- 3-pane layout: empty sidebar (history lands in v0.5), chat main, audit panel
+- 3-pane layout: empty sidebar (history lands in v0.5), chat main, optional dev audit panel
 - Streaming SSE chat over `/v1/chat/completions` (OpenAI-compatible)
 - Tool-use indicators inline ("calling postgres.query...")
-- Audit panel right with `trace_id`, latency, tool calls per assistant message
 - Identity badge with `principal_type` per ADR-020 (`user · mario`)
 - Model picker fed by `/v1/models`
+- Dev-only audit panel (right rail) gated by `PUBLIC_DEV_AUDIT_PANEL=1`. In
+  production the audit chain belongs to the CISO/admin dashboard (Mastio),
+  not to the end-user surface. Default off.
 - No login (topology L: security boundary is the OS process; topology S adds
   reverse-proxy SSO upstream, see ADR-019 §2)
 
@@ -42,6 +44,14 @@ npm run dev             # Astro dev on :4321
 
 # Open http://localhost:4321
 ```
+
+To exercise the dev audit panel locally:
+
+```bash
+PUBLIC_DEV_AUDIT_PANEL=1 npm run dev
+```
+
+The Playwright config sets this automatically for the e2e suite.
 
 ## Build
 

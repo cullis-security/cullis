@@ -51,6 +51,9 @@ export default defineConfig({
       env: {
         CULLIS_LOCAL_TOKEN: 'test-token',
         CULLIS_AMBASSADOR_URL: `http://127.0.0.1:${MOCK_PORT}`,
+        // The audit panel is dev-only (production hides it). Tests
+        // exercise it, so enable it explicitly here.
+        PUBLIC_DEV_AUDIT_PANEL: '1',
       },
       stdout: 'pipe',
       stderr: 'pipe',
