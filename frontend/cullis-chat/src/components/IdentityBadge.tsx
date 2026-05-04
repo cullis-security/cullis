@@ -5,7 +5,12 @@ import type { Principal } from '../lib/types';
 
 /**
  * Live identity badge in the TopBar. Reads the principal from
- * `/api/session/whoami` (which forwards to Ambassador `/v1/whoami`).
+ * the local Astro `/api/session/whoami` route, which forwards to
+ * the Ambassador's shared-mode `/api/session/whoami` endpoint and
+ * translates the cookie-payload shape into the ADR-020 principal
+ * shape we render here. Single mode falls through to a "local"
+ * placeholder so the badge still shows something useful.
+ *
  * v0.1 shape (ADR-020): principal_type display em + name.
  */
 export default function IdentityBadge() {

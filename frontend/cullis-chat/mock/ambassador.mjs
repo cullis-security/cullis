@@ -152,12 +152,27 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/v1/whoami') {
+    // Single mode legacy shape — kept for back-compat. Shared mode
+    // uses /api/session/whoami (below) with the cookie-payload shape.
     jsonResponse(res, 200, {
       spiffe_id: 'spiffe://demo.test/demo/user/mario',
       principal_type: 'user',
       name: 'mario',
       org: 'demo',
       trust_domain: 'demo.test',
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/api/session/whoami') {
+    // ADR-021 shared-mode shape: cookie payload as the Ambassador
+    // hands it back. The Astro `/api/session/whoami` route translates
+    // this into the ADR-020 principal shape the IdentityBadge wants.
+    jsonResponse(res, 200, {
+      principal_id: 'demo.test/demo/user/mario',
+      sub: 'mario@demo.test',
+      org: 'demo',
+      exp: Math.floor(Date.now() / 1000) + 3600,
     });
     return;
   }
