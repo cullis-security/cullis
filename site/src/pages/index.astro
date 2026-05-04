@@ -2,182 +2,310 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="Cullis — Zero-trust identity and audit for AI agents">
+<Layout title="Cullis — A federated trust fabric for AI agents">
+
   <!-- HERO -->
   <section class="hero">
-    <div class="container hero-container">
-      <aside class="hero-marginalia reveal">
-        <div class="scribble">CLLS-0001</div>
-        <div class="folio">research preview · <em>pre-1.0</em></div>
-        <div class="marginalia">
-          Cryptographic infrastructure for artificial agents — identity,
-          authorization, and tamper-evident audit across organizations
-          that do not trust one another.
-        </div>
-      </aside>
-
-      <div class="hero-main">
-        <div class="eyebrow reveal">
+    <div class="container wide">
+      <div class="hero-eyebrow-row reveal">
+        <div class="eyebrow">
           <span class="pulse-dot"></span>
-          Agent Trust Fabric
+          Agent Trust Fabric · pre-1.0
         </div>
-
-        <h1 class="hero-title reveal" data-delay="1">
-          Zero-trust <em>identity</em><br />
-          &amp; <em>audit</em> for<br />
-          AI agents.
-        </h1>
-
-        <p class="hero-lead reveal" data-delay="2">
-          Start air-gapped inside your organization. Scale to
-          cross-company federation — without redeploy. Per-agent
-          cryptographic identity, tamper-evident hash-chain audit,
-          end-to-end encrypted messaging.
-        </p>
-
-        <div class="hero-actions reveal" data-delay="3">
-          <a href="/architecture" class="btn btn-primary">Read the architecture</a>
-          <a href="/download" class="btn btn-ghost">Download Connector</a>
-        </div>
-
-        <dl class="hero-stats reveal" data-delay="4">
-          <div>
-            <dt>Cryptography</dt>
-            <dd>ECC · <em>P-256</em></dd>
-          </div>
-          <div>
-            <dt>License</dt>
-            <dd>FSL-1.1 / Apache-2.0</dd>
-          </div>
-          <div>
-            <dt>Stage</dt>
-            <dd><em>research preview</em></dd>
-          </div>
-        </dl>
       </div>
 
+      <div class="hero-top">
+        <div class="hero-text">
+          <h1 class="hero-title reveal" data-delay="1">
+            Two layers for<br />
+            <em>AI agent trust.</em>
+          </h1>
+        </div>
+        <div class="hero-aside">
+          <p class="hero-lead reveal" data-delay="2">
+            Cullis is not a single product, it is two layers
+            designed to be adopted separately. <strong>Mastio</strong>
+            is the control point each organization installs for its
+            own AI agents (identity, policy, audit, MCP and LLM
+            gateway). <strong>Court</strong> federates Mastios across
+            organizations by routing sealed envelopes it cannot open.
+          </p>
+          <div class="hero-actions reveal" data-delay="3">
+            <a href="/architecture" class="btn btn-primary">Read the architecture</a>
+            <a href="#quickstart" class="btn btn-ghost">Try the sandbox</a>
+          </div>
+          <div class="hero-meta reveal" data-delay="4">
+            <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="hero-meta-link">
+              <span class="hero-meta-icon" aria-hidden="true">[ ]</span>
+              <span class="hero-meta-text">
+                <span class="hero-meta-label">Open source</span>
+                <span class="hero-meta-detail">FSL-1.1 · Apache-2.0</span>
+              </span>
+            </a>
+            <a href="/docs" class="hero-meta-link">
+              <span class="hero-meta-icon" aria-hidden="true">{ }</span>
+              <span class="hero-meta-text">
+                <span class="hero-meta-label">Read the docs</span>
+                <span class="hero-meta-detail">Quickstart · ADR · API</span>
+              </span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-figure reveal" data-delay="4">
+        <div class="frame-stack">
+          <div class="frame-glow"></div>
+          <div class="product-frame product-frame-hero">
+            <div class="product-frame-bar">
+              <span class="product-frame-dot live"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-title">cullis · mastio · /overview</span>
+              <span class="product-frame-status">ONLINE</span>
+            </div>
+            <div class="product-frame-screen">
+              <img src="/screenshots/mastio-overview.png" alt="Mastio overview dashboard" loading="eager" />
+            </div>
+          </div>
+          <div class="frame-marker frame-marker-tl">
+            <span class="marker-tick"></span>
+            <span class="marker-text">intra-org · org trust authority</span>
+          </div>
+          <div class="frame-marker frame-marker-br">
+            <span class="marker-tick"></span>
+            <span class="marker-text">live · sse stream</span>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
   <hr class="divider" />
 
-  <!-- PREMISE -->
-  <section class="prose-section">
-    <div class="container narrow">
-      <div class="eyebrow reveal">
-        <span class="eyebrow-number">01</span>
-        The premise
-      </div>
-      <h2 class="reveal" data-delay="1">
-        Three questions — <em>who</em>, <em>what</em>,<br/>
-        and <em>what actually happened</em>.
-      </h2>
-      <p class="reveal dropcap" data-delay="2">
-        Artificial agents act on your behalf. They read, decide, move money,
-        speak to systems owned by other companies. When something goes wrong
-        — and it will — three questions matter.
-        <em>Who was it?</em> Not the user who typed a prompt last week, the
-        specific agent process, with a cryptographic proof.
-        <em>What were they allowed to do?</em> Not by policy written in a PDF,
-        by policy enforced at the boundary before the call landed.
-        <em>What did they actually do?</em> Not what logs you can still find,
-        an append-only chain that cannot be silently rewritten.
-      </p>
-      <p class="reveal" data-delay="3">
-        Cullis answers those three questions with three components that run
-        entirely on your infrastructure: a connector at the edge, an
-        authority inside your organization, and — when you need to reach
-        agents in other companies — a court that routes between trust
-        domains without reading the mail.
-      </p>
-    </div>
-  </section>
-
-  <hr class="divider" />
-
-  <!-- COMPONENTS -->
-  <section class="components-section">
-    <div class="container">
-      <div class="section-head">
+  <!-- FEATURE SWITCHER · MASTIO -->
+  <section class="feature-switch">
+    <div class="container wide">
+      <div class="feature-head">
         <div class="eyebrow reveal">
           <span class="eyebrow-number">02</span>
-          Three components
+          Mastio · org trust authority
         </div>
-        <h2 class="reveal" data-delay="1">
-          The <em>fabric</em>, named.
+        <h2 class="feature-title reveal" data-delay="1">
+          What <em>Mastio</em><br />
+          actually does.
         </h2>
-        <p class="section-lead reveal" data-delay="2">
-          Three independent, deployable components. A single company
-          runs two; a consortium adds the third.
+        <p class="feature-lead reveal" data-delay="2">
+          One control point per organization. Authority over agent
+          identity. Policy enforced before the call lands. An
+          append-only chain of everything that happened.
         </p>
       </div>
 
-      <div class="components-grid">
-        <article class="component-card reveal" data-delay="1">
-          <div class="cc-number">01</div>
-          <div class="cc-label">Edge</div>
-          <h3 class="cc-title">Cullis <em>Connector</em></h3>
-          <p class="cc-body">
-            A desktop application that admits any MCP client — Claude
-            Desktop, Cursor, Cline — into the Cullis network. Runs on
-            the end user's laptop.
-          </p>
-          <dl class="cc-spec">
-            <dt>Runs on</dt><dd>macOS · Windows · Linux</dd>
-            <dt>Owned by</dt><dd>the end user</dd>
-            <dt>Does</dt><dd>identity · MCP↔Cullis translation</dd>
-          </dl>
-        </article>
+      <div class="feature-grid" data-feature-grid>
+        <ol class="feature-list reveal" data-delay="3">
+          <li class="feature-item active" data-feature="pki">
+            <div class="feature-num">01</div>
+            <h3>Cryptographic identity, per agent</h3>
+            <p>
+              Mastio holds the org CA and mints x509 + SPIFFE identities
+              for every agent it admits. The caller authenticated at the
+              gateway is the agent process itself, not the user with an
+              API key.
+            </p>
+            <a class="feature-link" href="/architecture#identity">Identity model →</a>
+          </li>
+          <li class="feature-item" data-feature="agents">
+            <div class="feature-num">02</div>
+            <h3>Federated and local agents</h3>
+            <p>
+              Some agents stay confined inside the org. Others are
+              published to the federation registry with explicit
+              capabilities and reach. Same authority, two scopes.
+            </p>
+            <a class="feature-link" href="/architecture#registry">Registry model →</a>
+          </li>
+          <li class="feature-item" data-feature="audit">
+            <div class="feature-num">03</div>
+            <h3>Tamper-evident audit chain</h3>
+            <p>
+              Every event (auth, enroll, reach change, message, tool
+              call) appended to a hash chain anchored via RFC 3161.
+              Reconstructable, evident even to the database admin.
+            </p>
+            <a class="feature-link" href="/architecture#audit">Audit chain →</a>
+          </li>
+        </ol>
 
-        <article class="component-card reveal" data-delay="2">
-          <div class="cc-number">02</div>
-          <div class="cc-label">Intra-org</div>
-          <h3 class="cc-title">Cullis <em>Mastio</em></h3>
-          <p class="cc-body">
-            The authority that governs agents inside a single
-            organization. Issues certificates, enforces policy, keeps
-            a local hash-chain audit that never leaves the perimeter.
-          </p>
-          <dl class="cc-spec">
-            <dt>Runs on</dt><dd>your infrastructure</dd>
-            <dt>Owned by</dt><dd>your org admin</dd>
-            <dt>Does</dt><dd>CA · policy · audit · reverse-proxy</dd>
-          </dl>
-        </article>
-
-        <article class="component-card reveal" data-delay="3">
-          <div class="cc-number">03</div>
-          <div class="cc-label">Cross-org</div>
-          <h3 class="cc-title">Cullis <em>Court</em></h3>
-          <p class="cc-body">
-            Federates Mastios across different organizations. Routes
-            sealed envelopes between companies — sees who and when,
-            never sees what was said.
-          </p>
-          <dl class="cc-spec">
-            <dt>Runs on</dt><dd>network operator's infrastructure</dd>
-            <dt>Owned by</dt><dd>one company or a consortium</dd>
-            <dt>Does</dt><dd>registry · federation · ciphertext routing</dd>
-          </dl>
-        </article>
+        <div class="feature-figure reveal" data-delay="4">
+          <div class="product-frame">
+            <div class="product-frame-bar">
+              <span class="product-frame-dot live"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-title" data-frame-title>cullis · mastio · /pki</span>
+            </div>
+            <div class="product-frame-screen feature-screen">
+              <img src="/screenshots/mastio-pki.png" alt="Mastio PKI management" data-frame-img="pki" class="active" />
+              <img src="/screenshots/mastio-agents.png" alt="Mastio internal agents" data-frame-img="agents" />
+              <img src="/screenshots/mastio-audit-log.png" alt="Mastio audit log" data-frame-img="audit" />
+            </div>
+          </div>
+        </div>
       </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- COURT -->
+  <section class="court-section">
+    <div class="container wide">
+      <div class="hero-eyebrow-row reveal">
+        <div class="eyebrow">
+          <span class="eyebrow-number">03</span>
+          Court · cross-org federation
+        </div>
+      </div>
+
+      <div class="court-top">
+        <div class="court-text">
+          <h2 class="court-title reveal" data-delay="2">
+            Routes envelopes<br />
+            it <em>cannot open.</em>
+          </h2>
+        </div>
+        <div class="court-aside">
+          <p class="reveal" data-delay="3">
+            When agents in different organizations need to talk, a Court
+            stands between them. It sees who routed what, when, between
+            which Mastios. It never holds keys to read the message,
+            never holds keys to impersonate a Mastio or an agent.
+          </p>
+          <p class="reveal" data-delay="4">
+            A Court compromise is a metadata leak. Never a
+            confidentiality breach, never a non-repudiation breach.
+            Cross-org non-repudiation comes from dual-write between the
+            two Mastios; Court is the third parallel witness.
+          </p>
+          <div class="hero-actions reveal" data-delay="5">
+            <a href="/architecture#federation" class="btn btn-ghost">How federation works</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="court-figure reveal">
+        <div class="frame-stack">
+          <div class="frame-glow frame-glow-amber"></div>
+          <div class="product-frame product-frame-hero">
+            <div class="product-frame-bar">
+              <span class="product-frame-dot live"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-title">cullis · court · /dashboard/overview</span>
+              <span class="product-frame-status court-status">NETWORK</span>
+            </div>
+            <div class="product-frame-screen">
+              <img src="/screenshots/court-overview.png" alt="Court network overview" />
+            </div>
+          </div>
+          <div class="frame-marker frame-marker-tl frame-marker-amber">
+            <span class="marker-tick"></span>
+            <span class="marker-text">cross-org · sealed routing</span>
+          </div>
+          <div class="frame-marker frame-marker-br frame-marker-amber">
+            <span class="marker-tick"></span>
+            <span class="marker-text">audit chain · 29 entries</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="court-secondary">
+        <div class="court-secondary-figure reveal">
+          <div class="product-frame product-frame-flat">
+            <div class="product-frame-bar">
+              <span class="product-frame-dot live"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-dot"></span>
+              <span class="product-frame-title">cullis · court · /dashboard/orgs</span>
+            </div>
+            <div class="product-frame-screen">
+              <img src="/screenshots/court-organizations.png" alt="Court organizations" />
+            </div>
+          </div>
+        </div>
+        <div class="court-secondary-caption reveal" data-delay="1">
+          <div class="caption-eyebrow">Onboarding</div>
+          <h3>One-time invite, then pinned.</h3>
+          <p>
+            New organizations join with a one-time token. Court pins
+            their CA, registers them, and from that moment they are
+            reachable from every other Mastio in the federation.
+            Revocation is one click and propagates immediately.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- BRIDGE -->
+  <section class="bridge-section">
+    <div class="container narrow">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">04</span>
+        Edge · the agent-side bridge
+      </div>
+      <h2 class="reveal" data-delay="1">
+        One bridge, <em>five shapes.</em>
+      </h2>
+      <p class="reveal" data-delay="2">
+        Wherever the agent runs, a small component holds its private
+        key, terminates mTLS toward Mastio, signs envelopes. It is
+        not a separate product line: it is the same cryptographic
+        role in five form factors, picked by where the agent lives.
+      </p>
+
+      <ul class="shapes reveal" data-delay="3">
+        <li>
+          <span class="shape-name">Connector</span>
+          <span class="shape-where">laptop daemon · macOS · Windows · Linux</span>
+        </li>
+        <li>
+          <span class="shape-name">Cullis Chat</span>
+          <span class="shape-where">browser SPA · single power user</span>
+        </li>
+        <li>
+          <span class="shape-name">Frontdesk</span>
+          <span class="shape-where">multi-user SSO · server-side packaging</span>
+        </li>
+        <li>
+          <span class="shape-name">SDK</span>
+          <span class="shape-where">backend services · in-process Python</span>
+        </li>
+        <li>
+          <span class="shape-name">SPIRE</span>
+          <span class="shape-where">Kubernetes workloads · existing identity fabric</span>
+        </li>
+      </ul>
     </div>
   </section>
 
   <hr class="divider" />
 
   <!-- QUICKSTART -->
-  <section class="prose-section">
+  <section class="prose-section" id="quickstart">
     <div class="container narrow">
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">03</span>
+        <span class="eyebrow-number">05</span>
         Quickstart
       </div>
       <h2 class="reveal" data-delay="1">
         One command to <em>federated</em>.
       </h2>
       <p class="reveal" data-delay="2">
-        Boot the full enterprise stack — Court, two Mastios, three agents,
+        Boot the full sandbox: Court, two Mastios, three agents,
         two MCP servers across two organizations, wired with SPIRE,
         Keycloak, Vault and Postgres.
       </p>
@@ -191,11 +319,6 @@ cd cullis
 ./sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
 ./sandbox/demo.sh oneshot-a-to-b  # cross-org: encrypted A2A message A → B
 ./sandbox/demo.sh oneshot-b-to-a  # cross-org: encrypted A2A message B → A</code></pre>
-      <p class="reveal note" data-delay="6">
-        <strong>For single-user install</strong> — download the Cullis
-        Connector from <a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener">Releases</a> and double-click. It will register with a Mastio you point it at and configure
-        your MCP client automatically.
-      </p>
     </div>
   </section>
 
@@ -206,7 +329,7 @@ cd cullis
     <div class="container narrow">
       <div class="closing-rule"></div>
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">04</span>
+        <span class="eyebrow-number">06</span>
         Continue
       </div>
       <h2 class="reveal" data-delay="1">Architecture, <em>deployment</em>, components.</h2>
@@ -221,289 +344,641 @@ cd cullis
       </div>
     </div>
   </section>
+
+  <script>
+    // Feature switcher (Mastio)
+    const grid = document.querySelector('[data-feature-grid]');
+    if (grid) {
+      const items = grid.querySelectorAll<HTMLElement>('[data-feature]');
+      const imgs = grid.querySelectorAll<HTMLImageElement>('[data-frame-img]');
+      const titleEl = grid.querySelector<HTMLElement>('[data-frame-title]');
+      const titles: Record<string, string> = {
+        pki:    'cullis · mastio · /pki',
+        agents: 'cullis · mastio · /agents',
+        audit:  'cullis · mastio · /audit-log',
+      };
+      items.forEach((item) => {
+        item.addEventListener('click', () => {
+          const key = item.dataset.feature || '';
+          items.forEach((i) => i.classList.toggle('active', i === item));
+          imgs.forEach((img) => img.classList.toggle('active', img.dataset.frameImg === key));
+          if (titleEl && titles[key]) titleEl.textContent = titles[key];
+        });
+      });
+      // auto-rotate every 6s if user has not interacted
+      let auto = true;
+      grid.addEventListener('click', () => { auto = false; }, { once: true });
+      let idx = 0;
+      const order = ['pki', 'agents', 'audit'];
+      setInterval(() => {
+        if (!auto) return;
+        idx = (idx + 1) % order.length;
+        const next = grid.querySelector<HTMLElement>(`[data-feature="${order[idx]}"]`);
+        if (next) (next as HTMLElement).click();
+        // re-enable auto after click() above flipped the flag
+        auto = true;
+      }, 6000);
+    }
+  </script>
 </Layout>
 
 <style>
+  /* ====================================================
+     CONTAINER overrides — wider for product showcases
+  ==================================================== */
+  :global(.container.wide) {
+    max-width: 1440px;
+  }
+
+  /* ====================================================
+     HERO
+  ==================================================== */
   .hero {
     padding-top: clamp(6rem, 12vw, 9rem);
-    padding-bottom: clamp(3rem, 7vw, 5rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+    overflow: visible;
   }
 
-  .hero-container {
+  .hero-eyebrow-row {
+    margin-bottom: 2rem;
+  }
+
+  .hero-eyebrow-row .eyebrow {
+    margin-bottom: 0;
+  }
+
+  .hero-top {
     display: grid;
-    grid-template-columns: minmax(170px, 0.7fr) minmax(0, 3fr);
-    gap: clamp(1.5rem, 4vw, 4rem);
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: clamp(2rem, 5vw, 5rem);
     align-items: start;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
   }
 
-  .hero-marginalia {
-    position: sticky;
-    top: 7rem;
-    padding-right: 1rem;
-    border-right: 1px solid var(--border-subtle);
-  }
+  .hero-text { min-width: 0; }
 
-  .hero-main {
-    padding-top: 0.3rem;
+  .hero-aside {
+    min-width: 0;
+    padding-top: clamp(0.5rem, 1.5vw, 1.2rem);
   }
 
   .hero-title {
-    margin: 0 0 1.8rem 0;
+    font-size: clamp(3rem, 8vw, 7rem);
+    line-height: 1.0;
+    margin: 0;
     font-weight: 400;
+    letter-spacing: -0.025em;
   }
 
   .hero-lead {
-    font-size: clamp(1.02rem, 1.45vw, 1.18rem);
-    line-height: 1.65;
-    margin: 0 0 2.2rem 0;
-    max-width: 56ch;
+    font-size: clamp(1rem, 1.3vw, 1.14rem);
+    line-height: 1.7;
     color: var(--text-secondary);
+    max-width: 52ch;
+    margin: 0 0 2.2rem 0;
+  }
+
+  .hero-lead strong {
+    color: var(--text-primary);
+    font-weight: 500;
   }
 
   .hero-actions {
     display: flex;
     gap: 1rem;
     flex-wrap: wrap;
-    margin-bottom: 3rem;
+    margin-bottom: 2.5rem;
   }
 
-  .hero-stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1.5rem;
-    margin: 0;
-    padding: 1.5rem 0 0 0;
+  .hero-meta {
+    display: flex;
+    gap: 2.5rem;
+    flex-wrap: wrap;
+    padding-top: 1.5rem;
     border-top: 1px solid var(--border-subtle);
-    max-width: 560px;
   }
 
-  .hero-stats div {
+  .hero-meta-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.85rem;
+    border: none;
+    color: var(--text-secondary);
+    transition: color 0.2s;
+  }
+
+  .hero-meta-link:hover { border: none; color: var(--accent-cyan); }
+
+  .hero-meta-icon {
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    color: var(--accent-cyan);
+    width: 1.4rem;
+    text-align: center;
+    letter-spacing: 0.04em;
+  }
+
+  .hero-meta-text {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0.18rem;
   }
 
-  .hero-stats dt {
+  .hero-meta-label {
     font-family: var(--font-mono);
-    font-size: 0.62rem;
-    font-weight: 400;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-  }
-
-  .hero-stats dd {
-    font-family: var(--font-display);
-    font-size: 1.25rem;
-    line-height: 1.2;
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
     color: var(--text-primary);
   }
 
-  .hero-stats dd em {
-    color: var(--accent-cyan);
-    font-style: italic;
-  }
-
-  .hero-seal {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
-    color: var(--accent-cyan);
-    padding-top: 0.5rem;
-  }
-
-  .hero-seal svg {
-    width: 100%;
-    max-width: 230px;
-    height: auto;
-    color: var(--accent-cyan);
-    animation: sealBreath 7s ease-in-out infinite;
-    filter: drop-shadow(0 0 16px rgba(0, 229, 199, 0.18));
-  }
-
-  @keyframes sealBreath {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.015); opacity: 0.92; }
-  }
-
-  .seal-caption {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.2rem;
+  .hero-meta-detail {
     font-family: var(--font-mono);
-    font-size: 0.68rem;
-    letter-spacing: 0.2em;
+    font-size: 0.66rem;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--text-tertiary);
-    text-align: center;
   }
 
-  /* Prose */
+  /* ====================================================
+     PRODUCT FRAME — terminal-window mockup
+  ==================================================== */
+  .frame-stack {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .frame-glow {
+    position: absolute;
+    inset: -40px;
+    background: radial-gradient(60% 60% at 60% 50%, var(--accent-cyan-glow) 0%, transparent 70%);
+    filter: blur(24px);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .product-frame {
+    position: relative;
+    background: var(--bg-card);
+    border: 1px solid var(--border-medium);
+    box-shadow:
+      0 30px 60px rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(0, 229, 199, 0.04),
+      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    overflow: hidden;
+    transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .product-frame-hero {
+    transform: perspective(2400px) rotateX(2deg);
+    transform-origin: center top;
+  }
+  .product-frame-hero:hover {
+    transform: perspective(2400px) rotateX(0deg);
+  }
+
+  .product-frame-flat { transform: none; }
+
+  .product-frame-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.7rem 1.1rem;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .product-frame-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    flex-shrink: 0;
+  }
+
+  .product-frame-dot.live {
+    background: var(--accent-cyan);
+    box-shadow: 0 0 8px var(--accent-cyan);
+    animation: pulse-dot 2.5s ease-in-out infinite;
+  }
+
+  .product-frame-title {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    margin-left: 1rem;
+    transition: color 0.3s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+
+  .product-frame-status {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    color: var(--accent-cyan);
+    padding: 0.18rem 0.55rem;
+    border: 1px solid var(--accent-cyan-dim);
+    background: rgba(0, 229, 199, 0.06);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .court-status {
+    color: var(--accent-amber);
+    border-color: rgba(240, 165, 0, 0.25);
+    background: rgba(240, 165, 0, 0.06);
+  }
+
+  .product-frame-screen {
+    position: relative;
+    background: var(--bg-surface);
+    overflow: hidden;
+  }
+
+  .product-frame-screen img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  /* Frame markers — tiny annotated tags around the hero figure */
+  .frame-marker {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  .marker-tick {
+    width: 18px;
+    height: 1px;
+    background: var(--accent-cyan);
+  }
+
+  .frame-marker-tl {
+    top: -1.4rem;
+    left: 0.5rem;
+  }
+
+  .frame-marker-br {
+    bottom: -1.4rem;
+    right: 0.5rem;
+  }
+
+  .frame-marker-amber .marker-tick {
+    background: var(--accent-amber);
+  }
+
+  .marker-text {
+    color: var(--text-tertiary);
+  }
+
+  .frame-glow-amber {
+    background: radial-gradient(60% 60% at 50% 50%, rgba(240, 165, 0, 0.06) 0%, transparent 70%);
+  }
+
+  /* ====================================================
+     FEATURE SWITCHER · MASTIO
+  ==================================================== */
+  .feature-switch { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .feature-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .feature-title {
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .feature-lead {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 60ch;
+    line-height: 1.7;
+  }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr);
+    gap: clamp(2rem, 5vw, 5rem);
+    align-items: start;
+  }
+
+  .feature-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .feature-item {
+    position: relative;
+    padding: 1.4rem 0 1.4rem 2rem;
+    border-left: 1px solid var(--border-subtle);
+    cursor: pointer;
+    transition: border-color 0.35s ease;
+  }
+
+  .feature-item.active { border-left-color: transparent; }
+
+  .feature-item.active::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--accent-cyan);
+    box-shadow: 0 0 14px var(--accent-cyan);
+  }
+
+  .feature-num {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.22em;
+    color: var(--text-tertiary);
+    margin-bottom: 0.5rem;
+    transition: color 0.3s;
+  }
+
+  .feature-item.active .feature-num { color: var(--accent-cyan); }
+
+  .feature-item h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.25rem, 2vw, 1.65rem);
+    color: var(--text-secondary);
+    margin: 0 0 0.6rem 0;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    font-weight: 400;
+    transition: color 0.3s;
+  }
+
+  .feature-item.active h3 { color: var(--text-primary); }
+
+  .feature-item p {
+    font-size: 0.96rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0 0 0.8rem 0;
+    max-width: 50ch;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.5s ease, opacity 0.3s ease, margin 0.3s ease;
+  }
+
+  .feature-item.active p {
+    max-height: 250px;
+    opacity: 1;
+    margin: 0 0 0.9rem 0;
+  }
+
+  .feature-link {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    border: none;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.4s ease, opacity 0.3s ease;
+  }
+
+  .feature-item.active .feature-link {
+    max-height: 30px;
+    opacity: 1;
+  }
+
+  .feature-link:hover { border: none; color: var(--text-primary); }
+
+  .feature-figure {
+    position: sticky;
+    top: 6.5rem;
+  }
+
+  .feature-screen {
+    aspect-ratio: 1618 / 863;
+  }
+
+  .feature-screen img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top left;
+    opacity: 0;
+    transition: opacity 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .feature-screen img.active { opacity: 1; }
+
+  /* ====================================================
+     COURT
+  ==================================================== */
+  .court-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .court-top {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: clamp(2rem, 5vw, 5rem);
+    align-items: start;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .court-aside {
+    padding-top: clamp(0.5rem, 1.5vw, 1.2rem);
+  }
+
+  .court-title {
+    font-size: clamp(2.6rem, 7vw, 6rem);
+    line-height: 1.0;
+    margin: 0;
+    font-weight: 400;
+    letter-spacing: -0.025em;
+  }
+
+  .court-aside p {
+    font-size: 1.02rem;
+    line-height: 1.7;
+    margin-bottom: 1.2em;
+    max-width: 52ch;
+    color: var(--text-secondary);
+  }
+
+  .court-figure { margin-bottom: clamp(3rem, 6vw, 5rem); }
+
+  .court-secondary {
+    margin-top: clamp(3rem, 6vw, 5rem);
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: clamp(2rem, 5vw, 4rem);
+    align-items: center;
+  }
+
+  .court-secondary-caption .caption-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent-amber);
+    margin-bottom: 0.8rem;
+  }
+
+  .court-secondary-caption h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.4rem, 2.4vw, 1.9rem);
+    color: var(--text-primary);
+    margin: 0 0 1rem 0;
+    line-height: 1.25;
+    font-weight: 400;
+  }
+
+  .court-secondary-caption p {
+    font-size: 1rem;
+    color: var(--text-secondary);
+    max-width: 44ch;
+    line-height: 1.7;
+  }
+
+  /* ====================================================
+     BRIDGE
+  ==================================================== */
+  .bridge-section { padding: clamp(4rem, 9vw, 7rem) 0; }
+
+  .bridge-section h2 {
+    font-size: clamp(2.2rem, 5vw, 3.6rem);
+    line-height: 1.06;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .bridge-section > .container > p {
+    font-size: 1.05rem;
+    line-height: 1.75;
+    color: var(--text-secondary);
+  }
+
+  .shapes {
+    list-style: none;
+    margin: clamp(2rem, 4vw, 3rem) 0 0 0;
+    padding: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .shapes li {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) 3fr;
+    gap: 2rem;
+    padding: 1.15rem 0;
+    border-bottom: 1px solid var(--border-subtle);
+    align-items: baseline;
+    transition: padding-left 0.3s ease;
+  }
+
+  .shapes li:hover { padding-left: 0.5rem; }
+
+  .shape-name {
+    font-family: var(--font-display);
+    font-size: 1.45rem;
+    color: var(--text-primary);
+    font-style: italic;
+    line-height: 1;
+  }
+
+  .shape-where {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+    line-height: 1.5;
+  }
+
+  /* ====================================================
+     PROSE / QUICKSTART
+  ==================================================== */
   .prose-section { padding: clamp(3rem, 7vw, 6rem) 0; }
-
-  .prose-section h2 { margin-bottom: 2rem; }
-
+  .prose-section h2 {
+    font-size: clamp(2rem, 4vw, 3rem);
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
   .prose-section p {
-    font-size: 1.1rem;
+    font-size: 1.08rem;
     line-height: 1.8;
     color: var(--text-secondary);
     margin-bottom: 1.5em;
   }
 
-  .prose-section p.note {
-    padding: 1.25rem 1.5rem;
-    border-left: 3px solid var(--accent-cyan);
-    background: var(--bg-card);
-    font-size: 1rem;
-    margin-top: 2.5rem;
-    line-height: 1.65;
-    color: var(--text-secondary);
-  }
-
-  .prose-section p.note strong {
-    color: var(--text-primary);
-  }
-
-  /* Components */
-  .components-section { padding: clamp(3rem, 7vw, 6rem) 0; }
-
-  .section-head {
-    max-width: 720px;
-    margin-bottom: 4rem;
-  }
-
-  .section-lead {
-    font-size: 1.05rem;
-    color: var(--text-tertiary);
-    margin-top: 1rem;
-  }
-
-  .components-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1.25rem;
-  }
-
-  .component-card {
-    padding: 2.2rem 1.75rem;
-    background: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-    position: relative;
-    transition: transform 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
-  }
-
-  .component-card:hover {
-    transform: translateY(-4px);
-    border-color: var(--border-medium);
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3), 0 0 40px var(--accent-cyan-glow);
-  }
-
-  .cc-number {
-    font-family: var(--font-display);
-    font-style: italic;
-    font-size: 3rem;
-    color: var(--accent-cyan);
-    line-height: 1;
-    margin-bottom: 0.5rem;
-    opacity: 0.9;
-  }
-
-  .cc-label {
-    font-family: var(--font-mono);
-    font-size: 0.66rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-    margin-bottom: 0.75rem;
-  }
-
-  .cc-title {
-    font-family: var(--font-display);
-    font-size: 1.8rem;
-    font-weight: 400;
-    color: var(--text-primary);
-    margin: 0 0 1.25rem 0;
-    line-height: 1.15;
-    padding-bottom: 1.25rem;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-
-  .cc-title em {
-    font-style: italic;
-    color: var(--accent-cyan);
-  }
-
-  .cc-body {
-    font-size: 0.98rem;
-    line-height: 1.65;
-    color: var(--text-secondary);
-    margin-bottom: 1.5rem;
-    max-width: none;
-  }
-
-  .cc-spec {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.4rem 1rem;
-    font-size: 0.86rem;
-    padding-top: 1rem;
-    border-top: 1px dashed var(--border-subtle);
-  }
-
-  .cc-spec dt {
-    font-family: var(--font-mono);
-    font-size: 0.64rem;
-    font-weight: 400;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--text-tertiary);
-    padding-top: 0.2rem;
-  }
-
-  .cc-spec dd {
-    font-family: var(--font-body);
-    color: var(--text-secondary);
-    margin: 0;
-    line-height: 1.4;
-  }
-
-  /* Closing */
+  /* ====================================================
+     CLOSING
+  ==================================================== */
   .closing { padding: clamp(4rem, 8vw, 7rem) 0; }
-
   .closing-rule {
     width: 40px;
     height: 2px;
     background: var(--accent-cyan);
     margin-bottom: 2rem;
   }
-
-  .closing h2 { margin-bottom: 1.5rem; }
+  .closing h2 { margin-bottom: 1.5rem; font-weight: 400; }
   .closing p {
     font-size: 1.1rem;
     margin-bottom: 2.5rem;
     color: var(--text-secondary);
   }
 
-  @media (max-width: 900px) {
-    .hero-container {
+  /* ====================================================
+     RESPONSIVE
+  ==================================================== */
+  @media (max-width: 980px) {
+    .hero-top,
+    .feature-grid,
+    .court-top,
+    .court-secondary {
       grid-template-columns: 1fr;
-      gap: 2rem;
+      align-items: start;
     }
-    .hero-marginalia {
+
+    .hero-meta { gap: 1.5rem; }
+
+    .feature-figure {
       position: static;
-      padding-right: 0;
-      padding-bottom: 1rem;
-      border-right: none;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .hero-seal {
       order: -1;
-      padding-top: 0;
+      margin-bottom: 2rem;
     }
-    .hero-seal svg { max-width: 150px; }
-    .hero-stats { grid-template-columns: 1fr; }
-    .components-grid { grid-template-columns: 1fr; }
+
+    .product-frame-hero {
+      transform: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .shapes li {
+      grid-template-columns: 1fr;
+      gap: 0.35rem;
+    }
+
+    .hero-meta { gap: 1.2rem; }
+    .product-frame-status { display: none; }
+
+    .feature-item p { max-width: 100%; }
   }
 </style>
