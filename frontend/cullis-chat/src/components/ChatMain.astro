@@ -1,0 +1,202 @@
+---
+// ChatMain — placeholder for the central chat surface.
+//
+// In commit 5 this becomes a React island wrapping ChatWindow with
+// useReducer chat state, MessageList, MessageInput. The layout shell
+// here just shows a "ready" empty-state with the input box glued at
+// the bottom, so we can verify spacing visually before the island
+// arrives.
+---
+
+<div class="chat-shell">
+  <div class="chat-stream" aria-live="polite">
+    <div class="chat-empty">
+      <p class="folio">CLLS-CHAT · <em>session new</em></p>
+      <h1 class="chat-empty-title">
+        Ask <em>anything</em>.<br />
+        Every line is signed.
+      </h1>
+      <p class="chat-empty-sub">
+        Your question is forwarded under your principal identity, audit-chained,
+        and the answer arrives with a verifiable trace on the right.
+      </p>
+      <div class="chat-empty-hints">
+        <span class="hint">▸ what is the gdpr training status of mario rossi?</span>
+        <span class="hint">▸ summarise the open compliance findings.</span>
+        <span class="hint">▸ list active sessions across the org.</span>
+      </div>
+    </div>
+  </div>
+
+  <form class="chat-input" aria-label="Message">
+    <span class="prompt" aria-hidden="true">▸</span>
+    <textarea
+      rows="1"
+      placeholder="Compose a message ..."
+      disabled
+      aria-disabled="true"
+    ></textarea>
+    <button type="submit" class="send" disabled aria-disabled="true">
+      <span class="send-label">send</span>
+      <span class="send-arrow" aria-hidden="true">→</span>
+    </button>
+  </form>
+
+  <p class="chat-foot folio">
+    Bearer · cookie HttpOnly · CSP nonce-locked · markdown sanitized via DOMPurify
+  </p>
+</div>
+
+<style>
+  .chat-shell {
+    display: grid;
+    grid-template-rows: 1fr auto auto;
+    height: 100%;
+    padding: 1.5rem 1.75rem 1rem;
+    gap: 1rem;
+    min-height: 0;
+  }
+
+  .chat-stream {
+    overflow-y: auto;
+    min-height: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 2rem 0;
+  }
+
+  .chat-empty {
+    max-width: 56ch;
+    margin: 0 auto;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .chat-empty-title {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-size: clamp(2rem, 4.5vw, 3.2rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    margin: 0.4rem 0 0.2rem;
+  }
+
+  .chat-empty-title em {
+    font-style: italic;
+    color: var(--accent-cyan);
+  }
+
+  .chat-empty-sub {
+    font-family: var(--font-body);
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    max-width: 48ch;
+    margin: 0;
+  }
+
+  .chat-empty-hints {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .hint {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+    letter-spacing: 0.01em;
+  }
+
+  /* Input box — terminal aesthetic, sharp edges, cyan accents */
+  .chat-input {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: end;
+    gap: 0.7rem;
+    padding: 0.75rem 0.9rem;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    transition: border-color var(--t-base) ease;
+  }
+
+  .chat-input:focus-within {
+    border-color: var(--input-border-focus);
+    box-shadow: 0 0 24px var(--accent-cyan-glow);
+  }
+
+  .prompt {
+    font-family: var(--font-mono);
+    color: var(--accent-cyan);
+    font-size: 1rem;
+    line-height: 1.6;
+    padding-bottom: 0.05rem;
+  }
+
+  .chat-input textarea {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    line-height: 1.55;
+    resize: none;
+    outline: none;
+    width: 100%;
+    padding: 0.1rem 0;
+  }
+
+  .chat-input textarea::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .send {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.55rem 0.9rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    font-weight: 400;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    background: transparent;
+    color: var(--accent-cyan);
+    border: 1px solid var(--accent-cyan);
+    cursor: pointer;
+    transition: all var(--t-base) ease;
+  }
+
+  .send:not([disabled]):hover {
+    background: var(--accent-cyan);
+    color: var(--bg-void);
+  }
+
+  .send[disabled] {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .send-arrow {
+    transition: transform var(--t-base) ease;
+  }
+
+  .send:not([disabled]):hover .send-arrow {
+    transform: translateX(3px);
+  }
+
+  .chat-foot {
+    text-align: center;
+    color: var(--text-tertiary);
+    padding-top: 0.4rem;
+  }
+</style>

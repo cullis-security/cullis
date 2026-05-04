@@ -1,0 +1,90 @@
+---
+// SidebarLeft — left rail.
+//
+// In v0.1 there is no conversation history (decided in ADR-019 §4
+// open question 4 + Step 6 deferred). Instead of fake skeleton rows
+// we ship an honest editorial empty-state, matching the cullis.io
+// voice: a short headline in italic serif and a folio note.
+//
+// Becomes a real list in v0.5 (ADR-019 Step 6 — server-side history).
+---
+
+<aside class="sidebar-left" aria-label="Conversation history">
+  <header class="sl-head">
+    <span class="eyebrow">conversations</span>
+  </header>
+
+  <div class="sl-empty">
+    <p class="sl-empty-title">
+      <em>Nothing</em><br />
+      here yet.
+    </p>
+    <p class="sl-empty-body">
+      Conversation history lands in <span class="ver">v0.5</span>.
+      Until then every reload starts a fresh thread.
+    </p>
+    <div class="sl-rule" aria-hidden="true"></div>
+    <p class="folio">CLLS-CHAT · <em>v0.1</em></p>
+  </div>
+</aside>
+
+<style>
+  .sidebar-left {
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sl-head {
+    padding: 1.25rem 1.25rem 0.9rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .sl-empty {
+    padding: 2rem 1.25rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .sl-empty-title {
+    font-family: var(--font-display);
+    font-size: 1.6rem;
+    line-height: 1.05;
+    color: var(--text-primary);
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  .sl-empty-title em {
+    font-style: italic;
+    color: var(--accent-cyan);
+  }
+
+  .sl-empty-body {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 22ch;
+  }
+
+  .sl-empty-body .ver {
+    font-family: var(--font-mono);
+    font-size: 0.78em;
+    letter-spacing: 0.08em;
+    color: var(--accent-cyan);
+    padding: 0.05em 0.35em;
+    background: var(--accent-cyan-glow);
+    border: 1px solid var(--accent-cyan-dim);
+  }
+
+  .sl-rule {
+    width: 32px;
+    height: 1px;
+    background: var(--accent-cyan);
+    margin-top: 0.4rem;
+  }
+</style>

@@ -1,0 +1,69 @@
+---
+// ChatLayout — full-viewport shell for the Cullis Chat SPA.
+//
+// Holds the document <head>, mounts the global CSS, and lays out
+// the 3-pane grid: TopBar across the top, then SidebarLeft / main
+// chat / AuditPanel.
+//
+// Security note: a stub Content-Security-Policy meta tag ships here
+// for commit 2 so DevTools shows a strict policy from day one. In
+// commit 3 the policy moves to `src/middleware.ts` with a per-request
+// nonce, and this <meta> is removed.
+
+import '../styles/tokens.css';
+import '../styles/globals.css';
+import TopBar from '../components/TopBar.astro';
+import SidebarLeft from '../components/SidebarLeft.astro';
+import ChatMain from '../components/ChatMain.astro';
+import AuditPanel from '../components/AuditPanel.astro';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Cullis Chat',
+  description = 'Identity-aware chat for Cullis Frontdesk. Every message is signed, audited, and traceable.',
+} = Astro.props;
+
+// Stub CSP — replaced by middleware nonce in commit 3.
+const CSP_STUB = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' https://fonts.googleapis.com https://api.fontshare.com 'unsafe-inline'",
+  "font-src 'self' https://fonts.gstatic.com https://api.fontshare.com https://cdn.fontshare.com",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join('; ');
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#050508" />
+    <meta name="description" content={description} />
+    <meta http-equiv="Content-Security-Policy" content={CSP_STUB} />
+    <meta name="referrer" content="same-origin" />
+    <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/cullis-mark.svg" />
+  </head>
+  <body class="app-shell">
+    <TopBar />
+    <div class="app-body">
+      <SidebarLeft />
+      <section class="chat-main" aria-label="Chat">
+        <ChatMain />
+      </section>
+      <AuditPanel />
+    </div>
+    <slot />
+  </body>
+</html>

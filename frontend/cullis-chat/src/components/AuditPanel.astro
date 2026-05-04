@@ -1,0 +1,155 @@
+---
+// AuditPanel — right rail.
+//
+// v0.1 placeholder. In commit 7 this becomes a React island that
+// receives trace events from each assistant turn and renders a
+// ledger of trace_id, latency, tools called, audit row id.
+//
+// Style anchor: site `.comp-aside` (cyan border-left 3px, bg-card,
+// dl/dt/dd metadata grid).
+---
+
+<aside class="audit-pane" aria-label="Audit chain">
+  <header class="ap-head">
+    <span class="eyebrow">audit chain</span>
+    <span class="ap-state">
+      <span class="pulse-dot" aria-hidden="true"></span>
+      <span class="ap-state-label">live</span>
+    </span>
+  </header>
+
+  <div class="ap-body">
+    <p class="ap-empty">
+      No turns yet. <br />
+      Each assistant message will append a row here with its
+      <em>trace_id</em>, latency, tool calls, and the corresponding
+      Mastio audit anchor.
+    </p>
+
+    <dl class="ap-meta">
+      <dt>chain</dt>
+      <dd>append-only</dd>
+      <dt>anchor</dt>
+      <dd>Mastio · TSA</dd>
+      <dt>signing</dt>
+      <dd>DPoP+mTLS · ES256</dd>
+      <dt>endpoint</dt>
+      <dd><code>/v1/chat/completions</code></dd>
+    </dl>
+  </div>
+
+  <footer class="ap-foot folio">
+    ADR-019 §4 · ADR-020 <em>principal_type</em>
+  </footer>
+</aside>
+
+<style>
+  .audit-pane {
+    background: var(--audit-bg);
+    border-left: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Header */
+  .ap-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.1rem 1.25rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .ap-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .ap-state-label {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  /* Body */
+  .ap-body {
+    flex: 1;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    overflow-y: auto;
+
+    /* The cyan-accented border-left from site `.comp-aside`, but applied
+       inline as a left rule on the body so it tracks scroll content. */
+    background:
+      linear-gradient(var(--accent-cyan-dim), var(--accent-cyan-dim)) left top / 2px 100% no-repeat;
+    padding-left: 1.5rem;
+  }
+
+  .ap-empty {
+    font-family: var(--font-body);
+    font-size: 0.92rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 28ch;
+  }
+
+  .ap-empty em {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--accent-cyan);
+    font-size: 1.05em;
+  }
+
+  /* Metadata — site `.comp-meta dl` pattern */
+  .ap-meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.55rem 1rem;
+    margin: 0;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .ap-meta dt {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding-top: 0.15rem;
+  }
+
+  .ap-meta dd {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .ap-meta dd code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--accent-cyan);
+    padding: 0.05em 0.35em;
+  }
+
+  .ap-foot {
+    padding: 0.85rem 1.25rem;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-tertiary);
+  }
+
+  .ap-foot em {
+    font-family: var(--font-display);
+    font-style: italic;
+    color: var(--text-secondary);
+    font-size: 1.1em;
+  }
+</style>
