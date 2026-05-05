@@ -30,16 +30,20 @@
   --success:        #3ee089;
   --warning:        #f0a500;
 
-  /* Typography — dashboard registry (Chakra Petch brand lockup + DM Sans body + JetBrains Mono)
-     plus Instrument Serif editorial accent to bridge the site tone. */
-  --font-display:   'Chakra Petch', sans-serif;
+  /* Typography — aligned with cullis.io site + Cullis Chat SPA tokens
+     (ADR-019 rev 3 Phase 6.5, 2026-05-05). Display = Instrument Serif,
+     body = Satoshi, mono = DM Mono. Chakra Petch demoted to logo lockup
+     only via --font-brand (used by .brand-name). --font-editorial kept as
+     alias for backward compat with classes that explicitly request it. */
+  --font-display:   'Instrument Serif', Georgia, serif;
   --font-editorial: 'Instrument Serif', Georgia, serif;
-  --font-body:      'DM Sans', system-ui, sans-serif;
-  --font-mono:      'JetBrains Mono', 'Fira Code', monospace;
+  --font-body:      'Satoshi', system-ui, sans-serif;
+  --font-mono:      'DM Mono', 'SF Mono', Menlo, monospace;
+  --font-brand:     'Chakra Petch', sans-serif;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
 
   --shadow-glow: 0 0 24px rgba(0, 229, 199, 0.12);
 }
@@ -137,7 +141,7 @@ body::after {
 }
 
 .brand-name {
-  font-family: var(--font-display);
+  font-family: var(--font-brand);
   font-weight: 600;
   font-size: 14px;
   letter-spacing: 0.18em;
@@ -152,7 +156,7 @@ body::after {
 }
 
 .brand-role-chip {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.22em;
@@ -195,7 +199,7 @@ body::after {
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-subtle);
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -305,7 +309,7 @@ body::after {
 }
 
 .step-label {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -360,7 +364,7 @@ body::after {
 }
 
 .panel-eyebrow {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
@@ -396,7 +400,7 @@ body::after {
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
 
 .field-label {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -443,7 +447,7 @@ body::after {
   gap: 8px;
   padding: 11px 20px;
   border-radius: var(--radius-sm);
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -669,7 +673,7 @@ body::after {
 }
 
 .urlbox-eyebrow {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -698,7 +702,7 @@ body::after {
   border: 1px solid var(--border-default);
   background: transparent;
   color: var(--text-secondary);
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   text-transform: uppercase;
   cursor: pointer;
   transition: all 150ms ease;
@@ -773,7 +777,7 @@ body::after {
 .identity-row:last-child { border-bottom: none; }
 
 .identity-k {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -826,7 +830,7 @@ body::after {
 }
 
 .ide-card-name {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 12px;
   letter-spacing: 0.1em;
   font-weight: 600;
@@ -852,7 +856,7 @@ body::after {
 .toggle-meta { flex: 1; min-width: 0; }
 
 .toggle-title {
-    font-family: var(--font-display);
+    font-family: var(--font-mono);
     font-size: 14px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1000,7 +1004,7 @@ body::after {
 }
 
 .profile-name {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
@@ -1008,7 +1012,7 @@ body::after {
 }
 
 .profile-badge {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.22em;
