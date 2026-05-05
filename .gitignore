@@ -92,6 +92,11 @@ packaging/pypi-sdk/LICENSE-APACHE-2.0
 packaging/pypi-sdk/NOTICE
 packaging/pypi-sdk/CHANGELOG.md
 
+# Cullis Chat SPA static — built artefact, not source. Copied here by
+# scripts/build-spa.sh before packaging the Connector wheel (ADR-019
+# Phase 8c). Reproducible from frontend/cullis-chat/.
+cullis_connector/static/cullis-chat/
+
 # Python build outputs
 dist/
 build/

@@ -73,6 +73,34 @@ _log = logging.getLogger("cullis_connector.web")
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 
+# ADR-019 Phase 8c — locations to look for the Cullis Chat SPA build.
+# Searched in order; first match wins. ``CULLIS_CHAT_DIST`` env var
+# beats both. If none exist, /chat is not mounted (logged once at boot).
+_CHAT_BUNDLED_DIR = _STATIC_DIR / "cullis-chat"
+_CHAT_REPO_DEV_DIR = (
+    Path(__file__).parent.parent / "frontend" / "cullis-chat" / "dist"
+)
+
+
+def _resolve_chat_dist() -> Path | None:
+    """Return the directory holding the built Cullis Chat SPA, or None.
+
+    A directory counts as a valid SPA build if it contains an
+    ``index.html`` at its root. We check that explicitly so an empty
+    or half-built directory does not silently mount and serve 404s for
+    every asset.
+    """
+    candidates: list[Path] = []
+    env_path = os.environ.get("CULLIS_CHAT_DIST")
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(_CHAT_BUNDLED_DIR)
+    candidates.append(_CHAT_REPO_DEV_DIR)
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "index.html").is_file():
+            return candidate
+    return None
+
 
 # ── Pending-enrollment in-memory state ───────────────────────────────────
 #
@@ -470,6 +498,39 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     templates.env.globals["active_profile"] = config.profile_name or ""
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+    # ADR-019 Phase 8c — mount the Cullis Chat SPA static build at /chat
+    # if a built dist/ is reachable. Resolution order:
+    #
+    #   1. CULLIS_CHAT_DIST env var (operator override, useful in dev when
+    #      the SPA is built somewhere unusual)
+    #   2. cullis_connector/static/cullis-chat/ (production wheel layout —
+    #      the build pipeline copies frontend/cullis-chat/dist there before
+    #      packaging; pyproject.toml's force-include picks it up)
+    #   3. <repo>/frontend/cullis-chat/dist/ (dev layout, when running from
+    #      a source checkout)
+    #
+    # html=True so a bare GET /chat/ serves /chat/index.html. Templates
+    # like connected.html link to /chat/ once enrollment is complete.
+    chat_dist = _resolve_chat_dist()
+    if chat_dist is not None:
+        app.mount(
+            "/chat",
+            StaticFiles(directory=str(chat_dist), html=True),
+            name="cullis_chat",
+        )
+        _log.info("cullis-chat SPA mounted at /chat from %s", chat_dist)
+    else:
+        _log.info(
+            "cullis-chat SPA not mounted: no dist/ found; "
+            "build the SPA (npm run build in frontend/cullis-chat) or "
+            "set CULLIS_CHAT_DIST to enable /chat"
+        )
+    # Templates check this to decide whether to render the "Open Cullis
+    # Chat" button on /connected. Stashed on app.state too so the
+    # desktop wrapper can navigate to /chat post-enrollment.
+    templates.env.globals["cullis_chat_mounted"] = chat_dist is not None
+    app.state.cullis_chat_mounted = chat_dist is not None
+
     # ── CSRF / cross-origin guard ────────────────────────────────────────
     #
     # Audit 2026-04-30 lane 5 C1 — every state-changing endpoint on the
@@ -552,8 +613,18 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def root() -> Response:
-        """Dispatch to the correct screen based on current state."""
+        """Dispatch to the correct screen based on current state.
+
+        When identity is present AND the Cullis Chat SPA is mounted at
+        /chat (ADR-019 Phase 8c), the root sends users straight to the
+        chat surface — that is the consumer-facing destination of the
+        desktop installer. The /connected dashboard is still reachable
+        directly (or via the tray menu in the desktop wrapper) for
+        admin / maintenance flows.
+        """
         if has_identity(config.config_dir):
+            if getattr(app.state, "cullis_chat_mounted", False):
+                return RedirectResponse("/chat/", status_code=303)
             return RedirectResponse("/connected", status_code=303)
         if _pending is not None:
             return RedirectResponse("/waiting", status_code=303)
