@@ -1,7 +1,22 @@
 /**
- * Browser-side API client. Talks only to same-origin /api/* endpoints
- * (the Astro server proxies to the Ambassador). Never reaches out to
- * :7777 directly; that boundary lives in the cookie + middleware.
+ * Browser-side API client. Talks same-origin to:
+ *
+ *   /api/session/init     — mint the session cookie
+ *   /api/session/whoami   — resolved principal (ADR-020 shape)
+ *   /v1/models            — model list (Ambassador)
+ *   /v1/chat/completions  — chat (Ambassador, sync + SSE)
+ *
+ * After ADR-019 Phase 8a + 8b the SPA no longer goes through an
+ * Astro `/api/proxy/*` translator: ``require_bearer`` on the
+ * Ambassador (``cullis_connector/ambassador/auth.py``) accepts
+ * either ``Authorization: Bearer`` OR the ``cullis_local_session``
+ * cookie, so the browser can hit ``/v1/*`` directly with the cookie
+ * the SPA minted via ``/api/session/init``.
+ *
+ * Topology routing (dev / Frontdesk container / desktop installer)
+ * lives outside this file; here every call is a same-origin relative
+ * URL and whoever serves the SPA is responsible for routing
+ * ``/api/session/*`` and ``/v1/*`` to the Connector.
  */
 
 import { parseSSE, type SSEEvent } from './sse';
@@ -11,8 +26,6 @@ import type {
   Model,
   Principal,
 } from './types';
-
-const PROXY_ROOT = '/api/proxy';
 
 class ApiError extends Error {
   constructor(public status: number, public payload: unknown) {
@@ -57,11 +70,9 @@ export async function whoami(): Promise<{ ok: true; principal: Principal } | Pri
   return raw as Principal;
 }
 
-/** GET /v1/models via proxy. */
+/** GET /v1/models — direct to Ambassador via session cookie auth. */
 export async function listModels(): Promise<Model[]> {
-  const res = await jsonFetch<{ object: string; data: Model[] }>(
-    `${PROXY_ROOT}/v1/models`,
-  );
+  const res = await jsonFetch<{ object: string; data: Model[] }>('/v1/models');
   return res.data;
 }
 
@@ -69,7 +80,7 @@ export async function listModels(): Promise<Model[]> {
 export async function chatCompletion(
   request: ChatCompletionRequest,
 ): Promise<ChatCompletionResponse> {
-  return jsonFetch<ChatCompletionResponse>(`${PROXY_ROOT}/v1/chat/completions`, {
+  return jsonFetch<ChatCompletionResponse>('/v1/chat/completions', {
     method: 'POST',
     body: JSON.stringify({ ...request, stream: false }),
   });
@@ -84,7 +95,7 @@ export async function* chatCompletionStream(
   request: ChatCompletionRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
-  const res = await fetch(`${PROXY_ROOT}/v1/chat/completions`, {
+  const res = await fetch('/v1/chat/completions', {
     method: 'POST',
     credentials: 'same-origin',
     signal,

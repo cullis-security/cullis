@@ -2,10 +2,10 @@ import { initSession } from './api';
 
 /**
  * Idempotent session bootstrap. Three islands need the cookie before
- * their first /api/proxy/* call: ChatApp (chat completions),
- * IdentityBadge (whoami), ModelPicker (list models). Every island
- * calls `ensureSession()`; only the first call hits /api/session/init,
- * the rest piggyback on the cached promise.
+ * their first call to `/v1/*` or `/api/session/whoami`: ChatApp (chat
+ * completions), IdentityBadge (whoami), ModelPicker (list models).
+ * Every island calls `ensureSession()`; only the first call hits
+ * `/api/session/init`, the rest piggyback on the cached promise.
  */
 let pending: Promise<void> | null = null;
 

@@ -10,8 +10,9 @@ export const prerender = false;
  * Reads the Connector's local Bearer token and stores it in an HttpOnly
  * cookie scoped to this origin. The browser never sees the token value;
  * it can only ride along on subsequent same-origin requests, which the
- * `/api/proxy/*` route translates back into an `Authorization: Bearer`
- * header to the Ambassador on `127.0.0.1:7777`.
+ * Ambassador's ``require_bearer`` accepts as the cookie path
+ * (cullis_connector/ambassador/auth.py, ADR-019 Phase 8a). No more
+ * `/api/proxy/*` translator hop.
  *
  * ADR-019 §6 axis 1 + 2 + 4:
  *   - Cookie is HttpOnly + Secure + SameSite=Strict
