@@ -1,20 +1,18 @@
-# Cullis Chat — production container.
+# Cullis Chat — production container (ADR-019 Phase 8b-2b: pure static).
 #
-# Two stages: a Node 22 builder produces `dist/server/entry.mjs`
-# (Astro standalone Node adapter), and an Alpine Node 22 runtime
-# serves the bundle on :4321.
-#
-# Why Node 22 here vs Node 20 in package.json `engines`: Astro 5
-# accepts both, the docker base is the only place where we can
-# pin freely; we use the latest LTS. CI dev still works on Node 20.
+# Two stages: a Node 22 builder produces ``dist/`` (Astro static output,
+# all pages prerendered, no server entry), and an Alpine nginx runtime
+# serves those static files on :8080.
 #
 # Topology:
-#   - Topology L (laptop): the Frontdesk image (a future ADR-019
-#     Step 4 artefact) bundles this image + the Connector daemon
-#     under one supervisor.
-#   - Topology S (datacenter): this image runs as a sidecar to the
-#     Connector. CULLIS_AMBASSADOR_URL points at the Connector's
-#     loopback port.
+#   - Frontdesk container (datacenter): nginx in this image is fronted by
+#     packaging/frontdesk-bundle/nginx, which proxies /api/session/* and
+#     /v1/* to the Connector. The static SPA + the proxied APIs share an
+#     origin so the cookie minted by /api/session/init reaches /v1/*.
+#   - Desktop installer (Phase 8c): FastAPI mounts ``dist/`` at /chat and
+#     serves the same /api/session/* /v1/* on the same origin. This image
+#     is unused in that topology — the static is shipped inside the Python
+#     wheel.
 
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -29,30 +27,21 @@ COPY src ./src
 COPY public ./public
 RUN npm run build
 
-# Prune to production deps only for the runtime stage.
-RUN npm prune --omit=dev
-
 # ---
 
-FROM node:22-alpine AS runtime
-WORKDIR /app
+FROM nginx:1.27-alpine AS runtime
 
-ENV NODE_ENV=production \
-    HOST=0.0.0.0 \
-    PORT=4321 \
-    CULLIS_AMBASSADOR_URL=http://127.0.0.1:7777 \
-    CULLIS_CONNECTOR_PROFILE=default
+# Drop the default nginx welcome page; we ship our own config.
+RUN rm /etc/nginx/conf.d/default.conf
 
-# Drop root.
-RUN addgroup -S cullis && adduser -S -G cullis cullis
+COPY --from=builder /app/dist /usr/share/nginx/html
 
-COPY --from=builder --chown=cullis:cullis /app/dist ./dist
-COPY --from=builder --chown=cullis:cullis /app/node_modules ./node_modules
-COPY --from=builder --chown=cullis:cullis /app/package.json ./package.json
+# A minimal SPA-friendly nginx config: serve static, fall back to
+# index.html for unknown paths (single-page app routing). The Frontdesk
+# bundle's outer nginx layer adds the /api/session/* /v1/* proxy rules
+# and the security headers; this inner nginx stays focused on static.
+COPY ./nginx-static.conf /etc/nginx/conf.d/default.conf
 
-USER cullis
+EXPOSE 8080
 
-EXPOSE 4321
-
-# Astro standalone server entry. No `npm start` indirection.
-CMD ["node", "./dist/server/entry.mjs"]
+# nginx default CMD — alpine image already runs nginx in foreground.

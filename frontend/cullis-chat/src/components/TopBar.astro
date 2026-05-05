@@ -46,7 +46,7 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
   </div>
 </header>
 
-<script nonce={Astro.locals.cspNonce}>
+<script is:inline>
   document.addEventListener('click', function (e) {
     var t = e.target;
     if (!t) return;

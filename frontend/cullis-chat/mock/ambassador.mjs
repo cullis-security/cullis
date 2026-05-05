@@ -145,6 +145,27 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Session bootstrap is unauthenticated by design — it IS the path that
+  // mints the cookie. ADR-019 Phase 8b-2b: the SPA static now calls
+  // these directly (no Astro server in front).
+  if (req.method === 'POST' && pathname === '/api/session/init') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie':
+        'cullis_session=mock-token; HttpOnly; SameSite=Strict; Path=/; Max-Age=1800',
+    });
+    res.end(JSON.stringify({ ok: true, ttl: 1800 }));
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/session/logout') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'cullis_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // Everything else needs Bearer or the `cullis_session` cookie
   // (ADR-019 Phase 8a: ``require_bearer`` on the real Ambassador
   // accepts either path; the mock now mirrors that). Any non-empty

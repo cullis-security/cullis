@@ -21,8 +21,6 @@ const {
   title = 'Cullis Chat',
   description = 'Identity-aware chat for Cullis Frontdesk. Every message is signed, audited, and traceable.',
 } = Astro.props;
-
-const nonce = Astro.locals.cspNonce;
 ---
 
 <!doctype html>
@@ -44,7 +42,7 @@ const nonce = Astro.locals.cspNonce;
       <ChatApp client:load />
     </div>
 
-    <script nonce={nonce}>
+    <script is:inline>
       // Hydrate the audit-pane collapsed state from localStorage before
       // first paint of the React island, so the layout doesn't shift.
       (function () {

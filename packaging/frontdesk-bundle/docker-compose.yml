@@ -79,20 +79,17 @@ services:
   cullis-chat:
     # Build from source for now; future Phase 8.5 publishes
     # ghcr.io/cullis-security/cullis-chat and we switch to image:.
+    #
+    # ADR-019 Phase 8b-2b: this image is now nginx-static (port 8080),
+    # not the Astro Node server (port 4321). The /api/session/* and
+    # /v1/* proxying to the Connector lives in the outer nginx layer
+    # below; this inner container only serves the prerendered HTML +
+    # bundled JS/CSS.
     build:
       context: ../../frontend/cullis-chat
       dockerfile: Dockerfile
     expose:
-      - "4321"
-    environment:
-      # The SPA forwards Authorization+Cookie to this URL. Inside the
-      # bundle network the Ambassador is reachable as connector:7777.
-      CULLIS_AMBASSADOR_URL: http://connector:7777
-      # No local Bearer token in shared mode; the cookie is set by the
-      # Ambassador's /api/session/init via nginx routing (see nginx conf).
-      CULLIS_LOCAL_TOKEN: ${CULLIS_LOCAL_TOKEN:-shared-mode-no-bearer}
-      # Audit panel is for dashboards / admin surfaces, not end users.
-      PUBLIC_DEV_AUDIT_PANEL: ${PUBLIC_DEV_AUDIT_PANEL:-0}
+      - "8080"
     depends_on:
       - connector
     networks:
