@@ -17,7 +17,6 @@ real, the TestClient enters lifespan so ``install_ambassador`` runs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
