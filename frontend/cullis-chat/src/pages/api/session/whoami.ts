@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { AMBASSADOR_URL } from '../../../lib/server/config';
+import { AMBASSADOR_URL, SESSION_COOKIE } from '../../../lib/server/config';
 import { logEvent } from '../../../lib/server/logger';
 
 export const prerender = false;
@@ -7,7 +7,7 @@ export const prerender = false;
 /**
  * GET /api/session/whoami
  *
- * Pure passthrough to the Ambassador. After ADR-019 Phase 8b-2a both
+ * Cookie-forward to the Ambassador. After ADR-019 Phase 8b-2a both
  * single mode (cullis_connector/ambassador/session_routes.py) and
  * shared mode (cullis_connector/ambassador/shared/router.py) return
  * the same ADR-020 wrapped shape:
@@ -16,13 +16,23 @@ export const prerender = false;
  *                      trust_domain, sub, source },
  *     principal_id, sub, org, exp }
  *
- * The SPA's `lib/api.ts:whoami()` consumes that wrapped shape directly
- * — no translation here. This Astro route stays only to pass cookies
- * through in the dev `npm run dev` topology and the Frontdesk
- * container Phase 7 nginx config; Phase 8b-2 will remove it entirely
- * along with switching Astro to static.
+ * No payload translation here — the SPA's ``lib/api.ts:whoami()``
+ * consumes the wrapped shape directly. The "no cookie" early-return
+ * stays so unauth callers see a stable ``{ok:false, error:"no_session"}``
+ * 401 instead of whatever the upstream's missing-auth response happens
+ * to look like (single mode returns 200+placeholder, shared mode 401
+ * with a different body). Phase 8b-2 will remove this Astro route
+ * entirely along with switching Astro to static; the contract then
+ * lives on the Ambassador only.
  */
-export const GET: APIRoute = async ({ request }) => {
+export const GET: APIRoute = async ({ cookies, request }) => {
+  if (!cookies.get(SESSION_COOKIE)?.value) {
+    return new Response(JSON.stringify({ ok: false, error: 'no_session' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const fwdHeaders: Record<string, string> = {};
   const fwdCookie = request.headers.get('cookie');
   if (fwdCookie) {

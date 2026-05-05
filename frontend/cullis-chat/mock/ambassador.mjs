@@ -172,10 +172,21 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && pathname === '/api/session/whoami') {
-    // ADR-021 shared-mode shape: cookie payload as the Ambassador
-    // hands it back. The Astro `/api/session/whoami` route translates
-    // this into the ADR-020 principal shape the IdentityBadge wants.
+    // ADR-019 Phase 8b-2a unified shape: both single and shared modes
+    // now emit the wrapped ADR-020 ``principal`` subobject alongside
+    // the legacy top-level fields. The SPA's IdentityBadge consumes
+    // the wrapped shape directly with no client-side translation.
     jsonResponse(res, 200, {
+      ok: true,
+      principal: {
+        spiffe_id: 'spiffe://demo.test/demo/user/mario',
+        principal_type: 'user',
+        name: 'mario',
+        org: 'demo',
+        trust_domain: 'demo.test',
+        sub: 'mario@demo.test',
+        source: 'shared',
+      },
       principal_id: 'demo.test/demo/user/mario',
       sub: 'mario@demo.test',
       org: 'demo',
