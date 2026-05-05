@@ -513,6 +513,23 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     # like connected.html link to /chat/ once enrollment is complete.
     chat_dist = _resolve_chat_dist()
     if chat_dist is not None:
+        # Pre-mount gate: a user who navigates to /chat or /chat/ before
+        # enrollment would otherwise get the prerendered SPA, which then
+        # fails on its first /api/session/init call with a 404 (the
+        # Ambassador router is only mounted by the lifespan after
+        # has_identity is true). Surface the missing step explicitly by
+        # redirecting to /setup. Asset paths under /chat/_astro/ and
+        # other deep links keep flowing through to StaticFiles so an
+        # already-loaded SPA tab can refresh assets without a redirect
+        # ping-pong.
+        @app.middleware("http")
+        async def _chat_identity_gate(request, call_next):  # type: ignore[no-untyped-def]
+            path = request.url.path
+            if path == "/chat" or path == "/chat/":
+                if not has_identity(config.config_dir):
+                    return RedirectResponse("/setup", status_code=303)
+            return await call_next(request)
+
         app.mount(
             "/chat",
             StaticFiles(directory=str(chat_dist), html=True),

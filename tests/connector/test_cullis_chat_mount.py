@@ -140,6 +140,23 @@ def app_with_chat(tmp_path: Path, monkeypatch):
     return build_app(cfg)
 
 
+@pytest.fixture
+def app_with_chat_no_identity(tmp_path: Path, monkeypatch):
+    """SPA dist exists but no enrollment yet — the gate should redirect
+    /chat traffic to /setup so the user does not see the SPA's
+    session_init 404 banner before completing enrollment."""
+    cfg = ConnectorConfig(
+        config_dir=tmp_path,
+        site_url="https://mastio.test",
+        verify_tls=False,
+    )
+    cfg.ambassador.require_local_only = False
+    dist = tmp_path / "fake-spa-dist"
+    _make_fake_dist(dist)
+    monkeypatch.setenv("CULLIS_CHAT_DIST", str(dist))
+    return build_app(cfg)
+
+
 def test_chat_not_mounted_when_no_dist(app_no_chat):
     with TestClient(app_no_chat, follow_redirects=False) as cli:
         # /chat is not mounted at all — 404 from the dashboard router.
@@ -188,3 +205,37 @@ def test_connected_template_hides_chat_button_when_not_mounted(app_no_chat):
         resp = cli.get("/connected")
         assert resp.status_code == 200
         assert "Open Cullis Chat" not in resp.text
+
+
+def test_chat_gate_redirects_to_setup_when_no_identity(app_with_chat_no_identity):
+    """SPA mounted but no enrollment: /chat and /chat/ both redirect
+    to /setup so the user lands on the wizard instead of seeing the
+    SPA's ``session_init: HTTP 404`` banner before there is anything
+    for the cookie to authenticate against."""
+    with TestClient(app_with_chat_no_identity, follow_redirects=False) as cli:
+        for path in ("/chat", "/chat/"):
+            resp = cli.get(path)
+            assert resp.status_code == 303, f"{path}: {resp.status_code}"
+            assert resp.headers["location"] == "/setup"
+
+
+def test_chat_gate_does_not_block_static_assets_when_no_identity(
+    app_with_chat_no_identity,
+):
+    """Asset paths under /chat/_astro/ stay reachable so an already-
+    loaded SPA tab (rare but possible during enrollment if the user
+    keeps the chat tab open) can still pull JS/CSS chunks without a
+    redirect ping-pong."""
+    with TestClient(app_with_chat_no_identity, follow_redirects=False) as cli:
+        # The fake dist fixture writes _astro/app.js under the dist root.
+        resp = cli.get("/chat/_astro/app.js")
+        assert resp.status_code == 200
+        assert "fixture" in resp.text
+
+
+def test_chat_gate_passes_through_when_identity_exists(app_with_chat):
+    """The original mount-on path still works once enrollment is done."""
+    with TestClient(app_with_chat, follow_redirects=False) as cli:
+        resp = cli.get("/chat/")
+        assert resp.status_code == 200
+        assert "cullis-chat fixture" in resp.text

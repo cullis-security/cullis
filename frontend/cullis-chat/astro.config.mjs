@@ -14,8 +14,27 @@ import react from '@astrojs/react';
 //     the Connector container (packaging/frontdesk-bundle/).
 //   - Desktop installer (Phase 8c): FastAPI mounts dist/ at /chat and
 //     serves the same /v1/* /api/* on the same origin.
+// ``ASTRO_BASE`` env var lets the same source build for two topologies:
+//
+//   - Frontdesk container (packaging/frontdesk-bundle/): nginx serves
+//     the SPA at ``/`` so the default ``base: '/'`` produces asset
+//     URLs like ``/_astro/app.js`` that resolve against the bundle's
+//     root.
+//   - Desktop installer (Phase 8c): FastAPI mounts the SPA under
+//     ``/chat/`` (the ``/`` route is the Connector dashboard). Asset
+//     URLs need to live under ``/chat/_astro/...`` or the browser 404s
+//     the entire CSS+JS payload and renders an unstyled page.
+//
+// scripts/build-spa.sh sets ``ASTRO_BASE=/chat`` before invoking npm
+// run build for the Connector-staged copy. The Frontdesk Dockerfile
+// keeps the default. API fetches in lib/api.ts use absolute paths
+// (``/api/session/init`` etc) so they always hit the origin root,
+// regardless of base.
+const ASTRO_BASE = process.env.ASTRO_BASE || '/';
+
 export default defineConfig({
   output: 'static',
+  base: ASTRO_BASE,
   integrations: [react()],
   server: {
     port: 4321,

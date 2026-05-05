@@ -32,8 +32,15 @@ fi
 echo "==> npm ci (deterministic install) in ${SPA_DIR}"
 ( cd "${SPA_DIR}" && npm ci --include=dev )
 
-echo "==> npm run build"
-( cd "${SPA_DIR}" && npm run build )
+# ASTRO_BASE=/chat/: the Connector mounts the SPA at /chat (web.py),
+# Astro must emit asset URLs under that prefix or the browser 404s the
+# entire CSS/JS payload. Trailing slash matters because we concatenate
+# ``${BASE_URL}cullis-mark.svg`` in the templates — Astro exposes
+# ``import.meta.env.BASE_URL`` exactly as configured, no normalisation.
+# The Frontdesk container Dockerfile leaves ASTRO_BASE unset so its
+# default-/-rooted nginx serve still works.
+echo "==> npm run build (ASTRO_BASE=/chat/)"
+( cd "${SPA_DIR}" && ASTRO_BASE=/chat/ npm run build )
 
 if [[ ! -f "${DIST_DIR}/index.html" ]]; then
     echo "ERROR: build did not produce index.html in ${DIST_DIR}" >&2
