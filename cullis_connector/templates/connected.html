@@ -62,6 +62,11 @@
     </div>
 
     <div class="btn-row" style="margin-top: 16px;">
+        {% if cullis_chat_mounted %}
+        <a href="/chat/" class="btn btn-primary">
+            Open Cullis Chat →
+        </a>
+        {% endif %}
         <button type="button"
                 id="test-ping-btn"
                 class="btn btn-ghost"
