@@ -145,7 +145,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Everything else needs Bearer or the `cullis_local_session` cookie
+  // Everything else needs Bearer or the `cullis_session` cookie
   // (ADR-019 Phase 8a: ``require_bearer`` on the real Ambassador
   // accepts either path; the mock now mirrors that). Any non-empty
   // value passes — the mock does not validate the token, the real
@@ -153,7 +153,7 @@ const server = createServer(async (req, res) => {
   const auth = req.headers['authorization'];
   const hasBearer = auth && auth.toString().toLowerCase().startsWith('bearer ');
   const cookieHeader = req.headers['cookie'] || '';
-  const hasSessionCookie = /(?:^|;\s*)cullis_local_session=[^;]+/.test(cookieHeader);
+  const hasSessionCookie = /(?:^|;\s*)cullis_session=[^;]+/.test(cookieHeader);
   if (!hasBearer && !hasSessionCookie) {
     return unauthorized(res);
   }

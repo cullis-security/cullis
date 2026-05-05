@@ -36,7 +36,13 @@ LOCAL_TOKEN_FILENAME = "local.token"
 # <token>`` or this cookie carrying the same local token. Two paths to
 # the same secret so a browser SPA can talk directly to the Ambassador
 # without an Astro server-side proxy in front (ADR-019 Phase 8).
-LOCAL_SESSION_COOKIE = "cullis_local_session"
+#
+# Name matches shared mode's ``cullis_connector/ambassador/shared/
+# router.py::COOKIE_NAME``. Same name in both topologies so the SPA
+# does not see two different auth cookies on the same origin; the
+# value is mode-specific (raw local Bearer in single mode, signed
+# payload in shared mode), the name is shared by design.
+LOCAL_SESSION_COOKIE = "cullis_session"
 
 
 def ensure_local_token(config_dir: Path) -> str:
