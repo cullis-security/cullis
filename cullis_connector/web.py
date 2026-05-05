@@ -494,13 +494,19 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
     @app.middleware("http")
     async def _csrf_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
-        # ADR-019 — Ambassador endpoints under /v1/* run their own
-        # auth (loopback + Bearer) and cannot rely on Origin/Referer
-        # since OpenAI clients (Cullis Chat / Cursor / OpenWebUI) do
-        # not always emit those headers. Skip the dashboard CSRF
-        # guard for that prefix; the Ambassador router enforces
-        # 401 on missing/invalid Bearer.
-        if request.url.path.startswith("/v1/"):
+        # ADR-019 — Ambassador endpoints under /v1/* and /api/session/*
+        # run their own auth (loopback + Bearer/cookie) and cannot rely
+        # on Origin/Referer since OpenAI clients (Cullis Chat / Cursor /
+        # OpenWebUI) do not always emit those headers. The session
+        # endpoints in particular bootstrap the cookie that the rest of
+        # the SPA's calls authenticate with; gating them on a CSRF token
+        # the SPA does not yet have would deadlock the flow. Skip the
+        # dashboard CSRF guard for these prefixes; the Ambassador's
+        # session router enforces 401 on missing / invalid auth.
+        if (
+            request.url.path.startswith("/v1/")
+            or request.url.path.startswith("/api/session/")
+        ):
             return await call_next(request)
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):
             authz = request.headers.get("authorization", "")

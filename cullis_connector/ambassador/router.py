@@ -31,6 +31,7 @@ from cullis_connector.ambassador.auth import require_bearer, require_loopback
 from cullis_connector.ambassador.client import AmbassadorClient
 from cullis_connector.ambassador.loop import run_tool_use_loop
 from cullis_connector.ambassador.models import ChatCompletionRequest
+from cullis_connector.ambassador.session_routes import router as session_router
 from cullis_connector.ambassador.streaming import (
     extract_assistant_text,
     fake_stream,
@@ -242,6 +243,11 @@ def install_ambassador(
         "require_local_only": require_local_only,
     }
     app.include_router(router)
+    # Session endpoints (init / whoami / logout). Lifted into a separate
+    # router so shared mode can mount its own session routes without
+    # colliding (the two modes share AMBASSADOR_MODE-gated lifespan
+    # logic in web.py, never run together).
+    app.include_router(session_router)
     _log.info(
         "ambassador installed: agent=%s site=%s models=%s",
         client.agent_id, getattr(client, "_site_url", ""), advertised_models,
