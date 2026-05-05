@@ -211,8 +211,18 @@ def _build_menu(
     on_quit: Callable[[], None],
     *,
     profiles_submenu=None,
+    open_chat: Callable[[], None] | None = None,
 ):
-    """Tray menu: Open Dashboard / Open Inbox / [Profiles ▸] / Quit.
+    """Tray menu: [Open Cullis Chat] / Open Dashboard / Open Inbox /
+    [Profiles ▸] / Quit.
+
+    ADR-019 Phase 8d — when the Cullis Chat SPA is mounted at /chat
+    (resolved at boot by ``cullis_connector.web._resolve_chat_dist``)
+    the menu surfaces it as the default action. Clicking the tray
+    icon opens chat directly; "Open Dashboard" stays available for
+    admin / maintenance flows. When the SPA is not bundled (no dist/
+    found), the chat entry is omitted so users do not click a dead
+    link.
 
     Pause-notifications remains a deliberate follow-up (M3.1b) — the
     top-level surface stays small so the first packaged binary is
@@ -220,17 +230,35 @@ def _build_menu(
     """
     import pystray
 
-    items = [
-        pystray.MenuItem(
-            "Open Dashboard",
-            lambda icon, item: open_dashboard(),
-            default=True,
-        ),
+    items: list = []
+    if open_chat is not None:
+        items.append(
+            pystray.MenuItem(
+                "Open Cullis Chat",
+                lambda icon, item: open_chat(),
+                default=True,
+            )
+        )
+        items.append(
+            pystray.MenuItem(
+                "Open Connector Dashboard",
+                lambda icon, item: open_dashboard(),
+            )
+        )
+    else:
+        items.append(
+            pystray.MenuItem(
+                "Open Dashboard",
+                lambda icon, item: open_dashboard(),
+                default=True,
+            )
+        )
+    items.append(
         pystray.MenuItem(
             "Open Inbox",
             lambda icon, item: open_inbox(),
-        ),
-    ]
+        )
+    )
     if profiles_submenu is not None:
         items.append(
             pystray.MenuItem("Profiles", profiles_submenu)
@@ -288,8 +316,18 @@ def run_desktop_app(
 
     window.events.closing += _on_closing
 
+    # ADR-019 Phase 8d — discover at boot whether the Cullis Chat SPA
+    # is bundled with this Connector. The resolver (web.py) is the same
+    # logic the dashboard uses to decide its mount, so the tray menu and
+    # the dashboard agree about /chat availability.
+    from cullis_connector.web import _resolve_chat_dist
+    chat_available = _resolve_chat_dist() is not None
+
     def _open_dashboard() -> None:
-        window.load_url(f"{base_url}/")
+        # /connected for explicit "show me the admin dashboard". When chat
+        # is bundled, /connected stays the admin surface; the new "Open
+        # Cullis Chat" menu item drives the consumer chat path.
+        window.load_url(f"{base_url}/connected" if chat_available else f"{base_url}/")
         window.show()
 
     def _open_inbox() -> None:
@@ -298,6 +336,13 @@ def run_desktop_app(
 
     def _open_profiles() -> None:
         window.load_url(f"{base_url}/profiles")
+        window.show()
+
+    def _open_chat() -> None:
+        # /chat redirects to /setup when no identity (gate added in
+        # the Phase 8c follow-up), so a pre-enrollment user clicking
+        # "Open Cullis Chat" lands on the wizard.
+        window.load_url(f"{base_url}/chat/")
         window.show()
 
     import pystray
@@ -352,6 +397,7 @@ def run_desktop_app(
         _open_inbox,
         _quit_all,
         profiles_submenu=profiles_submenu,
+        open_chat=_open_chat if chat_available else None,
     )
     icon.run_detached()
 

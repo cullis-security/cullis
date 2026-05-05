@@ -10,6 +10,14 @@
 # Templates and static files must ship as data files — Jinja2Templates
 # and StaticFiles read them off disk at runtime relative to
 # cullis_connector/__file__.
+#
+# The ``cullis_connector/static`` entry covers two surfaces:
+#   - dashboard CSS + favicon (always present in the source tree)
+#   - the Cullis Chat SPA dist at ``cullis_connector/static/cullis-chat/``,
+#     which only exists if ``scripts/build-spa.sh`` was run before
+#     PyInstaller (ADR-019 Phase 8d). The release CI workflow does this
+#     automatically; local builds need to invoke the script first or the
+#     resulting binary will log "cullis-chat SPA not mounted" at boot.
 datas = [
     ("cullis_connector/templates", "cullis_connector/templates"),
     ("cullis_connector/static", "cullis_connector/static"),

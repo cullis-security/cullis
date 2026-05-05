@@ -216,6 +216,25 @@ jobs:
         with:
           python-version: "3.11"
 
+      # ADR-019 Phase 8d — the PyInstaller spec ships
+      # ``cullis_connector/static`` wholesale, so the SPA dist needs to
+      # be staged into ``cullis_connector/static/cullis-chat/`` BEFORE
+      # PyInstaller runs. ``scripts/build-spa.sh`` does the npm build
+      # and copies the dist into place. Skip if the SPA isn't part of
+      # this release (the script no-ops if ``frontend/cullis-chat/`` is
+      # missing — the script errors out by design when it can't find
+      # the SPA, so the workflow surfaces a missing-frontend regression
+      # at release time rather than producing a /chat-less binary).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/cullis-chat/package-lock.json
+
+      - name: Build Cullis Chat SPA + stage into the connector package
+        shell: bash
+        run: bash scripts/build-spa.sh
+
       - name: Build binary
         shell: bash  # works on windows-latest (Git Bash)
         run: bash packaging/pyinstaller/build.sh
