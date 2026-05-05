@@ -242,15 +242,15 @@ body::after {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 48px 32px 64px;
+  padding: 64px 32px 80px;
 }
 
 .stage-inner {
   width: 100%;
-  max-width: 580px;
+  max-width: 780px;
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 32px;
   animation: stage-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
@@ -265,7 +265,7 @@ body::after {
   display: flex;
   align-items: center;
   gap: 0;
-  padding: 14px 20px;
+  padding: 18px 24px;
   background: rgba(15, 21, 32, 0.6);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -310,7 +310,7 @@ body::after {
 
 .step-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -340,7 +340,7 @@ body::after {
     linear-gradient(145deg, rgba(15, 21, 32, 0.75), rgba(10, 15, 26, 0.65));
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: 32px;
+  padding: clamp(28px, 4vw, 48px);
   backdrop-filter: blur(12px);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.03) inset,
@@ -365,21 +365,21 @@ body::after {
 
 .panel-eyebrow {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--accent);
-  margin-bottom: 10px;
+  margin-bottom: 14px;
 }
 
 .panel-title {
   font-family: var(--font-editorial);
-  font-size: 32px;
+  font-size: clamp(2rem, 3.6vw, 2.8rem);
   font-weight: 400;
   letter-spacing: -0.01em;
   line-height: 1.1;
   color: var(--text-primary);
-  margin: 0 0 10px 0;
+  margin: 0 0 14px 0;
 }
 
 .panel-title em {
@@ -388,40 +388,40 @@ body::after {
 }
 
 .panel-sub {
-  font-size: 13px;
+  font-size: 15px;
   color: var(--text-secondary);
   margin: 0;
   max-width: 56ch;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 /* --- Form inputs ------------------------------------------------------- */
 
-.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
 
 .field-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-secondary);
 }
 
 .field-hint {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .input, .textarea {
   width: 100%;
-  padding: 11px 13px;
+  padding: 13px 15px;
   border-radius: var(--radius-sm);
   background: var(--bg-deepest);
   border: 1px solid var(--border-default);
   color: var(--text-primary);
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: 14px;
   transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
@@ -445,12 +445,12 @@ body::after {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 11px 20px;
+  padding: 13px 22px;
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   cursor: pointer;
   border: 1px solid transparent;
