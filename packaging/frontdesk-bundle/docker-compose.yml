@@ -1,0 +1,121 @@
+# =============================================================================
+# Cullis Frontdesk — multi-user shared-mode container bundle (ADR-019 Phase 7)
+# =============================================================================
+#
+# Three services on a private docker network:
+#
+#   nginx          80   reverse proxy + (dev) fake-SSO injecting X-Forwarded-User
+#     ↓
+#   cullis-chat    4321 Astro SPA (chat UI)
+#     ↓
+#   connector      7777 cullis-connector dashboard + Ambassador (shared mode)
+#     ↓ DPoP+mTLS
+#   [Cullis Mastio cloud — out of scope for this bundle]
+#
+# Prerequisites:
+#
+#   1. A Mastio is reachable from this host (separate deploy, see
+#      packaging/mastio-bundle/).
+#   2. The Connector has been enrolled against that Mastio. Enrollment
+#      writes identity material to the ``connector_data`` volume; without
+#      it the Ambassador comes up but cannot reach Mastio.
+#
+#      One-shot enrollment (run once before ``docker compose up``):
+#
+#        docker run --rm -it \
+#          -v $(pwd)/connector_data:/root/.cullis \
+#          ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest} \
+#          enroll --site https://mastio.acme.local:9443 \
+#                 --code <INVITE_CODE_FROM_MASTIO_ADMIN> \
+#                 --profile frontdesk
+#
+# Usage:
+#
+#   cp frontdesk.env.example frontdesk.env       # then edit org_id, trust_domain
+#   docker compose --env-file frontdesk.env up -d
+#   open http://localhost:8080?user=mario        # demo user switch (dev only)
+#
+# Production: replace nginx with oauth2-proxy + your IDP. The
+# X-Forwarded-User header MUST come from a trusted proxy; the Connector
+# refuses requests whose source IP is not in CULLIS_TRUSTED_PROXIES.
+# =============================================================================
+
+services:
+
+  connector:
+    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest}
+    # ``dashboard`` mounts the Ambassador router via web.py lifespan when
+    # AMBASSADOR_MODE=shared (cullis_connector/web.py:152). Bind to all
+    # interfaces inside the container so nginx can reach it.
+    command: >
+      dashboard
+      --host 0.0.0.0
+      --port 7777
+      --no-open-browser
+      --profile ${CONNECTOR_PROFILE:-frontdesk}
+    expose:
+      - "7777"
+    environment:
+      # Shared mode wiring (ADR-021 PR4c). Required.
+      AMBASSADOR_MODE: shared
+      CULLIS_FRONTDESK_ORG_ID: ${CULLIS_FRONTDESK_ORG_ID}
+      CULLIS_FRONTDESK_TRUST_DOMAIN: ${CULLIS_FRONTDESK_TRUST_DOMAIN}
+      # Trust the docker bridge network so X-Forwarded-User from nginx is
+      # accepted. Default covers the bridge networks docker hands out by
+      # default (172.16.0.0/12). Tighten if you know your CIDR.
+      CULLIS_TRUSTED_PROXIES: ${CULLIS_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
+      CULLIS_FRONTDESK_COOKIE_TTL_S: ${CULLIS_FRONTDESK_COOKIE_TTL_S:-3600}
+      # Where Mastio's CSR endpoint lives. Falls back to site_url when empty.
+      CULLIS_FRONTDESK_MASTIO_URL: ${CULLIS_FRONTDESK_MASTIO_URL:-}
+      CULLIS_SITE_URL: ${CULLIS_SITE_URL:-}
+    volumes:
+      # Connector identity material (cert, key, profile config). Populated
+      # by the one-shot enrollment documented in the header comment.
+      - ${CONNECTOR_DATA_DIR:-./connector_data}:/root/.cullis
+    networks:
+      - frontdesk_net
+    restart: unless-stopped
+
+  cullis-chat:
+    # Build from source for now; future Phase 8.5 publishes
+    # ghcr.io/cullis-security/cullis-chat and we switch to image:.
+    build:
+      context: ../../frontend/cullis-chat
+      dockerfile: Dockerfile
+    expose:
+      - "4321"
+    environment:
+      # The SPA forwards Authorization+Cookie to this URL. Inside the
+      # bundle network the Ambassador is reachable as connector:7777.
+      CULLIS_AMBASSADOR_URL: http://connector:7777
+      # No local Bearer token in shared mode; the cookie is set by the
+      # Ambassador's /api/session/init via nginx routing (see nginx conf).
+      CULLIS_LOCAL_TOKEN: ${CULLIS_LOCAL_TOKEN:-shared-mode-no-bearer}
+      # Audit panel is for dashboards / admin surfaces, not end users.
+      PUBLIC_DEV_AUDIT_PANEL: ${PUBLIC_DEV_AUDIT_PANEL:-0}
+    depends_on:
+      - connector
+    networks:
+      - frontdesk_net
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${FRONTDESK_HTTP_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - cullis-chat
+    networks:
+      - frontdesk_net
+    restart: unless-stopped
+
+volumes:
+  # Persistent Connector identity. Survives `docker compose down`. Wipe
+  # only if you want to re-enroll the Connector from scratch.
+  connector_data:
+
+networks:
+  frontdesk_net:
+    driver: bridge
