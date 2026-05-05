@@ -31,6 +31,13 @@ _AUTH_HEADER = "authorization"
 
 LOCAL_TOKEN_FILENAME = "local.token"
 
+# Name of the HttpOnly session cookie issued by ``POST /api/session/init``
+# in single mode. The Ambassador accepts either ``Authorization: Bearer
+# <token>`` or this cookie carrying the same local token. Two paths to
+# the same secret so a browser SPA can talk directly to the Ambassador
+# without an Astro server-side proxy in front (ADR-019 Phase 8).
+LOCAL_SESSION_COOKIE = "cullis_local_session"
+
 
 def ensure_local_token(config_dir: Path) -> str:
     """Return the local Bearer token, generating it on first call.
@@ -79,6 +86,19 @@ def require_loopback(request: Request) -> None:
 def require_bearer(expected_token: str):
     """Build a FastAPI dependency that validates the Bearer header.
 
+    Accepts the local token via either of two paths:
+
+      1. ``Authorization: Bearer <token>`` — the original path. Used by
+         Cursor / LibreChat / Claude Desktop and the SPA's server-side
+         proxy.
+      2. ``Cookie: cullis_local_session=<token>`` — the path used by a
+         browser SPA talking directly to the Ambassador, after
+         ``POST /api/session/init`` has minted the cookie. Lets the
+         Astro-static topology of ADR-019 Phase 8 collapse the
+         "browser → Astro server → Ambassador" hop.
+
+    The two paths carry the same secret. Both checks are constant-time.
+
     Returns a callable suitable for ``Depends(...)`` so each route can
     mount it without rebuilding the closure.
     """
@@ -87,13 +107,19 @@ def require_bearer(expected_token: str):
 
     def _checker(request: Request) -> None:
         raw = request.headers.get(_AUTH_HEADER, "")
-        if not raw.lower().startswith("bearer "):
-            raise HTTPException(
-                status_code=401,
-                detail="missing or non-Bearer Authorization header",
-            )
-        presented = raw.split(" ", 1)[1].strip()
-        if not secrets.compare_digest(presented, expected_token):
+        if raw.lower().startswith("bearer "):
+            presented = raw.split(" ", 1)[1].strip()
+            if secrets.compare_digest(presented, expected_token):
+                return
             raise HTTPException(status_code=401, detail="invalid Bearer token")
+
+        cookie_token = request.cookies.get(LOCAL_SESSION_COOKIE, "")
+        if cookie_token and secrets.compare_digest(cookie_token, expected_token):
+            return
+
+        raise HTTPException(
+            status_code=401,
+            detail="missing Authorization header or session cookie",
+        )
 
     return _checker
