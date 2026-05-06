@@ -27,6 +27,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from mcp_proxy.auth.dpop_client_cert import get_agent_from_dpop_client_cert
+from mcp_proxy.auth.rate_limit import get_token_sum_limiter
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import log_audit
 from mcp_proxy.egress.ai_gateway import GatewayError, dispatch
@@ -36,6 +37,10 @@ from mcp_proxy.models import InternalAgent
 logger = logging.getLogger("mcp_proxy.egress.llm_chat")
 
 router = APIRouter(tags=["llm-chat"])
+
+
+def _token_bucket_key(agent: InternalAgent) -> str:
+    return f"principal:{agent.agent_id}:llm_tokens"
 
 
 @router.post("/v1/chat/completions")
@@ -53,6 +58,39 @@ async def chat_completions(
 
     settings = get_settings()
     trace_id = f"trace_{uuid.uuid4().hex[:16]}"
+
+    if settings.llm_tokens_per_minute > 0:
+        token_limiter = get_token_sum_limiter()
+        bucket_key = _token_bucket_key(agent)
+        current_sum = await token_limiter.peek(bucket_key)
+        if current_sum >= settings.llm_tokens_per_minute:
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="egress_llm_chat",
+                status="error",
+                details={
+                    "event": "llm.chat_completion",
+                    "principal_id": agent.agent_id,
+                    "principal_type": agent.principal_type,
+                    "backend": settings.ai_gateway_backend,
+                    "provider": settings.ai_gateway_provider,
+                    "model": req.model,
+                    "trace_id": trace_id,
+                    "reason": "local_rate_limited_tokens",
+                    "current_window_tokens": current_sum,
+                    "limit_tokens_per_minute": settings.llm_tokens_per_minute,
+                },
+            )
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "reason": "local_rate_limited_tokens",
+                    "trace_id": trace_id,
+                    "current_window_tokens": current_sum,
+                    "limit_tokens_per_minute": settings.llm_tokens_per_minute,
+                },
+            )
+
     started = time.perf_counter()
 
     try:
@@ -88,6 +126,10 @@ async def chat_completions(
     latency_ms = int((time.perf_counter() - started) * 1000)
     payload = result.response.model_dump()
     payload.setdefault("cullis_trace_id", trace_id)
+
+    if settings.llm_tokens_per_minute > 0:
+        weight = int(result.prompt_tokens) + int(result.completion_tokens)
+        await get_token_sum_limiter().consume(_token_bucket_key(agent), weight)
 
     await log_audit(
         agent_id=agent.agent_id,

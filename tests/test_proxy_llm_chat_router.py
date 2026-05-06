@@ -269,6 +269,122 @@ async def test_chat_completions_gateway_error_surfaces_status(app_with_router, m
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_429_when_token_budget_exhausted(
+    app_with_router, monkeypatch,
+):
+    """When the principal's sliding-window token sum already meets or
+    exceeds llm_tokens_per_minute, the next call short-circuits with
+    HTTP 429 before reaching the upstream provider, and an audit row
+    is written with reason=local_rate_limited_tokens for ops triage."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+    from mcp_proxy.config import get_settings
+
+    reset_agent_rate_limiter()
+    monkeypatch.setenv("MCP_PROXY_LLM_TOKENS_PER_MINUTE", "100")
+    get_settings.cache_clear()
+
+    # Pre-fill the principal's bucket so the next call is over budget.
+    limiter = get_token_sum_limiter()
+    await limiter.consume("principal:orga::alice:llm_tokens", 100)
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 429, r.text
+    body = r.json()
+    assert body["detail"]["reason"] == "local_rate_limited_tokens"
+    assert body["detail"]["limit_tokens_per_minute"] == 100
+    assert body["detail"]["current_window_tokens"] >= 100
+
+    rows = await _audit_rows("egress_llm_chat", status="error")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["reason"] == "local_rate_limited_tokens"
+    assert detail["principal_id"] == "orga::alice"
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_consumes_tokens_post_call(
+    app_with_router, monkeypatch,
+):
+    """A successful call adds (prompt_tokens + completion_tokens) to
+    the principal's window so subsequent peeks see the new usage."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+
+    reset_agent_rate_limiter()
+    limiter = get_token_sum_limiter()
+    bucket = "principal:orga::alice:llm_tokens"
+    assert await limiter.peek(bucket) == 0
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+    # _gateway_result returns prompt_tokens=12 + completion_tokens=3.
+    assert await limiter.peek(bucket) == 15
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_rate_limit_disabled_when_zero(
+    app_with_router, monkeypatch,
+):
+    """Setting llm_tokens_per_minute=0 disables the gate entirely; no
+    peek is invoked and no consume is recorded. Useful for benchmarks
+    or tightly-controlled pipelines that already cap upstream."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+    from mcp_proxy.config import get_settings
+
+    reset_agent_rate_limiter()
+    monkeypatch.setenv("MCP_PROXY_LLM_TOKENS_PER_MINUTE", "0")
+    get_settings.cache_clear()
+
+    limiter = get_token_sum_limiter()
+    bucket = "principal:orga::alice:llm_tokens"
+    # Pre-fill above any reasonable cap to prove it's ignored.
+    await limiter.consume(bucket, 999_999)
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+    # Bucket unchanged: no consume happened either.
+    assert await limiter.peek(bucket) == 999_999
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_rejects_streaming(app_with_router, monkeypatch):
     monkeypatch.setattr(
         router_module, "dispatch",
