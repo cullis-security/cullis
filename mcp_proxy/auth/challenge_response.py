@@ -344,40 +344,51 @@ async def sign_challenged_assertion(
             ),
         )
 
-    # Cert pin — ``internal_agents.cert_pem`` is the row the operator
-    # enrolled. A valid chain-of-trust cert that doesn't match the
-    # pinned one is rejected (defence against silent re-issuance).
-    db_row = await db_get_agent(agent.agent_id)
-    if db_row is None or not db_row.get("is_active", True):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="agent not registered or deactivated",
-        )
-    pinned_pem = db_row.get("cert_pem")
-    if not pinned_pem:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="agent has no pinned cert_pem on record",
-        )
-    try:
-        pinned_cert = x509.load_pem_x509_certificate(pinned_pem.encode())
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="pinned cert_pem is malformed",
-        ) from exc
-    from cryptography.hazmat.primitives import serialization as _ser
-    pinned_der = pinned_cert.public_bytes(_ser.Encoding.DER)
-    leaf_der = leaf.public_bytes(_ser.Encoding.DER)
-    if pinned_der != leaf_der:
-        _log.info(
-            "login challenge rejected for %s: leaf cert != pinned",
-            agent.agent_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="leaf certificate does not match pinned internal_agents.cert_pem",
-        )
+    # ADR-020 — typed principals (user / workload) skip the cert pin
+    # check (see the matching branch in ``client_cert.py``): their certs
+    # rotate every ~1h via ``/v1/principals/csr`` and the registry never
+    # writes a pinned ``cert_pem`` for them. The chain walk + SPIFFE SAN
+    # match enforced upstream by nginx ``ssl_verify_client`` is the
+    # security gate; pinning a one-hour leaf would just force every
+    # fresh login through a registry write the provisioner doesn't issue.
+    is_typed_principal = (
+        "::user::" in agent.agent_id or "::workload::" in agent.agent_id
+    )
+    if not is_typed_principal:
+        # Cert pin — ``internal_agents.cert_pem`` is the row the operator
+        # enrolled. A valid chain-of-trust cert that doesn't match the
+        # pinned one is rejected (defence against silent re-issuance).
+        db_row = await db_get_agent(agent.agent_id)
+        if db_row is None or not db_row.get("is_active", True):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="agent not registered or deactivated",
+            )
+        pinned_pem = db_row.get("cert_pem")
+        if not pinned_pem:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="agent has no pinned cert_pem on record",
+            )
+        try:
+            pinned_cert = x509.load_pem_x509_certificate(pinned_pem.encode())
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="pinned cert_pem is malformed",
+            ) from exc
+        from cryptography.hazmat.primitives import serialization as _ser
+        pinned_der = pinned_cert.public_bytes(_ser.Encoding.DER)
+        leaf_der = leaf.public_bytes(_ser.Encoding.DER)
+        if pinned_der != leaf_der:
+            _log.info(
+                "login challenge rejected for %s: leaf cert != pinned",
+                agent.agent_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="leaf certificate does not match pinned internal_agents.cert_pem",
+            )
 
     # Counter-sign — reuse the ADR-009 Phase 2 primitive. When the
     # mastio identity isn't loaded yet (legacy deploys pre-ADR-009),

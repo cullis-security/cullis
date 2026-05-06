@@ -65,7 +65,18 @@ async def run(
         )
 
     # 2. Capability check
-    if not tool_registry.has_capability(tool_name, agent.scope):
+    # ADR-020 — typed principals (user / workload) authorise via the
+    # ``local_agent_resource_bindings`` table on the proxy, NOT via the
+    # broker-issued JWT scope. The aggregator (``_handle_tools_call``)
+    # has already verified an active binding for ``(agent_id,
+    # principal_type, resource_id)`` before reaching here, so the
+    # legacy scope-based capability gate is redundant for typed
+    # principals and would fail closed (the broker's user-token flow
+    # ships an empty scope).
+    principal_type = getattr(agent, "principal_type", "agent")
+    if principal_type == "agent" and not tool_registry.has_capability(
+        tool_name, agent.scope,
+    ):
         duration_ms = _elapsed_ms(t0)
         _log.warning(
             "Agent '%s' lacks capability '%s' for tool '%s'",

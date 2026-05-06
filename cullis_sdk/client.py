@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -314,6 +315,17 @@ class CullisClient:
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self._http.close()
+        # ADR-021 PR4c — wipe the per-process tmpdir that holds a
+        # user-principal cert + key when ``from_user_principal_pem``
+        # was used. Best-effort: any error during cleanup is logged
+        # and swallowed so close() stays exception-safe.
+        tmpdir = getattr(self, "_user_principal_tmpdir", None)
+        if tmpdir is not None:
+            try:
+                import shutil
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            finally:
+                self._user_principal_tmpdir = None
 
     def _resolve_trust_anchors(self) -> "list[str] | None":
         """Read the operator-pinned Org CA bundle for sender-cert chain checks.
@@ -1152,6 +1164,128 @@ class CullisClient:
                 )
 
         log("sdk", f"Loaded Connector identity {agent_id} from {identity_dir}")
+        return instance
+
+    # ── ADR-021 PR4c — user-principal client (in-memory cert+key) ───
+
+    @classmethod
+    def from_user_principal_pem(
+        cls,
+        site_url: str,
+        *,
+        principal_id: str,
+        cert_pem: str,
+        key_pem: str,
+        ca_chain_pem: str | None = None,
+        timeout: float = 10.0,
+        enable_dpop: bool = True,
+        verify_tls: bool | None = None,
+    ) -> CullisClient:
+        """Build a CullisClient bound to a Frontdesk-minted user principal.
+
+        Counterpart to :meth:`from_connector`, but for the shared-mode
+        Frontdesk Ambassador (ADR-021 PR4c) where the per-user cert and
+        KMS-released key live entirely in memory: nothing on disk, the
+        cert lifecycle is the SSO session lifecycle, and the lookup key
+        is the 4-segment ``<td>/<org>/<type>/<name>`` principal_id.
+
+        ``cert_pem`` + ``key_pem`` are the user's freshly-signed
+        ADR-020 typed-principal cert (CN/O empty, SPIFFE SAN
+        ``spiffe://<td>/<org>/user/<name>``) and the matching private
+        key the embedded KMS just released. The factory persists them
+        to a per-process temp dir so httpx + nginx can use them at the
+        TLS handshake — the temp files inherit the current umask and
+        are removed on ``close()`` / GC. The cert lives at most as long
+        as the cached :class:`UserCredentials` row in the Ambassador.
+
+        ``principal_id`` must be the 4-segment form. The factory derives
+        the canonical typed ``agent_id`` (``{org}::user::{name}`` for
+        users / workloads, ``{org}::{name}`` for plain agents) so JWT
+        ``sub`` and the broker x509_verifier's parse line up exactly.
+
+        Caller is expected to invoke
+        :meth:`login_via_proxy_with_local_key` afterwards to mint a
+        DPoP-bound access token. Building the client and minting the
+        token are kept separate so the ambassador can probe identity
+        before paying the full login round-trip.
+        """
+        import tempfile
+
+        parts = principal_id.split("/")
+        if len(parts) != 4:
+            raise ValueError(
+                "principal_id must be ``<td>/<org>/<type>/<name>``; "
+                f"got {principal_id!r}",
+            )
+        _td, org_id, ptype, name = parts
+        if ptype not in ("agent", "user", "workload"):
+            raise ValueError(
+                f"principal_id has unknown type segment {ptype!r}; "
+                "expected one of agent / user / workload",
+            )
+        if ptype == "agent":
+            agent_id = f"{org_id}::{name}"
+        else:
+            agent_id = f"{org_id}::{ptype}::{name}"
+
+        if verify_tls is None:
+            verify_tls = site_url.startswith("https://")
+
+        # Persist cert + key + CA bundle to a temp dir so httpx's SSL
+        # context can load them at the handshake. Tracked on the
+        # instance so ``close()`` cleans them up; nothing else needs
+        # them after the client is constructed.
+        tmp = tempfile.mkdtemp(prefix="cullis-user-")
+        cert_path = Path(tmp) / "cert.pem"
+        key_path = Path(tmp) / "key.pem"
+        cert_path.write_text(cert_pem)
+        key_path.write_text(key_pem)
+        os.chmod(key_path, 0o600)
+        ca_path: Path | None = None
+        if ca_chain_pem:
+            ca_path = Path(tmp) / "ca-chain.pem"
+            ca_path.write_text(ca_chain_pem)
+
+        instance = cls.__new__(cls)
+        instance.base = site_url.rstrip("/")
+        instance._verify_tls = verify_tls
+        instance.token = None
+        instance._label = agent_id
+        instance.server_role = None
+        instance._signing_key_pem = key_pem
+        instance._cert_pem = cert_pem
+        instance._http = _build_proxy_http_client(
+            verify_tls=verify_tls,
+            timeout=timeout,
+            cert_path=cert_path,
+            key_path=key_path,
+            ca_chain_path=ca_path,
+        )
+        instance._ca_chain_path = ca_path
+        instance._pubkey_cache = {}
+        instance._client_seq = {}
+        instance._dpop_privkey = None
+        instance._dpop_pubkey_jwk = None
+        instance._dpop_nonce = None
+        instance._egress_dpop_key = None
+        instance._egress_dpop_nonce = None
+        instance._proxy_agent_id = agent_id
+        instance._proxy_org_id = org_id
+        instance._use_egress_for_sessions = True
+        instance.identity = None
+        # Track the temp dir so ``close()`` / ``__del__`` can wipe the
+        # cert + key off disk. The temp files are mode 600 + key 600,
+        # but the on-disk dwell-time still wants to be minimised.
+        instance._user_principal_tmpdir = tmp
+
+        if enable_dpop:
+            from cullis_sdk.dpop import DpopKey
+            instance._egress_dpop_key = DpopKey.generate()
+
+        log(
+            "sdk",
+            f"Loaded user-principal identity {agent_id} (principal_id={principal_id})",
+        )
         return instance
 
     # ── SPIFFE Workload API bootstrap ───────────────────────────────

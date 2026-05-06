@@ -278,18 +278,27 @@ async def list_models(
 def _build_user_client(state: SharedAmbassadorState, cred: UserCredentials):
     """Construct a CullisClient logged in with the user's cert+key.
 
-    v0.1 builds fresh per request (~100ms login). v0.2 will cache
-    these clients keyed on principal_id with TTL matching the cert,
-    behind a tiny adapter so this function stays the entry point.
+    Uses :meth:`CullisClient.from_user_principal_pem` so the user's
+    cert is presented at the TLS handshake — required by the Mastio
+    nginx ``location ~ ^/v1/(egress|agents|audit|llm|chat)`` mTLS gate
+    that fronts the AI gateway. The factory derives the canonical
+    typed ``agent_id`` (``{org}::user::{name}``) from the 4-segment
+    principal_id so the JWT ``sub`` lines up with the broker
+    x509_verifier's SPIFFE-SAN parse (no 401 'sub mismatch').
+
+    v0.1 builds fresh per request (~100ms login + tempfile setup).
+    v0.2 will cache these clients keyed on principal_id with TTL
+    matching the cert, behind a tiny adapter so this function stays
+    the entry point.
     """
     from cullis_sdk import CullisClient
-    parts = cred.principal_id.split("/")
-    if len(parts) != 4:
-        raise HTTPException(500, "malformed principal_id in credentials")
-    _td, org, _ptype, name = parts
-    agent_id = f"{org}::{name}"
-    client = CullisClient(state.site_url)
-    client.login_from_pem(agent_id, org, cred.cert_pem, cred.key_pem)
+    client = CullisClient.from_user_principal_pem(
+        state.site_url,
+        principal_id=cred.principal_id,
+        cert_pem=cred.cert_pem,
+        key_pem=cred.key_pem,
+    )
+    client.login_via_proxy_with_local_key()
     return client
 
 

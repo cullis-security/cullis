@@ -103,11 +103,24 @@ def _parse_spiffe_uri(uri: str) -> Optional[tuple[str, str]]:
     if not uri.startswith("spiffe://"):
         return None
     rest = uri[len("spiffe://"):]
-    # rest = "<trust_domain>/<org_id>/<agent_name>"
-    parts = rest.split("/", 2)
-    if len(parts) != 3:
+    # ADR-020 — accept both legacy 2-component (``<td>/<org>/<name>``)
+    # and typed 3-component (``<td>/<org>/<type>/<name>``) paths.
+    parts = rest.split("/")
+    if len(parts) == 3:
+        _td, org_id, agent_name = parts
+    elif len(parts) == 4:
+        _td, org_id, ptype, name = parts
+        if ptype not in ("agent", "user", "workload"):
+            return None
+        if ptype == "agent":
+            agent_name = name
+        else:
+            # Encode the typed identity into the canonical agent_id form
+            # used as the registry key (``{org}::{type}::{name}``). The
+            # caller will look this up in ``internal_agents`` directly.
+            agent_name = f"{ptype}::{name}"
+    else:
         return None
-    _trust_domain, org_id, agent_name = parts
     if not org_id or not agent_name:
         return None
     return org_id, agent_name
@@ -280,31 +293,41 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             detail="agent unknown or inactive",
         )
 
-    # Pin the presented cert against the stored one. A renewal that
-    # rotated cert_pem in the DB but left the old cert in the wild
-    # would fail this — that's the desired behaviour: revocation by
-    # row-level update propagates to the next request without waiting
-    # for CA rotation.
-    stored_digest = _pem_der_digest(agent_data.get("cert_pem"))
-    if not stored_digest:
-        _log.error(
-            "internal_agents.cert_pem unparseable for %s — refusing auth",
-            canonical_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="agent cert pin unavailable",
-        )
-    if not hmac.compare_digest(_cert_der_digest(cert), stored_digest):
-        _log.warning(
-            "client cert pin mismatch for %s — presented cert is not "
-            "the one this Mastio issued.",
-            canonical_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="client cert does not match the registered identity",
-        )
+    # ADR-020 — typed principals (user / workload) skip the cert-pin step.
+    # Their certs rotate every ~1h via ``/v1/principals/csr`` and are not
+    # persisted in ``internal_agents`` (the registry is a *workload*
+    # registry; user principals live in their own table). Identity is
+    # already gated upstream by the nginx mTLS chain walk + the SPIFFE
+    # SAN match the chain enforces, so re-pinning the rotating leaf
+    # would force every fresh login through a registry write the
+    # provisioner doesn't issue.
+    is_typed_principal = "::user::" in canonical_id or "::workload::" in canonical_id
+    if not is_typed_principal:
+        # Pin the presented cert against the stored one. A renewal that
+        # rotated cert_pem in the DB but left the old cert in the wild
+        # would fail this — that's the desired behaviour: revocation by
+        # row-level update propagates to the next request without waiting
+        # for CA rotation.
+        stored_digest = _pem_der_digest(agent_data.get("cert_pem"))
+        if not stored_digest:
+            _log.error(
+                "internal_agents.cert_pem unparseable for %s — refusing auth",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="agent cert pin unavailable",
+            )
+        if not hmac.compare_digest(_cert_der_digest(cert), stored_digest):
+            _log.warning(
+                "client cert pin mismatch for %s — presented cert is not "
+                "the one this Mastio issued.",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="client cert does not match the registered identity",
+            )
 
     settings = get_settings()
     if not await get_agent_rate_limiter().check(

@@ -32,8 +32,10 @@ WORKDIR /src
 COPY . /src
 
 RUN python -m pip install --upgrade pip build \
+ && bash packaging/pypi-sdk/build.sh \
  && bash packaging/pypi/build.sh \
  && mkdir -p /dist \
+ && mv dist/cullis_sdk-*.whl /dist/ \
  && mv dist/cullis_connector-*.whl /dist/
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────
@@ -54,9 +56,18 @@ COPY --from=builder /dist/*.whl /tmp/
 # ``dashboard`` ImportErrors. The plain ``serve`` (MCP stdio) and
 # ``enroll`` paths do not need the extra but it costs ~25 MiB and keeps
 # the image single-purpose.
-RUN WHEEL=$(ls /tmp/cullis_connector-*.whl) \
- && pip install "${WHEEL}[dashboard]" \
- && rm "${WHEEL}"
+#
+# We install the locally-built ``cullis-sdk`` wheel BEFORE the
+# connector wheel (and pin pip to the local copy) so the ADR-021 PR4c
+# user-principal factory + ADR-017 ``chat_completion`` ship in the
+# image. Without this step pip would fall back to the published
+# ``cullis-sdk>=0.1.2`` which predates both features and the Frontdesk
+# shared-mode chat path 401s on every request.
+RUN SDK_WHEEL=$(ls /tmp/cullis_sdk-*.whl) \
+ && CONN_WHEEL=$(ls /tmp/cullis_connector-*.whl) \
+ && pip install "${SDK_WHEEL}" \
+ && pip install "${CONN_WHEEL}[dashboard]" \
+ && rm "${SDK_WHEEL}" "${CONN_WHEEL}"
 
 USER cullis
 WORKDIR /home/cullis

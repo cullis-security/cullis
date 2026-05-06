@@ -84,11 +84,18 @@ async def create_access_token(
     scope: list[str] | None = None,
     settings: Settings | None = None,
     dpop_jkt: str = "",
+    principal_type: str = "agent",
+    trust_domain: str | None = None,
 ) -> tuple[str, int]:
     """
     Create an RS256 JWT signed with the broker's private key.
     dpop_jkt must be the JWK thumbprint of the agent's DPoP key (RFC 9449 §6).
     Returns (token, expires_in_seconds).
+
+    ``trust_domain`` overrides ``settings.trust_domain`` when the
+    caller has resolved the org's federated trust domain (per-org
+    domains are common in multi-tenant deploys; the SPIFFE ``sub``
+    claim must match the cert SAN the verifier just authenticated).
     """
     if settings is None:
         settings = get_settings()
@@ -102,7 +109,26 @@ async def create_access_token(
     expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     jti = str(uuid.uuid4())
 
-    spiffe_id = internal_id_to_spiffe(agent_id, settings.trust_domain)
+    effective_td = trust_domain or settings.trust_domain
+    # ADR-020 — agent_id can be the legacy 2-segment ``{org}::{name}`` or
+    # the typed 3-segment ``{org}::{type}::{name}`` for user / workload
+    # principals. Build a SPIFFE URI that matches the cert SAN format
+    # the verifier emitted so ``sub`` round-trips correctly.
+    if principal_type == "agent":
+        spiffe_id = internal_id_to_spiffe(agent_id, effective_td)
+    else:
+        # ``{org}::{type}::{name}`` → ``spiffe://td/{org}/{type}/{name}``
+        parts = agent_id.split("::", 2)
+        if len(parts) != 3:
+            raise ValueError(
+                f"typed agent_id must be ``{{org}}::{{type}}::{{name}}``: "
+                f"got {agent_id!r}",
+            )
+        org_part, type_part, name_part = parts
+        spiffe_id = (
+            f"spiffe://{effective_td}"
+            f"/{org_part}/{type_part}/{name_part}"
+        )
 
     payload = {
         "iss": _TOKEN_ISSUER,
@@ -111,6 +137,7 @@ async def create_access_token(
         "agent_id": agent_id,    # internal format org::agent — DB primary key
         "org": org_id,
         "scope": scope or [],
+        "principal_type": principal_type,
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
         "jti": jti,

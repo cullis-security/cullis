@@ -144,13 +144,30 @@ def _validate_public_key(csr: x509.CertificateSigningRequest) -> None:
 
 
 def _build_subject(principal_id: str, org_id: str) -> x509.Name:
-    return x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, principal_id[:64]),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
-    ])
+    """ADR-020 — typed-principal certs ship as SVID-style (empty subject,
+    identity in the SPIFFE SAN URI only).
+
+    Putting the 4-component principal_id in CN/O sends the broker's
+    ``x509_verifier`` down the legacy CN/O parse branch which then tries
+    to coerce ``orga.test/orga/user/daniele`` into the
+    ``org::agent-name`` internal format and 500s. The SPIFFE SAN we add
+    later carries the full identity, and the verifier's SVID branch
+    parses it cleanly via ``spiffe_to_principal`` (PR #443). Agent certs
+    keep CN/O via the ``sign_external_pubkey`` path; this helper is
+    user / workload only.
+    """
+    return x509.Name([])
 
 
 def _build_issuer(org_id: str) -> x509.Name:
+    """Fallback issuer name when the proxy can't read the Org CA cert.
+
+    Real signing path uses the actual Org CA cert's subject (see
+    ``sign_user_csr``) so the cert's ``Issuer`` field rfc4514-equals
+    the CA's ``Subject`` and nginx ``ssl_verify_client`` walks the
+    chain cleanly. This helper is only kept for the test fakes that
+    construct certs without an AgentManager around.
+    """
     return x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "Cullis Mastio Broker CA"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
@@ -209,6 +226,17 @@ async def sign_user_csr(
     ca_key = agent_manager._org_ca_key  # type: ignore[attr-defined]
     if ca_key is None:
         raise RuntimeError("Org CA key missing despite ca_loaded=True")
+    # Use the *real* Org CA cert subject as the issuer so the resulting
+    # cert chains cleanly through nginx's ``ssl_verify_client``. The
+    # fallback ``_build_issuer`` would emit a synthetic
+    # ``CN=Cullis Mastio Broker CA, O=<org>`` Name that does NOT match
+    # the registered org_ca subject; OpenSSL then refuses the chain
+    # with "unable to get issuer cert" and nginx returns the generic
+    # 400 SSL certificate error page. Caught dogfooding 2026-05-06.
+    ca_cert = agent_manager._org_ca_cert  # type: ignore[attr-defined]
+    issuer_name = ca_cert.subject if ca_cert is not None else _build_issuer(
+        expected_org,
+    )
 
     now = datetime.now(timezone.utc)
     not_before = now - CLOCK_SKEW
@@ -217,7 +245,7 @@ async def sign_user_csr(
     cert = (
         x509.CertificateBuilder()
         .subject_name(_build_subject(principal_id, expected_org))
-        .issuer_name(_build_issuer(expected_org))
+        .issuer_name(issuer_name)
         .public_key(csr.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_before)

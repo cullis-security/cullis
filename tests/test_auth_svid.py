@@ -182,23 +182,23 @@ async def test_svid_no_san_rejected(client: AsyncClient, dpop):
 # ── ADR-020 — 3-component principal SPIFFE format ──────────────────────────
 
 
-async def test_user_principal_svid_token_endpoint_returns_400(
+async def test_user_principal_svid_token_endpoint_issues_token(
     client: AsyncClient, dpop,
 ):
-    """User principal cert (``spiffe://td/org/user/<name>``) is recognised
-    by the verifier but rejected by ``/v1/auth/token`` with a precise 400.
+    """User principal cert (``spiffe://td/org/user/<name>``) round-trips
+    through ``/v1/auth/token`` and gets a DPoP-bound JWT with
+    ``principal_type=user``.
 
-    Pre-fix this 500'd somewhere downstream because the verifier collapsed
-    the 3-component path into a fake agent_id and the registry lookup
-    blew up. The dedicated user-principal flow lives elsewhere; the
-    legacy ``/v1/auth/token`` endpoint stays agent-only on purpose.
+    Pre-fix this 500'd because the verifier collapsed the 3-component
+    path into a fake agent_id. PR #443 + the typed-token flow added
+    the user-principal lookup that issues an empty-scope token (the
+    proxy's ``local_agent_resource_bindings`` is the authz source for
+    user MCP access — see ADR-020). Workload principals stay rejected
+    on this endpoint by design (separate test below).
     """
     await _prime_nonce(client, dpop)
     org_id = "userp-orga"
     trust_domain = "userp-orga.test"
-    # We register a placeholder agent under the same org so the
-    # trust-domain → org resolution succeeds; the user principal is
-    # NOT in the agents table by design.
     await _register_agent(
         client, f"{org_id}::placeholder", org_id, trust_domain=trust_domain,
     )
@@ -215,8 +215,17 @@ async def test_user_principal_svid_token_endpoint_returns_400(
         json={"client_assertion": assertion},
         headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
     )
-    assert resp.status_code == 400, resp.text
-    assert "principal_type" in resp.text
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    token = body["access_token"]
+
+    # Decode without verification to check the typed claims survived.
+    import jwt as _jwt
+    payload = _jwt.decode(token, options={"verify_signature": False})
+    assert payload["principal_type"] == "user"
+    assert payload["agent_id"] == f"{org_id}::user::daniele"
+    assert payload["sub"] == spiffe
+    assert payload["scope"] == []  # binding-driven authz; no broker scope
 
 
 async def test_workload_principal_svid_token_endpoint_returns_400(

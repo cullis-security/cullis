@@ -93,29 +93,30 @@ async def issue_token(
         span.set_attribute("agent.id", agent_id)
         span.set_attribute("org.id", org_id)
         span.set_attribute("principal.type", principal_type)
-        # ADR-020 — user/workload principals do not authenticate via this
-        # legacy ``/v1/auth/token`` endpoint. The verifier now recognises
-        # their SPIFFE SAN so the caller fails fast with a precise 4xx
-        # instead of a confusing "agent not found" 401 from the registry
-        # lookup below. The dedicated user-principal flow lives on the
-        # dedicated routes (e.g. ``/v1/inbox`` directly via mTLS, or the
-        # post-PR4d user token endpoint when it lands).
-        if principal_type != "agent":
-            AUTH_DENY_COUNTER.add(1, {"reason": "principal_type_not_agent"})
+        # ADR-020 — workload principals don't have a token flow yet (they
+        # call /v1/principals/csr to mint user certs and forward the user
+        # cert downstream — they never need their own access token). User
+        # principals reuse this endpoint with a relaxed agents lookup (see
+        # below): the user_principals table is the registry, scope is
+        # empty (user-binding lives on the proxy via
+        # ``local_agent_resource_bindings`` keyed by principal_type=user),
+        # and the JWT carries ``principal_type='user'`` so the proxy
+        # aggregator filters MCP tools / audit rows correctly.
+        if principal_type == "workload":
+            AUTH_DENY_COUNTER.add(1, {"reason": "principal_type_workload"})
             await log_event(
                 db, "auth.token_request", "denied",
                 agent_id=agent_id, org_id=org_id,
                 details={
-                    "reason": "principal_type_not_agent",
+                    "reason": "workload principals do not have a token flow",
                     "principal_type": principal_type,
                 },
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    f"/v1/auth/token is only for agent principals; got "
-                    f"principal_type={principal_type!r}. Use the dedicated "
-                    f"endpoints for {principal_type} principals."
+                    "/v1/auth/token does not apply to workload principals; "
+                    "workloads use /v1/principals/csr to mint user certs."
                 ),
             )
 
@@ -141,29 +142,67 @@ async def issue_token(
             )
             raise
 
-        # ── Agent checks ─────────────────────────────────────────────────────
-        agent = await get_agent_by_id(db, agent_id)
-        if agent is None or agent.org_id != org_id:
-            AUTH_DENY_COUNTER.add(1, {"reason": "agent_not_found"})
-            await log_event(
-                db, "auth.token_request", "denied",
-                agent_id=agent_id, org_id=org_id,
-                details={"reason": "agent not found or org mismatch"},
+        # ── Registry lookup ──────────────────────────────────────────────────
+        if principal_type == "user":
+            # User principals live in ``user_principals`` (ADR-021 PR2)
+            # if the Frontdesk has already provisioned them, but the
+            # current Frontdesk only writes to the *proxy* via
+            # ``/v1/principals/csr`` and does not round-trip the row up
+            # to the Court. For revocation semantics we *should* check
+            # the row when present (allows admins to disable a user) but
+            # *must* permit absence so the demo flow works before the
+            # provisioner is wired end-to-end. Cert validity already
+            # gates this: the verifier walks the chain back to the org
+            # CA so a cert without an active row is still cryptographically
+            # bound to the user that owns the KMS-held key.
+            from app.registry.user_principals import get_by_principal_id
+            from app.registry.org_store import get_org_by_id
+            org_row = await get_org_by_id(db, org_id)
+            trust_domain = (
+                (org_row.trust_domain if org_row else None)
+                or settings.trust_domain
             )
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent not found or org mismatch")
+            full_principal_id = (
+                f"{trust_domain}/{org_id}/user/{agent_id.split('::', 2)[-1]}"
+            )
+            user_view = await get_by_principal_id(db, full_principal_id)
+            if user_view is not None and not user_view.is_active:
+                AUTH_DENY_COUNTER.add(1, {"reason": "user_principal_revoked"})
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User principal revoked",
+                )
+            agent = None  # bypass agent-only branches below
+        else:
+            agent = await get_agent_by_id(db, agent_id)
+            if agent is None or agent.org_id != org_id:
+                AUTH_DENY_COUNTER.add(1, {"reason": "agent_not_found"})
+                await log_event(
+                    db, "auth.token_request", "denied",
+                    agent_id=agent_id, org_id=org_id,
+                    details={"reason": "agent not found or org mismatch"},
+                )
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Agent not found or org mismatch")
 
-        if not agent.is_active:
-            AUTH_DENY_COUNTER.add(1, {"reason": "agent_inactive"})
-            await log_event(
-                db, "auth.token_request", "denied",
-                agent_id=agent_id, org_id=org_id,
-                details={"reason": "agent inactive"},
-            )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent not active")
+            if not agent.is_active:
+                AUTH_DENY_COUNTER.add(1, {"reason": "agent_inactive"})
+                await log_event(
+                    db, "auth.token_request", "denied",
+                    agent_id=agent_id, org_id=org_id,
+                    details={"reason": "agent inactive"},
+                )
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent not active")
 
         # ── Verify approved binding ──────────────────────────────────────────
-        binding = await get_approved_binding(db, org_id, agent_id)
-        if not binding:
+        # User principals: scoped binding lives on the proxy
+        # (``local_agent_resource_bindings`` keyed by principal_type=user).
+        # The Court issues an empty-scope token and trusts the proxy's
+        # MCP aggregator to filter tools by (principal_id, principal_type).
+        if principal_type == "user":
+            binding = None
+        else:
+            binding = await get_approved_binding(db, org_id, agent_id)
+        if principal_type != "user" and not binding:
             AUTH_DENY_COUNTER.add(1, {"reason": "no_binding"})
             await log_event(
                 db, "auth.token_request", "denied",
@@ -183,7 +222,11 @@ async def issue_token(
         # SPIFFE URI match instead (ADR-003 §2.3). The cert_pem still needs
         # to be current on the server side so outbound-message signature
         # verification in the broker can locate it.
-        if svid_mode:
+        if principal_type == "user":
+            # User cert lives in user_principals (KMS-attached); the
+            # ``agents`` cert refresh path doesn't apply.
+            pass
+        elif svid_mode:
             await refresh_agent_cert_svid(db, agent_id, cert_pem, cert_thumbprint)
         elif not svid_mode:
             pinned_ok = await update_agent_cert(db, agent_id, cert_pem, cert_thumbprint)
@@ -201,8 +244,28 @@ async def issue_token(
                     detail="Certificate thumbprint mismatch — use the rotate-cert endpoint to update",
                 )
 
+        scope = binding.scope if binding is not None else []
+        # Resolve the org's federated trust_domain so the SPIFFE ``sub``
+        # in the issued token matches the cert SAN the verifier just
+        # authenticated. Falls back to the broker default for legacy
+        # rows that haven't been migrated.
+        token_trust_domain: str | None = None
+        if principal_type == "user":
+            # Already loaded ``org_row`` above for the user-principals
+            # lookup; reuse it instead of a second round-trip.
+            token_trust_domain = (
+                (org_row.trust_domain if org_row is not None else None)
+            )
+        else:
+            from app.registry.org_store import get_org_by_id as _get_org
+            _org = await _get_org(db, org_id)
+            token_trust_domain = (
+                (_org.trust_domain if _org is not None else None)
+            )
         token, expires_in = await create_access_token(
-            agent_id, org_id, scope=binding.scope, dpop_jkt=dpop_jkt
+            agent_id, org_id, scope=scope, dpop_jkt=dpop_jkt,
+            principal_type=principal_type,
+            trust_domain=token_trust_domain,
         )
 
         AUTH_SUCCESS_COUNTER.add(1, {"org_id": org_id})
