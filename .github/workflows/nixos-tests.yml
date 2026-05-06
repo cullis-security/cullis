@@ -1,0 +1,133 @@
+# NixosTest CI for the cross-org integration suite.
+#
+# Builds + runs each scenario under
+# ``tests/integration/cullis_network/`` on a Linux runner with KVM
+# enabled. nixosTest spawns real QEMU VMs, so we need:
+#   - the Nix daemon (cachix/install-nix-action wires it up).
+#   - a binary cache so first-run builds don't re-pull every Python
+#     wheel — the public ``cache.nixos.org`` is enough for now;
+#     when the closure stabilises we can add a per-org cachix.
+#   - ``--option sandbox false`` is NOT used; nixos test framework
+#     requires sandbox to remain on for KVM/qemu access.
+#
+# Path-filter: only run when something the scenarios actually
+# consume changes. Keeps PR feedback fast on docs / frontend
+# unrelated work.
+
+name: nixos-tests
+
+on:
+  push:
+    branches: [main]
+  # No ``branches`` filter on pull_request — stacked PRs need it too.
+  pull_request:
+    paths:
+      # Source tree the test VMs mount via ``cleanSourceWith``.
+      - "app/**"
+      - "mcp_proxy/**"
+      - "cullis_sdk/**"
+      - "cullis_connector/**"
+      # The scenarios + reusable module + Python derivations.
+      - "tests/integration/cullis_network/**"
+      # And this workflow itself, so a workflow edit re-validates.
+      - ".github/workflows/nixos-tests.yml"
+
+# Cancel an in-flight run when a fresher commit lands on the same
+# branch — VM tests are slow, no point burning two runners.
+concurrency:
+  group: nixos-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Matrix-driven so adding a Tier 3+ later is a one-line edit.
+  scenario:
+    name: ${{ matrix.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - tier1-roma
+          - tier2-cross-org
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Free up disk space before installing Nix — Ubuntu runners
+      # come pre-loaded with ~25 GiB of toolchains we don't need
+      # (Android SDK, .NET, Haskell), and Nix store + closure +
+      # QEMU image easily breach the default budget on Tier 2.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # Match the dev-box channel pin so derivation hashes line
+          # up between local + CI. ``nixos-25.11`` is what landed
+          # the renamed ``pkgs.testers.nixosTest`` we depend on.
+          nix_path: nixpkgs=channel:nixos-25.11
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = true
+            # Bigger build pool — the broker pulls in a fair chunk
+            # of Python deps that compile in parallel.
+            max-jobs = 4
+            cores = 0
+
+      # The public binary cache shaves the first run from ~15 min
+      # to ~5 min. Most of the closure (Python deps, NixOS image,
+      # qemu) lives there.
+      - name: Configure cache
+        uses: cachix/cachix-action@v15
+        with:
+          name: nix-community
+          # Read-only; pushing requires a token we don't issue here.
+          skipPush: true
+
+      # KVM acceleration is what makes the VM run finish in tens
+      # of seconds instead of minutes. The runner exposes /dev/kvm
+      # but only when the user is in the ``kvm`` group; the
+      # following line adds the nix builder there.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      - name: Build + run nixosTest
+        run: |
+          nix-build tests/integration/cullis_network \
+            -A ${{ matrix.scenario }} \
+            --print-build-logs \
+            --keep-going
+
+      # If the test run fails, dump the on-VM journals + the test
+      # driver's output to the action log so the failure is
+      # debuggable without re-running locally.
+      - name: Capture test logs on failure
+        if: failure()
+        run: |
+          if [ -L result ]; then
+            echo "::group::test driver log"
+            cat result/test.log 2>/dev/null || true
+            echo "::endgroup::"
+          fi
+          echo "::group::derivation tail"
+          for drv in /nix/store/*-vm-test-run-*.drv; do
+            if [ -f "$drv" ]; then
+              nix log "$drv" 2>/dev/null | tail -200 || true
+            fi
+          done
+          echo "::endgroup::"
