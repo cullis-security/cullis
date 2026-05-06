@@ -107,10 +107,14 @@ jobs:
           ls -la /dev/kvm
 
       - name: Build + run nixosTest
+        # ``--print-build-logs`` (and its ``-L`` short form) belong to
+        # the new ``nix`` CLI; ``nix-build`` (the legacy command we
+        # use here for stability) doesn't accept them and exits with
+        # ``error: unrecognised flag``. Logs already stream to stderr
+        # by default, so dropping the flag costs nothing.
         run: |
           nix-build tests/integration/cullis_network \
             -A ${{ matrix.scenario }} \
-            --print-build-logs \
             --keep-going
 
       # If the test run fails, dump the on-VM journals + the test
