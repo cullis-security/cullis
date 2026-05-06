@@ -35,13 +35,19 @@ class ToolInfo(BaseModel):
 class TokenPayload(BaseModel):
     """Decoded JWT token payload from the broker."""
     sub: str           # SPIFFE ID
-    agent_id: str      # org::agent
+    agent_id: str      # org::agent (or org::user::name / org::workload::name)
     org: str
     exp: int
     iat: int
     jti: str
     scope: list[str] = []
     cnf: dict | None = None
+    # ADR-020 — typed principal. ``"agent"`` is the legacy default and
+    # the only value emitted by pre-ADR-020 brokers, so the field stays
+    # optional with a fallback. The aggregator + audit chain key on this
+    # so a user named "daniele" never collides with an agent named
+    # "daniele" when looking up bindings or writing audit rows.
+    principal_type: str = "agent"
 
 
 class InternalAgent(BaseModel):

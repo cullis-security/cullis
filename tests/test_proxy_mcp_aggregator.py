@@ -30,6 +30,7 @@ def _fake_agent(
     agent_id: str = "acme::buyer",
     org: str = "acme",
     scope: list[str] | None = None,
+    principal_type: str = "agent",
 ) -> TokenPayload:
     return TokenPayload(
         sub=f"spiffe://cullis.test/{agent_id}",
@@ -40,6 +41,7 @@ def _fake_agent(
         jti=f"jti-{agent_id}",
         scope=scope or [],
         cnf={"jkt": "fake-jkt"},
+        principal_type=principal_type,
     )
 
 
@@ -141,23 +143,28 @@ async def _seed_binding(
     org_id: str | None = "acme",
     revoked_at: str | None = None,
     binding_id: str | None = None,
+    principal_type: str = "agent",
 ) -> None:
     async with get_db() as conn:
         await conn.execute(
             text(
                 """
                 INSERT INTO local_agent_resource_bindings (
-                    binding_id, agent_id, resource_id, org_id,
+                    binding_id, agent_id, principal_type, resource_id, org_id,
                     granted_by, granted_at, revoked_at
                 ) VALUES (
-                    :binding_id, :agent_id, :resource_id, :org_id,
-                    'admin', '2026-04-16T10:05:00Z', :revoked_at
+                    :binding_id, :agent_id, :principal_type, :resource_id,
+                    :org_id, 'admin', '2026-04-16T10:05:00Z', :revoked_at
                 )
                 """
             ),
             {
-                "binding_id": binding_id or f"bind-{agent_id}-{resource_id}",
+                "binding_id": (
+                    binding_id
+                    or f"bind-{principal_type}-{agent_id}-{resource_id}"
+                ),
                 "agent_id": agent_id,
+                "principal_type": principal_type,
                 "resource_id": resource_id,
                 "org_id": org_id,
                 "revoked_at": revoked_at,
@@ -303,6 +310,108 @@ async def test_tools_list_excludes_builtin_without_capability(
         "jsonrpc": "2.0", "id": 5, "method": "tools/list",
     }).json()
     assert body["result"]["tools"] == []
+
+
+# ── ADR-020 — principal_type isolation on bindings ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_tools_list_isolated_by_principal_type(
+    proxy_db, clean_registry,
+):
+    """Same name, different ``principal_type`` → different bindings.
+
+    Seeds an ``agent`` binding for ``acme::daniele`` and a ``user``
+    binding for the same ``acme::daniele`` against two different
+    resources. tools/list for the *user* principal must surface only
+    the user's resource — never inherit the agent's binding (the whole
+    point of ADR-020 + ``feedback_frontdesk_shared_mode_capability_model``).
+    """
+    from mcp_proxy.main import app
+
+    await _seed_resource(resource_id="res-agent-only", name="agent-resource")
+    await _seed_resource(resource_id="res-user-only", name="user-resource")
+    await _seed_binding(
+        agent_id="acme::daniele",
+        resource_id="res-agent-only",
+        principal_type="agent",
+    )
+    await _seed_binding(
+        agent_id="acme::daniele",
+        resource_id="res-user-only",
+        principal_type="user",
+    )
+    await load_resources_into_registry(clean_registry)
+
+    # User principal — sees user-resource only.
+    app.dependency_overrides[get_authenticated_agent] = (
+        lambda: _fake_agent(
+            agent_id="acme::daniele", principal_type="user",
+        )
+    )
+    with TestClient(app) as client:
+        body = client.post("/v1/mcp", json={
+            "jsonrpc": "2.0", "id": 30, "method": "tools/list",
+        }).json()
+    names = {t["name"] for t in body["result"]["tools"]}
+    assert "user-resource" in names
+    assert "agent-resource" not in names
+
+    # Agent principal with same canonical name — sees agent-resource only.
+    app.dependency_overrides[get_authenticated_agent] = (
+        lambda: _fake_agent(
+            agent_id="acme::daniele", principal_type="agent",
+        )
+    )
+    with TestClient(app) as client:
+        body = client.post("/v1/mcp", json={
+            "jsonrpc": "2.0", "id": 31, "method": "tools/list",
+        }).json()
+    names = {t["name"] for t in body["result"]["tools"]}
+    assert "agent-resource" in names
+    assert "user-resource" not in names
+
+    app.dependency_overrides.pop(get_authenticated_agent, None)
+
+
+@pytest.mark.asyncio
+async def test_tools_call_denies_when_only_other_principal_type_bound(
+    proxy_db, clean_registry,
+):
+    """Agent has a binding to a resource → user with the same name calling
+    that resource is still denied (with ``principal_type`` recorded in the
+    audit row)."""
+    from mcp_proxy.main import app
+
+    await _seed_resource(resource_id="res-agent", name="postgres-prod")
+    await _seed_binding(
+        agent_id="acme::daniele",
+        resource_id="res-agent",
+        principal_type="agent",  # only agent binding exists
+    )
+    await load_resources_into_registry(clean_registry)
+
+    app.dependency_overrides[get_authenticated_agent] = (
+        lambda: _fake_agent(
+            agent_id="acme::daniele", principal_type="user",
+        )
+    )
+    with TestClient(app) as client:
+        body = client.post("/v1/mcp", json={
+            "jsonrpc": "2.0", "id": 32, "method": "tools/call",
+            "params": {"name": "postgres-prod", "arguments": {}},
+        }).json()
+        assert body["error"]["code"] == -32000
+
+        async with get_db() as conn:
+            row = (await conn.execute(text(
+                "SELECT details FROM local_audit ORDER BY id DESC LIMIT 1"
+            ))).first()
+    app.dependency_overrides.pop(get_authenticated_agent, None)
+
+    details = json.loads(row.details)
+    assert details["reason"] == "no_binding"
+    assert details["principal_type"] == "user"
 
 
 # ── tools/call: binding enforcement ─────────────────────────────────

@@ -223,3 +223,107 @@ async def test_binding_unknown_resource(tmp_path, monkeypatch):
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
+
+
+# ── ADR-020 — typed-principal bindings via admin API ─────────────────
+
+
+async def test_binding_user_principal_separate_from_agent(
+    tmp_path, monkeypatch,
+):
+    """Admin creates two bindings: one for ``daniele`` as ``agent`` and one
+    for the *same* canonical name as ``user``. Both succeed (the unique
+    constraint is on ``(agent_id, principal_type, resource_id)``) and the
+    response echoes ``principal_type`` back."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "mcp-bind-typed")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _admin_headers()
+
+            r = await cli.post(
+                "/v1/admin/mcp-resources",
+                headers=h,
+                json={
+                    "name": "postgres",
+                    "endpoint_url": "http://pg/",
+                    "org_id": "mcp-bind-typed",
+                },
+            )
+            rid = r.json()["resource_id"]
+
+            # Default (agent).
+            r = await cli.post(
+                "/v1/admin/mcp-resources/bindings",
+                headers=h,
+                json={
+                    "agent_id": "mcp-bind-typed::daniele",
+                    "resource_id": rid,
+                },
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["principal_type"] == "agent"
+
+            # Same name, principal_type=user → no collision.
+            r = await cli.post(
+                "/v1/admin/mcp-resources/bindings",
+                headers=h,
+                json={
+                    "agent_id": "mcp-bind-typed::daniele",
+                    "resource_id": rid,
+                    "principal_type": "user",
+                },
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["principal_type"] == "user"
+
+            # Re-creating the user one is the duplicate that 409s.
+            r = await cli.post(
+                "/v1/admin/mcp-resources/bindings",
+                headers=h,
+                json={
+                    "agent_id": "mcp-bind-typed::daniele",
+                    "resource_id": rid,
+                    "principal_type": "user",
+                },
+            )
+            assert r.status_code == 409, r.text
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_binding_rejects_unknown_principal_type(
+    tmp_path, monkeypatch,
+):
+    """``principal_type`` must be one of agent/user/workload — anything
+    else is a 422 from the request validator."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "mcp-bind-bad-pt")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _admin_headers()
+            r = await cli.post(
+                "/v1/admin/mcp-resources",
+                headers=h,
+                json={
+                    "name": "x",
+                    "endpoint_url": "http://x/",
+                    "org_id": "mcp-bind-bad-pt",
+                },
+            )
+            rid = r.json()["resource_id"]
+
+            r = await cli.post(
+                "/v1/admin/mcp-resources/bindings",
+                headers=h,
+                json={
+                    "agent_id": "mcp-bind-bad-pt::a",
+                    "resource_id": rid,
+                    "principal_type": "service",
+                },
+            )
+            assert r.status_code == 422, r.text
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()

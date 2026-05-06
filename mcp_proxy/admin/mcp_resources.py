@@ -265,11 +265,17 @@ async def delete_resource(resource_id: str):
 class MCPBindingCreate(BaseModel):
     agent_id: str
     resource_id: str
+    # ADR-020 — typed principal. ``"agent"`` is the legacy default and
+    # the only value any pre-ADR-020 caller emits, so the field stays
+    # optional and defaults to ``"agent"``. The Frontdesk admin UI
+    # passes ``"user"`` when binding a user principal to a resource.
+    principal_type: str = Field("agent", pattern=r"^(agent|user|workload)$")
 
 
 class MCPBindingOut(BaseModel):
     binding_id: str
     agent_id: str
+    principal_type: str
     resource_id: str
     org_id: str | None
     granted_at: str
@@ -285,6 +291,7 @@ class MCPBindingOut(BaseModel):
 async def create_binding(body: MCPBindingCreate):
     agent_id = body.agent_id.strip()
     resource_id = body.resource_id.strip()
+    principal_type = body.principal_type.strip()
     if not agent_id or not resource_id:
         raise HTTPException(
             status_code=400, detail="agent_id and resource_id are required",
@@ -306,17 +313,18 @@ async def create_binding(body: MCPBindingCreate):
                 text(
                     """
                     INSERT INTO local_agent_resource_bindings (
-                        binding_id, agent_id, resource_id, org_id,
-                        granted_by, granted_at, revoked_at
+                        binding_id, agent_id, principal_type, resource_id,
+                        org_id, granted_by, granted_at, revoked_at
                     ) VALUES (
-                        :bid, :aid, :rid, :org,
-                        'admin', :ts, NULL
+                        :bid, :aid, :pt, :rid,
+                        :org, 'admin', :ts, NULL
                     )
                     """
                 ),
                 {
                     "bid": binding_id,
                     "aid": agent_id,
+                    "pt": principal_type,
                     "rid": resource_id,
                     "org": org_id,
                     "ts": ts,
@@ -325,19 +333,25 @@ async def create_binding(body: MCPBindingCreate):
         except IntegrityError as exc:
             raise HTTPException(
                 status_code=409,
-                detail="binding already exists for this agent+resource pair",
+                detail=(
+                    "binding already exists for this principal+resource pair"
+                ),
             ) from exc
 
     await log_audit(
         agent_id="admin",
         action="mcp_binding.create",
         status="success",
-        detail=f"api=json binding_id={binding_id} agent={agent_id} resource={resource_id}",
+        detail=(
+            f"api=json binding_id={binding_id} principal_type={principal_type} "
+            f"agent={agent_id} resource={resource_id}"
+        ),
     )
 
     return MCPBindingOut(
         binding_id=binding_id,
         agent_id=agent_id,
+        principal_type=principal_type,
         resource_id=resource_id,
         org_id=org_id,
         granted_at=ts,

@@ -379,18 +379,33 @@ class LocalMCPResource(Base):
 
 
 class LocalAgentResourceBinding(Base):
-    """Explicit N:N grant: which local agents may call which resources.
+    """Explicit N:N grant: which local principals may call which resources.
 
     Revocation is soft (``revoked_at`` non-null). Regrant = UPDATE the
     existing row back to ``revoked_at=NULL`` — the UNIQUE on
-    ``(agent_id, resource_id)`` enforces one logical binding per pair
-    without relying on partial indexes (SQLite/Postgres parity).
+    ``(agent_id, principal_type, resource_id)`` enforces one logical
+    binding per (principal, resource) pair without relying on partial
+    indexes (SQLite/Postgres parity).
+
+    ADR-020 — ``principal_type`` widens the table to user / workload
+    principals next to the legacy ``agent``. The column name
+    ``agent_id`` stays for compatibility with on-disk rows and outside
+    callers; semantically it now holds a *principal_id* (canonical
+    ``{org}::{name}`` for agents, ``{org}::user::{name}`` /
+    ``{org}::workload::{name}`` for typed principals as emitted by the
+    auth layer).
     """
 
     __tablename__ = "local_agent_resource_bindings"
 
     binding_id = Column(Text, primary_key=True)
     agent_id = Column(Text, nullable=False)
+    # ADR-020 — defaults to "agent" so pre-migration rows + tests that
+    # don't set the field stay valid. Migration 0024 backfills the
+    # legacy table with the same default.
+    principal_type = Column(
+        Text, nullable=False, server_default="agent",
+    )
     resource_id = Column(Text, nullable=False)
     org_id = Column(Text, nullable=True)
     granted_by = Column(Text, nullable=False)
@@ -402,8 +417,8 @@ class LocalAgentResourceBinding(Base):
         Index("idx_local_bindings_resource_revoked", "resource_id", "revoked_at"),
         Index("idx_local_bindings_org", "org_id"),
         UniqueConstraint(
-            "agent_id", "resource_id",
-            name="uq_local_bindings_agent_resource",
+            "agent_id", "principal_type", "resource_id",
+            name="uq_local_bindings_principal_resource",
         ),
     )
 

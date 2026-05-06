@@ -71,34 +71,45 @@ def _rpc_result(req_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-async def _bound_resource_ids(agent_id: str) -> set[str]:
-    """Return the set of resource_ids this agent currently has active bindings for."""
+async def _bound_resource_ids(
+    principal_id: str, principal_type: str,
+) -> set[str]:
+    """Return the set of resource_ids this principal currently has active
+    bindings for. ADR-020 — keys on ``(agent_id, principal_type)`` so
+    a user named "daniele" never inherits an agent named "daniele"'s
+    bindings (or vice versa)."""
     async with get_db() as conn:
         result = await conn.execute(
             text(
                 """
                 SELECT resource_id
                   FROM local_agent_resource_bindings
-                 WHERE agent_id = :a AND revoked_at IS NULL
+                 WHERE agent_id = :a
+                   AND principal_type = :pt
+                   AND revoked_at IS NULL
                 """
             ),
-            {"a": agent_id},
+            {"a": principal_id, "pt": principal_type},
         )
         return {row[0] for row in result.all()}
 
 
-async def _has_active_binding(agent_id: str, resource_id: str) -> bool:
+async def _has_active_binding(
+    principal_id: str, principal_type: str, resource_id: str,
+) -> bool:
     async with get_db() as conn:
         row = (await conn.execute(
             text(
                 """
                 SELECT 1 FROM local_agent_resource_bindings
-                 WHERE agent_id = :a AND resource_id = :r
+                 WHERE agent_id = :a
+                   AND principal_type = :pt
+                   AND resource_id = :r
                    AND revoked_at IS NULL
                  LIMIT 1
                 """
             ),
-            {"a": agent_id, "r": resource_id},
+            {"a": principal_id, "pt": principal_type, "r": resource_id},
         )).first()
         return row is not None
 
@@ -119,7 +130,9 @@ async def _handle_initialize(req_id: Any) -> dict:
 
 
 async def _handle_tools_list(req_id: Any, agent: TokenPayload) -> dict:
-    bound = await _bound_resource_ids(agent.agent_id)
+    bound = await _bound_resource_ids(
+        agent.agent_id, agent.principal_type,
+    )
     agent_caps = set(agent.scope or [])
 
     tools_out: list[dict] = []
@@ -176,7 +189,9 @@ async def _handle_tools_call(
     # Binding is the primary authz for MCP resources — audit + deny
     # before even building a ToolContext.
     if tool_def.is_mcp_resource:
-        if not await _has_active_binding(agent.agent_id, tool_def.resource_id):
+        if not await _has_active_binding(
+            agent.agent_id, agent.principal_type, tool_def.resource_id,
+        ):
             await append_local_audit(
                 event_type="resource_call",
                 result="denied",
@@ -186,6 +201,7 @@ async def _handle_tools_call(
                     "resource_id": tool_def.resource_id,
                     "tool": name,
                     "reason": "no_binding",
+                    "principal_type": agent.principal_type,
                 },
             )
             return _rpc_error(
