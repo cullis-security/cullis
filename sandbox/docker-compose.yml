@@ -309,7 +309,7 @@ services:
       # never reaches the Court. Cross-org sends still route through
       # BrokerBridge's own per-agent Court login, so the envelope path
       # keeps working.
-      MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "false"
       # ADR-014 — first-boot writes Org CA + nginx server cert into the
       # shared volume so the mastio-nginx-a sidecar can serve TLS on
       # 9443 against the same CA the agents' certs chain to. SAN
@@ -612,7 +612,7 @@ services:
       # ADR-011 Phase 4b — see proxy-a rationale.
       PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
       # ADR-012 — Mastio-local /v1/auth/token (see proxy-a rationale).
-      MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "false"
       # ADR-014 — see proxy-a rationale. SAN includes
       # ``mastio-nginx-b`` (the hostname agents resolve to).
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
