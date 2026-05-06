@@ -35,6 +35,11 @@ FORWARDED_PREFIXES: tuple[str, ...] = (
     # (mcp_proxy/registry/public_key.py) and forwards the rest so SDK
     # discover() / search / get-by-id calls transit the proxy cleanly.
     "/v1/federation",
+    # ADR-021 PR4a — Court signs user-principal CSRs and lists provisioned
+    # users. The Frontdesk Connector calls /v1/principals/csr on its
+    # Mastio every time a user logs in via SSO; the proxy passes it
+    # through so the Court remains the user-cert authority.
+    "/v1/principals",
 )
 
 _HOP_BY_HOP = frozenset(

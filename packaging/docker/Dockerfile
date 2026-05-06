@@ -48,7 +48,15 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 RUN useradd --create-home --uid 10001 --shell /bin/false cullis
 
 COPY --from=builder /dist/*.whl /tmp/
-RUN pip install /tmp/cullis_connector-*.whl && rm /tmp/cullis_connector-*.whl
+# Install with the ``dashboard`` extra so ``cullis-connector dashboard``
+# (and the Frontdesk shared-mode embedded server) work out of the box —
+# without it FastAPI/Starlette/Jinja2/python-multipart are missing and
+# ``dashboard`` ImportErrors. The plain ``serve`` (MCP stdio) and
+# ``enroll`` paths do not need the extra but it costs ~25 MiB and keeps
+# the image single-purpose.
+RUN WHEEL=$(ls /tmp/cullis_connector-*.whl) \
+ && pip install "${WHEEL}[dashboard]" \
+ && rm "${WHEEL}"
 
 USER cullis
 WORKDIR /home/cullis

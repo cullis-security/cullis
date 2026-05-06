@@ -102,3 +102,7 @@ dist/
 build/
 *.egg-info/
 /sandbox/.env
+
+# Frontdesk Connector identity material (per-deployment, never committed)
+packaging/frontdesk-bundle/connector_data/
+packaging/frontdesk-bundle/frontdesk.env

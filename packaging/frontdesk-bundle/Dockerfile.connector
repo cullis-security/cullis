@@ -1,0 +1,19 @@
+# Frontdesk Connector image — wraps the official cullis-connector
+# with the FastAPI/Starlette stack required by ``dashboard`` mode.
+#
+# Bug: the published ``ghcr.io/cullis-security/cullis-connector:latest``
+# image installs the cullis-connector wheel without the FastAPI extras,
+# so ``cullis-connector dashboard`` ImportErrors on ``fastapi``. This
+# Dockerfile lifts the missing deps in. Real fix lives in the
+# cullis-connector packaging (split ``[dashboard]`` extra and ship it
+# in the GHCR image).
+ARG CONNECTOR_BASE=cullis-connector:local
+FROM ${CONNECTOR_BASE}
+
+USER root
+RUN pip install --no-cache-dir \
+    "fastapi>=0.115.6,<1.0.0" \
+    "starlette>=0.40.0,<1.0.0" \
+    "python-multipart>=0.0.20" \
+    "jinja2>=3.1.0"
+USER cullis
