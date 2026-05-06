@@ -101,3 +101,4 @@ cullis_connector/static/cullis-chat/
 dist/
 build/
 *.egg-info/
+/sandbox/.env

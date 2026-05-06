@@ -75,6 +75,12 @@ def run_tool_use_loop(
         Whatever the SDK raises (httpx.HTTPStatusError on 4xx/5xx, etc).
     """
     body = dict(request_body)  # shallow copy; we mutate `messages`
+    # ADR-017 Phase 2: Mastio /v1/llm/chat doesn't yet support SSE
+    # streaming. The SPA always asks for stream=true; we collapse the
+    # request to non-stream here and the outer router (router.py) wraps
+    # the final answer back into a fake_stream SSE response. Removed
+    # when Mastio Phase 3 wires real SSE pass-through.
+    body["stream"] = False
     messages: list[dict] = list(body.get("messages", []))
 
     # Discover tools the agent is bound to. Empty list is fine: the LLM

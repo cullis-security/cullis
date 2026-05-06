@@ -286,6 +286,16 @@ class ProxySettings(BaseSettings):
     # PROXY_LOCAL_AUTH.
     local_auth_enabled: bool = False
 
+    # ADR-017 native AI gateway on Mastio. When the Mastio runs litellm
+    # in-process (default: ``litellm_embedded``), every chat completion
+    # is dispatched without a Court round trip. Set ``backend=portkey``
+    # to delegate to a Portkey gateway sidecar instead.
+    anthropic_api_key: str = ""
+    ai_gateway_backend: str = "litellm_embedded"  # litellm_embedded | portkey
+    ai_gateway_provider: str = "anthropic"
+    ai_gateway_url: str = "http://localhost:8787"  # Portkey sidecar URL
+    ai_gateway_request_timeout_s: float = 30.0
+
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
