@@ -21,15 +21,14 @@
 
     enableBroker = mkOption {
       type = types.bool;
-      default = false;
+      default = true;
       description = ''
         Whether to start the FastAPI broker (``app/main.py``) in
-        addition to the proxy. Default off because the broker pulls
-        in ``a2a-sdk`` which is not packaged in nixpkgs yet — the
-        proxy alone is enough for ``/v1/principals/csr`` and the
-        federation-publisher path. Flip on once we ship the
-        derivation for ``a2a-sdk`` (tracked as a follow-up to the
-        Tier 1 scaffold).
+        addition to the proxy. Default on — the missing-from-nixpkgs
+        ``a2a-sdk`` (and its ``culsans`` / ``aiologic`` transitive)
+        ship as small derivations in ``lib/python-deps.nix`` next
+        to this module. Flip off only when sharpening a test that
+        doesn't need the broker.
       '';
     };
 
@@ -118,6 +117,10 @@
             "result"
           ]);
       };
+      # Custom derivations for PyPI packages not yet in nixpkgs.
+      # Currently: ``a2a-sdk`` (used by ``app/a2a/agent_card.py``)
+      # plus its ``culsans`` + ``aiologic`` transitive deps.
+      cullisPyDeps = import ./python-deps.nix { inherit pkgs; };
       # Build the Python environment offline so the VM boots without
       # outbound network: every wheel comes from the Nix store. The
       # actual ``cullis_sdk`` + ``cullis_connector`` source lives in
@@ -154,6 +157,26 @@
         anthropic
         openai
         joserfc
+        # OpenTelemetry — ``app/telemetry.py`` imports the SDK + the
+        # OTLP gRPC exporter + a handful of instrumentations. The
+        # broker's lifespan calls ``init_telemetry`` even when
+        # OTEL_ENABLED=false (it gates the exporter, not the
+        # imports), so all of these need to be in the closure.
+        opentelemetry-api
+        opentelemetry-sdk
+        opentelemetry-exporter-otlp-proto-grpc
+        opentelemetry-exporter-prometheus
+        opentelemetry-instrumentation-fastapi
+        opentelemetry-instrumentation-sqlalchemy
+        opentelemetry-instrumentation-redis
+        opentelemetry-instrumentation-httpx
+        opentelemetry-instrumentation-asgi
+      ] ++ [
+        # Custom derivations from ``python-deps.nix`` — pulled in
+        # only when the broker is enabled; the proxy doesn't import
+        # ``a2a`` at all. (Keeping them in the env unconditionally
+        # is fine — withPackages closes over the union, ~3 MB.)
+        cullisPyDeps.a2a-sdk
       ]);
       stateDir = "/var/lib/cullis";
       certsDir = "${stateDir}/certs";
@@ -262,9 +285,15 @@
         requires = [ "cullis-pki-bootstrap.service" ];
         environment = {
           PYTHONPATH = toString cullisSrcStore;
+          # The broker reads via pydantic-settings without a prefix —
+          # ``ADMIN_SECRET``, not ``CULLIS_ADMIN_SECRET``. Setting
+          # both forms keeps any module that wants the prefix happy.
           CULLIS_ORG_ID = cfg.orgId;
+          ORG_ID = cfg.orgId;
           CULLIS_TRUST_DOMAIN = cfg.trustDomain;
+          TRUST_DOMAIN = cfg.trustDomain;
           CULLIS_ADMIN_SECRET = cfg.adminSecret;
+          ADMIN_SECRET = cfg.adminSecret;
           DATABASE_URL = "sqlite+aiosqlite:///${stateDir}/broker.sqlite";
           KMS_BACKEND = "local";
           OTEL_ENABLED = "false";

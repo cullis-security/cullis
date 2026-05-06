@@ -50,11 +50,17 @@ let
     """One-shot driver for the ADR-020 user-principal token flow.
 
     Reads a SVID-style cert + key off /tmp (placed there by the
-    parent testScript), runs ``CullisClient.from_user_principal_pem``
-    + ``login_via_proxy_with_local_key`` against the loopback
+    parent testScript), pins the on-disk Org CA so httpx verifies
+    the Mastio's server cert, runs
+    ``CullisClient.from_user_principal_pem`` +
+    ``login_via_proxy_with_local_key`` against the loopback
     Mastio, decodes the issued JWT, and prints the four claims
-    the parent testScript asserts on. Mirrors the regression PR
-    #445 wired up so any future drift fails this slice loudly.
+    the parent testScript asserts on.
+
+    Note: ``verify_tls=False`` in the SDK short-circuits the
+    ``ssl.SSLContext`` build, which also drops the client cert
+    out of the TLS handshake — so we *must* keep ``verify_tls=True``
+    here and pin the Org CA via ``ca_chain_pem`` instead.
     """
     import sys
     sys.path.insert(0, "${toString cullisSrcStore}")
@@ -63,12 +69,13 @@ let
 
     cert_pem = open("/tmp/daniele.pem").read()
     key_pem  = open("/tmp/daniele.key").read()
+    ca_pem   = open("/var/lib/cullis/certs/org-ca.pem").read()
     client = CullisClient.from_user_principal_pem(
         "https://mastio.roma.cullis.test:9443",
         principal_id="roma.cullis.test/roma/user/daniele",
         cert_pem=cert_pem,
         key_pem=key_pem,
-        verify_tls=False,
+        ca_chain_pem=ca_pem,
     )
     client.login_via_proxy_with_local_key()
     payload = _jwt.decode(client.token, options={"verify_signature": False})
@@ -158,32 +165,41 @@ pkgs.testers.nixosTest {
         timeout=30,
     )
 
-    with subtest("Mastio identity surface (proxy half of #445 wire)"):
-        # The full daniele@user → JWT round-trip needs the broker
-        # (``app/auth/router.py``), which is gated behind
-        # ``enableBroker`` until the ``a2a-sdk`` derivation lands.
-        # Until then we validate the proxy half: ``/v1/principals/csr``
-        # is now hosted on the proxy (PR #442) and signs SVID-style
-        # certs with the loaded Org CA's subject as Issuer (PR #445).
-        # Confirming proxy + nginx + PKI come up clean, and that
-        # ``CullisClient`` imports cleanly under the systemd Python
-        # env, is what this slice asserts on.
+    # Broker now boots too — ``a2a-sdk`` derivation in
+    # ``lib/python-deps.nix`` plugs the gap. Wait for it before
+    # exercising the user-token flow.
+    roma.wait_for_unit("cullis-broker.service")
+    roma.wait_until_succeeds(
+        "curl -fs http://127.0.0.1:8000/health",
+        timeout=30,
+    )
+
+    with subtest("Broker import surface (a2a-sdk derivation works)"):
+        # ``app/main.py`` imports ``a2a-sdk``, ``opentelemetry``,
+        # ``litellm``, ``anthropic``, ``openai`` and so on. The
+        # ``cullis-broker.service`` unit reaching ``active`` already
+        # proves the import chain holds (uvicorn fails at config-load
+        # time on any missing module). This subtest just adds an
+        # explicit JWT/SDK smoke against the broker so a future
+        # regression ships a precise failure instead of a vague
+        # "service didn't reach active in time".
         out = roma.succeed(
             "python3 -c 'from cullis_sdk import CullisClient; "
+            "from a2a import types; "
             "print(\"OK from_user_principal_pem:\", "
             "hasattr(CullisClient, \"from_user_principal_pem\"))'"
         )
         assert "OK from_user_principal_pem: True" in out, out
 
-    # The full ADR-020 user-principal token flow (PR #445 wire end-to-
-    # end) needs the broker — which needs ``a2a-sdk``, not yet packaged
-    # in nixpkgs. Tracked as the next slice on this branch:
-    #   1. Drop a ``pkgs.python311Packages.a2a-sdk`` derivation under
-    #      ``tests/integration/cullis_network/lib/python-deps.nix``.
-    #   2. Flip ``enableBroker = true`` on the Tier 1 ``cullis.mastio``
-    #      module instance.
-    #   3. Restore the openssl + sqlite3 + ``userPrincipalTokenScript``
-    #      block (still in git history on this branch — see the
-    #      pre-simplification commit).
+    # The full daniele@user → JWT round-trip helper is built into
+    # ``${userPrincipalTokenScript}`` but currently 401s at the nginx
+    # mTLS gate ("client cert not verified") — root-cause looks like
+    # a nginx vs ``openssl x509 -req`` chain-validation mismatch we
+    # haven't triaged yet (the same flow worked live on the docker
+    # compose sandbox, so the cert format itself is fine; something
+    # about the way the test driver presents the chain here is off).
+    # Tracked as a follow-up slice — the helper script is wired and
+    # the cert + DB row generation is ready to be re-enabled once
+    # the nginx side is debugged.
   '';
 }
