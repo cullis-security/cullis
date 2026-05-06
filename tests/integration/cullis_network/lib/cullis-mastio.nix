@@ -16,6 +16,14 @@
 { config, pkgs, lib, ... }:
 
 {
+  # Mock LLM + Mock MCP postgres servers, gated behind
+  # ``cullis.mastio.enableMockServices`` (default off). Imported
+  # unconditionally so callers get the option set even when they
+  # leave it disabled — the actual systemd units only land when
+  # ``cullis.mockServices.enable`` flips true via the wiring at
+  # the bottom of ``config = …``.
+  imports = [ ./mock-services.nix ];
+
   options.cullis.mastio = with lib; {
     enable = mkEnableOption "Cullis Mastio (broker + proxy + nginx)";
 
@@ -29,6 +37,19 @@
         ship as small derivations in ``lib/python-deps.nix`` next
         to this module. Flip off only when sharpening a test that
         doesn't need the broker.
+      '';
+    };
+
+    enableMockServices = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Stand up a tiny mock LLM (port 11434, OpenAI-compat) and a
+        mock MCP postgres backend (port 11435) on loopback inside
+        the VM so the testScript can drive a daniele@user → tool
+        use → MCP query flow without an Anthropic API key or a
+        real Postgres. Off by default — Tier 1 baseline doesn't
+        need it; the demo path flips it on.
       '';
     };
 
@@ -193,6 +214,16 @@
       # callers actually hit.
       networking.firewall.allowedTCPPorts = [ cfg.nginxPort ];
 
+      # Forward the mock-services toggle. ``cullis.mockServices``
+      # is defined in ``mock-services.nix`` (imported above);
+      # passing ``pythonEnv`` here lets the mock services reuse
+      # the same closure (fastapi + uvicorn + everything else)
+      # the broker / proxy already pulled in — no doubling.
+      cullis.mockServices = {
+        enable = cfg.enableMockServices;
+        inherit pythonEnv;
+      };
+
       # Make the Cullis-flavoured Python interpreter (with fastapi /
       # uvicorn / cryptography / cullis_sdk deps) available as
       # ``python3`` system-wide, plus the CLI tools the testScript
@@ -329,6 +360,19 @@
           MCP_PROXY_ADMIN_SECRET = cfg.adminSecret;
           MCP_PROXY_DATABASE_URL = "sqlite+aiosqlite:///${stateDir}/proxy.sqlite";
           MCP_PROXY_BROKER_URL = "http://127.0.0.1:${toString cfg.brokerPort}";
+        } // lib.optionalAttrs cfg.enableMockServices {
+          # Point the AI gateway at the mock LLM. We use the
+          # ``portkey`` backend wrapper because it honours
+          # ``ai_gateway_url`` directly (the ``litellm_embedded``
+          # branch baked-in routes upstream); the mock serves the
+          # exact same OpenAI-compat endpoint, so the headers
+          # Portkey adds are ignored harmlessly.
+          MCP_PROXY_AI_GATEWAY_BACKEND = "portkey";
+          MCP_PROXY_AI_GATEWAY_URL = "http://127.0.0.1:11434";
+          # Portkey's ``provider_key_missing`` guard rejects empty
+          # values, so feed it a sentinel — the mock never reads
+          # the bearer.
+          MCP_PROXY_ANTHROPIC_API_KEY = "mock-key-not-checked";
         };
         serviceConfig = {
           Type = "simple";

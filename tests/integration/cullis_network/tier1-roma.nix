@@ -123,6 +123,12 @@ pkgs.testers.nixosTest {
 
     cullis.mastio = {
       enable = true;
+      enableBroker = true;
+      # Stand up the mock LLM (port 11434) + mock MCP postgres
+      # (port 11435) on loopback so the testScript can drive a
+      # daniele@user → tool_use → MCP query flow without an
+      # Anthropic API key or a real Postgres in the closure.
+      enableMockServices = true;
       cullisSrc = cullisSrc;
       orgId = "roma";
       trustDomain = "roma.cullis.test";
@@ -173,6 +179,61 @@ pkgs.testers.nixosTest {
         "curl -fs http://127.0.0.1:8000/health",
         timeout=30,
     )
+
+    # Mock LLM + Mock MCP postgres land under
+    # ``cullis-mock-llm.service`` + ``cullis-mock-mcp-postgres.service``
+    # whenever ``enableMockServices = true`` (Tier 1 demo path).
+    # Health-probe both before driving traffic through them so a
+    # systemd ordering glitch surfaces here, not as a vague 503
+    # mid-chat.
+    roma.wait_for_unit("cullis-mock-llm.service")
+    roma.wait_for_unit("cullis-mock-mcp-postgres.service")
+    roma.wait_until_succeeds(
+        "curl -fs http://127.0.0.1:11434/health", timeout=30,
+    )
+    roma.wait_until_succeeds(
+        "curl -fs http://127.0.0.1:11435/health", timeout=30,
+    )
+
+    with subtest("Mock LLM + MCP postgres reachable"):
+        # tools/list against the mock MCP returns the ``query`` tool.
+        out = roma.succeed(
+            "curl -fs -X POST http://127.0.0.1:11435/mcp "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}'"
+        )
+        assert '"name":"query"' in out, out
+
+        # Mock LLM smoke — first call should yield tool_calls.
+        out = roma.succeed(
+            "curl -fs -X POST http://127.0.0.1:11434/v1/chat/completions "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"model\":\"claude-haiku-4-5\","
+            "\"messages\":[{\"role\":\"user\",\"content\":\"Mario Rossi\"}]}'"
+        )
+        assert '"tool_calls"' in out, out
+        assert '"name": "query"' in out or '\"name\":\"query\"' in out, out
+
+    with subtest("E2E demo: register MCP resource via admin API"):
+        # Drive the actual demo wire: register the mock MCP backend
+        # as an org resource on the proxy. From here a Cullis Chat
+        # client (or the SDK) could ``tools/list`` and ``tools/call``
+        # ``query`` against it — the chat-loop slice (binding +
+        # token + ``/v1/llm/chat``) graduates with the user-flow
+        # nginx mTLS triage tracked above.
+        admin_register = roma.succeed(
+            "curl -fsk -X POST "
+            "https://mastio.roma.cullis.test:9443/v1/admin/mcp-resources "
+            "-H 'X-Admin-Secret: test-admin-secret' "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"name\":\"query\","
+            "\"endpoint_url\":\"http://127.0.0.1:11435/mcp\","
+            "\"description\":\"Mock postgres MCP — compliance_status\","
+            "\"required_capability\":\"sql.read\","
+            "\"allowed_domains\":[\"127.0.0.1\"]}'"
+        )
+        assert '"resource_id"' in admin_register, admin_register
+        print(f"  registered mock MCP resource: {admin_register[:120]}…")
 
     with subtest("Broker import surface (a2a-sdk derivation works)"):
         # ``app/main.py`` imports ``a2a-sdk``, ``opentelemetry``,
