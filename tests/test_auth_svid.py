@@ -177,3 +177,147 @@ async def test_svid_no_san_rejected(client: AsyncClient, dpop):
         headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
     )
     assert resp.status_code == 401
+
+
+# ── ADR-020 — 3-component principal SPIFFE format ──────────────────────────
+
+
+async def test_user_principal_svid_token_endpoint_returns_400(
+    client: AsyncClient, dpop,
+):
+    """User principal cert (``spiffe://td/org/user/<name>``) is recognised
+    by the verifier but rejected by ``/v1/auth/token`` with a precise 400.
+
+    Pre-fix this 500'd somewhere downstream because the verifier collapsed
+    the 3-component path into a fake agent_id and the registry lookup
+    blew up. The dedicated user-principal flow lives elsewhere; the
+    legacy ``/v1/auth/token`` endpoint stays agent-only on purpose.
+    """
+    await _prime_nonce(client, dpop)
+    org_id = "userp-orga"
+    trust_domain = "userp-orga.test"
+    # We register a placeholder agent under the same org so the
+    # trust-domain → org resolution succeeds; the user principal is
+    # NOT in the agents table by design.
+    await _register_agent(
+        client, f"{org_id}::placeholder", org_id, trust_domain=trust_domain,
+    )
+
+    assertion, spiffe = make_svid_assertion(
+        agent_name="daniele",
+        ca_org_id=org_id,
+        trust_domain=trust_domain,
+        spiffe_path=f"{org_id}/user/daniele",
+    )
+    assert spiffe == f"spiffe://{trust_domain}/{org_id}/user/daniele"
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "principal_type" in resp.text
+
+
+async def test_workload_principal_svid_token_endpoint_returns_400(
+    client: AsyncClient, dpop,
+):
+    """Same fast-fail for ``workload`` principals."""
+    await _prime_nonce(client, dpop)
+    org_id = "wlp-orga"
+    trust_domain = "wlp-orga.test"
+    await _register_agent(
+        client, f"{org_id}::placeholder", org_id, trust_domain=trust_domain,
+    )
+
+    assertion, _ = make_svid_assertion(
+        agent_name="frontdesk",
+        ca_org_id=org_id,
+        trust_domain=trust_domain,
+        spiffe_path=f"{org_id}/workload/frontdesk",
+    )
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
+    )
+    assert resp.status_code == 400, resp.text
+
+
+async def test_3component_agent_principal_accepted(
+    client: AsyncClient, dpop,
+):
+    """3-component path with ``principal_type=agent`` resolves identically
+    to the legacy 2-component agent SVID — same agent_id shape, same
+    behaviour at ``/v1/auth/token``."""
+    await _prime_nonce(client, dpop)
+    org_id = "ag3-orga"
+    trust_domain = "ag3-orga.test"
+    agent_id = f"{org_id}::sales-agent"
+    await _register_agent(client, agent_id, org_id, trust_domain=trust_domain)
+
+    assertion, _ = make_svid_assertion(
+        agent_name="sales-agent",
+        ca_org_id=org_id,
+        trust_domain=trust_domain,
+        spiffe_path=f"{org_id}/agent/sales-agent",
+    )
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_3component_org_segment_mismatch_rejected(
+    client: AsyncClient, dpop,
+):
+    """SPIFFE SAN's org segment does not match the trust-domain-resolved
+    org → 403. Closes the SAN-smuggling gap that 2-component legacy SVIDs
+    intentionally allowed for SPIRE-shape paths."""
+    await _prime_nonce(client, dpop)
+    org_id = "real-orga"
+    trust_domain = "real-orga.test"
+    await _register_agent(
+        client, f"{org_id}::placeholder", org_id, trust_domain=trust_domain,
+    )
+
+    assertion, _ = make_svid_assertion(
+        agent_name="bob",
+        ca_org_id=org_id,  # signed by THIS org's CA
+        trust_domain=trust_domain,
+        spiffe_path="other-org/user/bob",  # SAN claims a DIFFERENT org
+    )
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "does not match" in resp.text.lower()
+
+
+async def test_3component_unknown_principal_type_rejected(
+    client: AsyncClient, dpop,
+):
+    """Made-up principal type (e.g. ``service``) → 401 with parse error."""
+    await _prime_nonce(client, dpop)
+    org_id = "ut-orga"
+    trust_domain = "ut-orga.test"
+    await _register_agent(
+        client, f"{org_id}::placeholder", org_id, trust_domain=trust_domain,
+    )
+
+    assertion, _ = make_svid_assertion(
+        agent_name="x",
+        ca_org_id=org_id,
+        trust_domain=trust_domain,
+        spiffe_path=f"{org_id}/service/x",  # 'service' not in whitelist
+    )
+    resp = await client.post(
+        "/v1/auth/token",
+        json={"client_assertion": assertion},
+        headers={"DPoP": dpop.proof("POST", "/v1/auth/token")},
+    )
+    assert resp.status_code == 401, resp.text

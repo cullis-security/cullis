@@ -29,7 +29,14 @@ from app.auth.jti_blacklist import check_and_consume_jti
 from app.auth.revocation import check_cert_not_revoked
 from app.registry.org_store import get_org_by_id, get_org_by_trust_domain
 from app.config import get_settings
-from app.spiffe import internal_id_to_spiffe, parse_spiffe_san
+from app.spiffe import (
+    DEFAULT_PRINCIPAL_TYPE,
+    PrincipalType,
+    internal_id_to_spiffe,
+    parse_spiffe_san,
+    principal_to_spiffe,
+    spiffe_to_principal,
+)
 from app.telemetry import tracer
 from app.telemetry_metrics import X509_VERIFY_DURATION_HISTOGRAM
 
@@ -190,20 +197,32 @@ async def verify_client_assertion(
     assertion: str,
     db: AsyncSession,
     request: Request | None = None,
-) -> tuple[str, str, str, str, bool]:
+) -> tuple[str, str, str, str, bool, PrincipalType]:
     """
-    Verify a client_assertion JWT and return (agent_id, org_id, cert_pem,
-    cert_thumbprint, svid_mode).
-    cert_pem is the agent certificate extracted from x5c — it is saved in DB
-    by the auth router to allow verification of message signatures.
-    cert_thumbprint is the SHA-256 hex digest of the DER-encoded certificate.
-    svid_mode is True iff identity was resolved via SPIFFE URI SAN + chain
-    walk (no CN/O present); callers use it to skip per-cert pinning since
-    SPIRE-style SVIDs rotate far too fast for thumbprint-level stickiness.
+    Verify a client_assertion JWT and return ``(agent_id, org_id, cert_pem,
+    cert_thumbprint, svid_mode, principal_type)``.
 
-    When ``request`` is provided and ``mtls_binding`` is enabled in settings,
-    also enforces RFC 8705-style confirmation that the mTLS client cert
-    forwarded by the reverse proxy matches the cert in x5c.
+    ``cert_pem`` is the agent certificate extracted from x5c — it is saved
+    in DB by the auth router to allow verification of message signatures.
+    ``cert_thumbprint`` is the SHA-256 hex digest of the DER-encoded cert.
+    ``svid_mode`` is True iff identity was resolved via SPIFFE URI SAN +
+    chain walk (no CN/O present); callers use it to skip per-cert pinning
+    since SPIRE-style SVIDs rotate far too fast for thumbprint-level
+    stickiness.
+
+    ``principal_type`` is the ADR-020 principal type derived from the
+    SPIFFE SAN — ``"agent"`` (default / 2-component path), ``"user"``,
+    or ``"workload"``. Classic CN/O certs always report ``"agent"`` so
+    pre-ADR-020 callers see no behaviour change. When ``principal_type``
+    is ``"user"`` or ``"workload"``, ``agent_id`` carries the canonical
+    typed key ``{org}::{type}::{name}`` so the broker's auth router can
+    fan out to the correct registry table (``user_principals`` for
+    ``user``) without ever colliding with an agent that happens to share
+    a name with a user.
+
+    When ``request`` is provided and ``mtls_binding`` is enabled in
+    settings, also enforces RFC 8705-style confirmation that the mTLS
+    client cert forwarded by the reverse proxy matches the cert in x5c.
 
     Raises HTTPException 401/403 if verification fails.
     """
@@ -249,6 +268,7 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
     #       derive agent_id from the path's last segment.
     svid_mode = False
     svid_spiffe_uri: str | None = None
+    principal_type: PrincipalType = DEFAULT_PRINCIPAL_TYPE
     cn_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     org_attrs = agent_cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
     if cn_attrs and org_attrs:
@@ -268,6 +288,11 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
                 detail="Cert missing CN/O and no SPIFFE SAN URI present",
             )
         svid_spiffe_uri = spiffe_sans[0]
+        # ADR-020 — accept both 2-component (legacy SVID, e.g. SPIRE
+        # ``spiffe://td/workload/agent-a``) and 3-component (typed
+        # principal ``spiffe://td/org/<type>/<name>``) SPIFFE paths.
+        # ``parse_spiffe_san`` returns the raw path; the principal-typed
+        # parse below handles the type whitelist for 3-component URIs.
         try:
             trust_domain, spiffe_path = parse_spiffe_san(svid_spiffe_uri)
         except ValueError:
@@ -280,9 +305,50 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
                 status.HTTP_403_FORBIDDEN,
                 detail=f"No organization registered for trust domain '{trust_domain}'",
             )
-        agent_name = spiffe_path.rsplit("/", 1)[-1]
-        agent_id = f"{org.org_id}::{agent_name}"
         org_id = org.org_id
+        path_parts = spiffe_path.split("/")
+        if len(path_parts) == 2:
+            # Legacy 2-component: ``<freeform>/<agent-name>``. The first
+            # segment historically carried whatever workload/namespace the
+            # caller wanted (often literally "workload" for SPIRE SVIDs)
+            # and is intentionally NOT bound to the org_id. agent_id is
+            # ``{org}::{last segment}`` — same shape clients already index
+            # into ``agents.agent_id``.
+            agent_id = f"{org_id}::{path_parts[-1]}"
+            principal_type = DEFAULT_PRINCIPAL_TYPE
+        else:
+            # 3-component (or longer) — interpret as ADR-020 typed principal.
+            # ``spiffe_to_principal`` raises on anything outside the
+            # agent/user/workload whitelist or on path lengths != 3.
+            try:
+                principal = spiffe_to_principal(svid_spiffe_uri)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    detail=f"SPIFFE SAN principal parse failed: {exc}",
+                )
+            # Org consistency: the SPIFFE org segment must match the org
+            # we just resolved by trust_domain. Refuse cross-org SAN
+            # smuggling for any caller using the typed format.
+            if principal.org_id != org_id:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"SPIFFE SAN org '{principal.org_id}' does not match "
+                        f"trust-domain-resolved org '{org_id}'"
+                    ),
+                )
+            principal_type = principal.principal_type
+            # Canonical agent_id: keep ``{org}::{name}`` for ``agent`` so
+            # the existing ``agents`` row keying is unchanged, and use
+            # ``{org}::{type}::{name}`` for user / workload so the auth
+            # router can fan out to the right registry without a flag,
+            # and a user named "daniele" can never collide with an agent
+            # named "daniele".
+            if principal_type == "agent":
+                agent_id = f"{org_id}::{principal.name}"
+            else:
+                agent_id = f"{org_id}::{principal_type}::{principal.name}"
         svid_mode = True
 
     # ── 4. Load org CA from DB and verify it is a true CA ────────────────────
@@ -394,7 +460,9 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
     settings = get_settings()
     if svid_mode and svid_spiffe_uri is not None:
         # In SVID mode the SPIFFE URI IS the authoritative identity;
-        # accept it (and the internal agent_id) as sub/iss.
+        # accept it (and the internal agent_id) as sub/iss. For user /
+        # workload principals (3-component path) the JWT carries the
+        # full typed URI; for legacy 2-component agents nothing changes.
         expected_spiffe = svid_spiffe_uri
     else:
         org_td = org.trust_domain or settings.trust_domain
@@ -485,5 +553,6 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
     cert_pem = agent_cert.public_bytes(serialization.Encoding.PEM).decode()
     _span.set_attribute("cert.thumbprint", cert_thumbprint)
     _span.set_attribute("auth.svid_mode", svid_mode)
+    _span.set_attribute("auth.principal_type", principal_type)
     X509_VERIFY_DURATION_HISTOGRAM.record((_time.monotonic() - _t0) * 1000)
-    return agent_id, org_id, cert_pem, cert_thumbprint, svid_mode
+    return agent_id, org_id, cert_pem, cert_thumbprint, svid_mode, principal_type

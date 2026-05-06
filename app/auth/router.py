@@ -86,11 +86,38 @@ async def issue_token(
         dpop_jkt = await verify_dpop_proof(dpop, htm="POST", htu=htu, access_token=None)
 
         # ── Verify certificate and signature ─────────────────────────────────
-        agent_id, org_id, cert_pem, cert_thumbprint, svid_mode = await verify_client_assertion(
+        (agent_id, org_id, cert_pem, cert_thumbprint, svid_mode,
+         principal_type) = await verify_client_assertion(
             body.client_assertion, db, request=request,
         )
         span.set_attribute("agent.id", agent_id)
         span.set_attribute("org.id", org_id)
+        span.set_attribute("principal.type", principal_type)
+        # ADR-020 — user/workload principals do not authenticate via this
+        # legacy ``/v1/auth/token`` endpoint. The verifier now recognises
+        # their SPIFFE SAN so the caller fails fast with a precise 4xx
+        # instead of a confusing "agent not found" 401 from the registry
+        # lookup below. The dedicated user-principal flow lives on the
+        # dedicated routes (e.g. ``/v1/inbox`` directly via mTLS, or the
+        # post-PR4d user token endpoint when it lands).
+        if principal_type != "agent":
+            AUTH_DENY_COUNTER.add(1, {"reason": "principal_type_not_agent"})
+            await log_event(
+                db, "auth.token_request", "denied",
+                agent_id=agent_id, org_id=org_id,
+                details={
+                    "reason": "principal_type_not_agent",
+                    "principal_type": principal_type,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"/v1/auth/token is only for agent principals; got "
+                    f"principal_type={principal_type!r}. Use the dedicated "
+                    f"endpoints for {principal_type} principals."
+                ),
+            )
 
         # ── ADR-009 — mastio counter-signature (strict, always on) ───────────
         # After Phase 4 there is no legacy path: an org without a pinned
