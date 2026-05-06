@@ -287,6 +287,8 @@ async def test_chat_completion_writes_audit_ok(client, authed_agent, db_session)
     assert row.org_id == "acme"
     details = json.loads(row.details)
     assert details["event"] == "llm.chat_completion"
+    assert details["principal_id"] == "acme::mario"
+    assert details["principal_type"] == "agent"
     assert details["backend"] == "portkey"
     assert details["provider"] == "anthropic"
     assert details["model"] == "claude-haiku-4-5"

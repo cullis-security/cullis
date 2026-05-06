@@ -70,6 +70,8 @@ async def chat_completions(
             status="error",
             details={
                 "event": "llm.chat_completion",
+                "principal_id": agent.agent_id,
+                "principal_type": agent.principal_type,
                 "backend": settings.ai_gateway_backend,
                 "provider": settings.ai_gateway_provider,
                 "model": req.model,
@@ -94,6 +96,8 @@ async def chat_completions(
         duration_ms=float(latency_ms),
         details={
             "event": "llm.chat_completion",
+            "principal_id": agent.agent_id,
+            "principal_type": agent.principal_type,
             "backend": result.backend,
             "provider": result.provider,
             "model": req.model,

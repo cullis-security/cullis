@@ -69,6 +69,13 @@ class InternalAgent(BaseModel):
     # any forwarding; defaults to ``both`` so rows without the column
     # (pre-migration fixtures, legacy inserts) stay permissive.
     reach: str = "both"
+    # ADR-020 — typed principal mirrored from the client certificate /
+    # token claim. ``"agent"`` is the legacy default; ``"user"`` and
+    # ``"workload"`` widen the model to Frontdesk shared-mode users
+    # and SPIFFE workloads. Audit rows + per-principal aggregation
+    # key on this so a user named "daniele" never collides with an
+    # agent named "daniele".
+    principal_type: str = "agent"
 
 
 class AuditEntry(BaseModel):

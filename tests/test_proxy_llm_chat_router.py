@@ -162,6 +162,8 @@ async def test_chat_completions_happy_path_writes_audit(app_with_router, monkeyp
     assert rows[0]["agent_id"] == "orga::alice"
     detail = json.loads(rows[0]["detail"])
     assert detail["event"] == "llm.chat_completion"
+    assert detail["principal_id"] == "orga::alice"
+    assert detail["principal_type"] == "agent"
     assert detail["backend"] == "litellm_embedded"
     assert detail["provider"] == "anthropic"
     assert detail["model"] == "claude-haiku-4-5"
@@ -172,6 +174,45 @@ async def test_chat_completions_happy_path_writes_audit(app_with_router, monkeyp
     assert detail["upstream_request_id"] == "req_abc"
     assert detail["cache_hit"] is False
     assert detail["trace_id"].startswith("trace_")
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_user_principal_recorded(app_with_router, monkeypatch):
+    """Frontdesk shared-mode flow: when the auth dep yields a user
+    principal (not an agent), the audit row reflects principal_type=user
+    so per-principal cost aggregation in Phase B can split user vs agent
+    spend without ambiguity."""
+    user_principal = InternalAgent(
+        agent_id="orga::user::daniele",
+        display_name="daniele",
+        capabilities=["llm.chat"],
+        created_at="2026-05-06T00:00:00Z",
+        is_active=True,
+        cert_pem=None,
+        dpop_jkt="jkt-user",
+        reach="both",
+        principal_type="user",
+    )
+    app_with_router.dependency_overrides[get_agent_from_dpop_client_cert] = (
+        lambda: user_principal
+    )
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+
+    rows = await _audit_rows("egress_llm_chat", status="success")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["principal_id"] == "orga::user::daniele"
+    assert detail["principal_type"] == "user"
 
 
 @pytest.mark.asyncio
@@ -217,6 +258,8 @@ async def test_chat_completions_gateway_error_surfaces_status(app_with_router, m
     assert len(rows) == 1
     detail = json.loads(rows[0]["detail"])
     assert detail["event"] == "llm.chat_completion"
+    assert detail["principal_id"] == "orga::alice"
+    assert detail["principal_type"] == "agent"
     assert detail["reason"] == "upstream_timeout"
     assert detail["backend"] == "litellm_embedded"
     assert detail["provider"] == "anthropic"

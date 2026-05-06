@@ -30,3 +30,10 @@ class TokenPayload(BaseModel):
     resource_id: str | None = None      # bound resource (e.g. rfq_id)
     payload_hash: str | None = None     # SHA-256 of authorized payload
     parent_jti: str | None = None       # links to originating access token
+    # ADR-020 typed principal. ``agent`` is the legacy default; ``user``
+    # / ``workload`` arrive on tokens minted for Frontdesk shared-mode
+    # users and SPIFFE workloads. Audit rows + per-principal aggregation
+    # key on this so a user and an agent with the same local name don't
+    # collide. Optional for back-compat with tokens issued by pre-ADR-020
+    # brokers in the upgrade window.
+    principal_type: str = "agent"
