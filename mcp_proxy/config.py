@@ -144,6 +144,14 @@ class ProxySettings(BaseSettings):
     # that keeps the system responsive.)
     rate_limit_per_minute: int = 1800
 
+    # Phase A.3 — per-principal token budget on /v1/chat/completions.
+    # Sliding-window sum of (prompt_tokens + completion_tokens) over the
+    # last 60s, keyed on principal_id. Exhausted budget → 429 before the
+    # request reaches the upstream provider. Default 100k tok/min is
+    # generous for interactive use and modest for batch; tune per
+    # deployment via MCP_PROXY_LLM_TOKENS_PER_MINUTE.
+    llm_tokens_per_minute: int = 100_000
+
     # Shared secret the proxy uses to verify the X-ATN-Signature HMAC
     # on inbound /pdp/policy webhook calls (audit 2026-04-30 lane 3 H3).
     # When set, every POST to /pdp/policy must carry a valid

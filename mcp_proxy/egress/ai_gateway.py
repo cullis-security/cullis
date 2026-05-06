@@ -43,6 +43,9 @@ class GatewayResult:
     upstream_request_id: str | None
     backend: str
     provider: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: float | None = None
 
 
 class GatewayError(Exception):
@@ -196,6 +199,9 @@ async def _call_portkey(
         upstream_request_id=upstream_request_id,
         backend="portkey",
         provider=provider,
+        prompt_tokens=int(parsed.usage.prompt_tokens or 0),
+        completion_tokens=int(parsed.usage.completion_tokens or 0),
+        cost_usd=None,
     )
 
 
@@ -364,4 +370,7 @@ async def _call_litellm_embedded(
         upstream_request_id=upstream_request_id,
         backend="litellm_embedded",
         provider=provider,
+        prompt_tokens=int(prompt_tokens),
+        completion_tokens=int(completion_tokens),
+        cost_usd=cost_usd,
     )

@@ -12,6 +12,7 @@ chat completion in-process via litellm_embedded. No Court round trip.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -92,6 +93,9 @@ def _gateway_result() -> GatewayResult:
         upstream_request_id="req_abc",
         backend="litellm_embedded",
         provider="anthropic",
+        prompt_tokens=12,
+        completion_tokens=3,
+        cost_usd=0.000123,
     )
 
 
@@ -156,9 +160,59 @@ async def test_chat_completions_happy_path_writes_audit(app_with_router, monkeyp
     rows = await _audit_rows("egress_llm_chat", status="success")
     assert len(rows) == 1
     assert rows[0]["agent_id"] == "orga::alice"
-    assert "backend=litellm_embedded" in (rows[0]["detail"] or "")
-    assert "prompt_tokens=12" in (rows[0]["detail"] or "")
-    assert "completion_tokens=3" in (rows[0]["detail"] or "")
+    detail = json.loads(rows[0]["detail"])
+    assert detail["event"] == "llm.chat_completion"
+    assert detail["principal_id"] == "orga::alice"
+    assert detail["principal_type"] == "agent"
+    assert detail["backend"] == "litellm_embedded"
+    assert detail["provider"] == "anthropic"
+    assert detail["model"] == "claude-haiku-4-5"
+    assert detail["prompt_tokens"] == 12
+    assert detail["completion_tokens"] == 3
+    assert detail["cost_usd"] == 0.000123
+    assert detail["latency_ms"] >= 0
+    assert detail["upstream_request_id"] == "req_abc"
+    assert detail["cache_hit"] is False
+    assert detail["trace_id"].startswith("trace_")
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_user_principal_recorded(app_with_router, monkeypatch):
+    """Frontdesk shared-mode flow: when the auth dep yields a user
+    principal (not an agent), the audit row reflects principal_type=user
+    so per-principal cost aggregation in Phase B can split user vs agent
+    spend without ambiguity."""
+    user_principal = InternalAgent(
+        agent_id="orga::user::daniele",
+        display_name="daniele",
+        capabilities=["llm.chat"],
+        created_at="2026-05-06T00:00:00Z",
+        is_active=True,
+        cert_pem=None,
+        dpop_jkt="jkt-user",
+        reach="both",
+        principal_type="user",
+    )
+    app_with_router.dependency_overrides[get_agent_from_dpop_client_cert] = (
+        lambda: user_principal
+    )
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+
+    rows = await _audit_rows("egress_llm_chat", status="success")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["principal_id"] == "orga::user::daniele"
+    assert detail["principal_type"] == "user"
 
 
 @pytest.mark.asyncio
@@ -202,8 +256,132 @@ async def test_chat_completions_gateway_error_surfaces_status(app_with_router, m
 
     rows = await _audit_rows("egress_llm_chat", status="error")
     assert len(rows) == 1
-    assert "reason=upstream_timeout" in (rows[0]["detail"] or "")
-    assert "backend=litellm_embedded" in (rows[0]["detail"] or "")
+    detail = json.loads(rows[0]["detail"])
+    assert detail["event"] == "llm.chat_completion"
+    assert detail["principal_id"] == "orga::alice"
+    assert detail["principal_type"] == "agent"
+    assert detail["reason"] == "upstream_timeout"
+    assert detail["backend"] == "litellm_embedded"
+    assert detail["provider"] == "anthropic"
+    assert detail["model"] == "claude-haiku-4-5"
+    assert detail["upstream_detail"] == "provider 504 after 30s"
+    assert detail["trace_id"].startswith("trace_")
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_429_when_token_budget_exhausted(
+    app_with_router, monkeypatch,
+):
+    """When the principal's sliding-window token sum already meets or
+    exceeds llm_tokens_per_minute, the next call short-circuits with
+    HTTP 429 before reaching the upstream provider, and an audit row
+    is written with reason=local_rate_limited_tokens for ops triage."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+    from mcp_proxy.config import get_settings
+
+    reset_agent_rate_limiter()
+    monkeypatch.setenv("MCP_PROXY_LLM_TOKENS_PER_MINUTE", "100")
+    get_settings.cache_clear()
+
+    # Pre-fill the principal's bucket so the next call is over budget.
+    limiter = get_token_sum_limiter()
+    await limiter.consume("principal:orga::alice:llm_tokens", 100)
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 429, r.text
+    body = r.json()
+    assert body["detail"]["reason"] == "local_rate_limited_tokens"
+    assert body["detail"]["limit_tokens_per_minute"] == 100
+    assert body["detail"]["current_window_tokens"] >= 100
+
+    rows = await _audit_rows("egress_llm_chat", status="error")
+    assert len(rows) == 1
+    detail = json.loads(rows[0]["detail"])
+    assert detail["reason"] == "local_rate_limited_tokens"
+    assert detail["principal_id"] == "orga::alice"
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_consumes_tokens_post_call(
+    app_with_router, monkeypatch,
+):
+    """A successful call adds (prompt_tokens + completion_tokens) to
+    the principal's window so subsequent peeks see the new usage."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+
+    reset_agent_rate_limiter()
+    limiter = get_token_sum_limiter()
+    bucket = "principal:orga::alice:llm_tokens"
+    assert await limiter.peek(bucket) == 0
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+    # _gateway_result returns prompt_tokens=12 + completion_tokens=3.
+    assert await limiter.peek(bucket) == 15
+
+    reset_agent_rate_limiter()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_rate_limit_disabled_when_zero(
+    app_with_router, monkeypatch,
+):
+    """Setting llm_tokens_per_minute=0 disables the gate entirely; no
+    peek is invoked and no consume is recorded. Useful for benchmarks
+    or tightly-controlled pipelines that already cap upstream."""
+    from mcp_proxy.auth.rate_limit import (
+        get_token_sum_limiter, reset_agent_rate_limiter,
+    )
+    from mcp_proxy.config import get_settings
+
+    reset_agent_rate_limiter()
+    monkeypatch.setenv("MCP_PROXY_LLM_TOKENS_PER_MINUTE", "0")
+    get_settings.cache_clear()
+
+    limiter = get_token_sum_limiter()
+    bucket = "principal:orga::alice:llm_tokens"
+    # Pre-fill above any reasonable cap to prove it's ignored.
+    await limiter.consume(bucket, 999_999)
+
+    monkeypatch.setattr(
+        router_module, "dispatch",
+        AsyncMock(return_value=_gateway_result()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post("/v1/chat/completions", json=_request_body())
+
+    assert r.status_code == 200, r.text
+    # Bucket unchanged: no consume happened either.
+    assert await limiter.peek(bucket) == 999_999
+
+    reset_agent_rate_limiter()
 
 
 @pytest.mark.asyncio

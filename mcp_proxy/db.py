@@ -23,7 +23,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Mapping
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
@@ -352,6 +352,7 @@ async def log_audit(
     *,
     tool_name: str | None = None,
     detail: str | None = None,
+    details: Mapping[str, Any] | None = None,
     request_id: str | None = None,
     duration_ms: float | None = None,
 ) -> None:
@@ -363,8 +364,20 @@ async def log_audit(
     walks the chain and surfaces breaks; an attacker rewriting a
     row, dropping one, or splicing in a forgery has to recompute
     every subsequent hash without operator detection.
+
+    ``details`` lets callers attach a structured dict (e.g. LLM
+    cost/tokens). When passed it is serialised to canonical JSON and
+    stored in the same ``detail`` SQL column the legacy string uses,
+    so the chain hash semantics stay identical. Pass ``detail`` for
+    free-form human-readable strings, ``details`` for structured
+    data; if both arrive ``details`` wins.
     """
     from sqlalchemy.exc import IntegrityError
+
+    if details is not None:
+        detail = json.dumps(
+            dict(details), separators=(",", ":"), sort_keys=True, default=str,
+        )
 
     ts = datetime.now(timezone.utc).isoformat()
     async with _audit_chain_lock:
