@@ -391,12 +391,11 @@ def _maybe_install_shared_ambassador(
         return
 
     try:
-        import httpx
         from cullis_connector.ambassador.shared.credentials import (
             UserCredentialCache,
         )
         from cullis_connector.ambassador.shared.provisioning import (
-            HttpxMastioCsrTransport, UserProvisioner,
+            SdkMastioCsrTransport, UserProvisioner,
         )
         from cullis_connector.ambassador.shared.proxy_trust import (
             TrustedProxiesAllowlist,
@@ -437,20 +436,24 @@ def _maybe_install_shared_ambassador(
     cookie_secret = bootstrap_cookie_secret(config.config_dir)
     trusted = TrustedProxiesAllowlist.from_cidrs(settings.trusted_proxies_cidrs)
 
-    # httpx client carrying the Ambassador's own mTLS cert. The Mastio
-    # endpoint also wants DPoP — for v0.1 we lean on Mastio's existing
-    # auth path: when the request arrives with an mTLS-bound client
-    # cert + the SDK access token, Mastio accepts it. The Ambassador
-    # caches its own access token via the SDK in v0.2; for now each
-    # CSR call rebuilds the SDK client (same trade-off as the per-user
-    # CullisClient in shared/router.py).
-    http = httpx.AsyncClient(
-        cert=(str(cert_path), str(key_path)),
-        verify=config.verify_arg,
-        timeout=httpx.Timeout(15.0),
+    # ADR-021 PR4a-followup: the Court's CSR endpoint requires a
+    # DPoP-bound JWT plus the mTLS cert. The previous HttpxMastioCsrTransport
+    # only attached the cert and 401'd on every login. SdkMastioCsrTransport
+    # uses cullis-sdk ``CullisClient`` to cache an access token + sign
+    # per-request DPoP proofs, refreshing on the token TTL boundary.
+    # ADR-021 PR4a-followup: the Court's CSR endpoint requires a broker-
+    # issued DPoP-bound JWT plus the mTLS cert. The previous
+    # HttpxMastioCsrTransport only attached the cert and 401'd on every
+    # call. SdkMastioCsrTransport drives ``CullisClient.from_connector`` +
+    # ``login_via_proxy_with_local_key`` so the broker token (not a
+    # Mastio-local ADR-012 token) authorises the CSR call, with a 10-min
+    # token cache + auto refresh.
+    transport = SdkMastioCsrTransport(
+        config_dir=config.config_dir,
+        base_url=mastio_url,
+        verify_tls=config.verify_arg,
     )
-    app.state.shared_ambassador_http = http  # keep alive for app lifetime
-    transport = HttpxMastioCsrTransport(http=http, base_url=mastio_url)
+    app.state.shared_ambassador_csr_transport = transport  # keep alive
 
     cache = UserCredentialCache()
     provisioner = UserProvisioner(mastio=transport, cache=cache)

@@ -106,6 +106,11 @@ async def app_with_router(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROXY_AI_GATEWAY_BACKEND", "litellm_embedded")
     monkeypatch.setenv("MCP_PROXY_AI_GATEWAY_PROVIDER", "anthropic")
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "orga")
+    # ``get_settings`` is ``lru_cache``-wrapped — clear it so the test
+    # picks up the env we just set instead of whatever value a previous
+    # xdist worker memoised.
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
     await init_db(url)
 
     test_app = FastAPI()
@@ -115,6 +120,7 @@ async def app_with_router(tmp_path, monkeypatch):
     yield test_app
 
     test_app.dependency_overrides.clear()
+    get_settings.cache_clear()
     await dispose_db()
 
 
