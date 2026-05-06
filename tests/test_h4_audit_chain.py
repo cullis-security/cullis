@@ -212,3 +212,92 @@ async def test_existing_audit_query_pattern_still_works(proxy_app):
 
     assert row is not None
     assert (row[0], row[1], row[2]) == ("alice", "t.invoke", "ok")
+
+
+# ── Phase A.1: structured details kwarg ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_log_audit_details_dict_serialised_to_canonical_json(proxy_app):
+    """``details`` is canonical JSON (sort_keys, no whitespace) so
+    downstream consumers can rely on byte-stable serialisation across
+    workers and Python versions."""
+    import json as _json
+
+    _, _ = proxy_app
+    from mcp_proxy.db import get_db, log_audit
+    from sqlalchemy import text
+
+    await log_audit(
+        agent_id="alice", action="egress_llm_chat", status="success",
+        details={
+            "event": "llm.chat_completion",
+            "model": "claude-haiku-4-5",
+            "prompt_tokens": 12,
+            "completion_tokens": 3,
+            "cost_usd": 0.000123,
+            "cache_hit": False,
+        },
+    )
+
+    async with get_db() as conn:
+        row = (await conn.execute(
+            text("SELECT detail FROM audit_log WHERE action = :a"),
+            {"a": "egress_llm_chat"},
+        )).first()
+
+    assert row is not None
+    raw = row[0]
+    assert raw.startswith("{") and raw.endswith("}")
+    parsed = _json.loads(raw)
+    assert parsed["model"] == "claude-haiku-4-5"
+    assert parsed["cost_usd"] == 0.000123
+    assert parsed["cache_hit"] is False
+    keys = list(parsed.keys())
+    assert keys == sorted(keys), "details must be serialised with sort_keys"
+
+
+@pytest.mark.asyncio
+async def test_log_audit_details_wins_over_detail_string(proxy_app):
+    """If both ``detail`` and ``details`` are passed the dict wins; this
+    keeps the call site single-source-of-truth and avoids two
+    representations diverging in the audit row."""
+    import json as _json
+
+    _, _ = proxy_app
+    from mcp_proxy.db import get_db, log_audit
+    from sqlalchemy import text
+
+    await log_audit(
+        agent_id="alice", action="t.invoke", status="ok",
+        detail="legacy human readable",
+        details={"x": 1, "y": "two"},
+    )
+
+    async with get_db() as conn:
+        row = (await conn.execute(
+            text("SELECT detail FROM audit_log WHERE action = :a"),
+            {"a": "t.invoke"},
+        )).first()
+
+    parsed = _json.loads(row[0])
+    assert parsed == {"x": 1, "y": "two"}
+
+
+@pytest.mark.asyncio
+async def test_log_audit_details_chain_still_verifies(proxy_app):
+    """The hash chain treats ``detail`` (now JSON) the same as before:
+    ``verify_audit_chain`` must walk a mixed chain (legacy strings +
+    structured JSON rows) without breaks."""
+    _, _ = proxy_app
+    from mcp_proxy.db import log_audit, verify_audit_chain
+
+    await log_audit(agent_id="alice", action="t.invoke", status="ok",
+                    detail="legacy")
+    await log_audit(agent_id="alice", action="egress_llm_chat", status="success",
+                    details={"event": "llm.chat_completion", "cost_usd": 0.5})
+    await log_audit(agent_id="bob", action="t.invoke", status="ok",
+                    detail="legacy 2")
+
+    ok, broken, reason = await verify_audit_chain()
+    assert ok is True, f"chain broken at {broken}: {reason}"

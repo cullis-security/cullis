@@ -12,6 +12,7 @@ chat completion in-process via litellm_embedded. No Court round trip.
 """
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -92,6 +93,9 @@ def _gateway_result() -> GatewayResult:
         upstream_request_id="req_abc",
         backend="litellm_embedded",
         provider="anthropic",
+        prompt_tokens=12,
+        completion_tokens=3,
+        cost_usd=0.000123,
     )
 
 
@@ -156,9 +160,18 @@ async def test_chat_completions_happy_path_writes_audit(app_with_router, monkeyp
     rows = await _audit_rows("egress_llm_chat", status="success")
     assert len(rows) == 1
     assert rows[0]["agent_id"] == "orga::alice"
-    assert "backend=litellm_embedded" in (rows[0]["detail"] or "")
-    assert "prompt_tokens=12" in (rows[0]["detail"] or "")
-    assert "completion_tokens=3" in (rows[0]["detail"] or "")
+    detail = json.loads(rows[0]["detail"])
+    assert detail["event"] == "llm.chat_completion"
+    assert detail["backend"] == "litellm_embedded"
+    assert detail["provider"] == "anthropic"
+    assert detail["model"] == "claude-haiku-4-5"
+    assert detail["prompt_tokens"] == 12
+    assert detail["completion_tokens"] == 3
+    assert detail["cost_usd"] == 0.000123
+    assert detail["latency_ms"] >= 0
+    assert detail["upstream_request_id"] == "req_abc"
+    assert detail["cache_hit"] is False
+    assert detail["trace_id"].startswith("trace_")
 
 
 @pytest.mark.asyncio
@@ -202,8 +215,14 @@ async def test_chat_completions_gateway_error_surfaces_status(app_with_router, m
 
     rows = await _audit_rows("egress_llm_chat", status="error")
     assert len(rows) == 1
-    assert "reason=upstream_timeout" in (rows[0]["detail"] or "")
-    assert "backend=litellm_embedded" in (rows[0]["detail"] or "")
+    detail = json.loads(rows[0]["detail"])
+    assert detail["event"] == "llm.chat_completion"
+    assert detail["reason"] == "upstream_timeout"
+    assert detail["backend"] == "litellm_embedded"
+    assert detail["provider"] == "anthropic"
+    assert detail["model"] == "claude-haiku-4-5"
+    assert detail["upstream_detail"] == "provider 504 after 30s"
+    assert detail["trace_id"].startswith("trace_")
 
 
 @pytest.mark.asyncio

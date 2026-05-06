@@ -245,6 +245,9 @@ async def test_chat_completion_writes_audit_ok(client, authed_agent, db_session)
         upstream_request_id="pk_req_99",
         backend="portkey",
         provider="anthropic",
+        prompt_tokens=12,
+        completion_tokens=3,
+        cost_usd=None,
     )
 
     with patch.object(
@@ -283,12 +286,16 @@ async def test_chat_completion_writes_audit_ok(client, authed_agent, db_session)
     assert row.agent_id == "acme::mario"
     assert row.org_id == "acme"
     details = json.loads(row.details)
+    assert details["event"] == "llm.chat_completion"
     assert details["backend"] == "portkey"
     assert details["provider"] == "anthropic"
     assert details["model"] == "claude-haiku-4-5"
     assert details["latency_ms"] == 42
     assert details["prompt_tokens"] == 12
     assert details["completion_tokens"] == 3
+    assert details["total_tokens"] == 15
+    assert details["cost_usd"] is None
+    assert details["cache_hit"] is False
 
 
 @pytest.mark.asyncio

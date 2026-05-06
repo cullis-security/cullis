@@ -61,6 +61,7 @@ async def chat_completion(
             agent_id=p.agent_id,
             org_id=p.org,
             details={
+                "event": "llm.chat_completion",
                 "backend": settings.ai_gateway_backend,
                 "provider": settings.ai_gateway_provider,
                 "model": req.model,
@@ -81,15 +82,18 @@ async def chat_completion(
         agent_id=p.agent_id,
         org_id=p.org,
         details={
+            "event": "llm.chat_completion",
             "backend": result.backend,
             "provider": result.provider,
             "model": result.response.model,
             "trace_id": trace_id,
             "upstream_request_id": result.upstream_request_id,
             "latency_ms": result.latency_ms,
-            "prompt_tokens": result.response.usage.prompt_tokens,
-            "completion_tokens": result.response.usage.completion_tokens,
-            "total_tokens": result.response.usage.total_tokens,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "total_tokens": result.prompt_tokens + result.completion_tokens,
+            "cost_usd": result.cost_usd,
+            "cache_hit": False,
         },
     )
 

@@ -68,12 +68,15 @@ async def chat_completions(
             agent_id=agent.agent_id,
             action="egress_llm_chat",
             status="error",
-            detail=(
-                f"backend={settings.ai_gateway_backend} "
-                f"provider={settings.ai_gateway_provider} "
-                f"model={req.model} trace_id={trace_id} "
-                f"reason={exc.reason} upstream_detail={exc.detail}"
-            ),
+            details={
+                "event": "llm.chat_completion",
+                "backend": settings.ai_gateway_backend,
+                "provider": settings.ai_gateway_provider,
+                "model": req.model,
+                "trace_id": trace_id,
+                "reason": exc.reason,
+                "upstream_detail": exc.detail,
+            },
         )
         raise HTTPException(
             status_code=exc.status_code,
@@ -88,14 +91,20 @@ async def chat_completions(
         agent_id=agent.agent_id,
         action="egress_llm_chat",
         status="success",
-        detail=(
-            f"backend={result.backend} provider={result.provider} "
-            f"model={req.model} trace_id={trace_id} "
-            f"latency_ms={latency_ms} "
-            f"upstream_request_id={result.upstream_request_id or 'n/a'} "
-            f"prompt_tokens={payload.get('usage', {}).get('prompt_tokens', 0)} "
-            f"completion_tokens={payload.get('usage', {}).get('completion_tokens', 0)}"
-        ),
+        duration_ms=float(latency_ms),
+        details={
+            "event": "llm.chat_completion",
+            "backend": result.backend,
+            "provider": result.provider,
+            "model": req.model,
+            "trace_id": trace_id,
+            "upstream_request_id": result.upstream_request_id,
+            "latency_ms": latency_ms,
+            "prompt_tokens": result.prompt_tokens,
+            "completion_tokens": result.completion_tokens,
+            "cost_usd": result.cost_usd,
+            "cache_hit": False,
+        },
     )
 
     logger.info(
