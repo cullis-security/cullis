@@ -296,6 +296,13 @@ class ProxySettings(BaseSettings):
     ai_gateway_url: str = "http://localhost:8787"  # Portkey sidecar URL
     ai_gateway_request_timeout_s: float = 30.0
 
+    # ADR-021 PR4d — auto-create + auto-approve a baseline binding on
+    # the Court for ``connector``-method enrollments so the agent can
+    # pass ``login_via_proxy_with_local_key`` without a manual
+    # ``POST /v1/registry/bindings`` step. Default on; flip off when
+    # the org wants explicit per-agent binding decisions.
+    auto_baseline_binding: bool = True
+
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
