@@ -397,15 +397,27 @@ async def approve(
     )
 
     if existing.first() is None:
+        # ADR-010 D1 left ``federated`` opt-in (admin flips manually) so
+        # an org could onboard local-only agents without leaking them
+        # cross-org. ``connector``-method enrollments are the opposite
+        # case: the user has just gone through the dashboard approval
+        # ritual, the admin has set capabilities, and the agent's whole
+        # purpose is to talk to the user (and, in shared-mode Frontdesk,
+        # to the Court for ``/v1/principals/csr``). Auto-flip the flag
+        # so the federation publisher pushes the row on the next tick.
+        # Production deployments that want stricter gating can revoke
+        # via the dashboard's admin-only ``federated=0`` toggle.
         await conn.execute(
             text(
                 """INSERT INTO internal_agents
                    (agent_id, display_name, capabilities,
                     cert_pem, created_at, is_active, device_info, dpop_jkt,
-                    enrollment_method, enrolled_at, spiffe_id)
+                    enrollment_method, enrolled_at, spiffe_id,
+                    federated, federated_at, reach, federation_revision)
                    VALUES (:aid, :dn, :caps, :cert, :created, 1,
                            :device, :dpop_jkt, 'connector', :created,
-                           :spiffe_id)"""
+                           :spiffe_id,
+                           1, :created, 'both', 1)"""
             ),
             {
                 "aid": canonical_id,
