@@ -366,6 +366,20 @@
           # publisher task that pushes ``internal_agents`` rows to
           # ``/v1/federation/publish-agent`` every tick.
           PROXY_FEDERATION_SYNC = "true";
+          # Default poll interval is 30s — fine for production, but
+          # leaves the nixosTest sleeping past every CI budget. 2s
+          # keeps the test responsive while still being long enough
+          # that we don't observe a tick mid-startup.
+          MCP_PROXY_FEDERATION_POLL_INTERVAL_S = "2";
+          # Standalone mode (default ``True``) forcibly clears
+          # broker_url at startup so the publisher gate
+          # ``if broker_url and mastio_loaded`` fails closed. Cities
+          # that point at an external Court need standalone=false
+          # for the publisher to actually fire. Court itself stays
+          # standalone (it IS the federation hub), inferred from
+          # ``cfg.brokerUrl == ""``.
+          MCP_PROXY_STANDALONE =
+            if cfg.brokerUrl != "" then "false" else "true";
         };
         serviceConfig = {
           Type = "simple";
