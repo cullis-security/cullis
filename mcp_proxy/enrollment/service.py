@@ -7,6 +7,7 @@ material stays owned by the module that already loads it from Vault/disk.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -455,7 +456,203 @@ async def approve(
             },
         )
 
+    # ADR-021 PR4d follow-up: schedule a baseline binding on the Court so
+    # the freshly enrolled agent can pass ``login_via_proxy_with_local_key``
+    # without an extra manual step. The publisher needs ~1 tick to push
+    # the agent first, so we run this as a fire-and-forget task with
+    # retry/backoff. Production deployments that want explicit per-agent
+    # binding decisions can disable this via
+    # ``MCP_PROXY_AUTO_BASELINE_BINDING=false`` (see config).
+    #
+    # Shared-mode skip (Frontdesk container): when the Connector declares
+    # ``ambassador_mode=shared`` in ``device_info`` it is a *workload* that
+    # signs CSRs for end-user principals — capabilities scoped to MCP
+    # resources belong on those user principals, not on the container
+    # (see memory/feedback_frontdesk_shared_mode_capability_model.md).
+    # Skipping auto-binding keeps the container's permission surface to
+    # ``principals.sign`` and prevents bogus baseline bindings from being
+    # pushed to the Court for a workload that never calls MCP tools itself.
+    import logging as _logging
+    from mcp_proxy.config import get_settings as _get_settings
+    _bind_log = _logging.getLogger("mcp_proxy.enrollment.binding")
+    ambassador_mode = _ambassador_mode_from_device_info(record.get("device_info"))
+    if ambassador_mode == "shared":
+        _bind_log.info(
+            "auto-binding skipped agent=%s reason=shared-mode-workload caps=%s",
+            canonical_id, capabilities,
+        )
+    elif _get_settings().auto_baseline_binding and capabilities:
+        _bind_log.info(
+            "scheduling auto-binding agent=%s caps=%s",
+            canonical_id, capabilities,
+        )
+        task = asyncio.create_task(_create_baseline_binding(
+            agent_id=canonical_id,
+            capabilities=capabilities,
+        ))
+        # Log unhandled exceptions so the task does not die silently.
+        def _log_task_exc(t: asyncio.Task) -> None:
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                _bind_log.exception(
+                    "auto-binding task crashed for %s", canonical_id,
+                    exc_info=exc,
+                )
+        task.add_done_callback(_log_task_exc)
+    else:
+        _bind_log.info(
+            "auto-binding skipped agent=%s enabled=%s caps=%s",
+            canonical_id, _get_settings().auto_baseline_binding, capabilities,
+        )
+
     return await get_record(conn, session_id)
+
+
+def _ambassador_mode_from_device_info(device_info: str | None) -> str | None:
+    """Best-effort parse of ``ambassador_mode`` out of ``device_info``.
+
+    ``device_info`` is the free-form JSON the Connector ships at
+    ``start_enrollment``. The Frontdesk shared-mode Connector adds an
+    ``ambassador_mode: "shared"`` key so the proxy can tell, at approval
+    time, that the agent is a workload (no per-resource capabilities).
+
+    Returns ``None`` for any malformed / missing / non-JSON payload —
+    callers must treat ``None`` as ``single`` (the default).
+    """
+    if not device_info:
+        return None
+    try:
+        parsed = json.loads(device_info)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    mode = parsed.get("ambassador_mode")
+    if isinstance(mode, str):
+        return mode
+    return None
+
+
+async def _create_baseline_binding(
+    *,
+    agent_id: str,
+    capabilities: list[str],
+    max_attempts: int = 30,
+    initial_delay_s: float = 2.0,
+) -> None:
+    """Create + approve a baseline binding for a freshly enrolled agent.
+
+    Runs on the proxy's event loop after ``approve()`` returns. The
+    publisher needs a tick or two to push the agent into the Court's
+    ``agents`` table; until that lands, ``POST /v1/registry/bindings``
+    404s with ``no such agent``. We retry with linear backoff until the
+    agent shows up or ``max_attempts * initial_delay_s`` (=60s default)
+    elapses, whichever comes first.
+
+    Failure to bind is logged but does not roll back the enrollment —
+    operators can still create the binding manually from the dashboard.
+    """
+    import logging
+    import httpx
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.db import get_config
+
+    log = logging.getLogger("mcp_proxy.enrollment.binding")
+    settings = get_settings()
+    org_id = settings.org_id
+    broker_url = settings.broker_url
+    if not broker_url:
+        log.info(
+            "auto-binding skipped for %s: standalone proxy (no broker_url)",
+            agent_id,
+        )
+        return
+
+    org_secret = await get_config("org_secret")
+    if not org_secret:
+        log.warning(
+            "auto-binding skipped for %s: org_secret not in proxy_config",
+            agent_id,
+        )
+        return
+
+    headers = {"X-Org-Id": org_id, "X-Org-Secret": org_secret}
+    body = {
+        "org_id": org_id,
+        "agent_id": agent_id,
+        "scope": list(capabilities),
+    }
+
+    binding_id: int | str | None = None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+        for attempt in range(max_attempts):
+            try:
+                r = await client.post(
+                    f"{broker_url.rstrip('/')}/v1/registry/bindings",
+                    json=body, headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                log.warning(
+                    "auto-binding attempt %d failed for %s: %s",
+                    attempt + 1, agent_id, exc,
+                )
+                await asyncio.sleep(initial_delay_s)
+                continue
+
+            if r.status_code == 201:
+                binding_id = r.json().get("id")
+                break
+            if r.status_code == 409:
+                # Already bound; look up the existing id.
+                lr = await client.get(
+                    f"{broker_url.rstrip('/')}/v1/registry/bindings",
+                    params={"org_id": org_id}, headers=headers,
+                )
+                if lr.status_code == 200:
+                    binding_id = next(
+                        (b["id"] for b in lr.json()
+                         if b.get("agent_id") == agent_id),
+                        None,
+                    )
+                    if binding_id is not None:
+                        break
+            # 404 = publisher hasn't pushed yet; 400 = caps not on Court yet.
+            await asyncio.sleep(initial_delay_s)
+
+        if binding_id is None:
+            log.warning(
+                "auto-binding gave up after %d attempts for %s; "
+                "operator can create+approve manually via dashboard",
+                max_attempts, agent_id,
+            )
+            return
+
+        try:
+            ar = await client.post(
+                f"{broker_url.rstrip('/')}/v1/registry/bindings/"
+                f"{binding_id}/approve",
+                headers=headers,
+            )
+        except httpx.HTTPError as exc:
+            log.warning(
+                "auto-binding approve failed for %s (id=%s): %s",
+                agent_id, binding_id, exc,
+            )
+            return
+
+        if ar.status_code in (200, 204):
+            log.info(
+                "auto-binding ok agent=%s binding_id=%s scope=%s",
+                agent_id, binding_id, capabilities,
+            )
+        else:
+            log.warning(
+                "auto-binding approve returned %d for %s: %s",
+                ar.status_code, agent_id, ar.text[:200],
+            )
 
 
 async def reject(

@@ -35,12 +35,12 @@ FORWARDED_PREFIXES: tuple[str, ...] = (
     # (mcp_proxy/registry/public_key.py) and forwards the rest so SDK
     # discover() / search / get-by-id calls transit the proxy cleanly.
     "/v1/federation",
-    # ADR-021 PR4a — Court signs user-principal CSRs and lists provisioned
-    # users. The Frontdesk Connector calls /v1/principals/csr on its
-    # Mastio every time a user logs in via SSO; the proxy passes it
-    # through so the Court remains the user-cert authority.
-    "/v1/principals",
 )
+# ADR-021 PR4a (proxy-native, post-2026-05-06): /v1/principals/csr is
+# now served by ``mcp_proxy.registry.user_principals_router`` because
+# the Org CA private key — the right signer for these certs — only
+# lives on the proxy. The reverse-proxy used to forward this prefix
+# to the Court; that path is gone.
 
 _HOP_BY_HOP = frozenset(
     h.lower()

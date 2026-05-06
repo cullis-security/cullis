@@ -962,6 +962,13 @@ from mcp_proxy.registry.public_key import (
 # alongside the Court's legacy registry endpoints.
 app.include_router(federation_public_key_router)
 
+# ADR-021 PR4a (proxy-native) — POST /v1/principals/csr signs a user-
+# principal CSR with the proxy's Org CA. Originally lived on the broker
+# but the broker root CA chain doesn't validate against ``organizations.
+# ca_certificate``; only the proxy holds the right private key.
+from mcp_proxy.registry.user_principals_router import router as principals_router
+app.include_router(principals_router)
+
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these
 # paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.

@@ -232,6 +232,18 @@ def _start(
         body["reason"] = requester.reason
     if requester.device_info:
         body["device_info"] = requester.device_info
+    # Shared-mode flag (Frontdesk container): when ``AMBASSADOR_MODE=shared``
+    # is set on this Connector, the workload enrolls *itself* as a shared
+    # multi-user host. The proxy reads ``ambassador_mode`` out of
+    # ``device_info`` at approve() time to skip the auto-baseline binding —
+    # capabilities scoped to MCP resources belong on user principals, not
+    # on the container (see ADR-021 + memory note
+    # ``feedback_frontdesk_shared_mode_capability_model``).
+    import os as _os
+    if _os.environ.get("AMBASSADOR_MODE", "").strip().lower() == "shared":
+        body["device_info"] = _wrap_device_info_with_shared_mode(
+            body.get("device_info"),
+        )
     # F-B-11 Phase 3d — include the public DPoP JWK so Mastio can
     # compute + store its thumbprint on approve (wire added in #207).
     if dpop_jwk is not None:
@@ -255,6 +267,28 @@ def _start(
             f"{response.text[:300]}"
         )
     return response.json()
+
+
+def _wrap_device_info_with_shared_mode(device_info: str | None) -> str:
+    """Embed ``ambassador_mode=shared`` into the ``device_info`` JSON.
+
+    If the operator already passed a JSON object as ``device_info``, merge
+    in the flag (without overwriting an explicit user-supplied value). If
+    they passed a plain string, nest it under ``raw`` so nothing is lost.
+    """
+    import json as _json
+    payload: dict[str, Any] = {"ambassador_mode": "shared"}
+    if device_info:
+        try:
+            existing = _json.loads(device_info)
+        except (TypeError, ValueError):
+            payload["raw"] = device_info
+        else:
+            if isinstance(existing, dict):
+                existing.setdefault("ambassador_mode", "shared")
+                return _json.dumps(existing)
+            payload["raw"] = device_info
+    return _json.dumps(payload)
 
 
 def _build_enrollment_proof(private_key, session_id: str) -> str:

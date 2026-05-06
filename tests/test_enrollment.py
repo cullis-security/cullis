@@ -305,6 +305,123 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
     assert audits[0]["status"] == "success"
 
 
+@pytest.mark.asyncio
+async def test_approve_shared_mode_skips_auto_baseline_binding(
+    db_engine, monkeypatch,
+):
+    """Frontdesk shared-mode workload must NOT get an auto-baseline binding.
+
+    The proxy reads ``ambassador_mode=shared`` out of the ``device_info``
+    JSON and skips ``_create_baseline_binding`` — capabilities scoped to
+    MCP resources belong on user principals, not on the shared container
+    (see memory/feedback_frontdesk_shared_mode_capability_model.md).
+    """
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+
+    pubkey = _rsa_pubkey_pem()
+
+    # Spy on the auto-baseline-binding scheduler so we can assert no task
+    # is created for shared-mode enrollments. ``approve()`` calls
+    # ``asyncio.create_task(_create_baseline_binding(...))`` directly, so
+    # patching the helper at the service-module level is enough.
+    called: list[dict] = []
+
+    async def _spy(**kwargs):
+        called.append(kwargs)
+
+    monkeypatch.setattr(service, "_create_baseline_binding", _spy)
+
+    async with get_db() as conn:
+        started = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey,
+            requester_name="Frontdesk",
+            requester_email="frontdesk@acme.com",
+            reason=None,
+            device_info='{"ambassador_mode":"shared","host":"frontdesk-1"}',
+        )
+
+    async with get_db() as conn:
+        await service.approve(
+            conn,
+            session_id=started.session_id,
+            agent_id="frontdesk",
+            capabilities=["principals.sign"],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    # Give any (errantly-) scheduled task a turn to run.
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+    assert called == [], (
+        "shared-mode enrollment must not schedule auto-baseline binding"
+    )
+
+
+@pytest.mark.asyncio
+async def test_approve_single_mode_still_schedules_auto_baseline_binding(
+    db_engine, monkeypatch,
+):
+    """Regression — patch must not break the single-mode default path."""
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+
+    pubkey = _rsa_pubkey_pem()
+
+    called: list[dict] = []
+
+    async def _spy(**kwargs):
+        called.append(kwargs)
+
+    monkeypatch.setattr(service, "_create_baseline_binding", _spy)
+
+    async with get_db() as conn:
+        started = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey,
+            requester_name="Daniele",
+            requester_email="d@acme.com",
+            reason=None,
+            device_info='{"host":"laptop-1"}',  # no ambassador_mode key
+        )
+
+    async with get_db() as conn:
+        await service.approve(
+            conn,
+            session_id=started.session_id,
+            agent_id="cullis",
+            capabilities=["sql.read"],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+    assert len(called) == 1
+    assert called[0]["agent_id"] == "acme::cullis"
+    assert called[0]["capabilities"] == ["sql.read"]
+
+
+def test_ambassador_mode_from_device_info_handles_garbage():
+    """The parser must never raise on malformed ``device_info`` payloads."""
+    f = service._ambassador_mode_from_device_info
+    assert f(None) is None
+    assert f("") is None
+    assert f("not json") is None
+    assert f("[1,2,3]") is None  # JSON but not an object
+    assert f('{"ambassador_mode": 42}') is None  # non-string value
+    assert f('{"ambassador_mode": "shared"}') == "shared"
+    assert f('{"ambassador_mode": "single", "host": "x"}') == "single"
+
+
 # ── HTTP endpoint tests ────────────────────────────────────────────
 
 
