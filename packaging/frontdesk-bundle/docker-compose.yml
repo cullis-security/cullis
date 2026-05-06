@@ -43,7 +43,11 @@
 services:
 
   connector:
-    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.connector
+      args:
+        CONNECTOR_VERSION: ${CONNECTOR_VERSION:-latest}
     # ``dashboard`` mounts the Ambassador router via web.py lifespan when
     # AMBASSADOR_MODE=shared (cullis_connector/web.py:152). Bind to all
     # interfaces inside the container so nginx can reach it.
@@ -68,12 +72,34 @@ services:
       # Where Mastio's CSR endpoint lives. Falls back to site_url when empty.
       CULLIS_FRONTDESK_MASTIO_URL: ${CULLIS_FRONTDESK_MASTIO_URL:-}
       CULLIS_SITE_URL: ${CULLIS_SITE_URL:-}
+      # Trust anchor for the Mastio TLS handshake. Production uses the
+      # corporate PKI; the sandbox/ ships a self-signed Org-CA so we
+      # mount it as a CA bundle here. Honoured by Python's ssl module
+      # (cullis-connector + the Mastio CSR client both pick it up).
+      SSL_CERT_FILE: ${CULLIS_FRONTDESK_CA_BUNDLE:-/etc/cullis/ca-bundle.pem}
+      REQUESTS_CA_BUNDLE: ${CULLIS_FRONTDESK_CA_BUNDLE:-/etc/cullis/ca-bundle.pem}
     volumes:
       # Connector identity material (cert, key, profile config). Populated
       # by the one-shot enrollment documented in the header comment.
-      - ${CONNECTOR_DATA_DIR:-./connector_data}:/root/.cullis
+      # The cullis-connector image runs as user ``cullis`` whose home is
+      # ``/home/cullis`` — mount the bind directory there so identity
+      # writes survive container recreation.
+      - ${CONNECTOR_DATA_DIR:-./connector_data}:/home/cullis/.cullis
+      # CA bundle for Mastio TLS verification. Path inside the container
+      # is referenced by SSL_CERT_FILE / REQUESTS_CA_BUNDLE.
+      - ${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-../../imp/official_sandbox/certs/cullis-bundle.pem}:/etc/cullis/ca-bundle.pem:ro
+    # In dev with the Mastio published on the docker host (rather than a
+    # routable hostname), the Connector reaches it via host.docker.internal.
+    # Production deployments route over a real DNS name; this entry is a
+    # no-op there.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - frontdesk_net
+      # Join the sandbox's orga-internal network so the Connector can
+      # reach mastio-nginx-a:9443 by hostname. official_sandbox-only:
+      # production has the Mastio behind a real DNS / routable IP.
+      - sandbox-orga
     restart: unless-stopped
 
   cullis-chat:
@@ -116,3 +142,8 @@ volumes:
 networks:
   frontdesk_net:
     driver: bridge
+  # External network owned by the sandbox/ compose. The Frontdesk
+  # connector joins it to reach mastio-nginx-a:9443 by hostname.
+  sandbox-orga:
+    name: cullis-sandbox-orga
+    external: true
