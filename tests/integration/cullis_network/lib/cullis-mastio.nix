@@ -109,6 +109,18 @@
       networking.hostName = "mastio-${cfg.orgId}";
       networking.firewall.allowedTCPPorts = [ cfg.nginxPort ];
 
+      # Make the Cullis-flavoured Python interpreter (with fastapi /
+      # uvicorn / cryptography / cullis_sdk deps) available as
+      # ``python3`` system-wide, plus the CLI tools the testScript
+      # leans on (openssl for the on-VM PKI fixture, sqlite3 for
+      # poking the proxy DB without booting the dashboard).
+      environment.systemPackages = [
+        pythonEnv
+        pkgs.openssl
+        pkgs.curl
+        pkgs.sqlite
+      ];
+
       users.users.cullis = {
         isSystemUser = true;
         group = "cullis";
