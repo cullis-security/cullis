@@ -419,7 +419,34 @@
             ssl_client_certificate  ${certsDir}/org-ca.pem;
             ssl_verify_client       optional;
           '';
+          # Regex locations are evaluated in nginx config order. NixOS
+          # sorts ``locations`` alphabetically by attribute name, so a
+          # later-alphabetic auth-specific block would be shadowed by
+          # the ``^/v1/(.*)$`` catch-all. The ``priority`` attribute
+          # forces explicit ordering: lowest priority emits first, so
+          # the mTLS-gated paths (egress + auth challenge endpoints)
+          # match before the catch-all wipes ``X-SSL-Client-Cert``.
           locations."~ ^/v1/(egress|agents|audit|llm|chat)(/.*)?$" = {
+            priority = 100;
+            proxyPass = "http://127.0.0.1:${toString cfg.proxyPort}";
+            extraConfig = ''
+              if ($ssl_client_verify != SUCCESS) { return 401; }
+              proxy_set_header X-SSL-Client-Cert   $ssl_client_escaped_cert;
+              proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+            '';
+          };
+          # PR #445 user-principal flow: the SDK's
+          # ``login_via_proxy_with_local_key`` posts to
+          # ``/v1/auth/login-challenge`` and ``/v1/auth/sign-challenged-assertion``
+          # carrying a client cert in the TLS handshake. The proxy
+          # backend authenticates the principal off the
+          # ``X-SSL-Client-Cert`` header — so unlike the catch-all
+          # block (which strips the header to defeat spoofing) these
+          # specific paths must forward the verified cert + verify
+          # status downstream. This block mirrors the production
+          # ``nginx/mastio/mastio.conf`` layout.
+          locations."~ ^/v1/auth/(login-challenge|sign-challenged-assertion|sign-assertion)$" = {
+            priority = 200;
             proxyPass = "http://127.0.0.1:${toString cfg.proxyPort}";
             extraConfig = ''
               if ($ssl_client_verify != SUCCESS) { return 401; }
@@ -428,6 +455,7 @@
             '';
           };
           locations."~ ^/v1/(.*)$" = {
+            priority = 1000;
             proxyPass = "http://127.0.0.1:${toString cfg.proxyPort}";
             extraConfig = ''
               proxy_set_header X-SSL-Client-Cert "";
