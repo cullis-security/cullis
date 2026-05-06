@@ -463,10 +463,25 @@ async def approve(
     # retry/backoff. Production deployments that want explicit per-agent
     # binding decisions can disable this via
     # ``MCP_PROXY_AUTO_BASELINE_BINDING=false`` (see config).
+    #
+    # Shared-mode skip (Frontdesk container): when the Connector declares
+    # ``ambassador_mode=shared`` in ``device_info`` it is a *workload* that
+    # signs CSRs for end-user principals — capabilities scoped to MCP
+    # resources belong on those user principals, not on the container
+    # (see memory/feedback_frontdesk_shared_mode_capability_model.md).
+    # Skipping auto-binding keeps the container's permission surface to
+    # ``principals.sign`` and prevents bogus baseline bindings from being
+    # pushed to the Court for a workload that never calls MCP tools itself.
     import logging as _logging
     from mcp_proxy.config import get_settings as _get_settings
     _bind_log = _logging.getLogger("mcp_proxy.enrollment.binding")
-    if _get_settings().auto_baseline_binding and capabilities:
+    ambassador_mode = _ambassador_mode_from_device_info(record.get("device_info"))
+    if ambassador_mode == "shared":
+        _bind_log.info(
+            "auto-binding skipped agent=%s reason=shared-mode-workload caps=%s",
+            canonical_id, capabilities,
+        )
+    elif _get_settings().auto_baseline_binding and capabilities:
         _bind_log.info(
             "scheduling auto-binding agent=%s caps=%s",
             canonical_id, capabilities,
@@ -494,6 +509,31 @@ async def approve(
         )
 
     return await get_record(conn, session_id)
+
+
+def _ambassador_mode_from_device_info(device_info: str | None) -> str | None:
+    """Best-effort parse of ``ambassador_mode`` out of ``device_info``.
+
+    ``device_info`` is the free-form JSON the Connector ships at
+    ``start_enrollment``. The Frontdesk shared-mode Connector adds an
+    ``ambassador_mode: "shared"`` key so the proxy can tell, at approval
+    time, that the agent is a workload (no per-resource capabilities).
+
+    Returns ``None`` for any malformed / missing / non-JSON payload —
+    callers must treat ``None`` as ``single`` (the default).
+    """
+    if not device_info:
+        return None
+    try:
+        parsed = json.loads(device_info)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    mode = parsed.get("ambassador_mode")
+    if isinstance(mode, str):
+        return mode
+    return None
 
 
 async def _create_baseline_binding(

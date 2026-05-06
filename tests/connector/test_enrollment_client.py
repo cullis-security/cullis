@@ -238,3 +238,95 @@ def test_enroll_submits_pubkey_not_private_key(tmp_path: Path, fake_httpx):
     assert "PRIVATE KEY" not in submitted["pubkey_pem"]
     assert "PUBLIC KEY" in submitted["pubkey_pem"]
     assert submitted["requester_email"] == "x@x.com"
+
+
+def test_enroll_injects_ambassador_mode_shared_into_device_info(
+    tmp_path: Path, fake_httpx, monkeypatch,
+):
+    """``AMBASSADOR_MODE=shared`` env → flag travels in ``device_info`` JSON.
+
+    The proxy reads the flag at approve() time to skip the auto-baseline
+    binding. The Connector is the only place that knows it's running as
+    a shared-mode workload (the proxy doesn't see the env var), so the
+    declaration has to ride along with the enrollment payload.
+    """
+    monkeypatch.setenv("AMBASSADOR_MODE", "shared")
+
+    fake_httpx.enqueue_post(_start_response())
+    fake_httpx.enqueue_get(_pending_record())
+    fake_httpx.enqueue_get(
+        _FakeResponse(200, {"session_id": "session-abc", "status": "rejected",
+                            "rejection_reason": "stop test"}),
+    )
+
+    with pytest.raises(EnrollmentFailed):
+        enroll(
+            site_url="https://site.test",
+            config_dir=tmp_path,
+            requester=RequesterInfo(
+                name="Frontdesk", email="fd@acme.com",
+                device_info='{"host":"fd-1"}',
+            ),
+            poll_sink=io.StringIO(),
+        )
+
+    import json as _json
+    submitted = fake_httpx.posts[0]["json"]
+    assert "device_info" in submitted
+    parsed = _json.loads(submitted["device_info"])
+    assert parsed.get("ambassador_mode") == "shared"
+    # Original device_info content is preserved.
+    assert parsed.get("host") == "fd-1"
+
+
+def test_enroll_no_env_leaves_device_info_unchanged(
+    tmp_path: Path, fake_httpx, monkeypatch,
+):
+    """Single-mode default (no env) must not touch ``device_info``."""
+    monkeypatch.delenv("AMBASSADOR_MODE", raising=False)
+
+    fake_httpx.enqueue_post(_start_response())
+    fake_httpx.enqueue_get(
+        _FakeResponse(200, {"session_id": "session-abc", "status": "rejected",
+                            "rejection_reason": "stop test"}),
+    )
+
+    with pytest.raises(EnrollmentFailed):
+        enroll(
+            site_url="https://site.test",
+            config_dir=tmp_path,
+            requester=RequesterInfo(
+                name="Daniele", email="d@acme.com",
+                device_info="my-laptop",
+            ),
+            poll_sink=io.StringIO(),
+        )
+
+    submitted = fake_httpx.posts[0]["json"]
+    # Plain string preserved verbatim — no JSON wrapping when not shared.
+    assert submitted["device_info"] == "my-laptop"
+
+
+def test_wrap_device_info_helper_handles_inputs():
+    f = enrollment._wrap_device_info_with_shared_mode
+    import json as _json
+
+    # None / empty → bare {"ambassador_mode": "shared"}
+    assert _json.loads(f(None)) == {"ambassador_mode": "shared"}
+    assert _json.loads(f("")) == {"ambassador_mode": "shared"}
+
+    # Plain string → nested under "raw"
+    parsed = _json.loads(f("my-laptop"))
+    assert parsed == {"ambassador_mode": "shared", "raw": "my-laptop"}
+
+    # JSON object → merged, existing key wins
+    parsed = _json.loads(f('{"ambassador_mode": "single", "host": "x"}'))
+    assert parsed == {"ambassador_mode": "single", "host": "x"}
+
+    # JSON object without ambassador_mode → flag added
+    parsed = _json.loads(f('{"host": "x"}'))
+    assert parsed == {"ambassador_mode": "shared", "host": "x"}
+
+    # JSON array (not a dict) → nested under "raw"
+    parsed = _json.loads(f('[1,2,3]'))
+    assert parsed == {"ambassador_mode": "shared", "raw": "[1,2,3]"}
