@@ -98,10 +98,14 @@ async def _proxy_db(tmp_path, monkeypatch):
 
 
 class _FakeAgentManager:
-    """Minimal stand-in for AgentManager. ``approve`` only needs
-    ``ca_loaded`` + ``sign_external_pubkey`` to run."""
+    """Minimal stand-in for AgentManager. ``approve`` reads ``ca_loaded``,
+    ``sign_external_pubkey``, ``org_id`` and ``trust_domain`` (the last
+    two added when device-code approval started persisting ``spiffe_id``
+    on ``internal_agents``)."""
 
     ca_loaded = True
+    org_id = "testorg"
+    trust_domain = "testorg.test"
 
     def sign_external_pubkey(self, *, pubkey_pem: str, agent_name: str) -> str:
         # Not a real cert — approve() only stores it on the row.
