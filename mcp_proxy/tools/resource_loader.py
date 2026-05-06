@@ -65,6 +65,44 @@ def _make_handler(tool_def: ToolDefinition):
     return _h
 
 
+async def _fetch_upstream_schema(endpoint_url: str, tool_name: str) -> dict | None:
+    """Best-effort fetch of the upstream MCP server's inputSchema for ``tool_name``.
+
+    The DB stores only the resource description + endpoint; the actual
+    tool signature lives on the upstream MCP server (e.g. postgres-mcp
+    advertises ``{sql: string}``). Without this, the proxy aggregator
+    advertises an empty inputSchema and the LLM has no idea how to
+    invoke the tool.
+    """
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.post(
+                endpoint_url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            )
+            if r.status_code != 200:
+                _log.warning(
+                    "upstream tools/list returned %d for %s",
+                    r.status_code, endpoint_url,
+                )
+                return None
+            data = r.json()
+            for t in (data.get("result", {}) or {}).get("tools", []):
+                if t.get("name") == tool_name:
+                    return t.get("inputSchema")
+            return None
+    except Exception as exc:
+        _log.warning(
+            "upstream schema fetch failed for %s: %s", endpoint_url, exc,
+        )
+        return None
+
+
 def _parse_allowed_domains(raw: str | None) -> list[str]:
     """Decode the JSON-encoded allowed_domains column.
 
@@ -131,13 +169,21 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
             skipped_conflict += 1
             continue
 
+        # Fetch upstream input schema so the LLM sees the real tool
+        # signature (sql / SQL string / etc.) instead of an empty object.
+        # Best-effort: if the upstream MCP server is not yet up at boot,
+        # fall back to None and the LLM gets the empty schema. Future PR:
+        # lazy + cached refresh on demand.
+        upstream_schema = await _fetch_upstream_schema(
+            row["endpoint_url"], name,
+        )
         tool_def = ToolDefinition(
             name=name,
             description=row["description"] or "",
             required_capability=row["required_capability"] or "",
             allowed_domains=_parse_allowed_domains(row["allowed_domains"]),
             handler=_noop_placeholder,  # replaced below; must be a callable
-            parameters_schema=None,
+            parameters_schema=upstream_schema,
             resource_id=row["resource_id"],
             endpoint_url=row["endpoint_url"],
         )

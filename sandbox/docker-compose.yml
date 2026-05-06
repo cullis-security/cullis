@@ -22,6 +22,12 @@ networks:
   public-wan:
     name: cullis-sandbox-wan
     driver: bridge
+  # External network owned by imp/sandbox-mcp/ compose (the MCP servers
+  # bundle). proxy-a joins this so it can reach the Postgres / GitHub /
+  # Slack MCP containers by hostname. official_sandbox setup detail.
+  mcp-sandbox:
+    name: cullis-mcp-sandbox
+    external: true
 
 volumes:
   broker-ca:
@@ -101,6 +107,15 @@ services:
       # demo point look broken: the cookie kept validating across
       # reboots because the signature stayed good.
       KMS_BACKEND: "local"
+      # ADR-017 Phase 1 — AI gateway egress. Court runs litellm_embedded
+      # by default, which routes /v1/llm/chat to Anthropic when the key
+      # is present. Without the key the dispatcher 503s and Cullis Chat /
+      # any agent doing chat_completion fails. Pulled from host env so
+      # the sandbox-mcp .env (existing dogfood key) is reused without
+      # secret duplication.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      AI_GATEWAY_BACKEND: "litellm_embedded"
+      AI_GATEWAY_PROVIDER: "anthropic"
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
       # ADR-004 PR B — proxy-only topology. Agents now reach the broker
@@ -259,6 +274,13 @@ services:
       # actually signed.
       MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-nginx-a:9443"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
+      # ADR-017 native AI gateway on Mastio (post-2026-05-06 architectural
+      # fix): the Mastio dispatches LLM calls itself via litellm_embedded.
+      # No Court egress hop. Required for standalone Mastio + intra-org
+      # agents to consume LLM through Cullis without federating.
+      MCP_PROXY_ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      MCP_PROXY_AI_GATEWAY_BACKEND: "litellm_embedded"
+      MCP_PROXY_AI_GATEWAY_PROVIDER: "anthropic"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orga"
       MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100"
@@ -303,6 +325,12 @@ services:
     volumes:
       - proxy-a-data:/data
       - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
+    extra_hosts:
+      # Lets the proxy reach MCP servers exposed on the host (e.g.
+      # postgres-mcp from imp/sandbox-mcp/ on host port 8003). Without
+      # this, MCP resources registered with hostname ``host.docker.internal``
+      # 503 on tools/call.
+      - "host.docker.internal:host-gateway"
     networks:
       orga-internal:
         # ``mcp-proxy`` is the upstream name nginx/mastio/mastio.conf
@@ -312,6 +340,12 @@ services:
         aliases: [proxy-a, mcp-proxy]
       public-wan:
         aliases: [proxy-a]
+      # MCP servers from imp/sandbox-mcp/ live on a separate compose
+      # network. Joining it from here lets the proxy reach
+      # ``cullis-sb-postgres-mcp:8080`` etc. without exposing them on
+      # the host. official_sandbox-only — production deploys put the
+      # MCP servers on the same swarm/k8s network as the proxy.
+      mcp-sandbox: {}
     expose: ["9100"]
     ports: ["9100:9100"]
     healthcheck:
