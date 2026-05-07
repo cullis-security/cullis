@@ -123,14 +123,18 @@ def _query_claims(client: CullisClient) -> list[dict]:
 
 
 def _send(client: CullisClient, payload: dict) -> dict:
-    """Fire the summary as a one-shot to claim-officer. Sets
-    correlation_id deterministically so two same-day runs idempotent."""
-    corr_id = f"night-report-{time.strftime('%Y%m%d')}"
-    return client.send_oneshot(
-        recipient_id=RECIPIENT,
-        payload=payload,
-        correlation_id=corr_id,
-        ttl_seconds=86400,
+    """Deliver the summary to claim-officer's inbox via the ADR-020
+    Phase 4 send-to-inbox path (proxy → BrokerBridge → broker
+    /v1/inbox/send → user_inbox_messages). idempotency_key is
+    deterministic per-day so two runs the same day collapse to one row.
+    """
+    return client.send_to_inbox(
+        recipient_org_id="orga",
+        recipient_principal_type="user",
+        recipient_name="claim-officer",
+        body=payload,
+        subject="Night report — cross-company claims",
+        idempotency_key=f"night-report-{time.strftime('%Y%m%d')}",
     )
 
 
@@ -166,9 +170,10 @@ def run_once(verbose: bool = False) -> int:
     if verbose:
         print(json.dumps(payload, indent=2))
     resp = _send(client, payload)
-    print(f"[night-reporter] sent → {RECIPIENT} "
-          f"correlation_id={resp.get('correlation_id')} "
-          f"msg_id={resp.get('msg_id')} status={resp.get('status')}")
+    print(f"[night-reporter] delivered → {RECIPIENT} "
+          f"msg_id={resp.get('msg_id')} "
+          f"quadrant={resp.get('quadrant')} "
+          f"inserted={resp.get('inserted')}")
     return 0
 
 

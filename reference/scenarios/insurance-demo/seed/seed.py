@@ -333,6 +333,135 @@ def phase_provision_orga_agents(client: httpx.Client) -> None:
         _ok(f"agent {spec['agent_name']} enrolled at Roma proxy")
 
 
+def phase_federate_orga_agents(client: httpx.Client) -> None:
+    """Phase 2.5 — flip ``federated=true`` on the orga bots so the
+    Mastio's federation publisher pushes them to the Court.
+
+    The bots need broker auth to deliver into ``user_inbox_messages``
+    (ADR-020 Phase 4 — broker is the inbox trust boundary). Broker
+    auth requires the agent row to exist in ``agents`` table at the
+    Court, which is what the publisher's ``federated=true`` push
+    materialises.
+
+    Idempotent: re-running is fine, the PATCH is a no-op when the
+    row is already federated.
+    """
+    _h("Phase 2.5 — federate orga bots (publisher → Court)")
+    for spec in MEDITERRANEAN_AGENTS:
+        agent_id = f"orga::{spec['agent_name']}"
+        try:
+            r = client.patch(
+                f"{PROXY_A_URL}/v1/admin/agents/{agent_id}/federated",
+                json={"federated": True},
+                headers=_admin_headers(PROXY_A_URL), timeout=10.0,
+            )
+        except Exception as exc:
+            _fail(f"PATCH federated {agent_id}: {exc}")
+            raise SystemExit(1)
+        if r.status_code != 200:
+            _fail(f"PATCH federated {agent_id}: HTTP {r.status_code} {r.text[:160]}")
+            raise SystemExit(1)
+        _ok(f"agent {agent_id} federated=true (publisher tick ≤ 2s)")
+
+
+def phase_bind_orga_agents_on_court(client: httpx.Client) -> None:
+    """Phase 2.6 — create + approve a binding per bot on the Court.
+
+    Mirrors ``reference/bootstrap/bootstrap_mastio.py::_bind_agents_on_court``
+    but scoped to the insurance-demo cast. Without a binding the broker's
+    ``/v1/auth/login`` rejects the agent JWT with 403 ``No approved
+    binding for this agent and organization`` — which is exactly what
+    blocks ``send_to_inbox`` end-to-end.
+
+    Retries the binding create while the federation publisher is still
+    pushing the agent to the Court (404 on agent lookup), with a 60s
+    timeout. Approves once the binding row exists.
+    """
+    _h("Phase 2.6 — bind orga bots on Court (create + approve)")
+    secret_path = STATE_DIR / "orga-org-secret"
+    if not secret_path.exists():
+        _fail(
+            "missing orga-org-secret — run ./run.sh prep-ca to copy it from "
+            "the bootstrap-state volume",
+        )
+        raise SystemExit(1)
+    org_secret = secret_path.read_text().strip()
+    org_headers = {
+        "X-Org-Id": "orga", "X-Org-Secret": org_secret,
+        "Content-Type": "application/json",
+    }
+
+    for spec in MEDITERRANEAN_AGENTS:
+        agent_id = f"orga::{spec['agent_name']}"
+        body = {
+            "org_id":    "orga",
+            "agent_id":  agent_id,
+            "scope":     spec["capabilities"],
+        }
+        binding_id: int | str | None = None
+        deadline = time.monotonic() + 60.0
+        last_err = "(no attempt)"
+        while time.monotonic() < deadline:
+            r = client.post(
+                f"{BROKER_URL}/v1/registry/bindings",
+                json=body, headers=org_headers, timeout=10.0,
+            )
+            if r.status_code == 201:
+                binding_id = r.json().get("id")
+                break
+            if r.status_code == 409:
+                # Already bound — find the existing id.
+                lr = client.get(
+                    f"{BROKER_URL}/v1/registry/bindings",
+                    params={"org_id": "orga"}, headers=org_headers,
+                    timeout=10.0,
+                )
+                lr.raise_for_status()
+                binding_id = next(
+                    (b["id"] for b in lr.json() if b.get("agent_id") == agent_id),
+                    None,
+                )
+                break
+            last_err = f"HTTP {r.status_code} {r.text[:160]}"
+            time.sleep(2.0)
+
+        if binding_id is None:
+            _fail(
+                f"{agent_id}: binding create never succeeded in 60s "
+                f"(publisher stuck? last={last_err})",
+            )
+            raise SystemExit(1)
+
+        # Approve only if the binding is still pending — re-approving
+        # an already-approved row triggers an upstream NoneType crash
+        # (broker bug — ``approve_binding`` returns None on idempotent
+        # re-approve, the router then dereferences ``.agent_id``).
+        # Pre-check via the list endpoint and skip when ``status='approved'``.
+        listed = client.get(
+            f"{BROKER_URL}/v1/registry/bindings",
+            params={"org_id": "orga"}, headers=org_headers, timeout=10.0,
+        ).json()
+        current = next(
+            (b for b in listed if b.get("id") == binding_id),
+            None,
+        )
+        if current and current.get("status") == "approved":
+            _ok(f"{agent_id}: binding {binding_id} already approved — skipping")
+            continue
+
+        ar = client.post(
+            f"{BROKER_URL}/v1/registry/bindings/{binding_id}/approve",
+            headers=org_headers, timeout=10.0,
+        )
+        if ar.status_code not in (200, 204):
+            _fail(
+                f"{agent_id}: binding approve failed "
+                f"HTTP {ar.status_code} {ar.text[:200]}",
+            )
+            raise SystemExit(1)
+        _ok(f"{agent_id}: binding {binding_id} approved (scope={spec['capabilities'] or '[]'})")
+
+
 def phase_provision_user_principals(client: httpx.Client) -> None:
     _h("Phase 3 — provision user principals (Roma + Tokyo)")
     # NOTE: the user-principal admin endpoint is NEW per the spec. Until
@@ -455,6 +584,79 @@ def phase_seed_claims_db() -> None:
         raise SystemExit(1)
 
 
+def phase_grant_reach_consents() -> None:
+    """Phase 8 — pre-grant the reach consents the demo workflow needs.
+
+    ADR-020 introduced ``reach_consents``: a recipient user must have
+    granted consent for a (source_org, source_principal_type, source_name)
+    triple before any A2U / U2U / U2A delivery into their inbox is
+    allowed. By default no consent → deny.
+
+    For the recorded demo we pre-populate every grant the storyboard
+    walks through so the operator can run the flow without stopping
+    at each consent prompt. A real production deployment would surface
+    the prompts in the SPA the first time each principal is contacted.
+
+    Grants written (recipient ← source):
+      orga::user::claim-officer ← orga::agent::night-reporter
+      orga::user::claim-officer ← orga::agent::ticket-bot
+      orga::user::claim-manager ← orga::agent::ticket-bot
+      orga::user::claim-manager ← orga::user::claim-officer
+      orgb::user::counterparty-liaison ← orga::user::claim-manager
+      orga::user::claim-manager ← orgb::user::counterparty-liaison
+
+    Stored in the broker's postgres (``reach_consents`` table). Direct
+    SQL — there's no public API for grant management yet (when one
+    lands, this phase rewrites against it).
+    """
+    _h("Phase 8 — grant reach consents (broker.reach_consents)")
+    grants = [
+        ("orga", "user", "claim-officer",        "orga", "agent", "night-reporter"),
+        ("orga", "user", "claim-officer",        "orga", "agent", "ticket-bot"),
+        ("orga", "user", "claim-manager",        "orga", "agent", "ticket-bot"),
+        ("orga", "user", "claim-manager",        "orga", "user",  "claim-officer"),
+        ("orgb", "user", "counterparty-liaison", "orga", "user",  "claim-manager"),
+        ("orga", "user", "claim-manager",        "orgb", "user",  "counterparty-liaison"),
+    ]
+    import hashlib
+    sql_lines = []
+    for r_org, r_type, r_name, s_org, s_type, s_name in grants:
+        # consent_id PK is VARCHAR(64); hash the pair into a stable short
+        # id so re-runs collide on the unique pair constraint and the
+        # idempotent UPDATE wins.
+        pair = f"{r_org}/{r_type}/{r_name}/{s_org}/{s_type}/{s_name}"
+        consent_id = "id-" + hashlib.sha256(pair.encode()).hexdigest()[:32]
+        sql_lines.append(
+            f"INSERT INTO reach_consents "
+            f"(consent_id, recipient_org_id, recipient_principal_type, "
+            f"recipient_name, source_org_id, source_principal_type, "
+            f"source_name, granted_at, granted_by) VALUES "
+            f"('{consent_id}', '{r_org}', '{r_type}', '{r_name}', "
+            f"'{s_org}', '{s_type}', '{s_name}', NOW(), 'insurance-demo-seed') "
+            f"ON CONFLICT ON CONSTRAINT uq_reach_consent_pair "
+            f"DO UPDATE SET revoked_at=NULL, granted_at=NOW();"
+        )
+    sql = "\n".join(sql_lines)
+
+    try:
+        result = subprocess.run(
+            ["docker", "compose",
+             "-f", str(REPO_ROOT / "reference" / "docker-compose.yml"),
+             "exec", "-T", "postgres",
+             "psql", "-U", "atn", "-d", "agent_trust", "-f", "/dev/stdin"],
+            input=sql.encode(),
+            check=True, capture_output=True,
+        )
+        _ok(f"granted {len(grants)} reach consents into broker.reach_consents")
+    except subprocess.CalledProcessError as exc:
+        # Common cause: the consent_id UNIQUE constraint is on a different
+        # column shape on older schemas. Print stderr so the operator can
+        # diagnose without re-running.
+        stderr = exc.stderr.decode()[:400] if exc.stderr else str(exc)
+        _fail(f"grant reach consents failed: {stderr}")
+        raise SystemExit(1)
+
+
 def phase_anthropic_key() -> None:
     _h("Phase 7 — verify Anthropic API key")
     key = _anthropic_key()
@@ -470,10 +672,13 @@ def main() -> int:
     with httpx.Client() as client:
         phase_check_reference_up(client)
         phase_provision_orga_agents(client)
+        phase_federate_orga_agents(client)
+        phase_bind_orga_agents_on_court(client)
         phase_provision_user_principals(client)
         phase_provision_workload(client)
         phase_provision_resources(client)
     phase_seed_claims_db()
+    phase_grant_reach_consents()
     phase_anthropic_key()
     print(f"\n{GREEN}{BOLD}✓ insurance-demo seed complete{RESET}")
     print(f"  next: ./run.sh frontdesk + ./run.sh trigger-night-reporter")
