@@ -37,7 +37,7 @@ Auth model:
     before the first message lands.
 
   * workload (frontdesk-container) — provisioned via admin endpoint with
-    principal_type=workload, hosting Mario at runtime.
+    principal_type=workload, hosting Kenji Watanabe at runtime.
 
 Env override:
 

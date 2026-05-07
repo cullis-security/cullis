@@ -13,6 +13,17 @@ Two orgs (English-only, role-named):
 
 Plus `court` as federation hub.
 
+Personas (the humans behind the user principals — Mediterranean side
+Italian, Asia-Pacific side Japanese; mirrors the realistic insurance
+scenario where a Roma–Napoli accident involves a Japanese-insured
+counterparty, see claim INC-2026-0501 in `seed/claims.sql`):
+
+  - `claim-officer`         → Marco Conti       (Italian, junior)
+  - `claim-manager`         → Lucia Bianchi     (Italian, senior)
+  - `counterparty-liaison`  → Kenji Watanabe    (Japanese, partner)
+
+Bots have no human face — they are just `Night Reporter` and `Ticket Bot`.
+
 Five principals + 1 workload + 1 resource:
 
 | Backend ID | Type | Surface |

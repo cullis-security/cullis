@@ -155,7 +155,7 @@ cmd_urls() {
     4. Switch to claim-manager — receive operatore's escalation
     5. claim-manager sends @ticket-bot a request — see ticket id come back
     6. claim-manager sends cross-org to counterparty-liaison
-    7. Switch to Asia-Pacific Frontdesk — Mario sees the cross-org request
+    7. Switch to Asia-Pacific Frontdesk — Kenji Watanabe sees the cross-org request
 
   Each step has visible audit chain entries on Mediterranean Mastio + Asia-Pacific Mastio + Court.
 EOF
