@@ -57,11 +57,6 @@ def _app(*, broker_url: str = "") -> FastAPI:
 def test_inbox_routes_mounted():
     """Regression guard — the three inbox routes must be registered."""
     app = _app(broker_url="http://broker.test")
-    paths = {
-        f"{r.methods or set()} {r.path}"
-        for r in app.routes
-        if hasattr(r, "path")
-    }
     routes = {r.path for r in app.routes if hasattr(r, "path")}
     assert "/v1/inbox" in routes
     assert "/v1/inbox/{msg_id}/ack" in routes
