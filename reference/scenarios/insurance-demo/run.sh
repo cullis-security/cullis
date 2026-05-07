@@ -81,20 +81,53 @@ cmd_seed() {
     python3 "$HERE/seed/seed.py"
 }
 
+cmd_frontdesk_prep() {
+    _h "Bootstrapping Asia-Pacific Frontdesk Connector identity (one-shot)"
+    # The overlay's connector container looks for identity material under
+    # ``frontdesk-asia-pacific-connector-data``. Until enrolled, /chat
+    # routes 401 because the Ambassador can't sign per-user CSRs. This
+    # one-shot generates an invite on the Asia-Pacific Mastio admin and
+    # runs ``cullis-connector enroll`` against proxy-b through the
+    # orgb-internal network.
+    local invite
+    invite=$(curl -s -X POST -H "X-Admin-Secret: ${ADMIN_SECRET:-sandbox-admin-secret-change-me}" \
+        -H "Content-Type: application/json" \
+        -d '{"label":"frontdesk-asia-pacific","ttl_hours":1}' \
+        http://localhost:9200/v1/admin/agents/enroll/connector \
+        2>/dev/null | grep -oE '"invite_token":"[^"]*"' | cut -d'"' -f4 || true)
+    if [ -z "$invite" ]; then
+        _warn "could not fetch a Connector invite token from proxy-b admin"
+        _warn "manual fallback: hit /v1/admin/agents/enroll/connector on Tokyo Mastio"
+        _warn "and pass the token to: docker run cullis-connector enroll --code <token>"
+        return 1
+    fi
+    _ok "invite token issued: ${invite:0:12}…"
+    docker run --rm \
+        -v frontdesk-asia-pacific-connector-data:/home/cullis/.cullis \
+        --network cullis-reference-orgb-internal \
+        ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest} \
+        enroll --site https://mastio-nginx-b:9443 \
+               --code "$invite" \
+               --profile frontdesk-asia-pacific
+    _ok "Connector enrolled — identity persisted in volume"
+}
+
 cmd_frontdesk() {
     _h "Bringing up Asia-Pacific Frontdesk container"
     if [ ! -f "$HERE/compose.frontdesk.yml" ]; then
-        _warn "compose.frontdesk.yml not present yet — manual scaffold pending"
-        _warn "use ../packaging/frontdesk-bundle/ as the source for now:"
-        _warn "  cd $REPO_ROOT/packaging/frontdesk-bundle"
-        _warn "  cp frontdesk.env.example frontdesk.env"
-        _warn "  edit frontdesk.env: set CULLIS_FRONTDESK_ORG_ID=asia-pacific"
-        _warn "  docker compose --env-file frontdesk.env up -d"
-        return 0
+        _fail "compose.frontdesk.yml missing — pull a fresh demo branch"
+        return 1
+    fi
+    if ! docker volume inspect frontdesk-asia-pacific-connector-data >/dev/null 2>&1; then
+        _warn "Connector identity volume not bootstrapped — running prep first"
+        cmd_frontdesk_prep
     fi
     docker compose -f "$REFERENCE_DIR/docker-compose.yml" \
-                   -f "$HERE/compose.frontdesk.yml" up -d frontdesk-asia-pacific
-    _ok "frontdesk-asia-pacific up — http://localhost:8090"
+                   -f "$HERE/compose.frontdesk.yml" up -d \
+                   connector-frontdesk-asia-pacific \
+                   chat-frontdesk-asia-pacific \
+                   nginx-frontdesk-asia-pacific
+    _ok "Frontdesk Asia-Pacific up — http://localhost:8090?user=kenji"
 }
 
 cmd_trigger_night_reporter() {
@@ -197,6 +230,7 @@ cmd_status() {
 
 case "${1:-help}" in
     seed)                     cmd_seed ;;
+    frontdesk-prep)           cmd_frontdesk_prep ;;
     frontdesk)                cmd_frontdesk ;;
     trigger-night-reporter)   cmd_trigger_night_reporter ;;
     start-ticket-bot)         cmd_start_ticket_bot ;;
