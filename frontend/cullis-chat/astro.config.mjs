@@ -1,5 +1,15 @@
 import { defineConfig } from 'astro/config';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import react from '@astrojs/react';
+
+// Brand split — see src/branding/{cullis-chat,frontdesk}. The alias
+// `@brand` resolves to whichever brand bundle this build produces.
+// Default consumer build is `cullis-chat`; the Frontdesk Dockerfile
+// (Phase 4) sets `CULLIS_BRAND=frontdesk` before invoking npm run build.
+const CULLIS_BRAND = process.env.CULLIS_BRAND === 'frontdesk' ? 'frontdesk' : 'cullis-chat';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const brandDir = path.resolve(__dirname, 'src', 'branding', CULLIS_BRAND);
 
 // Cullis Chat SPA — ADR-019 Phase 8b-2b: pure static.
 //
@@ -41,6 +51,11 @@ export default defineConfig({
     host: '127.0.0.1',
   },
   vite: {
+    resolve: {
+      alias: {
+        '@brand': brandDir,
+      },
+    },
     server: {
       // Dev: forward both /v1/* and /api/* to the mock Ambassador.
       // The SPA's session bootstrap (POST /api/session/init), the

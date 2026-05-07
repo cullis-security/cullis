@@ -12,6 +12,8 @@
 // (`chat` for index.astro, `inbox` for inbox.astro). Used to mark
 // the matching surface link in the in-rail navigation.
 
+import brand from '@brand/config';
+
 interface Props {
   active?: 'chat' | 'inbox';
 }
@@ -53,7 +55,7 @@ const inboxHref = `${base}inbox`;
       Conversation history lands in <span class="ver">v0.5</span>.
       Until then every reload starts a fresh thread.
     </p>
-    <p class="folio">CLLS-CHAT · <em>v0.1</em></p>
+    <p class="folio">{brand.sidebarFolio} · <em>v0.1</em></p>
   </div>
 </aside>
 

@@ -9,8 +9,10 @@
  * {msg_id}`) is BLOCKED in the spec until the broker ships it; the
  * detail panel renders a placeholder so the demo screenshot is honest.
  *
- * The component is intentionally one file: split lands in Phase 3
- * when the SPA core is extracted into `components/core/`.
+ * Lives in `components/core/` as a shared SPA primitive; Cullis Chat
+ * (consumer) and Frontdesk (enterprise) both mount the same instance.
+ * Sub-views (list, detail, compose) are intentionally inline in this
+ * file: split if the file exceeds ~600 lines.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -20,15 +22,15 @@ import {
   ApiError,
   listInbox,
   sendInboxMessage,
-} from '../lib/api';
-import { ensureSession } from '../lib/session-singleton';
+} from '../../lib/api';
+import { ensureSession } from '../../lib/session-singleton';
 import type {
   InboxMessage,
   InboxSendRequest,
   InboxTab,
   PrincipalType,
-} from '../lib/types';
-import PrincipalBadge from './core/PrincipalBadge';
+} from '../../lib/types';
+import PrincipalBadge from './PrincipalBadge';
 
 const TABS: { id: InboxTab; label: string }[] = [
   { id: 'all', label: 'All' },
