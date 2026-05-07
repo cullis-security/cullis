@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Protocol
 
 _log = logging.getLogger("mcp_proxy.guardian.slow_path")
 
