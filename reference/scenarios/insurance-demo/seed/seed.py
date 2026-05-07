@@ -3,16 +3,16 @@
 Adds, on top of whatever ``reference/bootstrap/`` already created:
 
   - 3 user / agent principals on Mediterranean Insurance (Mediterranean):
-      mediterranean::user::claim-officer
-      mediterranean::user::claim-manager
-      mediterranean::agent::night-reporter
-      mediterranean::agent::ticket-bot
+      orga::user::claim-officer
+      orga::user::claim-manager
+      orga::agent::night-reporter
+      orga::agent::ticket-bot
   - 1 user principal on Asia-Pacific Insurance (Asia-Pacific):
-      asia-pacific::user::counterparty-liaison
+      orgb::user::counterparty-liaison
   - 1 workload principal on Asia-Pacific (the Frontdesk container itself):
-      asia-pacific::workload::frontdesk-container
+      orgb::workload::frontdesk-container
   - 1 MCP resource on Roma:
-      mediterranean::resource::mcp::claims-db (postgres-backed, seeded with claims.sql)
+      orga::resource::mcp::claims-db (postgres-backed, seeded with claims.sql)
   - Cross-org bindings + reach=both for the user principals that need to
     talk across orgs (claim-manager <-> counterparty-liaison).
 
@@ -44,7 +44,9 @@ Env override:
   CULLIS_BROKER_URL          default http://localhost:8000
   CULLIS_PROXY_A_URL         default http://localhost:9100
   CULLIS_PROXY_B_URL         default http://localhost:9200
-  ADMIN_SECRET               default sandbox-admin-secret-change-me
+  PROXY_A_ADMIN_SECRET       default sandbox-proxy-admin-a (Mastio A)
+  PROXY_B_ADMIN_SECRET       default sandbox-proxy-admin-b (Mastio B)
+  COURT_ADMIN_SECRET         default sandbox-admin-secret-change-me
   ANTHROPIC_API_KEY          read from imp/official_sandbox/.env if unset
 """
 from __future__ import annotations
@@ -71,7 +73,18 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 BROKER_URL  = os.environ.get("CULLIS_BROKER_URL",  "http://localhost:8000")
 PROXY_A_URL = os.environ.get("CULLIS_PROXY_A_URL", "http://localhost:9100")
 PROXY_B_URL = os.environ.get("CULLIS_PROXY_B_URL", "http://localhost:9200")
-ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "sandbox-admin-secret-change-me")
+# Per-proxy admin secrets — match reference/docker-compose.yml. The Court
+# (broker) uses its own secret for org-onboarding admin; the per-proxy
+# secrets gate the Mastio admin surface (/v1/admin/agents, users, etc.).
+PROXY_A_ADMIN_SECRET = os.environ.get(
+    "PROXY_A_ADMIN_SECRET", "sandbox-proxy-admin-a",
+)
+PROXY_B_ADMIN_SECRET = os.environ.get(
+    "PROXY_B_ADMIN_SECRET", "sandbox-proxy-admin-b",
+)
+COURT_ADMIN_SECRET = os.environ.get(
+    "COURT_ADMIN_SECRET", "sandbox-admin-secret-change-me",
+)
 
 # Cast definitions — match imp/insurance-demo-spec.md verbatim.
 MEDITERRANEAN_AGENTS = [
@@ -120,8 +133,8 @@ ASIA_PACIFIC_WORKLOADS = [
         "workload_name":          "frontdesk-container",
         "display_name":           "Asia-Pacific Frontdesk",
         "image_digest":           "sha256:demo-frontdesk-bundle",
-        "hosted_principals_hint": ["asia-pacific::user::counterparty-liaison"],
-        "description":            "Multi-user Frontdesk container hosting asia-pacific::user::counterparty-liaison.",
+        "hosted_principals_hint": ["orgb::user::counterparty-liaison"],
+        "description":            "Multi-user Frontdesk container hosting orgb::user::counterparty-liaison.",
     },
 ]
 
@@ -220,8 +233,15 @@ def _gen_agent_cert(
 # ── Provisioning helpers (HTTP) ──────────────────────────────────────────
 
 
-def _admin_headers() -> dict[str, str]:
-    return {"X-Admin-Secret": ADMIN_SECRET, "Content-Type": "application/json"}
+def _admin_headers(proxy_url: str) -> dict[str, str]:
+    """Pick the right admin secret based on which proxy we're calling."""
+    if proxy_url == PROXY_A_URL:
+        secret = PROXY_A_ADMIN_SECRET
+    elif proxy_url == PROXY_B_URL:
+        secret = PROXY_B_ADMIN_SECRET
+    else:
+        secret = COURT_ADMIN_SECRET
+    return {"X-Admin-Secret": secret, "Content-Type": "application/json"}
 
 
 def _byoca_enroll_agent(
@@ -238,7 +258,7 @@ def _byoca_enroll_agent(
     }
     r = client.post(
         f"{proxy_url}/v1/admin/agents/enroll/byoca",
-        json=body, headers=_admin_headers(), timeout=15.0,
+        json=body, headers=_admin_headers(proxy_url), timeout=15.0,
     )
     if r.status_code == 201:
         return r.json().get("dpop_jkt")
@@ -269,10 +289,10 @@ def phase_check_reference_up(client: httpx.Client) -> None:
             raise SystemExit(1)
 
 
-def phase_provision_mediterranean_agents(client: httpx.Client) -> None:
-    _h("Phase 2 — provision Roma agents (BYOCA) ")
-    org_ca = STATE_DIR / "mediterranean-ca.pem"
-    org_ca_key = STATE_DIR / "mediterranean-ca.key"
+def phase_provision_orga_agents(client: httpx.Client) -> None:
+    _h("Phase 2 — provision orga (Mediterranean) agents (BYOCA) ")
+    org_ca = STATE_DIR / "orga-ca.pem"
+    org_ca_key = STATE_DIR / "orga-ca.key"
     if not (org_ca.exists() and org_ca_key.exists()):
         _warn("Roma Org CA material not on disk yet — pulling from reference state")
         # ``reference/bootstrap/bootstrap.py`` writes the CA into the
@@ -285,14 +305,26 @@ def phase_provision_mediterranean_agents(client: httpx.Client) -> None:
     for spec in MEDITERRANEAN_AGENTS:
         agent_dir = STATE_DIR / "agents" / spec["agent_name"]
         agent_dir.mkdir(parents=True, exist_ok=True)
+        cert_path = agent_dir / "agent.pem"
+        key_path  = agent_dir / "agent-key.pem"
+        # Idempotency: if the cert+key already exist on disk we trust
+        # they match the BYOCA-enrolled row in the proxy DB. Re-minting
+        # on a re-run produces a NEW cert that the DB doesn't know about
+        # (BYOCA returns 409 without updating), and the next mTLS
+        # handshake fails with "client cert does not match the
+        # registered identity".
+        if cert_path.exists() and key_path.exists():
+            _ok(f"agent {spec['agent_name']} already provisioned "
+                f"({cert_path.name} on disk) — skipping mint+enroll")
+            continue
         cert_pem, key_pem = _gen_agent_cert(
-            "mediterranean", spec["agent_name"], "mediterranean.cullis.test",
+            "orga", spec["agent_name"], "orga.test",
             org_ca, org_ca_key,
         )
-        (agent_dir / "agent.pem").write_text(cert_pem)
-        (agent_dir / "agent-key.pem").write_text(key_pem)
-        (agent_dir / "agent.pem").chmod(0o644)
-        (agent_dir / "agent-key.pem").chmod(0o600)
+        cert_path.write_text(cert_pem)
+        key_path.write_text(key_pem)
+        cert_path.chmod(0o644)
+        key_path.chmod(0o600)
 
         _byoca_enroll_agent(
             client, PROXY_A_URL, spec["agent_name"], spec["capabilities"],
@@ -318,14 +350,14 @@ def phase_provision_user_principals(client: httpx.Client) -> None:
         try:
             r = client.post(
                 f"{PROXY_A_URL}/v1/admin/users",
-                json=body, headers=_admin_headers(), timeout=10.0,
+                json=body, headers=_admin_headers(PROXY_A_URL), timeout=10.0,
             )
         except Exception as exc:
             _warn(f"/v1/admin/users unreachable ({exc}) — endpoint pending,"
                   " run.sh will try the runtime CSR fallback")
             continue
         if r.status_code in (201, 409):
-            _ok(f"user mediterranean::user::{spec['user_name']} ready")
+            _ok(f"user orga::user::{spec['user_name']} ready")
         else:
             _fail(f"user create {spec['user_name']}: HTTP {r.status_code}")
 
@@ -339,13 +371,13 @@ def phase_provision_user_principals(client: httpx.Client) -> None:
         try:
             r = client.post(
                 f"{PROXY_B_URL}/v1/admin/users",
-                json=body, headers=_admin_headers(), timeout=10.0,
+                json=body, headers=_admin_headers(PROXY_B_URL), timeout=10.0,
             )
         except Exception as exc:
             _warn(f"Tokyo /v1/admin/users unreachable ({exc}) — pending")
             continue
         if r.status_code in (201, 409):
-            _ok(f"user asia-pacific::user::{spec['user_name']} ready")
+            _ok(f"user orgb::user::{spec['user_name']} ready")
         else:
             _fail(f"user create {spec['user_name']}: HTTP {r.status_code}")
 
@@ -362,34 +394,38 @@ def phase_provision_workload(client: httpx.Client) -> None:
         try:
             r = client.post(
                 f"{PROXY_B_URL}/v1/admin/workloads",
-                json=body, headers=_admin_headers(), timeout=10.0,
+                json=body, headers=_admin_headers(PROXY_B_URL), timeout=10.0,
             )
         except Exception as exc:
             _warn(f"Tokyo /v1/admin/workloads unreachable ({exc}) — pending")
             continue
         if r.status_code in (201, 409):
-            _ok(f"workload asia-pacific::workload::{spec['workload_name']} ready")
+            _ok(f"workload orgb::workload::{spec['workload_name']} ready")
 
 
 def phase_provision_resources(client: httpx.Client) -> None:
     _h("Phase 5 — provision MCP resource (claims-db)")
     for spec in MEDITERRANEAN_RESOURCES:
+        # Contract: mcp_proxy/admin/mcp_resources.py::MCPResourceCreate
+        # — fields are ``name`` + ``endpoint_url``, NOT resource_id /
+        # endpoint. The proxy mints the resource_id (uuid4) on insert.
         body = {
-            "resource_id":   f"mediterranean::resource::{spec['type']}::{spec['resource_name']}",
-            "display_name":  spec["display_name"],
-            "type":          spec["type"],
-            "endpoint":      spec["endpoint"],
+            "name":         spec["resource_name"],
+            "endpoint_url": spec["endpoint"],
+            "description":  spec.get("description") or spec["display_name"],
+            "auth_type":    "none",
         }
         try:
             r = client.post(
                 f"{PROXY_A_URL}/v1/admin/mcp-resources",
-                json=body, headers=_admin_headers(), timeout=10.0,
+                json=body, headers=_admin_headers(PROXY_A_URL), timeout=10.0,
             )
         except Exception as exc:
             _warn(f"/v1/admin/mcp-resources unreachable ({exc})")
             continue
         if r.status_code in (201, 409):
-            _ok(f"resource {body['resource_id']} ready")
+            _ok(f"resource {spec['resource_name']} ready "
+                f"(resource_id={r.json().get('resource_id', '?')[:8]})")
         else:
             _fail(f"resource create: HTTP {r.status_code} {r.text[:160]}")
 
@@ -433,7 +469,7 @@ def main() -> int:
     print(f"{BOLD}{CYAN}Cullis insurance-demo seed{RESET}\n")
     with httpx.Client() as client:
         phase_check_reference_up(client)
-        phase_provision_mediterranean_agents(client)
+        phase_provision_orga_agents(client)
         phase_provision_user_principals(client)
         phase_provision_workload(client)
         phase_provision_resources(client)

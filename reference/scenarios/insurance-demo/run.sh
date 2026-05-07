@@ -9,7 +9,7 @@
 #   run.sh urls                      print recording-ready URLs
 #   run.sh down                      tear down frontdesk overlay
 #   run.sh status                    diagnostic — show component health
-#   run.sh prep-ca                   copy Mediterranean Org CA out of reference state
+#   run.sh prep-ca                   copy orga Org CA out of reference state
 #                                    volume to local disk (one-shot)
 #
 # Prerequisites:
@@ -50,10 +50,11 @@ _load_env() {
 # ── Subcommands ─────────────────────────────────────────────────────────
 
 cmd_prep_ca() {
-    _h "Copying Mediterranean Org CA from reference state volume"
+    _h "Copying orga (Mediterranean Insurance) Org CA from reference state volume"
     # The reference compose's bootstrap container persists Org CAs into
-    # the bootstrap-state volume. Copy them out for our seed.py to mint
-    # agent certs against.
+    # the bootstrap-state volume at ``/state/{org_id}/ca.pem`` +
+    # ``ca-key.pem``. Copy them out for our seed.py to mint agent
+    # certs against.
     local container
     container=$(docker compose -f "$REFERENCE_DIR/docker-compose.yml" ps -q bootstrap | head -1)
     if [ -z "$container" ]; then
@@ -65,17 +66,17 @@ cmd_prep_ca() {
         _fail "no bootstrap container available; cannot extract CA"
         exit 1
     fi
-    docker cp "$container:/state/mediterranean/ca-cert.pem" "$STATE_DIR/mediterranean-ca.pem"
-    docker cp "$container:/state/mediterranean/ca-key.pem"  "$STATE_DIR/mediterranean-ca.key"
-    chmod 600 "$STATE_DIR/mediterranean-ca.key"
-    _ok "Mediterranean Org CA at $STATE_DIR/mediterranean-ca.{pem,key}"
+    docker cp "$container:/state/orga/ca.pem"     "$STATE_DIR/orga-ca.pem"
+    docker cp "$container:/state/orga/ca-key.pem" "$STATE_DIR/orga-ca.key"
+    chmod 600 "$STATE_DIR/orga-ca.key"
+    _ok "orga Org CA at $STATE_DIR/orga-ca.{pem,key}"
 }
 
 cmd_seed() {
     _load_env
     _h "Seeding insurance-demo cast"
-    if [ ! -f "$STATE_DIR/mediterranean-ca.pem" ]; then
-        _warn "Mediterranean Org CA missing — running prep-ca first"
+    if [ ! -f "$STATE_DIR/orga-ca.pem" ]; then
+        _warn "orga Org CA missing — running prep-ca first"
         cmd_prep_ca
     fi
     python3 "$HERE/seed/seed.py"
@@ -90,7 +91,7 @@ cmd_frontdesk_prep() {
     # runs ``cullis-connector enroll`` against proxy-b through the
     # orgb-internal network.
     local invite
-    invite=$(curl -s -X POST -H "X-Admin-Secret: ${ADMIN_SECRET:-sandbox-admin-secret-change-me}" \
+    invite=$(curl -s -X POST -H "X-Admin-Secret: ${PROXY_B_ADMIN_SECRET:-sandbox-proxy-admin-b}" \
         -H "Content-Type: application/json" \
         -d '{"label":"frontdesk-asia-pacific","ttl_hours":1}' \
         http://localhost:9200/v1/admin/agents/enroll/connector \
@@ -179,7 +180,7 @@ cmd_urls() {
   ${GREEN}Asia-Pacific Mastio admin${RESET}             http://localhost:9200/admin
   ${GREEN}Court federation dashboard${RESET}     http://localhost:8000/dashboard
   ${GREEN}Grafana audit + traffic${RESET}        http://localhost:3000  (admin/admin)
-  ${GREEN}MCP claims-db (intra-org)${RESET}      mediterranean::resource::mcp::claims-db
+  ${GREEN}MCP claims-db (intra-org)${RESET}      orga::resource::mcp::claims-db
 
   Recording sequence (60-90s):
     1. Open Mediterranean Mastio admin — show Users + Agents + Workloads + Resources

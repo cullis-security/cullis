@@ -29,7 +29,7 @@
 #
 #   FRONTDESK_AP_HTTP_PORT          host port for Frontdesk web (default 8090)
 #   FRONTDESK_AP_ORG_ID             default asia-pacific
-#   FRONTDESK_AP_TRUST_DOMAIN       default asia-pacific.cullis.test
+#   FRONTDESK_AP_TRUST_DOMAIN       default orgb.test
 #   FRONTDESK_AP_MASTIO_URL         default https://mastio-nginx-b:9443
 #                                   (reachable through the orgb-internal
 #                                    network this overlay joins)
@@ -52,7 +52,7 @@ services:
     environment:
       AMBASSADOR_MODE: shared
       CULLIS_FRONTDESK_ORG_ID:        ${FRONTDESK_AP_ORG_ID:-asia-pacific}
-      CULLIS_FRONTDESK_TRUST_DOMAIN:  ${FRONTDESK_AP_TRUST_DOMAIN:-asia-pacific.cullis.test}
+      CULLIS_FRONTDESK_TRUST_DOMAIN:  ${FRONTDESK_AP_TRUST_DOMAIN:-orgb.test}
       CULLIS_TRUSTED_PROXIES:         ${FRONTDESK_AP_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       CULLIS_FRONTDESK_COOKIE_TTL_S:  3600
       CULLIS_FRONTDESK_MASTIO_URL:    ${FRONTDESK_AP_MASTIO_URL:-https://mastio-nginx-b:9443}
