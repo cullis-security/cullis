@@ -21,13 +21,13 @@ const chatHref = base;
 const inboxHref = `${base}inbox`;
 ---
 
-<aside class="sidebar-left" aria-label="Conversation history">
-  <header class="sl-head">
-    <span class="eyebrow">conversations</span>
-    <a class="sl-new" href={chatHref} aria-label="Start a new chat" title="New chat">
-      <span aria-hidden="true">+</span> new
+<aside class="sidebar-left" aria-label="Sidebar">
+  <nav class="sl-nav">
+    <a class="sl-item" href={chatHref} aria-label="Start a new chat" title="New chat">
+      <svg class="sl-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span class="sl-item-label">New chat</span>
     </a>
-  </header>
+  </nav>
 
   <nav class="sl-surfaces" aria-label="Surfaces">
     <a
@@ -49,15 +49,10 @@ const inboxHref = `${base}inbox`;
   </nav>
 
   <div class="sl-empty">
-    <p class="sl-empty-title">
-      <em>Nothing</em><br />
-      here yet.
-    </p>
     <p class="sl-empty-body">
       Conversation history lands in <span class="ver">v0.5</span>.
       Until then every reload starts a fresh thread.
     </p>
-    <div class="sl-rule" aria-hidden="true"></div>
     <p class="folio">CLLS-CHAT · <em>v0.1</em></p>
   </div>
 </aside>
@@ -70,34 +65,46 @@ const inboxHref = `${base}inbox`;
     flex-direction: column;
   }
 
-  .sl-head {
-    padding: 1.25rem 1.25rem 0.9rem;
-    border-bottom: 1px solid var(--border-subtle);
+  /* Nav list — Mastio dashboard pattern (.nav-item / .nav-active). */
+  .sl-nav {
+    padding: 0.75rem 0.5rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .sl-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  /* "+ new" — full-page navigation to / so React island state resets
-     cleanly. v0.1 has no server-side history; v0.5 will swap this for
-     a real "spawn new conversation" action that also persists. */
-  .sl-new {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
+    gap: 0.625rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius-sm);
+    border-left: 2px solid transparent;
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #6b7280; /* text-gray-500, identical to Mastio inactive */
     text-decoration: none;
-    padding: 0.25rem 0.55rem;
-    border: 1px solid var(--border-medium);
-    border-left: 2px solid var(--accent-cyan);
-    transition: color var(--t-base) ease, border-color var(--t-base) ease;
+    transition: all 0.15s ease;
   }
 
-  .sl-new:hover, .sl-new:focus-visible {
+  .sl-item:hover:not(.sl-item-active) {
+    background: rgba(255, 255, 255, 0.03);
+    color: #d1d5db; /* text-gray-300 */
+  }
+
+  .sl-item-active {
+    background: rgba(0, 229, 199, 0.08);
     color: var(--accent-cyan);
-    border-color: var(--accent-cyan);
+    border-left-color: var(--accent-cyan);
+  }
+
+  .sl-item-icon {
+    flex-shrink: 0;
+  }
+
+  .sl-item-label {
+    line-height: 1.2;
   }
 
   .sl-surfaces {
@@ -155,16 +162,18 @@ const inboxHref = `${base}inbox`;
   }
 
   .sl-empty-title {
-    font-family: var(--font-display);
-    font-size: 1.6rem;
-    line-height: 1.05;
+    font-family: var(--font-brand);
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    line-height: 1.4;
     color: var(--text-primary);
     margin: 0;
-    letter-spacing: -0.01em;
   }
 
   .sl-empty-title em {
-    font-style: italic;
+    font-style: normal;
     color: var(--accent-cyan);
   }
 
@@ -174,7 +183,7 @@ const inboxHref = `${base}inbox`;
     line-height: 1.55;
     color: var(--text-secondary);
     margin: 0;
-    max-width: 22ch;
+    max-width: 24ch;
   }
 
   .sl-empty-body .ver {
@@ -182,15 +191,9 @@ const inboxHref = `${base}inbox`;
     font-size: 0.78em;
     letter-spacing: 0.08em;
     color: var(--accent-cyan);
-    padding: 0.05em 0.35em;
+    padding: 0.05em 0.4em;
     background: var(--accent-cyan-glow);
     border: 1px solid var(--accent-cyan-dim);
-  }
-
-  .sl-rule {
-    width: 32px;
-    height: 1px;
-    background: var(--accent-cyan);
-    margin-top: 0.4rem;
+    border-radius: var(--radius-sm);
   }
 </style>

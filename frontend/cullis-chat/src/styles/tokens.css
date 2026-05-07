@@ -6,18 +6,17 @@
  * candidates for back-port to the site once stable.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=Chakra+Petch:wght@400;500;600;700&display=swap');
-@import url('https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,700,900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
   /* ---- Mirrored from cullis.io ---- */
 
-  /* Palette */
-  --bg-void: #050508;
-  --bg-surface: #0a0b10;
-  --bg-elevated: #10121a;
-  --bg-card: #13151f;
-  --bg-card-hover: #161923;
+  /* Palette — bluish charcoal, matched to Mastio dashboard (surface-950..700). */
+  --bg-void: #0a0f1a;
+  --bg-surface: #111827;
+  --bg-elevated: #1a1f2e;
+  --bg-card: #1a1f2e;
+  --bg-card-hover: #252b3d;
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-medium: rgba(255, 255, 255, 0.10);
   --border-strong: rgba(255, 255, 255, 0.18);
@@ -37,11 +36,29 @@
   --cullis-badge-agent: #8b5cf6;
   --cullis-badge-workload: #10b981;
 
-  /* Fonts */
+  /* Fonts — Mastio dashboard family (DM Sans / JetBrains Mono / Chakra Petch). */
   --font-display: 'Instrument Serif', Georgia, serif;
-  --font-body: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'DM Mono', 'SF Mono', Menlo, monospace;
+  --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
   --font-brand: 'Chakra Petch', sans-serif;
+
+  /* Radius — match Mastio: small on controls, medium on cards, pill on status. */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-pill: 9999px;
+
+  /* Relief — subtle depth shadows for solid + ghost buttons.
+   * `--shadow-button` adds a tiny dark drop + light top-edge inset, so
+   * a flat button reads as raised. `--shadow-button-pressed` flips the
+   * inset to a darker top, simulating press.
+   * `--shadow-button-primary` is a stronger drop for filled accents. */
+  --shadow-button: 0 1px 0 rgba(255, 255, 255, 0.05) inset,
+                   0 1px 2px rgba(0, 0, 0, 0.35),
+                   0 2px 6px rgba(0, 0, 0, 0.18);
+  --shadow-button-primary: 0 1px 0 rgba(255, 255, 255, 0.30) inset,
+                           0 1px 2px rgba(0, 0, 0, 0.45),
+                           0 2px 8px rgba(0, 229, 199, 0.18);
+  --shadow-button-pressed: 0 1px 2px rgba(0, 0, 0, 0.45) inset;
 
   /* Motion (mirrored from site Nav/buttons) */
   --ease-soft: cubic-bezier(0.16, 1, 0.3, 1);
@@ -60,7 +77,7 @@
   --msg-pad-x: 1.4rem;
   --msg-pad-y: 1.1rem;
   --msg-gap: 1.4rem;
-  --msg-radius: 0;          /* Cullis is zero-radius — sharp edges, like the site buttons */
+  --msg-radius: var(--radius-sm);  /* aligned with Mastio cards/controls */
 
   /* Roles. Assistant uses card surface with cyan border-left like site .comp-aside.
      User reads as a "sent" line — no card, just a folio + text. */

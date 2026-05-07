@@ -64,7 +64,6 @@ export function MessageInput({ onSend, disabled, isSending, draft, onDraftConsum
       />
       <button type="submit" className="send" disabled={submitDisabled}>
         <span className="send-label">{isSending ? 'sending' : 'send'}</span>
-        <span className="send-arrow" aria-hidden="true">→</span>
       </button>
     </form>
   );
