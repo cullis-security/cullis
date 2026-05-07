@@ -11,7 +11,6 @@ When the backend session lands /v1/admin/users + /v1/admin/workloads,
 these tests should be widened to assert against real data and the
 ``endpoint_ready=False`` banner should disappear from the templates.
 """
-import json
 import pytest
 from httpx import AsyncClient
 
