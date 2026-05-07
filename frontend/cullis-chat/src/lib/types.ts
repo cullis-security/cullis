@@ -69,3 +69,42 @@ export interface ChatCompletionResponse {
   choices: { index: number; message: { role: ChatRole; content: string }; finish_reason: string }[];
   cullis_audit?: AuditTrace;
 }
+
+/**
+ * ADR-020 Phase 4 — REST inbox surface.
+ *
+ * Mirrors `app.inbox.router.InboxItem` (broker side). Field shape is
+ * stable across single and shared mode: only `sender_principal_type`
+ * may differ between flows (user/agent/workload).
+ */
+export interface InboxMessage {
+  msg_id: string;
+  sender_org_id: string;
+  sender_principal_type: PrincipalType;
+  sender_name: string;
+  subject: string | null;
+  body: string;
+  delivery_state: 'pending' | 'delivered' | 'archived' | string;
+  consent_id: string | null;
+  enqueued_at: string;
+  delivered_at: string | null;
+  ttl_expires_at: string;
+}
+
+export interface InboxSendRequest {
+  recipient_org_id: string;
+  recipient_principal_type: PrincipalType;
+  recipient_name: string;
+  body: string;
+  subject?: string;
+  idempotency_key?: string;
+}
+
+export interface InboxSendResponse {
+  msg_id: string;
+  inserted: boolean;
+  quadrant: string;
+}
+
+/** Inbox UI tabs — drives client-side filtering, not a server param. */
+export type InboxTab = 'all' | 'unread' | 'sent' | 'drafts';

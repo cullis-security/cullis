@@ -23,9 +23,21 @@ import { parseSSE, type SSEEvent } from './sse';
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
+  InboxMessage,
+  InboxSendRequest,
+  InboxSendResponse,
   Model,
   Principal,
 } from './types';
+
+/**
+ * Inbox base path. The spec at `imp/insurance-demo-spec.md` originally
+ * named this `/v1/egress/message/*`; the broker today exposes
+ * `/v1/inbox/*` (see `app/inbox/router.py`). Tracked as a BLOCKED:
+ * note in the spec — flip this constant when the rename lands and
+ * everything else just works.
+ */
+const INBOX_BASE = '/v1/inbox';
 
 class ApiError extends Error {
   constructor(public status: number, public payload: unknown) {
@@ -116,5 +128,51 @@ export async function* chatCompletionStream(
   yield* parseSSE(res.body, signal);
 }
 
-export { ApiError };
+// ─── Inbox surface (ADR-020 Phase 4) ──────────────────────────────────
+
+/** GET /v1/inbox — list messages addressed to the caller. */
+export async function listInbox(opts?: {
+  since?: string;
+  limit?: number;
+  includeArchived?: boolean;
+}): Promise<InboxMessage[]> {
+  const qs = new URLSearchParams();
+  if (opts?.since) qs.set('since', opts.since);
+  if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts?.includeArchived) qs.set('include_archived', 'true');
+  const suffix = qs.toString();
+  const url = suffix ? `${INBOX_BASE}?${suffix}` : INBOX_BASE;
+  return jsonFetch<InboxMessage[]>(url);
+}
+
+/** POST /v1/inbox/send — enqueue a message to a Cullis principal. */
+export async function sendInboxMessage(
+  req: InboxSendRequest,
+): Promise<InboxSendResponse> {
+  return jsonFetch<InboxSendResponse>(`${INBOX_BASE}/send`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+/** POST /v1/inbox/{msg_id}/ack — mark delivered. */
+export async function ackInboxMessage(
+  msgId: string,
+  online: boolean = false,
+): Promise<{ acked: boolean; msg_id: string }> {
+  const url = `${INBOX_BASE}/${encodeURIComponent(msgId)}/ack${online ? '?online=true' : ''}`;
+  return jsonFetch<{ acked: boolean; msg_id: string }>(url, { method: 'POST' });
+}
+
+/** POST /v1/inbox/{msg_id}/archive — soft hide. */
+export async function archiveInboxMessage(
+  msgId: string,
+): Promise<{ archived: boolean; msg_id: string }> {
+  return jsonFetch<{ archived: boolean; msg_id: string }>(
+    `${INBOX_BASE}/${encodeURIComponent(msgId)}/archive`,
+    { method: 'POST' },
+  );
+}
+
+export { ApiError, INBOX_BASE };
 export type { SSEEvent };
