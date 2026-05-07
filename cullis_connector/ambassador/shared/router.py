@@ -74,6 +74,10 @@ class SharedAmbassadorState:
     # production must keep this True so the SSO header is only honoured
     # from the configured reverse proxy.
     enforce_proxy_trust: bool = True
+    # ADR-020 Phase 4 — broker URL for the user-inbox passthrough
+    # (issue #488). Empty string disables the inbox endpoints (the
+    # SPA gracefully falls back to the "endpoint pending" message).
+    broker_url: str = ""
 
 
 def _state(request: Request) -> SharedAmbassadorState:
@@ -345,6 +349,119 @@ async def chat_completions(
     return response
 
 
+# ── /v1/inbox passthrough (issue #488) ──────────────────────────
+
+
+def _build_broker_user_client(state: SharedAmbassadorState, cred: UserCredentials):
+    """Build a broker-direct CullisClient for the user.
+
+    The Mastio doesn't yet have a user-aware broker bridge for the
+    inbox endpoints, so the ambassador hops directly to the broker
+    using the user's cert+key. The cert chain is the user-principal
+    cert minted by ``/v1/principals/csr``; the broker side trusts it
+    via the org CA (already attached at onboarding).
+
+    The client is built fresh per request (same lifecycle as the
+    chat-completions client). v0.2 will cache by principal_id.
+    """
+    if not state.broker_url:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "inbox endpoint not configured — set CULLIS_BROKER_URL on "
+                "the Connector to enable the user-inbox passthrough"
+            ),
+        )
+    from cullis_sdk import CullisClient
+    client = CullisClient.from_user_principal_pem(
+        state.broker_url,
+        principal_id=cred.principal_id,
+        cert_pem=cred.cert_pem,
+        key_pem=cred.key_pem,
+    )
+    # Derive the canonical typed agent_id from the 4-segment principal_id.
+    # Format: ``<td>/<org>/<type>/<name>`` → ``<org>::<type>::<name>``.
+    parts = cred.principal_id.split("/")
+    if len(parts) != 4:
+        raise HTTPException(500, f"unexpected principal_id format: {cred.principal_id!r}")
+    _td, org_id, ptype, name = parts
+    agent_id = (
+        f"{org_id}::{name}" if ptype == "agent"
+        else f"{org_id}::{ptype}::{name}"
+    )
+    # Broker-direct login: the user's cert+key sign the client_assertion
+    # locally; the broker validates the chain to the org CA + the JWT
+    # signature. Since we're talking to the broker (not Mastio), there
+    # is no proxy-counter-sig hop — the user is the audited principal.
+    client._legacy_login_from_pem(
+        agent_id,
+        state.org_id,
+        cred.cert_pem,
+        cred.key_pem,
+    )
+    return client
+
+
+@router.get("/v1/inbox")
+async def inbox_list(
+    request: Request,
+    cred: UserCredentials = Depends(_require_credentials),
+    since: str | None = None,
+    limit: int = 50,
+):
+    """Return the calling user's inbox queue (broker passthrough)."""
+    state = _state(request)
+    try:
+        client = _build_broker_user_client(state, cred)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("inbox login failed for %s", cred.principal_id)
+        raise HTTPException(502, f"broker login failed: {exc}") from exc
+
+    params: dict[str, Any] = {"limit": limit}
+    if since is not None:
+        params["since"] = since
+    resp = client._authed_request("GET", "/v1/inbox", params=params)
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, detail=resp.text[:400])
+    return resp.json()
+
+
+@router.post("/v1/inbox/{msg_id}/ack")
+async def inbox_ack(
+    msg_id: str,
+    request: Request,
+    cred: UserCredentials = Depends(_require_credentials),
+):
+    state = _state(request)
+    try:
+        client = _build_broker_user_client(state, cred)
+    except HTTPException:
+        raise
+    resp = client._authed_request("POST", f"/v1/inbox/{msg_id}/ack")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, detail=resp.text[:400])
+    return resp.json() if resp.content else {"ok": True}
+
+
+@router.post("/v1/inbox/{msg_id}/archive")
+async def inbox_archive(
+    msg_id: str,
+    request: Request,
+    cred: UserCredentials = Depends(_require_credentials),
+):
+    state = _state(request)
+    try:
+        client = _build_broker_user_client(state, cred)
+    except HTTPException:
+        raise
+    resp = client._authed_request("POST", f"/v1/inbox/{msg_id}/archive")
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, detail=resp.text[:400])
+    return resp.json() if resp.content else {"ok": True}
+
+
 # ── Wiring ────────────────────────────────────────────────────────
 
 
@@ -361,6 +478,7 @@ def install_shared_ambassador(
     cookie_ttl_seconds: int = DEFAULT_COOKIE_TTL_SECONDS,
     site_url: str = "",
     enforce_proxy_trust: bool = True,
+    broker_url: str = "",
 ) -> None:
     """Stash shared-mode state on ``app.state.shared_ambassador`` and mount.
 
@@ -385,6 +503,7 @@ def install_shared_ambassador(
         advertised_models=list(advertised_models or ["claude-haiku-4-5"]),
         site_url=site_url,
         enforce_proxy_trust=enforce_proxy_trust,
+        broker_url=broker_url,
     )
     app.include_router(router)
     _log.info(

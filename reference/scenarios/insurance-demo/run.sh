@@ -107,13 +107,18 @@ cmd_frontdesk_prep() {
         return 1
     fi
     _ok "invite token issued: ${invite:0:12}…"
-    docker run --rm \
-        -v frontdesk-asia-pacific-connector-data:/home/cullis/.cullis \
-        --network cullis-reference-orgb-internal \
-        ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest} \
+    # Use the locally-built cullis-connector image so the ambassador's
+    # /v1/inbox endpoints (issue #488) are present at runtime. Mount the
+    # volume at /root/.cullis to match the dashboard's runtime path —
+    # the dashboard runs as root for chown/mkdir on the volume backing.
+    docker run --rm --user root \
+        -v frontdesk-asia-pacific-connector-data:/root/.cullis \
+        --network cullis-reference-orgb \
+        cullis-connector:local \
         enroll --site https://mastio-nginx-b:9443 \
                --code "$invite" \
-               --profile frontdesk-asia-pacific
+               --profile frontdesk-asia-pacific \
+               --insecure-skip-verify
     _ok "Connector enrolled — identity persisted in volume"
 }
 
