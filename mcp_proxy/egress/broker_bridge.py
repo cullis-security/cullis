@@ -69,6 +69,10 @@ class BrokerBridge:
                 countersign_fn=countersign_fn,
             ),
         )
+        # ADR-020 Phase 4 — when the SDK's send_to_inbox is called from
+        # this client (we are inside the proxy talking *to* the broker),
+        # skip the egress prefix and call /v1/inbox/send directly.
+        client._inbox_path_via_broker = True
         logger.info("Authenticated CullisClient for agent: %s", agent_id)
         return client
 

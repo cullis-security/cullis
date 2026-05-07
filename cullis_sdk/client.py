@@ -2704,6 +2704,71 @@ class CullisClient:
             "mode": mode,
         }
 
+    # ── ADR-020 Phase 4 — user inbox send ────────────────────────────
+
+    def send_to_inbox(
+        self,
+        *,
+        recipient_org_id: str,
+        recipient_principal_type: str,
+        recipient_name: str,
+        body: dict | str,
+        subject: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict:
+        """Send a message to a user / agent / workload principal's inbox.
+
+        This is the ADR-020 / Phase 4 delivery path — distinct from
+        :meth:`send_oneshot` which encrypts an envelope for agent ↔
+        agent E2E. The inbox path is plaintext-at-rest within the
+        broker (the broker is the trust boundary the user signed up
+        for) and reach-policy gated.
+
+        Default route is the Mastio-mediated path
+        (``POST /v1/egress/inbox/send`` → ``BrokerBridge`` →
+        ``POST /v1/inbox/send`` on the broker). When ``self.base`` is a
+        broker URL — i.e. the SDK is run from inside the proxy via
+        ``BrokerBridge.get_client()`` — set ``via_broker=True`` on the
+        instance to skip the egress prefix.
+
+        ``body`` is JSON-serialised when it arrives as a dict; pass a
+        plain string to send pre-serialised content.
+
+        Returns ``{"msg_id", "inserted", "quadrant"}`` on success.
+        Raises :class:`PermissionError` on a 403 from reach-policy.
+        """
+        import json as _json
+        if isinstance(body, dict):
+            body_str = _json.dumps(body)
+        else:
+            body_str = body
+        payload: dict[str, Any] = {
+            "recipient_org_id":          recipient_org_id,
+            "recipient_principal_type":  recipient_principal_type,
+            "recipient_name":            recipient_name,
+            "body":                      body_str,
+        }
+        if subject is not None:
+            payload["subject"] = subject
+        if idempotency_key is not None:
+            payload["idempotency_key"] = idempotency_key
+        # Hop selector: BrokerBridge sets ``_inbox_path_via_broker=True``
+        # on the per-agent broker client so the same SDK method works on
+        # both sides of the Mastio. Default is the mastio-mediated path
+        # (egress prefix), which is what every external SDK caller uses.
+        path = (
+            "/v1/inbox/send"
+            if getattr(self, "_inbox_path_via_broker", False)
+            else "/v1/egress/inbox/send"
+        )
+        resp = self._authed_request("POST", path, json=payload)
+        if resp.status_code == 403:
+            raise PermissionError(
+                f"inbox send denied (reach policy): {resp.text}",
+            )
+        resp.raise_for_status()
+        return resp.json()
+
     def send_oneshot_and_wait(
         self,
         recipient_id: str,

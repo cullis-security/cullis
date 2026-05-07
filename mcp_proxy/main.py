@@ -1015,6 +1015,13 @@ app.include_router(guardian_router)
 from mcp_proxy.egress.oneshot import router as oneshot_router
 app.include_router(oneshot_router)
 
+# ADR-020 Phase 4 — proxy-mediated user inbox send. Lets agents deliver
+# to user / agent / workload principal inboxes through their Mastio
+# without holding a broker-aud JWT directly. See egress/inbox.py for
+# the reasoning behind a dedicated endpoint vs. forwarding /v1/inbox.
+from mcp_proxy.egress.inbox import router as egress_inbox_router
+app.include_router(egress_inbox_router)
+
 # ADR-014 PR-C: the legacy /v1/local/ws endpoint relied on api_key
 # query-param auth, which is gone. The local_ws_manager itself stays
 # (push fan-out by agent_id) — it's used by the egress router to deliver
