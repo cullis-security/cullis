@@ -75,13 +75,22 @@
             <div class="px-5 py-5 cell">
                 <div class="flex items-center justify-between">
                     <p class="mono text-[10px] uppercase tracking-[0.22em] text-white/45">organizations</p>
-                    <a href="/dashboard/orgs" class="mono text-[10px] uppercase tracking-wider text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">ls →</a>
+                    <a href="/dashboard/federation" class="mono text-[10px] uppercase tracking-wider text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">ls →</a>
                 </div>
                 <p class="heading text-[40px] leading-none font-semibold text-white mt-3 tnum mono">{{ stats.orgs }}</p>
                 <div class="mt-2 flex items-center gap-3 mono text-[10px] uppercase tracking-wider">
                     <span class="text-[#00e5c7]">● {{ stats.orgs_active }} active</span>
                     {% if stats.orgs_pending %}<span class="text-amber-300">◐ {{ stats.orgs_pending }} pending</span>{% endif %}
                 </div>
+            </div>
+            <!-- Users -->
+            <div class="px-5 py-5 cell">
+                <div class="flex items-center justify-between">
+                    <p class="mono text-[10px] uppercase tracking-[0.22em] text-white/45">users</p>
+                    <a href="/dashboard/users" class="mono text-[10px] uppercase tracking-wider text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">ls →</a>
+                </div>
+                <p class="heading text-[40px] leading-none font-semibold text-white mt-3 tnum mono">{{ stats.users }}</p>
+                <div class="mt-2 mono text-[10px] uppercase tracking-wider text-white/40">human principals</div>
             </div>
             <!-- Agents -->
             <div class="px-5 py-5 cell">
@@ -91,15 +100,6 @@
                 </div>
                 <p class="heading text-[40px] leading-none font-semibold text-white mt-3 tnum mono">{{ stats.agents }}</p>
                 <div class="mt-2 mono text-[10px] uppercase tracking-wider text-[#00e5c7]">● {{ stats.agents_active }} active</div>
-            </div>
-            <!-- Sessions -->
-            <div class="px-5 py-5 cell">
-                <div class="flex items-center justify-between">
-                    <p class="mono text-[10px] uppercase tracking-[0.22em] text-white/45">sessions · live</p>
-                    <a href="/dashboard/sessions" class="mono text-[10px] uppercase tracking-wider text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">tail →</a>
-                </div>
-                <p class="heading text-[40px] leading-none font-semibold {% if stats.sessions_active > 0 %}text-[#00e5c7]{% else %}text-white{% endif %} mt-3 tnum mono">{{ stats.sessions_active }}</p>
-                <div class="mt-2 mono text-[10px] uppercase tracking-wider text-white/40">active sockets</div>
             </div>
             <!-- Audit -->
             <div class="px-5 py-5">
@@ -199,12 +199,12 @@
                         <span class="text-white tnum">{{ stats.orgs_active }}</span>
                     </div>
                     <div class="flex items-center justify-between mono text-[11px]">
-                        <span class="text-white/55 uppercase tracking-wider">live sessions</span>
-                        <span class="text-[#00e5c7] tnum">{{ stats.sessions_active }}</span>
+                        <span class="text-white/55 uppercase tracking-wider">active agents</span>
+                        <span class="text-[#00e5c7] tnum">{{ stats.agents_active }}</span>
                     </div>
                 </div>
                 <div class="mt-4 pt-4 border-t hairline">
-                    <a href="/dashboard/orgs" class="mono text-[10px] uppercase tracking-[0.22em] text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">Inspect organizations →</a>
+                    <a href="/dashboard/federation" class="mono text-[10px] uppercase tracking-[0.22em] text-[#00e5c7]/80 hover:text-[#00e5c7] transition-colors">Inspect federation →</a>
                 </div>
             </div>
         </aside>

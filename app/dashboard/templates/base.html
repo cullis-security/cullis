@@ -48,12 +48,6 @@
                 Agents
                 <span hx-get="/dashboard/badge/agents-count" hx-trigger="load, every 30s" hx-swap="innerHTML" class="ml-auto"></span>
             </a>
-            <a href="/dashboard/workloads"
-               class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'workloads' %}nav-active{% else %}text-gray-500{% endif %}">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-                Workloads
-                <span hx-get="/dashboard/badge/workloads-count" hx-trigger="load, every 30s" hx-swap="innerHTML" class="ml-auto"></span>
-            </a>
             <a href="/dashboard/resources"
                class="flex items-center gap-2.5 px-3 py-2 rounded text-sm nav-item {% if active == 'resources' %}nav-active{% else %}text-gray-500{% endif %}">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 2 3 4 3h8c2 0 4-1 4-3V7c0-2-2-3-4-3H8C6 4 4 5 4 7zm4 0h8M8 12h8M8 17h5"/></svg>

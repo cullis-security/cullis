@@ -659,8 +659,13 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
         select(func.count(AuditLog.id)).where(AuditLog.timestamp >= _one_hour_ago)
     )).scalar() or 0
 
+    # Users count is hardcoded from the insurance demo cast until
+    # /v1/admin/users lands (backend session). See _demo_cast.py.
+    users_total = len(_demo_cast.users_cast())
+
     stats = {
         "orgs": orgs_total, "orgs_active": orgs_active, "orgs_pending": orgs_pending,
+        "users": users_total,
         "agents": agents_total, "agents_active": agents_active,
         "sessions_active": sessions_active,
         "audit_events": audit_events,

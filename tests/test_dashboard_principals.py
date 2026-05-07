@@ -152,12 +152,32 @@ async def test_nav_includes_principal_sections(client: AsyncClient):
     # Every section link present in the new nav structure
     assert 'href="/dashboard/users"' in body
     assert 'href="/dashboard/agents"' in body
-    assert 'href="/dashboard/workloads"' in body
     assert 'href="/dashboard/resources"' in body
     assert 'href="/dashboard/federation"' in body
+    # Workloads are LOCAL-only runtime infrastructure: they don't
+    # federate, so the Court network-admin nav must not surface them.
+    # The /dashboard/workloads route stays alive (URL-accessible) for
+    # future per-org Mastio admin reuse.
+    assert 'href="/dashboard/workloads"' not in body
     # Group labels
     assert "Principals" in body
     assert "Federation" in body
+
+
+async def test_overview_stats_strip(client: AsyncClient):
+    cookies = await _admin_cookies(client)
+    resp = await client.get("/dashboard", cookies=cookies)
+    assert resp.status_code == 200
+    body = resp.text
+    # Stats strip cells
+    assert "organizations" in body
+    assert "users" in body
+    assert "agents" in body
+    assert "audit chain" in body
+    # Sessions cell must not be on overview anymore
+    assert "sessions · live" not in body
+    # Users cell links to the Users page
+    assert 'href="/dashboard/users"' in body
 
 
 # ─────────────────────────────────────────────────────────────────────────────
