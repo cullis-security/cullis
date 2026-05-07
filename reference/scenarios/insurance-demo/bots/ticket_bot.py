@@ -1,14 +1,14 @@
 """Ticket Bot — request-response agent for the insurance demo.
 
-Identity: ``roma::agent::ticket-bot``
+Identity: ``mediterranean::agent::ticket-bot``
 Reach:    intra-org only
 Scope:    claims-db.write + oneshot.message
 
 What it does (event loop):
 
-  1. Authenticate to Roma's Mastio with the cert/key minted by ``seed.py``
+  1. Authenticate to Mediterranean's Mastio with the cert/key minted by ``seed.py``
   2. Poll the inbox for incoming requests addressed to this agent
-     (typically from ``roma::user::claim-manager``)
+     (typically from ``mediterranean::user::claim-manager``)
   3. For each request, parse the natural-language claim context, generate
      a deterministic ticket ID (``TKT-YYYY-MM-DD-NNN``), persist a
      formal record into the claims-db (status=under-review, ticket_ref
@@ -85,7 +85,7 @@ def _process_request(client: CullisClient, msg: dict) -> dict | None:
     # Persist into the claims DB via the MCP server.
     try:
         client.call_mcp_tool(
-            resource_id="roma::resource::mcp::claims-db",
+            resource_id="mediterranean::resource::mcp::claims-db",
             tool_name="exec_sql",
             arguments={
                 "statement": (
@@ -122,8 +122,8 @@ def run_once(verbose: bool = False) -> int:
         MASTIO_URL,
         cert_path=cert,
         key_path=key,
-        agent_id="roma::agent::ticket-bot",
-        org_id="roma",
+        agent_id="mediterranean::agent::ticket-bot",
+        org_id="mediterranean",
         verify_tls=False,
     )
     client.login_via_proxy()

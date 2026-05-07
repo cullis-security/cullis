@@ -1,16 +1,16 @@
 """Night Reporter — overnight scheduled agent for the insurance demo.
 
-Identity: ``roma::agent::night-reporter``
+Identity: ``mediterranean::agent::night-reporter``
 Reach:    intra-org only
 Scope:    claims-db.read + oneshot.message
 
 What it does (one tick):
 
-  1. Authenticate to Roma's Mastio with the cert/key minted by ``seed.py``
-  2. Query the ``roma::resource::mcp::claims-db`` MCP server for claims
+  1. Authenticate to Mediterranean's Mastio with the cert/key minted by ``seed.py``
+  2. Query the ``mediterranean::resource::mcp::claims-db`` MCP server for claims
      where ``cross_company_flag = TRUE`` AND ``status = 'open'``
   3. Build a short summary (count, top 3 by amount, urgency breakdown)
-  4. Send a one-shot message to ``roma::user::claim-officer`` with the
+  4. Send a one-shot message to ``mediterranean::user::claim-officer`` with the
      summary as payload (intra-org A2U, ADR-008 envelope)
   5. Log + exit (idempotent — replay-safe via correlation_id)
 
@@ -40,7 +40,7 @@ from cullis_sdk import CullisClient
 
 HERE = pathlib.Path(__file__).resolve().parent
 STATE_DIR = (HERE.parents[2] / "state" / "insurance-demo" / "agents" / "night-reporter").resolve()
-RECIPIENT = "roma::user::claim-officer"
+RECIPIENT = "mediterranean::user::claim-officer"
 MASTIO_URL = os.environ.get("CULLIS_PROXY_A_URL", "https://localhost:9100")
 
 
@@ -81,7 +81,7 @@ def _build_summary(claims: list[dict]) -> dict:
 
 
 def _query_claims(client: CullisClient) -> list[dict]:
-    """Call the ``roma::resource::mcp::claims-db`` MCP server through the
+    """Call the ``mediterranean::resource::mcp::claims-db`` MCP server through the
     SDK helper. Returns a list of claim rows (dict). Falls back to a
     canned fixture if the MCP server is unreachable so the demo doesn't
     hard-fail on a network blip during recording."""
@@ -89,7 +89,7 @@ def _query_claims(client: CullisClient) -> list[dict]:
         # SDK MCP helpers landed in ADR-017 Phase 3 (memory:
         # project_session_2026_05_04_adr017_live.md).
         result = client.call_mcp_tool(
-            resource_id="roma::resource::mcp::claims-db",
+            resource_id="mediterranean::resource::mcp::claims-db",
             tool_name="query_claims",
             arguments={
                 "where": "cross_company_flag = TRUE AND status = 'open'",
@@ -139,8 +139,8 @@ def run_once(verbose: bool = False) -> int:
         MASTIO_URL,
         cert_path=cert,
         key_path=key,
-        agent_id="roma::agent::night-reporter",
-        org_id="roma",
+        agent_id="mediterranean::agent::night-reporter",
+        org_id="mediterranean",
         verify_tls=False,  # dev / sandbox — Org CA self-signed
     )
     client.login_via_proxy()

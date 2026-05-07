@@ -2,17 +2,17 @@
 
 Adds, on top of whatever ``reference/bootstrap/`` already created:
 
-  - 3 user / agent principals on Mediterranean Insurance (Roma):
-      roma::user::claim-officer
-      roma::user::claim-manager
-      roma::agent::night-reporter
-      roma::agent::ticket-bot
-  - 1 user principal on Asia-Pacific Insurance (Tokyo):
-      tokyo::user::counterparty-liaison
-  - 1 workload principal on Tokyo (the Frontdesk container itself):
-      tokyo::workload::frontdesk-container
+  - 3 user / agent principals on Mediterranean Insurance (Mediterranean):
+      mediterranean::user::claim-officer
+      mediterranean::user::claim-manager
+      mediterranean::agent::night-reporter
+      mediterranean::agent::ticket-bot
+  - 1 user principal on Asia-Pacific Insurance (Asia-Pacific):
+      asia-pacific::user::counterparty-liaison
+  - 1 workload principal on Asia-Pacific (the Frontdesk container itself):
+      asia-pacific::workload::frontdesk-container
   - 1 MCP resource on Roma:
-      roma::resource::mcp::claims-db (postgres-backed, seeded with claims.sql)
+      mediterranean::resource::mcp::claims-db (postgres-backed, seeded with claims.sql)
   - Cross-org bindings + reach=both for the user principals that need to
     talk across orgs (claim-manager <-> counterparty-liaison).
 
@@ -74,7 +74,7 @@ PROXY_B_URL = os.environ.get("CULLIS_PROXY_B_URL", "http://localhost:9200")
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "sandbox-admin-secret-change-me")
 
 # Cast definitions — match imp/insurance-demo-spec.md verbatim.
-ROMA_AGENTS = [
+MEDITERRANEAN_AGENTS = [
     {
         "agent_name":   "night-reporter",
         "display_name": "Night Reporter",
@@ -91,7 +91,7 @@ ROMA_AGENTS = [
     },
 ]
 
-ROMA_USERS = [
+MEDITERRANEAN_USERS = [
     {
         "user_name":    "claim-officer",
         "display_name": "Claim Officer",
@@ -106,7 +106,7 @@ ROMA_USERS = [
     },
 ]
 
-TOKYO_USERS = [
+ASIA_PACIFIC_USERS = [
     {
         "user_name":    "counterparty-liaison",
         "display_name": "Counterparty Liaison",
@@ -115,17 +115,17 @@ TOKYO_USERS = [
     },
 ]
 
-TOKYO_WORKLOADS = [
+ASIA_PACIFIC_WORKLOADS = [
     {
         "workload_name":          "frontdesk-container",
-        "display_name":           "Frontdesk Tokyo",
+        "display_name":           "Asia-Pacific Frontdesk",
         "image_digest":           "sha256:demo-frontdesk-bundle",
-        "hosted_principals_hint": ["tokyo::user::counterparty-liaison"],
-        "description":            "Multi-user Frontdesk container hosting tokyo::user::counterparty-liaison.",
+        "hosted_principals_hint": ["asia-pacific::user::counterparty-liaison"],
+        "description":            "Multi-user Frontdesk container hosting asia-pacific::user::counterparty-liaison.",
     },
 ]
 
-ROMA_RESOURCES = [
+MEDITERRANEAN_RESOURCES = [
     {
         "resource_name": "claims-db",
         "type":          "mcp",
@@ -256,8 +256,8 @@ def phase_check_reference_up(client: httpx.Client) -> None:
     _h("Phase 1 — verify reference stack reachable")
     for name, url in (
         ("broker (Court)", BROKER_URL),
-        ("proxy-a (Roma)", PROXY_A_URL),
-        ("proxy-b (Tokyo)", PROXY_B_URL),
+        ("proxy-a (Mediterranean)", PROXY_A_URL),
+        ("proxy-b (Asia-Pacific)", PROXY_B_URL),
     ):
         try:
             r = client.get(f"{url}/health", timeout=5.0)
@@ -269,10 +269,10 @@ def phase_check_reference_up(client: httpx.Client) -> None:
             raise SystemExit(1)
 
 
-def phase_provision_roma_agents(client: httpx.Client) -> None:
+def phase_provision_mediterranean_agents(client: httpx.Client) -> None:
     _h("Phase 2 — provision Roma agents (BYOCA) ")
-    org_ca = STATE_DIR / "roma-ca.pem"
-    org_ca_key = STATE_DIR / "roma-ca.key"
+    org_ca = STATE_DIR / "mediterranean-ca.pem"
+    org_ca_key = STATE_DIR / "mediterranean-ca.key"
     if not (org_ca.exists() and org_ca_key.exists()):
         _warn("Roma Org CA material not on disk yet — pulling from reference state")
         # ``reference/bootstrap/bootstrap.py`` writes the CA into the
@@ -282,11 +282,11 @@ def phase_provision_roma_agents(client: httpx.Client) -> None:
         _fail("missing CA — run ./run.sh prep-ca to copy from the reference volume")
         raise SystemExit(1)
 
-    for spec in ROMA_AGENTS:
+    for spec in MEDITERRANEAN_AGENTS:
         agent_dir = STATE_DIR / "agents" / spec["agent_name"]
         agent_dir.mkdir(parents=True, exist_ok=True)
         cert_pem, key_pem = _gen_agent_cert(
-            "roma", spec["agent_name"], "roma.cullis.test",
+            "mediterranean", spec["agent_name"], "mediterranean.cullis.test",
             org_ca, org_ca_key,
         )
         (agent_dir / "agent.pem").write_text(cert_pem)
@@ -308,7 +308,7 @@ def phase_provision_user_principals(client: httpx.Client) -> None:
     # operator knows where to plug it in. The Frontdesk SSO flow + the
     # /v1/principals/csr proxy endpoint already create user principals
     # at runtime; pre-creation just lets the dashboard show them.
-    for spec in ROMA_USERS:
+    for spec in MEDITERRANEAN_USERS:
         body = {
             "principal_type": "user",
             "user_name":      spec["user_name"],
@@ -325,11 +325,11 @@ def phase_provision_user_principals(client: httpx.Client) -> None:
                   " run.sh will try the runtime CSR fallback")
             continue
         if r.status_code in (201, 409):
-            _ok(f"user roma::user::{spec['user_name']} ready")
+            _ok(f"user mediterranean::user::{spec['user_name']} ready")
         else:
             _fail(f"user create {spec['user_name']}: HTTP {r.status_code}")
 
-    for spec in TOKYO_USERS:
+    for spec in ASIA_PACIFIC_USERS:
         body = {
             "principal_type": "user",
             "user_name":      spec["user_name"],
@@ -345,14 +345,14 @@ def phase_provision_user_principals(client: httpx.Client) -> None:
             _warn(f"Tokyo /v1/admin/users unreachable ({exc}) — pending")
             continue
         if r.status_code in (201, 409):
-            _ok(f"user tokyo::user::{spec['user_name']} ready")
+            _ok(f"user asia-pacific::user::{spec['user_name']} ready")
         else:
             _fail(f"user create {spec['user_name']}: HTTP {r.status_code}")
 
 
 def phase_provision_workload(client: httpx.Client) -> None:
-    _h("Phase 4 — provision Tokyo Frontdesk workload")
-    for spec in TOKYO_WORKLOADS:
+    _h("Phase 4 — provision Asia-Pacific Frontdesk workload")
+    for spec in ASIA_PACIFIC_WORKLOADS:
         body = {
             "principal_type": "workload",
             "workload_name":  spec["workload_name"],
@@ -368,14 +368,14 @@ def phase_provision_workload(client: httpx.Client) -> None:
             _warn(f"Tokyo /v1/admin/workloads unreachable ({exc}) — pending")
             continue
         if r.status_code in (201, 409):
-            _ok(f"workload tokyo::workload::{spec['workload_name']} ready")
+            _ok(f"workload asia-pacific::workload::{spec['workload_name']} ready")
 
 
 def phase_provision_resources(client: httpx.Client) -> None:
     _h("Phase 5 — provision MCP resource (claims-db)")
-    for spec in ROMA_RESOURCES:
+    for spec in MEDITERRANEAN_RESOURCES:
         body = {
-            "resource_id":   f"roma::resource::{spec['type']}::{spec['resource_name']}",
+            "resource_id":   f"mediterranean::resource::{spec['type']}::{spec['resource_name']}",
             "display_name":  spec["display_name"],
             "type":          spec["type"],
             "endpoint":      spec["endpoint"],
@@ -433,7 +433,7 @@ def main() -> int:
     print(f"{BOLD}{CYAN}Cullis insurance-demo seed{RESET}\n")
     with httpx.Client() as client:
         phase_check_reference_up(client)
-        phase_provision_roma_agents(client)
+        phase_provision_mediterranean_agents(client)
         phase_provision_user_principals(client)
         phase_provision_workload(client)
         phase_provision_resources(client)

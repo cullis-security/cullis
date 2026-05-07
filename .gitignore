@@ -40,6 +40,9 @@ drafts/
 # generate_certs.py is INTENTIONALLY tracked — it is a runtime dependency
 # of deploy_broker.sh (invoked on a fresh clone to bootstrap the broker CA).
 run.sh
+# Specific scenario orchestration scripts are checked-in (the top-level
+# run.sh is the dev-machine entry point and stays gitignored).
+!reference/scenarios/insurance-demo/run.sh
 reset.sh
 CLAUDE.md
 .claude/

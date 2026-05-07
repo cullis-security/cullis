@@ -8,8 +8,8 @@ Insurance claims escalation scenario.
 
 Two orgs (English-only, role-named):
 
-  Mediterranean Insurance    org_id=roma,  td=roma.cullis.test
-  Asia-Pacific Insurance     org_id=tokyo, td=tokyo.cullis.test
+  Mediterranean Insurance    org_id=mediterranean,  td=mediterranean.cullis.test
+  Asia-Pacific Insurance     org_id=asia-pacific, td=asia-pacific.cullis.test
 
 Plus `court` as federation hub.
 
@@ -17,13 +17,13 @@ Five principals + 1 workload + 1 resource:
 
 | Backend ID | Type | Surface |
 |---|---|---|
-| `roma::user::claim-officer` | user | Cullis Chat (single-user desktop) |
-| `roma::user::claim-manager` | user | Cullis Chat dashboard `/chat` |
-| `roma::agent::night-reporter` | agent | none (cron-style script) |
-| `roma::agent::ticket-bot` | agent | none (request-response script) |
-| `tokyo::user::counterparty-liaison` | user | Frontdesk (multi-user web) |
-| `tokyo::workload::frontdesk-container` | workload | n/a (visible in admin) |
-| `roma::resource::mcp::claims-db` | resource | postgres MCP server |
+| `mediterranean::user::claim-officer` | user | Cullis Chat (single-user desktop) |
+| `mediterranean::user::claim-manager` | user | Cullis Chat dashboard `/chat` |
+| `mediterranean::agent::night-reporter` | agent | none (cron-style script) |
+| `mediterranean::agent::ticket-bot` | agent | none (request-response script) |
+| `asia-pacific::user::counterparty-liaison` | user | Frontdesk (multi-user web) |
+| `asia-pacific::workload::frontdesk-container` | workload | n/a (visible in admin) |
+| `mediterranean::resource::mcp::claims-db` | resource | postgres MCP server |
 
 Full UI/SPA contract: `imp/insurance-demo-spec.md`
 
@@ -36,7 +36,7 @@ Full UI/SPA contract: `imp/insurance-demo-spec.md`
 3. `claim-manager` (user, Cullis Chat /chat) decides cross-company action,
    asks `ticket-bot` to generate a formal ticket. **U2A intra-org.**
 4. `ticket-bot` returns ticket ID. **A2U intra-org return.**
-5. `claim-manager` sends request to `counterparty-liaison` at Tokyo,
+5. `claim-manager` sends request to `counterparty-liaison` at Asia-Pacific,
    referencing ticket. **U2U cross-org.**
 6. `counterparty-liaison` (user, Frontdesk) receives in inbox, reads, replies.
 
@@ -63,16 +63,16 @@ Quadrants ADR-020 covered: A2U, U2U intra, U2A, U2U cross-org. Missing: A2A
   ./demo.sh full                                  # base reference up
   cd scenarios/insurance-demo
   ./run.sh seed                                   # provision principals + claims
-  ./run.sh frontdesk                              # bring up Tokyo Frontdesk
+  ./run.sh frontdesk                              # bring up Asia-Pacific Frontdesk
   ./run.sh trigger-night-reporter                 # manual A2U trigger
   ./run.sh urls                                   # print recording-ready URLs
 
 Then browser:
   Cullis Chat (claim-officer):   http://localhost:9100/chat
   Cullis Chat (claim-manager):   http://localhost:9100/chat?user=manager  (or alt port)
-  Frontdesk Tokyo:               http://localhost:8090?user=liaison
-  Mastio Roma admin:             http://localhost:9100/admin
-  Mastio Tokyo admin:            http://localhost:9200/admin
+  Asia-Pacific Frontdesk:               http://localhost:8090?user=liaison
+  Mediterranean Mastio admin:             http://localhost:9100/admin
+  Asia-Pacific Mastio admin:            http://localhost:9200/admin
 
 ## Cleanup
 
@@ -85,7 +85,7 @@ Then browser:
     ../../../imp/official_sandbox/.env | cut -d= -f2-)
 
   ./run.sh seed   # picks it up from env, configures litellm_embedded
-                  # on Roma proxy AI gateway
+                  # on Mediterranean proxy AI gateway
 
 The bots use Haiku 4.5 for cost; Cullis Chat user-facing path uses whatever
 the user's session config has set.
