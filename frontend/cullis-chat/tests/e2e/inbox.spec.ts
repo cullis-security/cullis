@@ -29,7 +29,12 @@ test('inbox: seeded message renders with principal badge + verify chip', async (
 
 test('inbox: open detail panel and ack flips chip', async ({ page }) => {
   await page.goto('/inbox');
-  await page.locator('.inbox-row').first().click();
+  // Wait for the seed row to be in the DOM before clicking — the inbox
+  // is fetched async via /v1/inbox and CI runners are slow enough that
+  // an immediate click can race the fetch and miss the row entirely.
+  const firstRow = page.locator('.inbox-row').first();
+  await expect(firstRow).toBeVisible({ timeout: 10_000 });
+  await firstRow.click();
 
   // Detail panel populates
   await expect(page.locator('.msg-detail-subject')).toContainText(/Cross-company/i);
@@ -80,6 +85,13 @@ test('inbox: empty unread tab once seed is acked', async ({ page }) => {
   // assume initial state — instead we ack any remaining unread and
   // assert the resulting Unread tab is empty.
   await page.goto('/inbox');
+
+  // Wait for the inbox to finish its initial fetch before introspecting
+  // it. We give either the first row OR the empty state up to 10s to
+  // appear, so we don't race the /v1/inbox call on slow CI runners.
+  await expect(
+    page.locator('.inbox-row, .inbox-empty-title').first(),
+  ).toBeVisible({ timeout: 10_000 });
 
   // Ack every row that's still pending. We loop because there can be
   // a fresh user-sent message from the compose test.
