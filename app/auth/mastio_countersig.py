@@ -101,6 +101,7 @@ async def enforce_on_token_request(
     org_id: str,
     client_assertion: str,
     signature_header: str | None,
+    principal_type: str | None = None,
 ) -> None:
     """ADR-009 — the single gate on /v1/auth/token.
 
@@ -108,10 +109,20 @@ async def enforce_on_token_request(
     incomplete) or if the counter-signature is missing/invalid. Verified
     via :func:`verify_mastio_countersig` against the pinned PEM.
 
+    User principals (ADR-021) skip this gate: their certs are issued by
+    the org's Mastio via ``/v1/principals/csr``, so the cert itself IS
+    the Mastio's vouch — a per-login counter-signature is redundant
+    (and unworkable without the user's private key resident at the
+    Mastio, which the ADR-021 KMS model forbids). Agents and workloads
+    keep the per-login gate because their certs may have been issued
+    out-of-band (BYOCA / SPIFFE).
+
     Hook point exposed as a module-level function so ``tests/conftest.py``
     can monkey-patch it to a no-op for the bulk of the suite, while the
     ADR-009 test files re-enable the real implementation in their scope.
     """
+    if principal_type == "user":
+        return
     from app.registry.org_store import get_org_by_id
     org_record = await get_org_by_id(db, org_id)
     if org_record is None or not org_record.mastio_pubkey:

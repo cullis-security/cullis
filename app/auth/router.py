@@ -132,6 +132,7 @@ async def issue_token(
                 org_id=org_id,
                 client_assertion=body.client_assertion,
                 signature_header=mastio_signature,
+                principal_type=principal_type,
             )
         except HTTPException:
             AUTH_DENY_COUNTER.add(1, {"reason": "mastio_countersig"})
