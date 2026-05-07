@@ -42,12 +42,10 @@ services:
       dockerfile: Dockerfile.connector
       args:
         CONNECTOR_VERSION: ${CONNECTOR_VERSION:-latest}
-    command: >
-      dashboard
-      --host 0.0.0.0
-      --port 7777
-      --no-open-browser
-      --profile frontdesk-asia-pacific
+    # Args are inlined into the entrypoint below — sh -c needs an
+    # explicit positional placeholder to forward CMD, and the
+    # previous ``$$@`` form silently dropped them.
+    command: []
     expose: ["7777"]
     environment:
       AMBASSADOR_MODE: shared
@@ -57,25 +55,52 @@ services:
       CULLIS_FRONTDESK_COOKIE_TTL_S:  3600
       CULLIS_FRONTDESK_MASTIO_URL:    ${FRONTDESK_AP_MASTIO_URL:-https://mastio-nginx-b:9443}
       CULLIS_SITE_URL:                ${FRONTDESK_AP_MASTIO_URL:-https://mastio-nginx-b:9443}
+      # ADR-020 Phase 4 — broker URL for the user-inbox passthrough
+      # (issue #488). The Connector ambassador builds a per-request
+      # broker-direct client with the user's cert+key to read /v1/inbox.
+      # ADR-014 says agents go through Mastio; users that read their
+      # own inbox are an exception until Mastio gains a user-aware
+      # broker bridge.
+      CULLIS_BROKER_URL:              ${FRONTDESK_AP_BROKER_URL:-http://broker:8000}
       # The Asia-Pacific Mastio's nginx serves a self-signed Org CA cert.
-      # Mount mastio-b-nginx-certs/org-ca.crt and trust it.
-      SSL_CERT_FILE:                  /etc/cullis/ca-bundle.pem
-      REQUESTS_CA_BUNDLE:             /etc/cullis/ca-bundle.pem
+      # Point the SSL bundles directly at the read-only mount — no copy,
+      # no ownership gymnastics with the cullis non-root user.
+      SSL_CERT_FILE:                  /etc/cullis-certs/org-ca.crt
+      REQUESTS_CA_BUNDLE:             /etc/cullis-certs/org-ca.crt
     volumes:
-      # Connector identity material. Pre-populated by ``run.sh frontdesk-prep``.
-      - frontdesk-asia-pacific-connector-data:/home/cullis/.cullis
+      # Connector identity material. Pre-populated by ``run.sh
+      # frontdesk-prep``. Mount under /root/.cullis because the
+      # container runs as root (see ``user: root`` below — needed for
+      # chown/mkdir on the volume's ext4 backing).
+      - frontdesk-asia-pacific-connector-data:/root/.cullis
       # Trust anchor for proxy-b's self-signed Org CA.
       - mastio-b-nginx-certs:/etc/cullis-certs:ro
       # Bash entrypoint copies the trust anchor into the location
       # SSL_CERT_FILE points at. Plain symlink would suffice but volume
       # mounts are cleaner.
-    entrypoint: >
-      sh -c "cp /etc/cullis-certs/org-ca.crt /etc/cullis/ca-bundle.pem &&
-             exec /usr/local/bin/cullis-connector $$@"
+    # ``user: root`` so the cullis-connector wheel can chown/mkdir the
+    # profile dir on the freshly-mounted volume. The dashboard process
+    # itself runs as root inside the container; container is sandboxed
+    # to the orgb-internal + public-wan nets.
+    user: root
+    entrypoint:
+      - cullis-connector
+      - dashboard
+      - --host
+      - 0.0.0.0
+      - --port
+      - "7777"
+      - --no-open-browser
+      - --profile
+      - frontdesk-asia-pacific
     networks:
       frontdesk-asia-pacific-net:
       orgb-internal:
         aliases: [connector-frontdesk-asia-pacific]
+      # public-wan — broker lives here. Until Mastio gains a user-aware
+      # broker bridge for /v1/inbox, the ambassador hops directly to
+      # broker.cullis.test:8000.
+      public-wan:
     restart: unless-stopped
 
   chat-frontdesk-asia-pacific:
@@ -115,7 +140,7 @@ volumes:
   # parent compose (reference/docker-compose.yml).
   mastio-b-nginx-certs:
     external: true
-    name: cullis-reference-mastio-b-nginx-certs
+    name: cullis-reference_mastio-b-nginx-certs
 
 
 networks:
@@ -125,4 +150,8 @@ networks:
   # connector-frontdesk-asia-pacific reach mastio-nginx-b:9443 by hostname.
   orgb-internal:
     external: true
-    name: cullis-reference-orgb-internal
+    name: cullis-reference-orgb
+  # public-wan — federation backbone, shared by reference compose.
+  public-wan:
+    external: true
+    name: cullis-reference-wan

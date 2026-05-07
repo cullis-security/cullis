@@ -458,6 +458,12 @@ def _maybe_install_shared_ambassador(
     cache = UserCredentialCache()
     provisioner = UserProvisioner(mastio=transport, cache=cache)
 
+    # ADR-020 Phase 4 — broker URL for the user-inbox passthrough
+    # (issue #488). Read from env so the deployment can route the
+    # ambassador's inbox calls directly to the broker instead of
+    # taking the long way through Mastio (which lacks a user-aware
+    # broker bridge for inbox today).
+    broker_url = os.environ.get("CULLIS_BROKER_URL", "")
     install_shared_ambassador(
         app,
         cookie_secret=cookie_secret,
@@ -467,6 +473,7 @@ def _maybe_install_shared_ambassador(
         provisioner=provisioner,
         cookie_ttl_seconds=settings.cookie_ttl_seconds,
         site_url=mastio_url,
+        broker_url=broker_url,
     )
     log.info(
         "shared Ambassador mounted: org=%s td=%s mastio=%s ttl=%ds",
