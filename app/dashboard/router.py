@@ -46,6 +46,7 @@ from app.policy.store import PolicyRecord, create_policy, get_policy, deactivate
 from app.broker.db_models import SessionRecord, SessionMessageRecord, RfqRecord, RfqResponseRecord
 from app.broker.ws_manager import ws_manager
 from app.auth.transaction_token import create_transaction_token, compute_payload_hash
+from app.dashboard import _demo_cast
 
 import logging
 _log = logging.getLogger("agent_trust")
@@ -658,8 +659,13 @@ async def overview(request: Request, db: AsyncSession = Depends(get_db)):
         select(func.count(AuditLog.id)).where(AuditLog.timestamp >= _one_hour_ago)
     )).scalar() or 0
 
+    # Users count is hardcoded from the insurance demo cast until
+    # /v1/admin/users lands (backend session). See _demo_cast.py.
+    users_total = len(_demo_cast.users_cast())
+
     stats = {
         "orgs": orgs_total, "orgs_active": orgs_active, "orgs_pending": orgs_pending,
+        "users": users_total,
         "agents": agents_total, "agents_active": agents_active,
         "sessions_active": sessions_active,
         "audit_events": audit_events,
@@ -875,6 +881,7 @@ async def agents_list(request: Request, db: AsyncSession = Depends(get_db)):
 
     agent_list = []
     for agent in agents:
+        extras = _demo_cast.agent_extras(agent.agent_id)
         agent_list.append({
             "agent_id": agent.agent_id,
             "org_id": agent.org_id,
@@ -884,11 +891,75 @@ async def agents_list(request: Request, db: AsyncSession = Depends(get_db)):
             "binding_status": binding_statuses.get(agent.agent_id),
             "ws_connected": ws_manager.is_connected(agent.agent_id),
             "cert_thumbprint": agent.cert_thumbprint,
+            "enrollment_method": extras.get("enrollment_method"),
+            "automation_type": extras.get("automation_type"),
         })
 
     return templates.TemplateResponse("agents.html",
         _ctx(request, session, active="agents", agents=agent_list)
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Users / Workloads / Resources / Federation (ADR-020 principal-type sections)
+#
+# Phase 1 of the SPA rework ships these views with hardcoded demo data
+# from imp/insurance-demo-spec.md. The matching admin REST endpoints
+# (/v1/admin/users, /v1/admin/workloads) are owned by the backend
+# session and land separately. Once they are live, swap the
+# ``_demo_cast.*`` calls below for httpx calls to those routes and
+# delete app/dashboard/_demo_cast.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_list(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("users.html", _ctx(
+        request, session, active="users",
+        users=_demo_cast.users_cast(),
+        endpoint_ready=False,
+    ))
+
+
+@router.get("/workloads", response_class=HTMLResponse)
+async def workloads_list(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("workloads.html", _ctx(
+        request, session, active="workloads",
+        workloads=_demo_cast.workloads_cast(),
+        endpoint_ready=False,
+    ))
+
+
+@router.get("/resources", response_class=HTMLResponse)
+async def resources_list(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("resources.html", _ctx(
+        request, session, active="resources",
+        resources=_demo_cast.resources_cast(),
+    ))
+
+
+@router.get("/federation", response_class=HTMLResponse)
+async def federation_view(request: Request):
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("federation.html", _ctx(
+        request, session, active="federation",
+        peers=_demo_cast.peers_cast(),
+        court_status="Online",
+        court_endpoint="https://court.cullis.test",
+        court_audit_status="Healthy",
+        court_last_anchor="active",
+        court_last_anchor_iso=None,
+    ))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1199,6 +1270,53 @@ async def badge_pending_sessions(request: Request, db: AsyncSession = Depends(ge
     if count > 0:
         return f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-yellow-500/20 text-yellow-400">{count}</span>'
     return ""
+
+
+def _count_chip(count: int) -> str:
+    """Neutral count chip used in the principal-type nav badges."""
+    if count <= 0:
+        return ""
+    return (
+        '<span class="px-1.5 py-0.5 rounded-full text-[10px] font-mono '
+        f'bg-gray-700/40 text-gray-400">{count}</span>'
+    )
+
+
+@router.get("/badge/users-count", response_class=HTMLResponse)
+async def badge_users_count(request: Request):
+    session = get_session(request)
+    if not session.logged_in:
+        return ""
+    return _count_chip(len(_demo_cast.users_cast()))
+
+
+@router.get("/badge/agents-count", response_class=HTMLResponse)
+async def badge_agents_count(request: Request, db: AsyncSession = Depends(get_db)):
+    session = get_session(request)
+    if not session.logged_in:
+        return ""
+    count = (await db.execute(select(func.count(AgentRecord.agent_id)))).scalar() or 0
+    if count == 0:
+        # During demo recording the registry may not yet be populated.
+        # Fall back to the cast count so the badge is screenshot-ready.
+        count = len(_demo_cast.agent_extras_keys())
+    return _count_chip(int(count))
+
+
+@router.get("/badge/workloads-count", response_class=HTMLResponse)
+async def badge_workloads_count(request: Request):
+    session = get_session(request)
+    if not session.logged_in:
+        return ""
+    return _count_chip(len(_demo_cast.workloads_cast()))
+
+
+@router.get("/badge/resources-count", response_class=HTMLResponse)
+async def badge_resources_count(request: Request):
+    session = get_session(request)
+    if not session.logged_in:
+        return ""
+    return _count_chip(len(_demo_cast.resources_cast()))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

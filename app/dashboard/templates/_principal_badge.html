@@ -1,0 +1,37 @@
+{# Principal type badge — ADR-020.
+   Usage:
+     {% from "_principal_badge.html" import principal_badge %}
+     {{ principal_badge("user") }}
+
+   `kind` is one of: user | agent | workload. Falls back to a neutral
+   chip for unknown values so a typo does not break the page. #}
+{% macro principal_badge(kind) -%}
+  {%- set k = (kind or "")|lower -%}
+  {%- if k == "user" -%}
+    <span class="inline-flex items-center px-1.5 py-[1px] rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em]"
+          style="background: rgba(59,122,245,0.10); color: var(--cullis-badge-user, #3b7af5); border-color: rgba(59,122,245,0.25);">User</span>
+  {%- elif k == "agent" -%}
+    <span class="inline-flex items-center px-1.5 py-[1px] rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em]"
+          style="background: rgba(139,92,246,0.10); color: var(--cullis-badge-agent, #8b5cf6); border-color: rgba(139,92,246,0.25);">Agent</span>
+  {%- elif k == "workload" -%}
+    <span class="inline-flex items-center px-1.5 py-[1px] rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em]"
+          style="background: rgba(16,185,129,0.10); color: var(--cullis-badge-workload, #10b981); border-color: rgba(16,185,129,0.25);">Workload</span>
+  {%- else -%}
+    <span class="inline-flex items-center px-1.5 py-[1px] rounded-sm border text-[10px] font-semibold uppercase tracking-[0.18em] bg-gray-700/30 text-gray-400 border-gray-700/40">{{ kind|default("?", true) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{# Reach chip — intra | cross | both. Visually distinct from principal
+   type badge. #}
+{% macro reach_chip(reach) -%}
+  {%- set r = (reach or "")|lower -%}
+  {%- if r == "intra" -%}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-gray-500/10 text-gray-400">Intra</span>
+  {%- elif r == "cross" -%}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-amber-500/10 text-amber-400">Cross</span>
+  {%- elif r == "both" -%}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-accent-400/10 text-accent-400">Both</span>
+  {%- else -%}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wider bg-gray-700/20 text-gray-500">{{ reach|default("none", true) }}</span>
+  {%- endif -%}
+{%- endmacro %}

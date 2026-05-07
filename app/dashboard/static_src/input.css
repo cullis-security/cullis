@@ -7,6 +7,14 @@
  * Keep in sync with mcp_proxy/dashboard/static_src/input.css.
  */
 
+:root {
+  /* Principal type badge — ADR-020 user/agent/workload, mirrored
+     from site/global.css and cullis-chat/tokens.css. */
+  --cullis-badge-user: #3b7af5;
+  --cullis-badge-agent: #8b5cf6;
+  --cullis-badge-workload: #10b981;
+}
+
 @layer base {
   body {
     font-family: 'DM Sans', sans-serif;

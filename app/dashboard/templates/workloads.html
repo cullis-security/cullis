@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% from "_principal_badge.html" import principal_badge, reach_chip %}
+{% block title %}Workloads{% endblock %}
+{% block header_title %}Workload Principals{% endblock %}
+{% block content %}
+<div id="page-content" data-sse-page="workloads" class="max-w-6xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Workloads</h2>
+            <p class="text-xs text-gray-600 mt-0.5">{{ workloads | length }} registered &middot; container/VM hosts of user principals (SPIFFE-attested)</p>
+        </div>
+    </div>
+
+    {% if not endpoint_ready %}
+    <div class="mb-4 px-4 py-3 rounded border border-yellow-700/40 bg-yellow-500/5 text-yellow-300 text-xs">
+        <strong class="font-semibold">Endpoint pending.</strong>
+        Showing demo cast hardcoded from <code class="font-mono">imp/insurance-demo-spec.md</code>.
+        Backend route <code class="font-mono">/v1/admin/workloads</code> lands in a follow-up PR.
+    </div>
+    {% endif %}
+
+    <!-- Workloads table -->
+    <div class="bg-surface-900/80 border border-gray-800/60 rounded-lg overflow-hidden backdrop-blur-sm">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Principal</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Display name</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Reach</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Hosted</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Image digest</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Runtime</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for w in workloads %}
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-5 py-4">
+                        <div class="flex items-center gap-2">
+                            {{ principal_badge("workload") }}
+                            <span class="text-[10px] text-gray-500 font-mono"
+                                  title="{{ w.principal_id }}">{{ w.principal_id }}</span>
+                            <button type="button" class="text-gray-700 hover:text-accent-400 transition-colors"
+                                    onclick="copyToClipboard('{{ w.principal_id }}')" title="Copy ID">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                            </button>
+                        </div>
+                    </td>
+                    <td class="px-5 py-4 text-sm text-white">{{ w.display_name }}</td>
+                    <td class="px-5 py-4">{{ reach_chip(w.reach) }}</td>
+                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">{{ w.hosted_principals_count }}</td>
+                    <td class="px-5 py-4">
+                        {% if w.image_digest %}
+                        <span class="text-[10px] text-gray-400 font-mono" title="{{ w.image_digest }}">{{ w.image_digest[:14] }}…</span>
+                        {% else %}
+                        <span class="text-[10px] text-gray-700">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if w.runtime_status == "running" %}
+                        <span class="inline-flex items-center gap-1.5 text-[10px] text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Running
+                        </span>
+                        {% elif w.runtime_status == "unhealthy" %}
+                        <span class="inline-flex items-center gap-1.5 text-[10px] text-yellow-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>Unhealthy
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 text-[10px] text-gray-500 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-gray-700"></span>{{ w.runtime_status or "stopped" }}
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 space-x-1.5">
+                        <button type="button" disabled
+                                class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-gray-800/60 text-gray-700 rounded cursor-not-allowed"
+                                title="Manage lands with /v1/admin/workloads (pending)">Manage</button>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not workloads %}
+                <tr>
+                    <td colspan="7" class="px-5 py-16 text-center">
+                        <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                        <p class="text-sm text-gray-600">No workloads registered</p>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
