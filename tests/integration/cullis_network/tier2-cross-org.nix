@@ -213,6 +213,450 @@ let
     print(f"BOOTSTRAPPED org_id={org_id} on Court")
   '';
 
+  # Provisions a single agent on the local Mastio via the BYOCA
+  # enrollment endpoint. Mints an Org-CA-signed cert, generates a DPoP
+  # keypair, POSTs to ``/v1/admin/agents/enroll/byoca``, and persists
+  # the runtime credentials under
+  # ``<identity_root>/<org_id>/agents/<agent_name>/`` so the SDK's
+  # ``CullisClient.from_identity_dir`` can pick them up later. Mirrors
+  # ``reference/bootstrap/bootstrap_mastio.py::_enroll_one_byoca`` but
+  # written for the test driver (no /state shared mount, no docker).
+  provisionAgentScript = pkgs.writeText "provision-agent.py" ''
+    """Provision a single agent on the local Mastio via BYOCA enroll.
+
+    Args (positional):
+      org_id          short org id
+      agent_name      short agent name (no ``::``)
+      capabilities    comma-separated list (use empty string for none)
+      proxy_url       local proxy admin (e.g. ``http://127.0.0.1:9100``)
+      admin_secret    proxy admin secret
+      identity_root   filesystem root for runtime creds
+      org_ca_cert     filesystem path to ``org-ca.pem``
+      org_ca_key      filesystem path to ``org-ca.key``
+      trust_domain    SPIFFE trust domain (e.g. ``roma.cullis.test``)
+    """
+    import base64
+    import json
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    import urllib.error
+    import urllib.request
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    if len(sys.argv) != 10:
+        print(
+            f"USAGE: {sys.argv[0]} org_id agent_name capabilities proxy_url "
+            f"admin_secret identity_root org_ca_cert org_ca_key trust_domain",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    (_, org_id, agent_name, caps_csv, proxy_url, admin_secret,
+     identity_root, org_ca_cert, org_ca_key, trust_domain) = sys.argv
+
+    capabilities = [c for c in caps_csv.split(",") if c]
+    agent_id = f"{org_id}::{agent_name}"
+    # Cullis SPIFFE SAN convention (mcp_proxy/auth/client_cert.py
+    # ``_parse_spiffe_uri``): 3-component path = ``{td}/{org}/{name}``.
+    # The 4-component typed variant (``{td}/{org}/agent/{name}``) is
+    # also valid; this 3-comp form mirrors what
+    # ``agent_manager._generate_agent_cert`` emits in production.
+    spiffe_uri = f"spiffe://{trust_domain}/{org_id}/{agent_name}"
+
+    identity_dir = pathlib.Path(identity_root) / org_id / "agents" / agent_name
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = identity_dir / "agent.pem"
+    key_path = identity_dir / "agent-key.pem"
+    dpop_path = identity_dir / "dpop.jwk"
+    ca_chain_path = pathlib.Path(identity_root) / org_id / "ca.pem"
+    ca_chain_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Mint EC P-256 cert signed by Org CA. Using openssl rather than
+    # cryptography directly keeps the cert structure byte-identical to
+    # the existing ``fedtest`` cert generation in this file (same
+    # subject/SAN convention).
+    csr_path = identity_dir / "agent.csr"
+    extfile = identity_dir / "agent.ext"
+    extfile.write_text(
+        f"subjectAltName=URI:{spiffe_uri}\nextendedKeyUsage=clientAuth\n"
+    )
+    subprocess.check_call([
+        "openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+        "-out", str(key_path),
+    ])
+    subprocess.check_call([
+        "openssl", "req", "-new", "-key", str(key_path),
+        "-out", str(csr_path),
+        "-subj", f"/CN={agent_id}/O={org_id}",
+    ])
+    subprocess.check_call([
+        "openssl", "x509", "-req", "-in", str(csr_path),
+        "-CA", org_ca_cert, "-CAkey", org_ca_key, "-CAcreateserial",
+        "-out", str(cert_path), "-days", "1",
+        "-extfile", str(extfile),
+    ])
+    cert_path.chmod(0o644)
+    key_path.chmod(0o600)
+    print(f"  minted cert + key for {agent_id} (SAN={spiffe_uri})")
+
+    # Generate DPoP keypair (EC P-256). Public JWK goes into the enroll
+    # body so the Mastio pins ``dpop_jkt`` from the first request;
+    # private JWK lands on disk next to the cert for the runtime SDK.
+    priv = ec.generate_private_key(ec.SECP256R1())
+    pub_nums = priv.public_key().public_numbers()
+    priv_nums = priv.private_numbers()
+
+    def _b64url(n: int) -> str:
+        return base64.urlsafe_b64encode(n.to_bytes(32, "big")).rstrip(b"=").decode()
+
+    public_jwk = {
+        "kty": "EC", "crv": "P-256",
+        "x": _b64url(pub_nums.x), "y": _b64url(pub_nums.y),
+    }
+    private_jwk = {**public_jwk, "d": _b64url(priv_nums.private_value)}
+
+    # POST /v1/admin/agents/enroll/byoca
+    body = json.dumps({
+        "agent_name": agent_name,
+        "display_name": agent_name,
+        "capabilities": capabilities,
+        "federated": True,
+        "cert_pem": cert_path.read_text(),
+        "private_key_pem": key_path.read_text(),
+        "dpop_jwk": public_jwk,
+    }).encode()
+    req = urllib.request.Request(
+        f"{proxy_url}/v1/admin/agents/enroll/byoca",
+        data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Admin-Secret": admin_secret,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            code = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        print(f"FAILED enroll/byoca → HTTP {exc.code}: {exc.read().decode()[:300]}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if code != 201:
+        print(f"FAILED enroll/byoca → HTTP {code}", file=sys.stderr)
+        sys.exit(1)
+
+    # Persist runtime DPoP private JWK + Org CA chain alongside the cert
+    # — these four files are exactly what ``CullisClient.from_identity_dir``
+    # opens on send.
+    dpop_path.write_text(
+        json.dumps({"private_jwk": private_jwk}, separators=(",", ":"))
+    )
+    dpop_path.chmod(0o600)
+    ca_chain_path.write_text(open(org_ca_cert).read())
+    ca_chain_path.chmod(0o644)
+
+    jkt = (data.get("dpop_jkt") or "")[:12]
+    thumb = (data.get("cert_thumbprint") or "")[:12]
+    print(f"PROVISIONED {agent_id} jkt={jkt}… thumb={thumb}…")
+  '';
+
+  # Drives the binding flow on Court for an agent that the federation
+  # publisher has already pushed. ``POST /v1/registry/bindings`` takes
+  # ``X-Org-Id`` + ``X-Org-Secret`` headers; the body's ``org_id`` must
+  # match the auth org (intra-org binding only — cross-org A2A is
+  # gated by federation registry visibility + cert chain, not by a
+  # cross-org binding row). Retries POST while the publisher catches
+  # up — 404 means the agent isn't visible on Court yet.
+  bindAgentScript = pkgs.writeText "bind-agent.py" ''
+    """Create + approve a binding for a federated agent on Court.
+
+    Args (positional):
+      court_url       e.g. ``http://court:8000``
+      org_id          short org id
+      org_secret      same secret submitted at /onboarding/join
+      agent_id        full ``org::name``
+      scope_csv       comma-separated capabilities (subset of agent's caps)
+    """
+    import json
+    import sys
+    import time
+    import urllib.error
+    import urllib.request
+
+    if len(sys.argv) != 6:
+        print(
+            f"USAGE: {sys.argv[0]} court_url org_id org_secret agent_id scope_csv",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    _, court_url, org_id, org_secret, agent_id, scope_csv = sys.argv
+    scope = [c for c in scope_csv.split(",") if c]
+    headers = {"X-Org-Id": org_id, "X-Org-Secret": org_secret,
+               "Content-Type": "application/json"}
+
+
+    def _req(method, url, body=None, allow_status=()):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.getcode(), resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode()
+            if exc.code in allow_status:
+                return exc.code, payload
+            raise
+
+
+    # Retry create until publisher has pushed the agent to Court
+    # (404 → agent_id not visible yet, retry; 409 → already there).
+    binding_id = None
+    deadline = time.monotonic() + 30.0
+    last_err = "(no attempt)"
+    while time.monotonic() < deadline:
+        try:
+            code, payload = _req(
+                "POST", f"{court_url}/v1/registry/bindings",
+                body={"org_id": org_id, "agent_id": agent_id, "scope": scope},
+                allow_status=(404, 409),
+            )
+        except urllib.error.URLError as exc:
+            last_err = f"connection: {exc}"
+            time.sleep(1.0)
+            continue
+        if code == 201:
+            binding_id = json.loads(payload)["id"]
+            print(f"  created binding {binding_id} for {agent_id}")
+            break
+        if code == 409:
+            # Already there — list and find it.
+            lc, lp = _req(
+                "GET", f"{court_url}/v1/registry/bindings?org_id={org_id}",
+            )
+            for b in json.loads(lp):
+                if b.get("agent_id") == agent_id:
+                    binding_id = b["id"]
+                    break
+            print(f"  binding already existed → id={binding_id}")
+            break
+        last_err = f"HTTP {code}: {payload[:200]}"
+        time.sleep(1.0)
+
+    if binding_id is None:
+        print(
+            f"FAILED binding create did not succeed in 30s "
+            f"(last={last_err})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Approve. 200 / 204 both ok; 409 if already approved.
+    code, payload = _req(
+        "POST", f"{court_url}/v1/registry/bindings/{binding_id}/approve",
+        allow_status=(409,),
+    )
+    print(f"  approve → HTTP {code}")
+    print(f"BOUND {agent_id} scope={scope} binding_id={binding_id}")
+  '';
+
+  # Creates an allow-all session policy for the given org on Court.
+  # Mirrors ``reference/bootstrap/bootstrap.py::phase_5_session_policies``.
+  # Without this, ``evaluate_session_policy`` defaults to deny on the
+  # ``/v1/broker/oneshot/forward`` path → 403 even with a valid binding.
+  policyAllowScript = pkgs.writeText "policy-allow.py" ''
+    """Create a default-allow session policy on Court for one org.
+
+    Args (positional):
+      court_url       e.g. ``http://court:8000``
+      org_id          short org id
+      org_secret      same secret submitted at /onboarding/join
+    """
+    import json
+    import sys
+    import urllib.error
+    import urllib.request
+
+    if len(sys.argv) != 4:
+        print(f"USAGE: {sys.argv[0]} court_url org_id org_secret",
+              file=sys.stderr)
+        sys.exit(2)
+
+    _, court_url, org_id, org_secret = sys.argv
+
+    body = {
+        "policy_id": f"{org_id}::session-allow-all",
+        "org_id": org_id,
+        "policy_type": "session",
+        "rules": {
+            "effect": "allow",
+            "conditions": {"target_org_id": [], "capabilities": []},
+        },
+    }
+    req = urllib.request.Request(
+        f"{court_url}/v1/policy/rules",
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Org-Id": org_id,
+            "X-Org-Secret": org_secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            code = resp.getcode()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            code = 409  # already there — idempotent
+        else:
+            print(f"FAILED policy create → HTTP {exc.code}: "
+                  f"{exc.read().decode()[:300]}",
+                  file=sys.stderr)
+            sys.exit(1)
+    print(f"POLICY {body['policy_id']} → HTTP {code}")
+  '';
+
+  # Loads a CullisClient from disk-pinned identity files and fires
+  # ``send_oneshot`` against a cross-org recipient. The local proxy's
+  # ``/v1/egress/resolve`` returns the recipient's cert from Court's
+  # federation registry, the SDK encrypts + signs, and the broker
+  # bridge forwards via ``POST /v1/broker/oneshot/forward`` on Court.
+  oneshotSendScript = pkgs.writeText "oneshot-send.py" ''
+    """SDK-driven cross-org one-shot send.
+
+    Args (positional):
+      mastio_url      e.g. ``https://mastio.roma.cullis.test:9443``
+      org_id          sender's org
+      agent_name      sender's agent name
+      target_id       recipient ``org::name``
+      identity_root   filesystem root with provisioned creds
+      nonce           opaque marker, echoed inside payload for receiver match
+    """
+    import json
+    import pathlib
+    import sys
+
+    from cullis_sdk import CullisClient
+
+    if len(sys.argv) != 7:
+        print(
+            f"USAGE: {sys.argv[0]} mastio_url org_id agent_name target_id "
+            f"identity_root nonce",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    _, mastio_url, org_id, agent_name, target_id, identity_root, nonce = sys.argv
+    identity_dir = pathlib.Path(identity_root) / org_id / "agents" / agent_name
+    cert_path = identity_dir / "agent.pem"
+    key_path = identity_dir / "agent-key.pem"
+    dpop_path = identity_dir / "dpop.jwk"
+    ca_chain = pathlib.Path(identity_root) / org_id / "ca.pem"
+
+    client = CullisClient.from_identity_dir(
+        mastio_url,
+        cert_path=cert_path,
+        key_path=key_path,
+        dpop_key_path=dpop_path,
+        agent_id=f"{org_id}::{agent_name}",
+        org_id=org_id,
+        ca_chain_path=ca_chain,
+    )
+    client.login_via_proxy()
+    client._signing_key_pem = key_path.read_text()
+
+    payload = {"nonce": nonce, "hello": "cross-org A2A from nixosTest",
+               "sender": f"{org_id}::{agent_name}"}
+    resp = client.send_oneshot(target_id, payload)
+    print(json.dumps({"sent_to": target_id, "nonce": nonce, **resp}))
+    print("ONESHOT_SENT")
+  '';
+
+  # Polls the recipient's inbox until the expected nonce arrives, then
+  # decrypts the envelope and verifies the inner signature. ``nonce``
+  # is the marker to match (passed in plaintext payload by the sender);
+  # the deadline keeps the test bounded if the message never lands.
+  oneshotPollScript = pkgs.writeText "oneshot-poll.py" ''
+    """SDK-driven inbox poll + decrypt for the receiver side.
+
+    Args (positional):
+      mastio_url      e.g. ``https://mastio.tokyo.cullis.test:9443``
+      org_id          recipient's org
+      agent_name      recipient's agent name
+      identity_root   filesystem root with provisioned creds
+      expected_nonce  the nonce the sender embedded in payload
+      timeout_s       wait deadline (seconds)
+    """
+    import pathlib
+    import sys
+    import time
+
+    from cullis_sdk import CullisClient
+
+    if len(sys.argv) != 7:
+        print(
+            f"USAGE: {sys.argv[0]} mastio_url org_id agent_name "
+            f"identity_root expected_nonce timeout_s",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    (_, mastio_url, org_id, agent_name, identity_root, expected_nonce,
+     timeout_s) = sys.argv
+    deadline = time.monotonic() + float(timeout_s)
+    identity_dir = pathlib.Path(identity_root) / org_id / "agents" / agent_name
+    ca_chain = pathlib.Path(identity_root) / org_id / "ca.pem"
+
+    client = CullisClient.from_identity_dir(
+        mastio_url,
+        cert_path=identity_dir / "agent.pem",
+        key_path=identity_dir / "agent-key.pem",
+        dpop_key_path=identity_dir / "dpop.jwk",
+        agent_id=f"{org_id}::{agent_name}",
+        org_id=org_id,
+        ca_chain_path=ca_chain,
+    )
+    client.login_via_proxy()
+    # Envelope-mode decrypt unwraps the AES key with the recipient's
+    # private key. ``from_identity_dir`` skips ``__init__`` so we
+    # populate ``_signing_key_pem`` explicitly, mirroring what the
+    # send side does.
+    client._signing_key_pem = (identity_dir / "agent-key.pem").read_text()
+
+    last_err = "(no rows yet)"
+    while time.monotonic() < deadline:
+        rows = client.receive_oneshot()
+        for row in rows:
+            try:
+                decrypted = client.decrypt_oneshot(row)
+            except Exception as exc:  # noqa: BLE001 — surface decrypt failure
+                last_err = f"decrypt: {exc}"
+                continue
+            payload = decrypted.get("payload") or {}
+            if payload.get("nonce") == expected_nonce:
+                print(
+                    f"RECEIVED nonce={expected_nonce} "
+                    f"sender={payload.get('sender')} "
+                    f"sender_verified={decrypted.get('sender_verified')} "
+                    f"mode={decrypted.get('mode')}"
+                )
+                sys.exit(0)
+            last_err = (
+                f"nonce mismatch: got {payload.get('nonce')!r}, "
+                f"want {expected_nonce!r}"
+            )
+        time.sleep(1.0)
+
+    print(f"FAILED no message with nonce={expected_nonce} within "
+          f"{timeout_s}s (last={last_err})", file=sys.stderr)
+    sys.exit(1)
+  '';
+
   # Per-city Mastio config. Each entry produces a NixOS node that
   # drops the ``cullis.mastio`` module on top of a base
   # ``virtualisation`` block; the module handles broker + proxy +
@@ -497,6 +941,140 @@ pkgs.testers.nixosTest {
             f"{court.succeed('journalctl -u cullis-broker --no-pager -n 50')}"
         )
         print(f"  publish accepted by Court:\n    {publish_log}")
+
+    with subtest("Cross-org A2A oneshot: roma::sender → tokyo::receiver"):
+        # Six-phase round-trip — Roma SDK encrypt+sign, broker bridge
+        # forwards, Court counter-signs, Tokyo SDK decrypts+verifies.
+        # Each phase reuses one of the helper scripts defined in the
+        # ``let`` block above; the test driver wires them together
+        # with the right env per VM.
+        identity_root = "/var/lib/cullis/test-identities"
+
+        # Phase 1: provision both agents on their respective Mastios
+        # via the BYOCA enroll endpoint. The script mints a cert
+        # against the local Org CA, generates a DPoP keypair, posts
+        # the public material to /v1/admin/agents/enroll/byoca, and
+        # drops cert+key+dpop+CA chain on disk in the layout the
+        # SDK's ``from_identity_dir`` expects.
+        for city, cfg in (
+            (roma,  {"orgId": "roma",  "agentName": "sender",
+                     "trustDomain": "roma.cullis.test"}),
+            (tokyo, {"orgId": "tokyo", "agentName": "receiver",
+                     "trustDomain": "tokyo.cullis.test"}),
+        ):
+            out = city.succeed(
+                "python3 ${provisionAgentScript} "
+                f"{cfg['orgId']} {cfg['agentName']} oneshot.message "
+                "http://127.0.0.1:9100 test-admin-secret "
+                f"{identity_root} "
+                "/var/lib/cullis/certs/org-ca.pem "
+                "/var/lib/cullis/certs/org-ca.key "
+                f"{cfg['trustDomain']}"
+            )
+            assert "PROVISIONED" in out, (
+                f"provisioning of {cfg['orgId']}::{cfg['agentName']} failed:\n{out}"
+            )
+            print(f"  {cfg['orgId']}::{cfg['agentName']} provisioned")
+
+        # No trust-bundle plumbing needed: PR #467 (issue #459) delegates
+        # cross-org chain checks to Court, which already verified the
+        # leaf at federation publish time. Each agent's ``ca.pem`` holds
+        # only the local Org CA and the SDK's ``decrypt_oneshot`` skips
+        # the chain step for cross-org senders.
+
+        # Phase 2: wait for the federation publisher to push both
+        # rows to Court. The ``federated=true`` flag came in via
+        # provisioning; poll interval is forced to 2s by the module
+        # env. Look for the success log line on each side.
+        for city, agent_id in (
+            (roma, "roma::sender"),
+            (tokyo, "tokyo::receiver"),
+        ):
+            city.wait_until_succeeds(
+                "journalctl -u cullis-proxy --no-pager | "
+                f"grep -q 'federation publish OK: {agent_id}'",
+                timeout=20,
+            )
+            print(f"  {agent_id} published to Court")
+
+        # Phase 3: bind both agents on Court so authentication +
+        # capability gates allow the oneshot. Each binding is
+        # intra-org (the auth org_id must match the body org_id);
+        # cross-org A2A is gated by federation registry visibility
+        # plus the recipient's intra-org binding having scope.
+        for city, cfg in (
+            (roma,  {"orgId": "roma",  "agentId": "roma::sender"}),
+            (tokyo, {"orgId": "tokyo", "agentId": "tokyo::receiver"}),
+        ):
+            out = city.succeed(
+                "python3 ${bindAgentScript} "
+                "http://court:8000 "
+                f"{cfg['orgId']} {cfg['orgId']}-secret-test "
+                f"{cfg['agentId']} oneshot.message"
+            )
+            assert "BOUND" in out, (
+                f"binding for {cfg['agentId']} failed:\n{out}"
+            )
+            print(f"  {cfg['agentId']} bound + approved on Court")
+
+        # Phase 3b: install an allow-all session policy on Court for
+        # both orgs. Without this, ``evaluate_session_policy`` on the
+        # ``/v1/broker/oneshot/forward`` path defaults to deny → 403
+        # even with valid bindings.
+        for city, org_id in ((roma, "roma"), (tokyo, "tokyo")):
+            out = city.succeed(
+                "python3 ${policyAllowScript} "
+                f"http://court:8000 {org_id} {org_id}-secret-test"
+            )
+            assert "POLICY" in out, f"policy create for {org_id} failed:\n{out}"
+            print(f"  {org_id} session-allow-all policy installed")
+
+        # Phase 4: send. Roma SDK loads the cert/key/dpop from disk,
+        # logs in via the local proxy, encrypts the payload for the
+        # Tokyo recipient (cert pulled from Court via /resolve), and
+        # POSTs to ``/v1/egress/message/send``.
+        nonce = "tier2-a2a-cross-org-roundtrip"
+        out = roma.succeed(
+            "python3 ${oneshotSendScript} "
+            "https://mastio.roma.cullis.test:9443 "
+            "roma sender tokyo::receiver "
+            f"{identity_root} {nonce}"
+        )
+        assert "ONESHOT_SENT" in out, f"send_oneshot failed:\n{out}"
+        print(f"  Roma SDK fired one-shot:\n    {out.strip()}")
+
+        # Phase 5: receive. Tokyo SDK polls inbox, decrypts the
+        # envelope, verifies the inner signature, and confirms the
+        # nonce matches what Roma sent. Times out at 20s — the
+        # broker queue + bridge poll cadence is in the 2-5s range.
+        out = tokyo.succeed(
+            "python3 ${oneshotPollScript} "
+            "https://mastio.tokyo.cullis.test:9443 "
+            "tokyo receiver "
+            f"{identity_root} {nonce} 20"
+        )
+        assert "RECEIVED" in out, f"inbox poll did not match nonce:\n{out}"
+        assert "sender_verified=True" in out, (
+            f"recipient could not verify sender signature:\n{out}"
+        )
+        print(f"  Tokyo SDK received + verified:\n    {out.strip()}")
+
+        # Phase 6: dump the local oneshot audit rows (informative). The
+        # broker-side ``log_event_cross_org`` writes the canonical
+        # cross-org pair on Court; each Mastio mirrors a local row via
+        # the egress pipeline (``mcp_proxy/egress/oneshot.py`` →
+        # ``oneshot_sent`` / ``oneshot_delivered``). Surface the rows
+        # for visual inspection without asserting an exact event_type
+        # name (varies by code path); the previous assertions on send
+        # + receive already proved the round-trip cryptographically.
+        for city in (roma, tokyo):
+            rc, dump = city.execute(
+                "sqlite3 /var/lib/cullis/proxy.sqlite "
+                "\"SELECT event_type, result FROM audit_log "
+                "WHERE event_type LIKE '%oneshot%' "
+                "ORDER BY id DESC LIMIT 5\" 2>&1 || true"
+            )
+            print(f"  {city.name} oneshot audit (last 5):\n{dump.rstrip()}")
 
     # Cross-org cert chain refusal (default-deny) — the third
     # invariant the demo sells — needs a Roma-minted cert
