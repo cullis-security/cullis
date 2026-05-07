@@ -86,8 +86,17 @@ export default function Inbox() {
       const rows = await listInbox({ limit: 50 });
       setMessages(rows);
     } catch (err) {
-      const msg =
-        err instanceof ApiError ? `api error ${err.status}` : 'failed to load';
+      // 404 surfaces when the Connector Ambassador hasn't wired the
+      // /v1/inbox passthrough yet (tracked separately as a backend
+      // issue). Show a calm "endpoint pending" copy instead of a raw
+      // API error so the demo screenshot is honest about the state.
+      let msg = 'failed to load';
+      if (err instanceof ApiError) {
+        msg =
+          err.status === 404
+            ? 'inbox endpoint pending — backend wiring in flight'
+            : `api error ${err.status}`;
+      }
       setError(msg);
     } finally {
       setLoading(false);
