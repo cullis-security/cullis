@@ -162,6 +162,11 @@
             "state"
             "dist"
             "result"
+            # Dev-box .env can carry host-specific values (BROKER_PUBLIC_URL
+            # pointing at the dev IP) that pydantic-settings picks up over
+            # the explicit env we set per VM, breaking DPoP htu validation.
+            ".env"
+            ".env.local"
           ]);
       };
       # Custom derivations for PyPI packages not yet in nixpkgs.
@@ -359,8 +364,28 @@
           # ``app/kms/admin_secret.py`` defaults to ``certs/`` relative
           # to the broker's CWD, which here is the read-only Nix store.
           # Redirect to the writable state dir so first-boot mkdir of
-          # ``.admin_bootstrap_token`` succeeds.
+          # ``.admin_bootstrap_token`` succeeds. Lands via #468.
           CULLIS_LOCAL_KMS_DIR = certsDir;
+          # Court advertises itself as ``http://court:8000`` so cities
+          # signing DPoP proofs with that exact URL pass htu validation.
+          # When the broker is loopback-only (cities) the override stops
+          # any inherited dev-box ``BROKER_PUBLIC_URL`` from the source
+          # tree's ``.env`` (already filtered, but env override is the
+          # authoritative source). pydantic-settings: env > .env > defaults.
+          # Issue #462 tracks turning this into an allowlist for multi-
+          # ingress Court setups.
+          BROKER_PUBLIC_URL =
+            if cfg.nginxAllowExternal
+            then "http://court:${toString cfg.brokerPort}"
+            else "http://127.0.0.1:${toString cfg.brokerPort}";
+          # Sandbox/demo PDP fall-through (issue #461 / PR #463). Cities
+          # are registered without a webhook_url; the dispatcher would
+          # otherwise default-deny every cross-org call. ``allow`` lets
+          # the test fixture exercise the path with audit rows tagged
+          # ``policy_default_allow`` so reviewers can grep for the
+          # bypass after the fact. Production refuses this value (see
+          # ``app/config.py::validate_config``).
+          POLICY_DEFAULT_DECISION = "allow";
         };
         serviceConfig = {
           Type = "simple";
@@ -413,6 +438,25 @@
           # hub), inferred from ``cfg.brokerUrl == ""``.
           MCP_PROXY_STANDALONE =
             if cfg.brokerUrl != "" then "false" else "true";
+          # DPoP htu validation needs the public URL the SDK speaks to
+          # (nginx mTLS endpoint), not the loopback uvicorn binds. Without
+          # this set, ``_build_htu`` falls back to ``request.url`` which
+          # in our setup is ``http://127.0.0.1:9100`` and never matches
+          # the SDK's ``https://mastio.<td>:9443/...`` signed proof.
+          # See feedback_proxy_env_public_url_vm.md +
+          # feedback_proxy_headers_insufficient.md — auto-detect via
+          # ``--proxy-headers`` alone is not enough.
+          MCP_PROXY_PROXY_PUBLIC_URL =
+            "https://mastio.${cfg.trustDomain}:${toString cfg.nginxPort}";
+        } // lib.optionalAttrs (cfg.brokerUrl != "") {
+          # ADR-012 — non-standalone proxies default to forwarding
+          # ``/v1/auth/token`` to the broker, which fails htu validation
+          # in our cross-org topology (Court only sees the forwarded URL,
+          # not the SDK's signed mastio.<td>:9443 URL). Cities should
+          # issue tokens locally exactly like the standalone case;
+          # Court keeps standalone=true and turns this on via the
+          # auto-default in ``config.py``.
+          MCP_PROXY_LOCAL_AUTH_ENABLED = "true";
         } // lib.optionalAttrs cfg.enableMockServices {
           # Point the AI gateway at the mock LLM. We use the
           # ``portkey`` backend wrapper because it honours
