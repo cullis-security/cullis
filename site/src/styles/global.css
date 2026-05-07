@@ -26,6 +26,11 @@
   --accent-blue: #3d7aed;
   --accent-teal: #00b8a9;
 
+  /* Principal type badges — ADR-020 user/agent/workload */
+  --cullis-badge-user: #3b7af5;
+  --cullis-badge-agent: #8b5cf6;
+  --cullis-badge-workload: #10b981;
+
   /* Fonts */
   --font-display: 'Instrument Serif', Georgia, serif;
   --font-body: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

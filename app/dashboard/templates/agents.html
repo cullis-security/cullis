@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_principal_badge.html" import principal_badge %}
 {% block title %}Agents{% endblock %}
 {% block header_title %}Agents{% endblock %}
 {% block content %}
@@ -8,7 +9,7 @@
     <div class="flex items-center justify-between mb-6">
         <div>
             <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Federated Agents</h2>
-            <p class="text-xs text-gray-600 mt-0.5">{{ agents | length }} registered</p>
+            <p class="text-xs text-gray-600 mt-0.5">{{ agents | length }} registered &middot; non-human autonomous principals</p>
         </div>
         <a href="/dashboard/agents/register"
            class="px-4 py-2 text-xs font-semibold rounded transition-all"
@@ -27,6 +28,8 @@
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Agent</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Organization</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Enrollment</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Automation</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Capabilities</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Binding</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">WebSocket</th>
@@ -38,7 +41,10 @@
                 {% for agent in agents %}
                 <tr class="table-row-hover transition-colors">
                     <td class="px-5 py-4">
-                        <a href="/dashboard/agents/{{ agent.agent_id }}" class="text-sm text-white hover:text-accent-400 transition-colors">{{ agent.display_name }}</a>
+                        <div class="flex items-center gap-2">
+                            {{ principal_badge("agent") }}
+                            <a href="/dashboard/agents/{{ agent.agent_id }}" class="text-sm text-white hover:text-accent-400 transition-colors">{{ agent.display_name }}</a>
+                        </div>
                         <p class="text-[10px] text-gray-600 font-mono mt-0.5">{{ agent.agent_id }}</p>
                     </td>
                     <td class="px-5 py-4 text-xs text-gray-400 font-mono">{{ agent.org_id }}</td>
@@ -51,6 +57,20 @@
                         <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
                             <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span>Inactive
                         </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if agent.enrollment_method %}
+                        <span class="text-[10px] text-gray-400 font-mono uppercase tracking-wider">{{ agent.enrollment_method }}</span>
+                        {% else %}
+                        <span class="text-[10px] text-gray-700">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if agent.automation_type %}
+                        <span class="text-[10px] text-gray-400 uppercase tracking-wider">{{ agent.automation_type }}</span>
+                        {% else %}
+                        <span class="text-[10px] text-gray-700">—</span>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4">
@@ -100,7 +120,7 @@
                 {% endfor %}
                 {% if not agents %}
                 <tr>
-                    <td colspan="8" class="px-5 py-16 text-center">
+                    <td colspan="10" class="px-5 py-16 text-center">
                         <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
                         <p class="text-sm text-gray-600">No agents registered</p>
                     </td>

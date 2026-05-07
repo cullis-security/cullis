@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Federation{% endblock %}
+{% block header_title %}Federation{% endblock %}
+{% block content %}
+<div id="page-content" data-sse-page="federation" class="max-w-6xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">Federation</h2>
+            <p class="text-xs text-gray-600 mt-0.5">Peer organizations &amp; Court health</p>
+        </div>
+    </div>
+
+    <!-- Court status -->
+    <div class="mb-6 bg-surface-900/80 border border-gray-800/60 rounded-lg overflow-hidden backdrop-blur-sm">
+        <div class="px-5 py-4 border-b border-gray-800/60">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Court</h3>
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium bg-accent-400/10 text-accent-400 uppercase tracking-wider">
+                    <span class="w-1.5 h-1.5 rounded-full bg-accent-400 pulse-dot"></span>
+                    {{ court_status or "Online" }}
+                </span>
+            </div>
+        </div>
+        <div class="px-5 py-3 grid grid-cols-3 gap-4 text-xs">
+            <div>
+                <div class="text-gray-600 uppercase tracking-wider text-[10px] mb-1">Endpoint</div>
+                <div class="text-gray-300 font-mono text-[11px]">{{ court_endpoint or "https://court.cullis.test" }}</div>
+            </div>
+            <div>
+                <div class="text-gray-600 uppercase tracking-wider text-[10px] mb-1">Audit dual-write</div>
+                <div class="text-emerald-400 text-[11px]">{{ court_audit_status or "Healthy" }}</div>
+            </div>
+            <div>
+                <div class="text-gray-600 uppercase tracking-wider text-[10px] mb-1">Last anchor</div>
+                <div class="text-gray-300 text-[11px]" title="{{ court_last_anchor_iso or '' }}">{{ court_last_anchor or "—" }}</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Peer orgs -->
+    <div class="bg-surface-900/80 border border-gray-800/60 rounded-lg overflow-hidden backdrop-blur-sm">
+        <div class="px-5 py-3 border-b border-gray-800/60 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Peer organizations</h3>
+            <span class="text-[10px] text-gray-600 uppercase tracking-wider">{{ peers | length }} federated</span>
+        </div>
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Org ID</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Trust domain</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">CA fingerprint</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Joined</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for p in peers %}
+                <tr class="table-row-hover transition-colors">
+                    <td class="px-5 py-4 text-sm text-white font-mono">{{ p.org_id }}</td>
+                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">{{ p.trust_domain }}</td>
+                    <td class="px-5 py-4">
+                        {% if p.status == "active" %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+                        </span>
+                        {% elif p.status == "pending" %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-yellow-500/10 text-yellow-400 uppercase tracking-wider">Pending</span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">{{ p.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if p.ca_fingerprint %}
+                        <span class="text-[10px] text-gray-400 font-mono" title="{{ p.ca_fingerprint }}">{{ p.ca_fingerprint[:14] }}…</span>
+                        {% else %}
+                        <span class="text-[10px] text-gray-700">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 text-[11px] text-gray-500" title="{{ p.joined_at_iso or '' }}">{{ p.joined_at or "—" }}</td>
+                </tr>
+                {% endfor %}
+                {% if not peers %}
+                <tr>
+                    <td colspan="5" class="px-5 py-12 text-center text-sm text-gray-600">No peer organizations federated</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Legacy /orgs link -->
+    <div class="mt-4 text-[11px] text-gray-700">
+        Legacy organization CRUD lives at
+        <a href="/dashboard/orgs" class="text-gray-500 hover:text-accent-400 transition-colors underline decoration-dotted">/dashboard/orgs</a>
+        (own-org operations not yet exposed in Federation tab).
+    </div>
+</div>
+{% endblock %}

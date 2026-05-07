@@ -22,6 +22,12 @@ module.exports = {
           400: '#0ea5e9',
           500: '#0284c7',
         },
+        // Principal type badges — ADR-020 user/agent/workload
+        badge: {
+          user: '#3b7af5',
+          agent: '#8b5cf6',
+          workload: '#10b981',
+        },
       },
       fontFamily: {
         heading: ['Chakra Petch', 'sans-serif'],
@@ -35,6 +41,10 @@ module.exports = {
     'bg-emerald-900/90', 'border-emerald-700/50', 'text-emerald-300',
     'bg-red-900/90', 'border-red-700/50', 'text-red-300',
     'bg-accent-400', 'pulse-dot', 'bg-gray-700',
+    // Principal badge variants — referenced via macro
+    'bg-badge-user/10', 'text-badge-user', 'border-badge-user/20',
+    'bg-badge-agent/10', 'text-badge-agent', 'border-badge-agent/20',
+    'bg-badge-workload/10', 'text-badge-workload', 'border-badge-workload/20',
   ],
   plugins: [],
 };
