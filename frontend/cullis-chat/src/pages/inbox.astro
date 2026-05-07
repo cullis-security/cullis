@@ -1,0 +1,33 @@
+---
+// Inbox page — companion surface to /chat. Same shell (TopBar +
+// SidebarLeft) but renders the React island <Inbox /> in the main
+// area instead of <ChatApp />. Phase 3 of the SPA rework refactors
+// the shared shell into a single layout with a slot; until then the
+// duplication is intentional and small.
+import '../styles/tokens.css';
+import '../styles/globals.css';
+import '../styles/inbox.css';
+import TopBar from '../components/TopBar.astro';
+import SidebarLeft from '../components/SidebarLeft.astro';
+import Inbox from '../components/Inbox.tsx';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#050508" />
+    <meta name="description" content="Cullis Chat inbox — identity-aware messages for users and agents." />
+    <meta name="referrer" content="same-origin" />
+    <title>Inbox · Cullis Chat</title>
+    <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}cullis-mark.svg`} />
+  </head>
+  <body class="app-shell">
+    <TopBar />
+    <div class="app-body">
+      <SidebarLeft active="inbox" />
+      <Inbox client:load />
+    </div>
+  </body>
+</html>

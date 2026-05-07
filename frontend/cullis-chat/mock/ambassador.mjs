@@ -128,6 +128,71 @@ function unauthorized(res) {
   jsonResponse(res, 401, { error: { code: 'no_bearer', message: 'Bearer required' } });
 }
 
+// ─── Inbox in-memory store ──────────────────────────────────────────
+// Seeded with one demo row so /inbox renders a real message in
+// Playwright. send() appends, ack() flips delivery_state, archive()
+// removes from the visible list. Mirrors the broker `InboxItem`
+// shape (`app/inbox/router.py`).
+const INBOX_MOCK = (() => {
+  const nowIso = () => new Date().toISOString();
+  const ttlIso = (h = 24) =>
+    new Date(Date.now() + h * 3600 * 1000).toISOString();
+  const seed = {
+    msg_id: 'msg_seed_001',
+    sender_org_id: 'mediterranean',
+    sender_principal_type: 'agent',
+    sender_name: 'night-reporter',
+    subject: 'Cross-company-flagged claims · nightly summary',
+    body:
+      'Two claims flagged for cross-company review overnight:\n\n' +
+      '  · CLM-2026-0412 (vehicle, asia-pacific)\n' +
+      '  · CLM-2026-0419 (property, asia-pacific)\n\n' +
+      'See the audit chain for full provenance.',
+    delivery_state: 'pending',
+    consent_id: null,
+    enqueued_at: nowIso(),
+    delivered_at: null,
+    ttl_expires_at: ttlIso(72),
+  };
+  const rows = [seed];
+  return {
+    list() { return rows.filter((r) => r.delivery_state !== 'archived'); },
+    send(body) {
+      const msg_id = 'msg_' + Math.random().toString(36).slice(2, 10);
+      rows.unshift({
+        msg_id,
+        sender_org_id: 'demo',
+        sender_principal_type: 'user',
+        sender_name: 'mario',
+        subject: body?.subject ?? null,
+        body: body?.body ?? '',
+        delivery_state: 'pending',
+        consent_id: null,
+        enqueued_at: nowIso(),
+        delivered_at: null,
+        ttl_expires_at: ttlIso(24),
+      });
+      return { msg_id, inserted: true, quadrant: 'u2u' };
+    },
+    ack(msgId) {
+      const row = rows.find((r) => r.msg_id === msgId);
+      if (!row) return false;
+      if (row.delivery_state === 'pending') {
+        row.delivery_state = 'delivered';
+        row.delivered_at = nowIso();
+        return true;
+      }
+      return false;
+    },
+    archive(msgId) {
+      const row = rows.find((r) => r.msg_id === msgId);
+      if (!row) return false;
+      row.delivery_state = 'archived';
+      return true;
+    },
+  };
+})();
+
 const server = createServer(async (req, res) => {
   // Loopback-only — same posture as the real Ambassador.
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -226,6 +291,40 @@ const server = createServer(async (req, res) => {
       ],
     });
     return;
+  }
+
+  // ─── Inbox surface (ADR-020 Phase 4) ────────────────────────────
+  // The mock keeps an in-memory list seeded with one demo message so
+  // /inbox renders a real row in Playwright. POST /send appends a
+  // synthetic msg_id and refreshes the list. Ack/archive are wired
+  // for end-to-end coverage of the read/dismiss UI flows.
+  if (req.method === 'GET' && pathname === '/v1/inbox') {
+    jsonResponse(res, 200, INBOX_MOCK.list());
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/v1/inbox/send') {
+    let body;
+    try { body = await readJson(req); } catch {
+      jsonResponse(res, 400, { error: { code: 'bad_json' } });
+      return;
+    }
+    const result = INBOX_MOCK.send(body);
+    jsonResponse(res, 201, result);
+    return;
+  }
+  {
+    const m = pathname.match(/^\/v1\/inbox\/([^/]+)\/(ack|archive)$/);
+    if (m && req.method === 'POST') {
+      const [, msgId, action] = m;
+      if (action === 'ack') {
+        const flipped = INBOX_MOCK.ack(msgId);
+        jsonResponse(res, 200, { acked: flipped, msg_id: msgId });
+      } else {
+        const archived = INBOX_MOCK.archive(msgId);
+        jsonResponse(res, 200, { archived, msg_id: msgId });
+      }
+      return;
+    }
   }
 
   if (req.method === 'POST' && pathname === '/v1/chat/completions') {
