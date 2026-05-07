@@ -1,6 +1,6 @@
 """Ticket Bot — request-response agent for the insurance demo.
 
-Identity: ``mediterranean::agent::ticket-bot``
+Identity: ``orga::agent::ticket-bot``
 Reach:    intra-org only
 Scope:    claims-db.write + oneshot.message
 
@@ -8,7 +8,7 @@ What it does (event loop):
 
   1. Authenticate to Mediterranean's Mastio with the cert/key minted by ``seed.py``
   2. Poll the inbox for incoming requests addressed to this agent
-     (typically from ``mediterranean::user::claim-manager``)
+     (typically from ``orga::user::claim-manager``)
   3. For each request, parse the natural-language claim context, generate
      a deterministic ticket ID (``TKT-YYYY-MM-DD-NNN``), persist a
      formal record into the claims-db (status=under-review, ticket_ref
@@ -38,8 +38,13 @@ from cullis_sdk import CullisClient
 
 
 HERE = pathlib.Path(__file__).resolve().parent
-STATE_DIR = (HERE.parents[2] / "state" / "insurance-demo" / "agents" / "ticket-bot").resolve()
-MASTIO_URL = os.environ.get("CULLIS_PROXY_A_URL", "https://localhost:9100")
+# parents: [0]=bots, [1]=insurance-demo, [2]=scenarios, [3]=reference, [4]=repo root.
+STATE_DIR = (HERE.parents[3] / "state" / "insurance-demo" / "agents" / "ticket-bot").resolve()
+# See night_reporter.py — agent traffic must hit the nginx sidecar at
+# :9443 (HTTPS), not the admin port :9100 (plain HTTP).
+MASTIO_URL = os.environ.get(
+    "MASTIO_NGINX_A_URL", "https://localhost:9443",
+)
 POLL_INTERVAL_S = 3.0
 
 
@@ -85,7 +90,7 @@ def _process_request(client: CullisClient, msg: dict) -> dict | None:
     # Persist into the claims DB via the MCP server.
     try:
         client.call_mcp_tool(
-            resource_id="mediterranean::resource::mcp::claims-db",
+            resource_id="orga::resource::mcp::claims-db",
             tool_name="exec_sql",
             arguments={
                 "statement": (
@@ -113,18 +118,23 @@ def _process_request(client: CullisClient, msg: dict) -> dict | None:
 def run_once(verbose: bool = False) -> int:
     cert = STATE_DIR / "agent.pem"
     key  = STATE_DIR / "agent-key.pem"
+    # See night_reporter.py — STATE_DIR.parents[1] = state/insurance-demo.
+    org_ca = STATE_DIR.parents[1] / "orga-ca.pem"
     if not (cert.exists() and key.exists()):
         print(f"[ticket-bot] missing identity at {STATE_DIR} — "
               "did you run ./run.sh seed?", file=sys.stderr)
         return 2
 
+    # See night_reporter.py — ``verify_tls=False`` silently drops the
+    # client cert in the SDK's httpx layer.
     client = CullisClient.from_identity_dir(
         MASTIO_URL,
         cert_path=cert,
         key_path=key,
-        agent_id="mediterranean::agent::ticket-bot",
-        org_id="mediterranean",
-        verify_tls=False,
+        agent_id="orga::ticket-bot",
+        org_id="orga",
+        verify_tls=True,
+        ca_chain_path=org_ca,
     )
     client.login_via_proxy()
     client._signing_key_pem = key.read_text()

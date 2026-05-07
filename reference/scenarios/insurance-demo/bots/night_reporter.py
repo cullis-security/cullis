@@ -1,16 +1,16 @@
 """Night Reporter — overnight scheduled agent for the insurance demo.
 
-Identity: ``mediterranean::agent::night-reporter``
+Identity: ``orga::agent::night-reporter``
 Reach:    intra-org only
 Scope:    claims-db.read + oneshot.message
 
 What it does (one tick):
 
   1. Authenticate to Mediterranean's Mastio with the cert/key minted by ``seed.py``
-  2. Query the ``mediterranean::resource::mcp::claims-db`` MCP server for claims
+  2. Query the ``orga::resource::mcp::claims-db`` MCP server for claims
      where ``cross_company_flag = TRUE`` AND ``status = 'open'``
   3. Build a short summary (count, top 3 by amount, urgency breakdown)
-  4. Send a one-shot message to ``mediterranean::user::claim-officer`` with the
+  4. Send a one-shot message to ``orga::user::claim-officer`` with the
      summary as payload (intra-org A2U, ADR-008 envelope)
   5. Log + exit (idempotent — replay-safe via correlation_id)
 
@@ -39,9 +39,16 @@ from cullis_sdk import CullisClient
 
 
 HERE = pathlib.Path(__file__).resolve().parent
-STATE_DIR = (HERE.parents[2] / "state" / "insurance-demo" / "agents" / "night-reporter").resolve()
-RECIPIENT = "mediterranean::user::claim-officer"
-MASTIO_URL = os.environ.get("CULLIS_PROXY_A_URL", "https://localhost:9100")
+# parents: [0]=bots, [1]=insurance-demo, [2]=scenarios, [3]=reference, [4]=repo root.
+# seed.py writes agent identity material under <repo-root>/state/insurance-demo/.
+STATE_DIR = (HERE.parents[3] / "state" / "insurance-demo" / "agents" / "night-reporter").resolve()
+RECIPIENT = "orga::user::claim-officer"
+# mTLS endpoint (mastio-nginx-a sidecar). The plain HTTP :9100 is
+# admin-only — agent traffic must hit nginx :9443 to satisfy DPoP htu
+# matching + Org CA mTLS handshake.
+MASTIO_URL = os.environ.get(
+    "MASTIO_NGINX_A_URL", "https://localhost:9443",
+)
 
 
 def _build_summary(claims: list[dict]) -> dict:
@@ -81,7 +88,7 @@ def _build_summary(claims: list[dict]) -> dict:
 
 
 def _query_claims(client: CullisClient) -> list[dict]:
-    """Call the ``mediterranean::resource::mcp::claims-db`` MCP server through the
+    """Call the ``orga::resource::mcp::claims-db`` MCP server through the
     SDK helper. Returns a list of claim rows (dict). Falls back to a
     canned fixture if the MCP server is unreachable so the demo doesn't
     hard-fail on a network blip during recording."""
@@ -89,7 +96,7 @@ def _query_claims(client: CullisClient) -> list[dict]:
         # SDK MCP helpers landed in ADR-017 Phase 3 (memory:
         # project_session_2026_05_04_adr017_live.md).
         result = client.call_mcp_tool(
-            resource_id="mediterranean::resource::mcp::claims-db",
+            resource_id="orga::resource::mcp::claims-db",
             tool_name="query_claims",
             arguments={
                 "where": "cross_company_flag = TRUE AND status = 'open'",
@@ -130,18 +137,26 @@ def _send(client: CullisClient, payload: dict) -> dict:
 def run_once(verbose: bool = False) -> int:
     cert = STATE_DIR / "agent.pem"
     key  = STATE_DIR / "agent-key.pem"
+    # STATE_DIR = …/state/insurance-demo/agents/night-reporter
+    # parents[1] = …/state/insurance-demo (where prep-ca dropped orga-ca.pem)
+    org_ca = STATE_DIR.parents[1] / "orga-ca.pem"
     if not (cert.exists() and key.exists()):
         print(f"[night-reporter] missing identity at {STATE_DIR} — "
               "did you run ./run.sh seed?", file=sys.stderr)
         return 2
 
+    # NOTE: ``verify_tls=False`` in the SDK silently drops the client
+    # cert (httpx 0.28 incompat — see _build_proxy_http_client). nginx
+    # then 401s. Pin verify_tls=True + ca_chain_path so the client cert
+    # is actually presented at the TLS handshake.
     client = CullisClient.from_identity_dir(
         MASTIO_URL,
         cert_path=cert,
         key_path=key,
-        agent_id="mediterranean::agent::night-reporter",
-        org_id="mediterranean",
-        verify_tls=False,  # dev / sandbox — Org CA self-signed
+        agent_id="orga::night-reporter",
+        org_id="orga",
+        verify_tls=True,
+        ca_chain_path=org_ca,
     )
     client.login_via_proxy()
     client._signing_key_pem = key.read_text()

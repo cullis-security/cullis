@@ -6,12 +6,20 @@ Insurance claims escalation scenario.
 
 ## Cast
 
-Two orgs (English-only, role-named):
+Two orgs. Display name (the brand the user sees) lives separately from
+the backend ``org_id`` so we can reuse the reference stack without
+re-bootstrapping with new IDs:
 
-  Mediterranean Insurance    org_id=mediterranean,  td=mediterranean.cullis.test
-  Asia-Pacific Insurance     org_id=asia-pacific, td=asia-pacific.cullis.test
+  Display name              Backend org_id    Trust domain
+  ─────────────────────────────────────────────────────────
+  Mediterranean Insurance   orga              orga.test
+  Asia-Pacific Insurance    orgb              orgb.test
 
-Plus `court` as federation hub.
+Principal IDs in audit logs and on the wire use the backend ``org_id``
+(``orga::user::claim-officer``). The dashboard maps ``orga`` →
+"Mediterranean Insurance" at the display layer.
+
+Plus ``court`` as federation hub.
 
 Personas (the humans behind the user principals — Mediterranean side
 Italian, Asia-Pacific side Japanese; mirrors the realistic insurance
@@ -28,13 +36,13 @@ Five principals + 1 workload + 1 resource:
 
 | Backend ID | Type | Surface |
 |---|---|---|
-| `mediterranean::user::claim-officer` | user | Cullis Chat (single-user desktop) |
-| `mediterranean::user::claim-manager` | user | Cullis Chat dashboard `/chat` |
-| `mediterranean::agent::night-reporter` | agent | none (cron-style script) |
-| `mediterranean::agent::ticket-bot` | agent | none (request-response script) |
-| `asia-pacific::user::counterparty-liaison` | user | Frontdesk (multi-user web) |
-| `asia-pacific::workload::frontdesk-container` | workload | n/a (visible in admin) |
-| `mediterranean::resource::mcp::claims-db` | resource | postgres MCP server |
+| `orga::user::claim-officer` | user | Cullis Chat (single-user desktop) |
+| `orga::user::claim-manager` | user | Cullis Chat dashboard `/chat` |
+| `orga::agent::night-reporter` | agent | none (cron-style script) |
+| `orga::agent::ticket-bot` | agent | none (request-response script) |
+| `orgb::user::counterparty-liaison` | user | Frontdesk (multi-user web) |
+| `orgb::workload::frontdesk-container` | workload | n/a (visible in admin) |
+| `orga::resource::mcp::claims-db` | resource | postgres MCP server |
 
 Full UI/SPA contract: `imp/insurance-demo-spec.md`
 
