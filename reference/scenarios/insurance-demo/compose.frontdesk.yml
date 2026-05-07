@@ -1,0 +1,128 @@
+# Frontdesk overlay for the insurance demo.
+#
+# Adds a Frontdesk container in shared mode wired to the Asia-Pacific
+# Mastio (proxy-b) of the reference stack. Mirrors the structure in
+# packaging/frontdesk-bundle/docker-compose.yml but renamed + rewired
+# to live alongside the reference services rather than alongside the
+# packaging stack.
+#
+# Three internal services on a private bridge net:
+#
+#   nginx-frontdesk-asia-pacific  80   reverse proxy + dev fake-SSO
+#     ↓
+#   chat-frontdesk-asia-pacific   8080 Astro SPA static
+#     ↓
+#   connector-frontdesk-asia-pacific 7777 Connector dashboard + Ambassador
+#     ↓ DPoP+mTLS (joins orgb-internal to reach mastio-nginx-b:9443)
+#
+# Use:
+#
+#   cd reference/scenarios/insurance-demo
+#   ./run.sh seed             # provisions the user principal
+#   ./run.sh frontdesk-prep   # bootstraps the connector identity (one-shot)
+#   ./run.sh frontdesk        # docker compose -f reference/docker-compose.yml
+#                             #                -f compose.frontdesk.yml up -d
+#
+# Open http://localhost:8090?user=kenji to act as Kenji Watanabe.
+#
+# Expected env (defaults set so the demo runs without overrides):
+#
+#   FRONTDESK_AP_HTTP_PORT          host port for Frontdesk web (default 8090)
+#   FRONTDESK_AP_ORG_ID             default asia-pacific
+#   FRONTDESK_AP_TRUST_DOMAIN       default asia-pacific.cullis.test
+#   FRONTDESK_AP_MASTIO_URL         default https://mastio-nginx-b:9443
+#                                   (reachable through the orgb-internal
+#                                    network this overlay joins)
+
+services:
+
+  connector-frontdesk-asia-pacific:
+    build:
+      context: ../../../packaging/frontdesk-bundle
+      dockerfile: Dockerfile.connector
+      args:
+        CONNECTOR_VERSION: ${CONNECTOR_VERSION:-latest}
+    command: >
+      dashboard
+      --host 0.0.0.0
+      --port 7777
+      --no-open-browser
+      --profile frontdesk-asia-pacific
+    expose: ["7777"]
+    environment:
+      AMBASSADOR_MODE: shared
+      CULLIS_FRONTDESK_ORG_ID:        ${FRONTDESK_AP_ORG_ID:-asia-pacific}
+      CULLIS_FRONTDESK_TRUST_DOMAIN:  ${FRONTDESK_AP_TRUST_DOMAIN:-asia-pacific.cullis.test}
+      CULLIS_TRUSTED_PROXIES:         ${FRONTDESK_AP_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
+      CULLIS_FRONTDESK_COOKIE_TTL_S:  3600
+      CULLIS_FRONTDESK_MASTIO_URL:    ${FRONTDESK_AP_MASTIO_URL:-https://mastio-nginx-b:9443}
+      CULLIS_SITE_URL:                ${FRONTDESK_AP_MASTIO_URL:-https://mastio-nginx-b:9443}
+      # The Asia-Pacific Mastio's nginx serves a self-signed Org CA cert.
+      # Mount mastio-b-nginx-certs/org-ca.crt and trust it.
+      SSL_CERT_FILE:                  /etc/cullis/ca-bundle.pem
+      REQUESTS_CA_BUNDLE:             /etc/cullis/ca-bundle.pem
+    volumes:
+      # Connector identity material. Pre-populated by ``run.sh frontdesk-prep``.
+      - frontdesk-asia-pacific-connector-data:/home/cullis/.cullis
+      # Trust anchor for proxy-b's self-signed Org CA.
+      - mastio-b-nginx-certs:/etc/cullis-certs:ro
+      # Bash entrypoint copies the trust anchor into the location
+      # SSL_CERT_FILE points at. Plain symlink would suffice but volume
+      # mounts are cleaner.
+    entrypoint: >
+      sh -c "cp /etc/cullis-certs/org-ca.crt /etc/cullis/ca-bundle.pem &&
+             exec /usr/local/bin/cullis-connector $$@"
+    networks:
+      frontdesk-asia-pacific-net:
+      orgb-internal:
+        aliases: [connector-frontdesk-asia-pacific]
+    restart: unless-stopped
+
+  chat-frontdesk-asia-pacific:
+    build:
+      context: ../../../frontend/cullis-chat
+      dockerfile: Dockerfile
+    expose: ["8080"]
+    depends_on:
+      - connector-frontdesk-asia-pacific
+    networks:
+      - frontdesk-asia-pacific-net
+    restart: unless-stopped
+
+  nginx-frontdesk-asia-pacific:
+    image: nginx:1.27-alpine
+    ports:
+      - "${FRONTDESK_AP_HTTP_PORT:-8090}:80"
+    volumes:
+      # The packaging/frontdesk-bundle ships an nginx config tuned to its
+      # service hostnames (connector + cullis-chat). We point it at a
+      # demo-specific copy so the upstreams resolve to our renamed
+      # services. ``run.sh frontdesk-prep`` materialises this from the
+      # bundle config + service-name patches.
+      - ./nginx/frontdesk-asia-pacific.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - chat-frontdesk-asia-pacific
+    networks:
+      - frontdesk-asia-pacific-net
+    restart: unless-stopped
+
+
+volumes:
+  frontdesk-asia-pacific-connector-data:
+  # ``mastio-b-nginx-certs`` is the same volume mastio-nginx-b mounts. Re-
+  # using it lets us pick up the proxy-b Org CA without copy gymnastics.
+  # External flag tells docker compose this volume is created by the
+  # parent compose (reference/docker-compose.yml).
+  mastio-b-nginx-certs:
+    external: true
+    name: cullis-reference-mastio-b-nginx-certs
+
+
+networks:
+  frontdesk-asia-pacific-net:
+    driver: bridge
+  # Reuses the network created by the reference compose. Joining it lets
+  # connector-frontdesk-asia-pacific reach mastio-nginx-b:9443 by hostname.
+  orgb-internal:
+    external: true
+    name: cullis-reference-orgb-internal
