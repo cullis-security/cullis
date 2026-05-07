@@ -21,6 +21,15 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 
+# Brand selector — `cullis-chat` (consumer, default) or `frontdesk`
+# (enterprise). Resolves to `src/branding/${CULLIS_BRAND}/config.ts`
+# via the @brand Vite alias declared in astro.config.mjs (Phase 3 of
+# the SPA rework). The Frontdesk bundle docker-compose flips this to
+# `frontdesk`; every other consumer of this Dockerfile (CI, desktop
+# installer staging) keeps the default.
+ARG CULLIS_BRAND=cullis-chat
+ENV CULLIS_BRAND=${CULLIS_BRAND}
+
 # Build.
 COPY astro.config.mjs tsconfig.json ./
 COPY src ./src
