@@ -74,14 +74,32 @@ test('inbox: compose form submits and toast confirms', async ({ page }) => {
 });
 
 test('inbox: empty unread tab once seed is acked', async ({ page }) => {
+  // Note: the mock ambassador is a single process shared across the
+  // whole spec file, so by the time this test runs other tests may
+  // have already mutated the seed (acked, sent extras). We don't
+  // assume initial state — instead we ack any remaining unread and
+  // assert the resulting Unread tab is empty.
   await page.goto('/inbox');
 
-  // Seed is initially unread; ack via detail panel.
-  await page.locator('.inbox-row').first().click();
-  await page.getByRole('button', { name: 'Mark read' }).click();
-  await expect(page.getByRole('button', { name: 'Mark read' })).toHaveCount(0);
+  // Ack every row that's still pending. We loop because there can be
+  // a fresh user-sent message from the compose test.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const firstRow = page.locator('.inbox-row').first();
+    if ((await firstRow.count()) === 0) break;
+    await firstRow.click();
+    const markBtn = page.getByRole('button', { name: 'Mark read' });
+    if ((await markBtn.count()) === 0) break;
+    await markBtn.click();
+    await expect(markBtn).toHaveCount(0, { timeout: 5_000 });
+    // Switch to Unread to see if any are left — drives the loop.
+    await page.getByRole('button', { name: 'Unread' }).click();
+    if ((await page.locator('.inbox-row').count()) === 0) break;
+    // Otherwise switch back to All and continue.
+    await page.getByRole('button', { name: 'All' }).click();
+  }
 
-  // Switch to Unread tab — empty state should render
+  // Final assertion: Unread tab is empty.
   await page.getByRole('button', { name: 'Unread' }).click();
   await expect(page.locator('.inbox-empty-title')).toContainText(/caught up/i);
 });
