@@ -7,6 +7,122 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.3.1] — 2026-05-07 (cullis-mastio)
+
+First minor since `mastio-v0.3.0-rc3` (29 April). Folds 116 commits
+worth of work, organised by ADR. The on-disk schema is automatically
+upgraded on first boot via Alembic; no manual migration step is
+required.
+
+### Highlights
+
+- **ADR-016 — LLM Guardian (AI safety layer)** ([#465], [#469], [#473]):
+  fast-path tool dispatch + slow-path adjudication via 5 judge adapters
+  (prompt injection, PII egress, secret leak, loop detection, tool
+  escalation, reach guard). The SDK hooks Guardian into both
+  `send_oneshot` and `decrypt_oneshot`. Off by default; enable per-org
+  via the new admin endpoints.
+- **ADR-017 — AI gateway co-resident with Mastio** ([#435], [#450]):
+  the AI egress path moves from a separate Court component into
+  `mcp_proxy` itself. Streaming SSE on `stream=true` is now real (was
+  a Connector-side fake-stream fallback) via `litellm_embedded` with
+  `include_usage`.
+- **ADR-019 — Cullis Frontdesk** ([#427]–[#434], [#487], [#492]): a
+  packaged container distribution of the SPA + Ambassador for
+  multi-user deployments behind an existing IdP. Includes the new
+  `packaging/frontdesk-bundle/` artefact. The Ambassador now serves
+  the SPA statically (Astro `output: 'static'`) and exposes
+  single-mode + shared-mode session routes on the Connector itself.
+- **ADR-020 — User principal + four quadrants** ([#444], [#476]–[#478],
+  [#481]–[#484], [#492]): user principals are first-class citizens
+  alongside agents and workloads. New `principal_type` column on
+  `audit_log`, new `reach_consents` table gating A2A / A2U / U2A / U2U
+  policy, new `user_inbox_messages` primitive. Bindings are now keyed
+  by `(principal_id, principal_type)` so a user and a workload sharing
+  a name no longer collide.
+- **ADR-021 — Frontdesk shared mode + per-user KMS** ([#412]–[#418]):
+  the Ambassador can now multiplex many users behind a single
+  container, with a new `UserPrincipalKMS` protocol (embedded /
+  Vault / AWS-KMS / Azure-KV adapters) provisioning each user's
+  signing key on first SSO. New endpoint `POST /v1/principals/csr`
+  on the Mastio mints user certs from CSRs; `app/auth/mastio_countersig.py`
+  now exempts user principals from the per-login counter-signature
+  (the cert *is* the Mastio's vouch — issuing a fresh signature per
+  request would require the user's private key resident at the
+  Mastio, which the KMS model forbids).
+- **Insurance demo backend** ([#475], [#480], [#492]): the reference
+  scenario at `reference/scenarios/insurance-demo/` now stands up an
+  end-to-end multi-surface demo with Marco / Lucia (IT) and Kenji
+  (JP) personas across mediterranean and asia-pacific orgs. The
+  Frontdesk identity bootstrap phase in `seed/seed.py` mints an
+  agent cert via BYOCA + writes the four-file identity drop into
+  the Connector's volume.
+
+### Tests
+
+- **Tier 2 cross-org NixOS scenario** ([#446]–[#449], [#456], [#457],
+  [#474]): four-VM scenario (Roma + San Francisco + Tokyo + Court)
+  exercising real federation publish + cross-org A2A oneshot
+  end-to-end. Replaces the docker-compose sandbox path for the
+  cross-org-policy regression suite.
+- **Mock LLM + mock MCP postgres for tier1 demo** ([#452]): mockable
+  upstream lets the demo run without an Anthropic key or a live
+  Postgres.
+
+### Migrations (auto-applied on first boot)
+
+- `audit_log.principal_type` column (ADR-020 Phase 2)
+- `reach_consents` table (ADR-020 Phase 3)
+- `user_inbox_messages` table (ADR-020 Phase 4)
+- `user_principals` table (ADR-021 PR2)
+- audit chain `UNIQUE(org_id, chain_seq)` for multi-worker safety
+
+### Breaking
+
+- The `audit_log` JSON schema gains a `principal_type` field. Consumers
+  that strict-validate on the row shape must accept the new field.
+- `Binding` rows are now keyed by `(principal_id, principal_type)`. If
+  you wrote tooling that joined on `principal_id` alone, add the
+  `principal_type` filter.
+
+[#412]: https://github.com/cullis-security/cullis/pull/412
+[#413]: https://github.com/cullis-security/cullis/pull/413
+[#414]: https://github.com/cullis-security/cullis/pull/414
+[#416]: https://github.com/cullis-security/cullis/pull/416
+[#417]: https://github.com/cullis-security/cullis/pull/417
+[#418]: https://github.com/cullis-security/cullis/pull/418
+[#427]: https://github.com/cullis-security/cullis/pull/427
+[#428]: https://github.com/cullis-security/cullis/pull/428
+[#429]: https://github.com/cullis-security/cullis/pull/429
+[#430]: https://github.com/cullis-security/cullis/pull/430
+[#431]: https://github.com/cullis-security/cullis/pull/431
+[#432]: https://github.com/cullis-security/cullis/pull/432
+[#434]: https://github.com/cullis-security/cullis/pull/434
+[#435]: https://github.com/cullis-security/cullis/pull/435
+[#444]: https://github.com/cullis-security/cullis/pull/444
+[#446]: https://github.com/cullis-security/cullis/pull/446
+[#448]: https://github.com/cullis-security/cullis/pull/448
+[#449]: https://github.com/cullis-security/cullis/pull/449
+[#450]: https://github.com/cullis-security/cullis/pull/450
+[#452]: https://github.com/cullis-security/cullis/pull/452
+[#456]: https://github.com/cullis-security/cullis/pull/456
+[#457]: https://github.com/cullis-security/cullis/pull/457
+[#465]: https://github.com/cullis-security/cullis/pull/465
+[#469]: https://github.com/cullis-security/cullis/pull/469
+[#473]: https://github.com/cullis-security/cullis/pull/473
+[#474]: https://github.com/cullis-security/cullis/pull/474
+[#475]: https://github.com/cullis-security/cullis/pull/475
+[#476]: https://github.com/cullis-security/cullis/pull/476
+[#477]: https://github.com/cullis-security/cullis/pull/477
+[#478]: https://github.com/cullis-security/cullis/pull/478
+[#480]: https://github.com/cullis-security/cullis/pull/480
+[#481]: https://github.com/cullis-security/cullis/pull/481
+[#482]: https://github.com/cullis-security/cullis/pull/482
+[#483]: https://github.com/cullis-security/cullis/pull/483
+[#484]: https://github.com/cullis-security/cullis/pull/484
+[#487]: https://github.com/cullis-security/cullis/pull/487
+[#492]: https://github.com/cullis-security/cullis/pull/492
+
 ## [v0.1.3] — 2026-05-01 (cullis-sdk)
 
 ### Security
