@@ -10,15 +10,16 @@
 
 import IdentityBadge from './IdentityBadge.tsx';
 import ModelPicker from './ModelPicker.tsx';
+import brand from '@brand/config';
 
 const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
 ---
 
 <header class="topbar">
-  <a class="brand" href={import.meta.env.BASE_URL} aria-label="Cullis Chat home">
-    <img src={`${import.meta.env.BASE_URL}cullis-mark.svg`} alt="" width="26" height="26" />
+  <a class="brand" href={import.meta.env.BASE_URL} aria-label={brand.ariaHome}>
+    <img src={`${import.meta.env.BASE_URL}${brand.logoMark}`} alt="" width="26" height="26" />
     <span class="wordmark">
-      Cullis <span class="brand-tail">Chat</span>
+      {brand.brandHead} <span class="brand-tail">{brand.brandTail}</span>
     </span>
   </a>
 

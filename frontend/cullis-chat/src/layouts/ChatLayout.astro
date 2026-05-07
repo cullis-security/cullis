@@ -11,6 +11,7 @@ import '../styles/globals.css';
 import TopBar from '../components/TopBar.astro';
 import SidebarLeft from '../components/SidebarLeft.astro';
 import ChatApp from '../components/ChatApp.tsx';
+import brand from '@brand/config';
 
 interface Props {
   title?: string;
@@ -18,8 +19,8 @@ interface Props {
 }
 
 const {
-  title = 'Cullis Chat',
-  description = 'Identity-aware chat for Cullis Frontdesk. Every message is signed, audited, and traceable.',
+  title = brand.layoutTitle,
+  description = brand.layoutDescription,
 } = Astro.props;
 ---
 
@@ -33,7 +34,7 @@ const {
     <meta name="description" content={description} />
     <meta name="referrer" content="same-origin" />
     <title>{title}</title>
-    <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}cullis-mark.svg`} />
+    <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}${brand.logoMark}`} />
   </head>
   <body class="app-shell">
     <TopBar />
