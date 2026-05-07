@@ -1,22 +1,20 @@
 """``POST /v1/guardian/inspect`` — bidirectional content inspection (ADR-016).
 
-Phase 1 (foundation) wires the contract end-to-end: mTLS-authenticated
-request, validated body, persisted audit row, signed ticket, response
-shaped per ADR. The endpoint always returns ``decision=pass`` because
-no inspection tools are registered yet — the Phase 2 plugin owns the
-actual logic.
+Phase 2 (this module): the endpoint now iterates the fast-path tools
+registered in ``mcp_proxy.guardian.registry`` and merges their
+verdicts (block > redact > pass), then enqueues a copy of the payload
+on the slow-path hook (when the enterprise plugin has set one). The
+public core stays adapter-agnostic — slow-path judges live in the
+enterprise ``llm_guardian`` plugin and are wired via
+``set_slow_path_hook`` at plugin startup.
 
-Locking the wire shape now lets:
-
-- the SDK author (Phase 3) develop against a real response, including
-  ticket verification, before any tool exists;
-- third-party adapter authors (Lakera, Portkey, NeMo, …) plug into the
-  ``mcp_proxy.guardian.registry`` without forking the proxy;
-- the dashboard (Phase 6) and audit timeline rely on a stable
-  ``guardian.inspect`` event in ``local_audit`` from day one.
+The wire contract is unchanged from Phase 1: same request body, same
+response shape, same audit row. Existing SDK clients (Phase 3) keep
+working without any change.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -29,6 +27,8 @@ from pydantic import BaseModel, Field
 from mcp_proxy.auth.dpop_client_cert import get_agent_from_dpop_client_cert
 from mcp_proxy.config import get_settings
 from mcp_proxy.guardian.audit import record_inspection
+from mcp_proxy.guardian.registry import ToolResult, registered_tools
+from mcp_proxy.guardian.slow_path import SlowPathPayload, enqueue_slow_path
 from mcp_proxy.guardian.ticket import GuardianTicketError, sign_ticket
 from mcp_proxy.models import InternalAgent
 
@@ -92,14 +92,25 @@ async def inspect(
         ) from exc
 
     audit_id = uuid.uuid4().hex
-    decision: Literal["pass", "redact", "block"] = "pass"
 
-    # Phase 1: no fast-path tools registered. Phase 2 (plugin) iterates
-    # ``mcp_proxy.guardian.registry.registered_tools`` here, dispatches
-    # each in parallel via asyncio.gather, and merges the worst decision
-    # into the response. The audit detail at that point will carry the
-    # per-tool reasons; for now ``reasons`` stays empty.
-    _ = payload  # tools will read this; silence linter for now
+    # ── Fast-path dispatch (Phase 2) ────────────────────────────────
+    #
+    # Run every registered tool for the request direction (plus the
+    # ``both``-direction tools) in parallel. Merge verdicts using a
+    # block > redact > pass ordering so the strictest tool wins; on
+    # redact, the latest non-None ``redacted_payload`` is forwarded
+    # downstream. Reasons accumulate across all firing tools so the
+    # audit row carries the full triage signal.
+    fast_path_tools = registered_tools(direction=req.direction)
+    ctx = {
+        "agent_id": agent.agent_id,
+        "peer_agent_id": req.peer_agent_id,
+        "msg_id": req.msg_id,
+        "direction": req.direction,
+    }
+    decision, redacted_payload, reasons = await _run_fast_path(
+        tools=fast_path_tools, payload=payload, ctx=ctx,
+    )
 
     try:
         ticket, ticket_exp = sign_ticket(
@@ -129,24 +140,94 @@ async def inspect(
             peer_agent_id=req.peer_agent_id,
             msg_id=req.msg_id,
             org_id=settings.org_id,
-            reasons=[],
-            extra={"content_type": req.content_type, "phase": "foundation"},
+            reasons=reasons,
+            extra={
+                "content_type": req.content_type,
+                "phase": "fast_path",
+                "tools_run": [t.name for t in fast_path_tools],
+            },
         )
     except Exception:
         # Audit failure must not silently drop the decision; log loudly,
         # but still return the ticket — the SDK has already paid the
-        # round trip and an audit retry happens in the background
-        # writer in Phase 4. Phase 1 just logs.
+        # round trip. The slow-path queue in the enterprise plugin
+        # also writes its own per-judge rows asynchronously.
         _log.exception(
             "guardian audit write failed agent=%s msg_id=%s",
             agent.agent_id, req.msg_id,
+        )
+
+    # ── Slow-path enqueue (Phase 4 hook, populated by enterprise plugin) ─
+    enqueue_slow_path(SlowPathPayload(
+        audit_id=audit_id,
+        direction=req.direction,
+        agent_id=agent.agent_id,
+        peer_agent_id=req.peer_agent_id,
+        msg_id=req.msg_id,
+        # Pass the redacted form when we have one — the slow-path
+        # judges should see the same bytes downstream eventually does.
+        payload=redacted_payload if redacted_payload is not None else payload,
+    ))
+
+    redacted_b64: str | None = None
+    if redacted_payload is not None:
+        redacted_b64 = (
+            base64.urlsafe_b64encode(redacted_payload).rstrip(b"=").decode("ascii")
         )
 
     return InspectResponse(
         decision=decision,
         ticket=ticket,
         ticket_exp=ticket_exp,
-        redacted_payload_b64=None,
+        redacted_payload_b64=redacted_b64,
         audit_id=audit_id,
-        reasons=[],
+        reasons=[InspectReason(**r) for r in reasons if "tool" in r and "match" in r],
     )
+
+
+async def _run_fast_path(
+    *, tools: list, payload: bytes, ctx: dict,
+) -> tuple[Literal["pass", "redact", "block"], bytes | None, list[dict]]:
+    """Run every fast-path tool concurrently, merge worst-decision-wins.
+
+    Tools that raise are recorded in the reasons list as
+    ``tool=<name> match=tool_error:<class>`` so a broken tool does not
+    silently swallow the audit signal. The endpoint still returns a
+    decision (the strictest seen among the surviving tools).
+    """
+    if not tools:
+        return "pass", None, []
+
+    async def _safe_eval(t):
+        try:
+            return t, await t.evaluate(payload, ctx), None
+        except Exception as exc:
+            return t, None, exc
+
+    results = await asyncio.gather(*(_safe_eval(t) for t in tools))
+
+    decision: Literal["pass", "redact", "block"] = "pass"
+    redacted_payload: bytes | None = None
+    reasons: list[dict] = []
+    for tool, result, exc in results:
+        if exc is not None:
+            reasons.append({
+                "tool": getattr(tool, "name", "<unnamed>"),
+                "match": f"tool_error:{type(exc).__name__}",
+            })
+            continue
+        if not isinstance(result, ToolResult):
+            continue
+        for r in result.reasons or []:
+            reasons.append(r)
+        if result.decision == "block":
+            decision = "block"
+            # Block wins — clear any redaction the previous tool returned;
+            # we never want to deliver redacted bytes when another tool
+            # said the whole thing must not pass.
+            redacted_payload = None
+        elif result.decision == "redact" and decision != "block":
+            decision = "redact"
+            if result.redacted_payload is not None:
+                redacted_payload = result.redacted_payload
+    return decision, redacted_payload, reasons

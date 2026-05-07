@@ -126,7 +126,8 @@ async def test_inspect_writes_audit_row(app):
     assert detail["peer_agent_id"] == "orgb::bob"
     assert detail["msg_id"] == "msg-test-1"
     assert detail["content_type"] == "application/json+a2a-payload"
-    assert detail["phase"] == "foundation"
+    assert detail["phase"] == "fast_path"
+    assert detail["tools_run"] == []
 
 
 @pytest.mark.asyncio
