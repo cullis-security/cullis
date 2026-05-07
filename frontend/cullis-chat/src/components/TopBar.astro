@@ -63,7 +63,7 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     align-items: center;
     height: var(--topbar-h);
     padding: 0 1.4rem;
-    background: rgba(5, 5, 8, 0.85);
+    background: rgba(10, 15, 26, 0.85);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
     border-bottom: 1px solid var(--border-subtle);
@@ -113,24 +113,32 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
 
   /* ModelPicker — global rules so they apply to the React island
      (Astro scoped styles don't reach into mounted React subtrees). */
+  /* Model picker — raised ghost control. Subtle border + relief shadow,
+     no cyan focus ring (the SEND button is the only cyan-emphasis surface). */
   :global(.model-picker) {
     display: inline-flex;
     align-items: center;
-    gap: 0.55rem;
-    padding: 0.4rem 0.75rem;
+    gap: 0.6rem;
+    padding: 0.45rem 0.85rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border-medium);
-    transition: border-color var(--t-base) ease;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-button);
+    transition: border-color var(--t-fast) var(--ease-soft),
+                background var(--t-fast) var(--ease-soft);
   }
 
   :global(.model-picker:hover),
   :global(.model-picker:focus-within) {
-    border-color: var(--accent-cyan);
+    border-color: var(--border-strong);
+    background: var(--bg-card);
   }
 
   :global(.model-picker .folio) {
-    border-right: 1px solid var(--border-subtle);
-    padding-right: 0.55rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    color: var(--text-tertiary);
+    padding-right: 0.4rem;
   }
 
   :global(.model-picker select) {
@@ -138,20 +146,21 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     background: transparent;
     border: none;
     color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    letter-spacing: 0.04em;
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: 500;
+    letter-spacing: 0;
     cursor: pointer;
-    padding: 0.1rem 1.5rem 0.1rem 0;
-    background-image: linear-gradient(45deg, transparent 50%, var(--accent-cyan) 50%),
-                      linear-gradient(135deg, var(--accent-cyan) 50%, transparent 50%);
-    background-position: calc(100% - 12px) 50%, calc(100% - 6px) 50%;
-    background-size: 6px 6px;
+    padding: 0.1rem 1.4rem 0.1rem 0;
+    /* Single chevron — clean dropdown indicator. */
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8d9b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+    background-position: right 0 center;
+    background-size: 12px 12px;
     background-repeat: no-repeat;
   }
 
   :global(.model-picker[data-loaded='false']) {
-    opacity: 0.7;
+    opacity: 0.65;
   }
 
   /* Native <option> rendering ignores the parent <select> background
@@ -190,17 +199,20 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     display: inline-flex;
     align-items: center;
     gap: 0.55rem;
-    padding: 0.35rem 0.75rem;
+    padding: 0.4rem 0.8rem;
+    background: var(--bg-elevated);
     border: 1px solid var(--border-medium);
-    border-left: 2px solid var(--accent-cyan);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-button);
   }
 
   :global(.identity-badge-loading) {
-    border-left-color: var(--text-tertiary);
+    opacity: 0.7;
   }
 
   :global(.identity-badge-error) {
-    border-left-color: var(--accent-amber);
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
   }
 
   :global(.identity-badge .folio) {
@@ -231,23 +243,34 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     color: var(--text-tertiary);
   }
 
-  /* Audit toggle — slim icon button matching `.comp-download` family */
+  /* Audit toggle — raised ghost button. */
   .audit-toggle {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
-    padding: 0.35rem 0.65rem;
-    background: transparent;
+    padding: 0.4rem 0.7rem;
+    background: var(--bg-elevated);
     border: 1px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-button);
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all var(--t-base) ease;
+    transition: transform var(--t-fast) var(--ease-soft),
+                box-shadow var(--t-fast) var(--ease-soft),
+                color var(--t-fast) var(--ease-soft),
+                border-color var(--t-fast) var(--ease-soft);
     font-family: var(--font-mono);
   }
 
   .audit-toggle:hover {
     border-color: var(--accent-cyan);
     color: var(--accent-cyan);
+    transform: translateY(-1px);
+  }
+
+  .audit-toggle:active {
+    transform: translateY(0);
+    box-shadow: var(--shadow-button-pressed);
   }
 
   .audit-toggle-icon {
