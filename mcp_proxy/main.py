@@ -939,6 +939,14 @@ app.include_router(admin_mcp_resources_router)
 from mcp_proxy.admin.agents import router as admin_agents_router
 app.include_router(admin_agents_router)
 
+# ADR-020 / ADR-021 — user + workload principal admin lists for the
+# dashboard's Users / Workloads tabs. Workloads are intentionally
+# intra-org only (never federated to Court).
+from mcp_proxy.admin.users import router as admin_users_router
+from mcp_proxy.admin.workloads import router as admin_workloads_router
+app.include_router(admin_users_router)
+app.include_router(admin_workloads_router)
+
 # ADR-011 Phase 1b — BYOCA enrollment endpoint. ``/v1/admin/agents/enroll/byoca``
 # takes a caller-supplied cert/key pair, verifies the chain to the Mastio's
 # Org CA, and emits an API key + optional DPoP binding. Registered here,
