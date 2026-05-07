@@ -49,7 +49,11 @@ services:
     expose: ["7777"]
     environment:
       AMBASSADOR_MODE: shared
-      CULLIS_FRONTDESK_ORG_ID:        ${FRONTDESK_AP_ORG_ID:-asia-pacific}
+      # Backend org_id MUST match the reference compose (orgb), NOT the
+      # display name. JWT sub + SPIFFE SAN are validated against the
+      # Mastio's MCP_PROXY_ORG_ID; mismatch → 401 ``sub mismatch`` on
+      # /v1/auth/token.
+      CULLIS_FRONTDESK_ORG_ID:        ${FRONTDESK_AP_ORG_ID:-orgb}
       CULLIS_FRONTDESK_TRUST_DOMAIN:  ${FRONTDESK_AP_TRUST_DOMAIN:-orgb.test}
       CULLIS_TRUSTED_PROXIES:         ${FRONTDESK_AP_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       CULLIS_FRONTDESK_COOKIE_TTL_S:  3600

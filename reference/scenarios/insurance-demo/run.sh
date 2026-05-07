@@ -69,10 +69,14 @@ cmd_prep_ca() {
     docker cp "$container:/state/orga/ca.pem"     "$STATE_DIR/orga-ca.pem"
     docker cp "$container:/state/orga/ca-key.pem" "$STATE_DIR/orga-ca.key"
     docker cp "$container:/state/orga/org_secret" "$STATE_DIR/orga-org-secret"
+    docker cp "$container:/state/orgb/ca.pem"     "$STATE_DIR/orgb-ca.pem" 2>/dev/null || true
+    docker cp "$container:/state/orgb/ca-key.pem" "$STATE_DIR/orgb-ca.key" 2>/dev/null || true
     docker cp "$container:/state/orgb/org_secret" "$STATE_DIR/orgb-org-secret" 2>/dev/null || true
     chmod 600 "$STATE_DIR/orga-ca.key" "$STATE_DIR/orga-org-secret"
+    [ -f "$STATE_DIR/orgb-ca.key" ] && chmod 600 "$STATE_DIR/orgb-ca.key"
     [ -f "$STATE_DIR/orgb-org-secret" ] && chmod 600 "$STATE_DIR/orgb-org-secret"
     _ok "orga Org CA at $STATE_DIR/orga-ca.{pem,key}"
+    _ok "orgb Org CA at $STATE_DIR/orgb-ca.{pem,key}"
     _ok "org secrets at $STATE_DIR/{orga,orgb}-org-secret (needed for /v1/registry/bindings)"
 }
 

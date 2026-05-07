@@ -532,6 +532,157 @@ def phase_provision_workload(client: httpx.Client) -> None:
             _ok(f"workload orgb::workload::{spec['workload_name']} ready")
 
 
+def phase_provision_frontdesk_connector_identity(client: httpx.Client) -> None:
+    """Phase 4.5 — bootstrap the Frontdesk Connector's own agent identity.
+
+    The shared Ambassador on the Asia-Pacific Frontdesk container needs an
+    enrolled connector identity at ``/root/.cullis/profiles/
+    frontdesk-asia-pacific/identity/`` before it will install (the
+    identity backs the per-request UserProvisioner that mints user
+    certs via /v1/principals/csr). Without it, ``GET /v1/inbox``
+    returns 404 because the ambassador router was never mounted.
+
+    Steps:
+      1. Mint a fresh connector cert/key with the orgb Org CA.
+      2. POST /v1/admin/agents/enroll/byoca on Mastio B (proxy-b)
+         to register the cert; Mastio stores it as the connector's
+         agent_id ``orgb::frontdesk-asia-pacific-connector``.
+      3. Drop ``agent.crt`` + ``agent.key`` + ``ca-chain.pem`` into the
+         Connector volume so the dashboard sees the identity on next
+         boot.
+
+    Idempotent: skips mint+enroll if the identity files already exist
+    in the volume.
+    """
+    _h("Phase 4.5 — bootstrap Frontdesk Connector identity (orgb)")
+    org_ca = STATE_DIR / "orgb-ca.pem"
+    org_ca_key = STATE_DIR / "orgb-ca.key"
+    if not (org_ca.exists() and org_ca_key.exists()):
+        _fail(
+            "missing orgb Org CA — run ./run.sh prep-ca to copy it from "
+            "the bootstrap-state volume",
+        )
+        raise SystemExit(1)
+
+    # Volume is named by docker compose: <project>_<volume_name>.
+    # We address it through a helper container that mounts the volume
+    # read-write.
+    volume_name = "cullis-reference_frontdesk-asia-pacific-connector-data"
+    profile = "frontdesk-asia-pacific"
+    # Volume mounts at /data inside the helper container; the connector
+    # mounts the same volume at /root/.cullis. Same files, different
+    # mount points — write under /data, read in the dashboard at /root.
+    target_dir = f"/data/profiles/{profile}/identity"
+
+    # Probe whether the identity is already present.
+    probe = subprocess.run(
+        ["docker", "run", "--rm",
+         "-v", f"{volume_name}:/data",
+         "alpine", "sh", "-c",
+         f"test -f /data/profiles/{profile}/identity/agent.crt && echo PRESENT || echo MISSING"],
+        capture_output=True, text=True,
+    )
+    if "PRESENT" in probe.stdout:
+        _ok(f"connector identity already in volume {volume_name} — skipping")
+        return
+
+    agent_name = "frontdesk-asia-pacific-connector"
+    cert_pem, key_pem = _gen_agent_cert(
+        "orgb", agent_name, "orgb.test", org_ca, org_ca_key,
+    )
+
+    # Enroll on Mastio B as a regular BYOCA agent. The connector's
+    # /v1/principals/csr calls are JWT-authed, so the agent must be
+    # registered.
+    body = {
+        "agent_name":      agent_name,
+        "display_name":    "Asia-Pacific Frontdesk Connector",
+        "capabilities":    ["principals.csr.sign"],
+        "federated":       False,
+        "cert_pem":        cert_pem,
+        "private_key_pem": key_pem,
+    }
+    r = client.post(
+        f"{PROXY_B_URL}/v1/admin/agents/enroll/byoca",
+        json=body, headers=_admin_headers(PROXY_B_URL), timeout=15.0,
+    )
+    if r.status_code == 409:
+        # Disk had no identity (probe said MISSING) but Mastio kept the
+        # row from a prior run with a different cert — same drift bug
+        # we hit on the orga bots. Hard-delete + retry so cert on disk
+        # matches DB.
+        _warn(f"{agent_name} already on Mastio B with stale cert — re-enrolling")
+        agent_id = f"orgb::{agent_name}"
+        client.delete(
+            f"{PROXY_B_URL}/v1/admin/agents/{agent_id}",
+            headers=_admin_headers(PROXY_B_URL), timeout=10.0,
+        )
+        # The DELETE soft-deletes; another POST returns 409 on the
+        # zombie row. Direct DB scrub: drop the row entirely on the
+        # Mastio's sqlite so BYOCA INSERT can land. Reuses the
+        # ``proxy-b`` container we already have a shell into.
+        subprocess.run(
+            ["docker", "compose", "-f",
+             str(REPO_ROOT / "reference" / "docker-compose.yml"),
+             "exec", "-T", "proxy-b",
+             "python3", "-c",
+             "import sqlite3; c=sqlite3.connect('/data/mcp_proxy.db'); "
+             f"c.execute(\"DELETE FROM internal_agents WHERE agent_id='{agent_id}'\"); "
+             "c.commit()"],
+            check=True, capture_output=True,
+        )
+        r = client.post(
+            f"{PROXY_B_URL}/v1/admin/agents/enroll/byoca",
+            json=body, headers=_admin_headers(PROXY_B_URL), timeout=15.0,
+        )
+        if r.status_code != 201:
+            _fail(f"BYOCA re-enroll {agent_name}: HTTP {r.status_code} {r.text[:200]}")
+            raise SystemExit(1)
+        _ok(f"connector {agent_name} re-enrolled on Mastio B (fresh cert)")
+    elif r.status_code != 201:
+        _fail(f"BYOCA enroll {agent_name}: HTTP {r.status_code} {r.text[:200]}")
+        raise SystemExit(1)
+    else:
+        _ok(f"connector {agent_name} enrolled on Mastio B")
+
+    # Drop cert + key + ca-chain into the volume. The Connector reads
+    # ``identity/agent.crt`` + ``identity/agent.key`` + ``identity/
+    # ca-chain.pem`` per cullis_connector/config.py. Each file goes
+    # in its own ``docker run`` so stdin isn't multiplexed (a NUL-split
+    # heredoc was tempting but ``cat > file`` consumes all stdin).
+    ca_chain = org_ca.read_text()
+    # ``metadata.json`` is what ``CullisClient.from_connector`` keys off
+    # — the SDK's ``UserProvisioner`` calls it on every CSR sign and
+    # raises ``FileNotFoundError`` without it. Minimal viable shape.
+    metadata = json.dumps({
+        "agent_id":     f"orgb::{agent_name}",
+        "site_url":     "https://mastio-nginx-b:9443",
+        "capabilities": ["principals.csr.sign"],
+        "issued_at":    time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, indent=2)
+    for fname, content, mode in (
+        ("agent.crt", cert_pem, "644"),
+        ("agent.key", key_pem,  "600"),
+        ("ca-chain.pem", ca_chain, "644"),
+        ("metadata.json", metadata, "644"),
+    ):
+        sub = subprocess.run(
+            ["docker", "run", "--rm", "-i",
+             "-v", f"{volume_name}:/data",
+             "alpine", "sh", "-c",
+             f"mkdir -p {target_dir} && cat > {target_dir}/{fname} && "
+             f"chmod {mode} {target_dir}/{fname}"],
+            input=content, capture_output=True, text=True,
+        )
+        if sub.returncode != 0:
+            _fail(f"writing {fname} failed: {sub.stderr[:200]}")
+            raise SystemExit(1)
+    _ok(
+        f"connector identity dropped at /root/.cullis/profiles/{profile}/identity "
+        f"in {volume_name}",
+    )
+
+
 def phase_provision_resources(client: httpx.Client) -> None:
     _h("Phase 5 — provision MCP resource (claims-db)")
     for spec in MEDITERRANEAN_RESOURCES:
@@ -676,6 +827,7 @@ def main() -> int:
         phase_bind_orga_agents_on_court(client)
         phase_provision_user_principals(client)
         phase_provision_workload(client)
+        phase_provision_frontdesk_connector_identity(client)
         phase_provision_resources(client)
     phase_seed_claims_db()
     phase_grant_reach_consents()
