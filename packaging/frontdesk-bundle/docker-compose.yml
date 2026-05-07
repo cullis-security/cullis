@@ -111,9 +111,17 @@ services:
     # /v1/* proxying to the Connector lives in the outer nginx layer
     # below; this inner container only serves the prerendered HTML +
     # bundled JS/CSS.
+    #
+    # CULLIS_BRAND build arg flips the SPA brand identity at compile
+    # time (Phase 3 of the SPA rework, see frontend/cullis-chat/
+    # src/branding/). This bundle is the Frontdesk enterprise surface
+    # so the value is hardcoded; the consumer Cullis Chat build (CI,
+    # desktop installer staging) keeps the Dockerfile default.
     build:
       context: ../../frontend/cullis-chat
       dockerfile: Dockerfile
+      args:
+        CULLIS_BRAND: frontdesk
     expose:
       - "8080"
     depends_on:
