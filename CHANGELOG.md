@@ -51,12 +51,14 @@ required.
   request would require the user's private key resident at the
   Mastio, which the KMS model forbids).
 - **Insurance demo backend** ([#475], [#480], [#492]): the reference
-  scenario at `reference/scenarios/insurance-demo/` now stands up an
-  end-to-end multi-surface demo with Marco / Lucia (IT) and Kenji
-  (JP) personas across mediterranean and asia-pacific orgs. The
-  Frontdesk identity bootstrap phase in `seed/seed.py` mints an
-  agent cert via BYOCA + writes the four-file identity drop into
-  the Connector's volume.
+  scenario stands up an end-to-end multi-surface demo with Marco /
+  Lucia (IT) and Kenji (JP) personas across mediterranean and
+  asia-pacific orgs. The Frontdesk identity bootstrap phase mints an
+  agent cert via BYOCA + writes the four-file identity drop into the
+  Connector's volume. The scenario sources are kept locally for the
+  current release cycle and will be re-published once they stabilise
+  on the public quickstart shape; the public demo entry point is
+  `sandbox/demo.sh`.
 
 ### Tests
 

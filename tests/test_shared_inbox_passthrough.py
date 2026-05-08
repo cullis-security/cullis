@@ -4,7 +4,7 @@ The Frontdesk shared ambassador exposes ``GET /v1/inbox``, ``POST
 /v1/inbox/{id}/ack`` and ``POST /v1/inbox/{id}/archive`` as broker-
 direct passthroughs (the user's own cert+key authenticate at the
 broker, no Mastio hop). The full end-to-end behaviour is exercised
-in the live smoke against ``reference/demo.sh full``; these tests
+in the live smoke against ``sandbox/demo.sh full``; these tests
 cover the contract surface that is unit-testable without a running
 broker:
 

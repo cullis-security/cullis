@@ -1,4 +1,0 @@
-aiosqlite==0.20.0
-sqlalchemy>=2.0.36
-alembic>=1.18.0
-asyncpg>=0.30.0

@@ -146,11 +146,13 @@ cullis_connector/  Cullis Connector (desktop app)
 cullis_sdk/        Python SDK + MCP server
 sdk-ts/            TypeScript SDK
 alembic/           Court database migrations
-tests/             Unit + integration + e2e tests
-sandbox/ Full-stack demo (SPIRE, Keycloak, Vault, Postgres)
-deploy/            Helm chart, Docker Compose
+sandbox/           Public quickstart demo (SPIRE, Keycloak, Vault, Postgres)
+deploy/            Helm chart, Docker Compose, env templates
 enterprise-kit/    BYOCA guide, OPA policy bundles, PDP template
 docs/              cullis.io site source + ops runbook
+tests/             Unit, integration, e2e tests
+demo_network/      Test infrastructure for the CI smoke gate (federation
+                   + standalone matrix). Not a user-facing demo.
 ```
 
 > [!NOTE]
