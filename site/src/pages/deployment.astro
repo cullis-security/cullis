@@ -287,6 +287,30 @@ import Layout from '../layouts/Layout.astro';
       <div class="install-grid">
         <article class="install-card reveal" data-delay="1">
           <div class="install-head">
+            <div class="install-label">For one host, one curl</div>
+            <h3>Bundle install</h3>
+          </div>
+          <pre><code>curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-mastio-bundle.tar.gz | tar xz
+cd cullis-mastio-bundle &amp;&amp; ./deploy.sh
+# then, in a sibling dir:
+curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-frontdesk-bundle.tar.gz | tar xz
+cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
+          <p>
+            Two prebuilt bundles, no repo clone. The Mastio bundle brings up
+            the org gateway with a self-signed Org CA and the admin
+            dashboard; the Frontdesk bundle brings up the multi-user chat
+            container and enrolls itself against the Mastio. Pulls images
+            from ghcr.io, sensible defaults, opt-in production overrides.
+          </p>
+          <ul class="install-specs">
+            <li><span class="k">Time</span><span>~2 minutes first boot</span></li>
+            <li><span class="k">Requires</span><span>Docker + Compose v2 · ~2 GB RAM</span></li>
+            <li><span class="k">Best for</span><span>single-host evaluation or pilot</span></li>
+          </ul>
+        </article>
+
+        <article class="install-card reveal" data-delay="2">
+          <div class="install-head">
             <div class="install-label">For evaluation</div>
             <h3>Sandbox demo</h3>
           </div>
@@ -306,9 +330,9 @@ cd cullis
           </ul>
         </article>
 
-        <article class="install-card featured reveal" data-delay="2">
+        <article class="install-card featured reveal" data-delay="3">
           <div class="install-head">
-            <div class="install-label">For a single host</div>
+            <div class="install-label">For a single host with TLS</div>
             <h3>Self-host · Compose</h3>
           </div>
           <pre><code>git clone https://github.com/cullis-security/cullis
@@ -329,7 +353,7 @@ cd cullis
           </ul>
         </article>
 
-        <article class="install-card reveal" data-delay="3">
+        <article class="install-card reveal" data-delay="4">
           <div class="install-head">
             <div class="install-label">For Kubernetes</div>
             <h3>Helm chart</h3>
