@@ -2,13 +2,17 @@
 # Cullis Frontdesk — multi-user shared-mode container bundle (ADR-019 Phase 7)
 # =============================================================================
 #
-# Three services on a private docker network:
+# Three services on a private docker network. All three pull from
+# ghcr.io — the bundle no longer requires a repo checkout or local
+# ``docker build``.
 #
 #   nginx          80   reverse proxy + (dev) fake-SSO injecting X-Forwarded-User
 #     ↓
-#   cullis-chat    4321 Astro SPA (chat UI)
+#   cullis-chat    8080 nginx-static SPA, Frontdesk-branded build
+#                       (ghcr.io/cullis-security/cullis-chat-frontdesk)
 #     ↓
 #   connector      7777 cullis-connector dashboard + Ambassador (shared mode)
+#                       (ghcr.io/cullis-security/cullis-connector)
 #     ↓ DPoP+mTLS
 #   [Cullis Mastio cloud — out of scope for this bundle]
 #
@@ -16,22 +20,24 @@
 #
 #   1. A Mastio is reachable from this host (separate deploy, see
 #      packaging/mastio-bundle/).
-#   2. The Connector has been enrolled against that Mastio. Enrollment
-#      writes identity material to the ``connector_data`` volume; without
-#      it the Ambassador comes up but cannot reach Mastio.
+#   2. A trust anchor PEM for the Mastio's TLS certificate, exported as
+#      CULLIS_FRONTDESK_CA_BUNDLE_HOST in frontdesk.env. Required.
+#   3. The Connector has been enrolled against that Mastio. Enrollment
+#      writes identity material to ``./connector_data``; without it the
+#      Ambassador comes up but cannot reach Mastio.
 #
 #      One-shot enrollment (run once before ``docker compose up``):
 #
 #        docker run --rm -it \
-#          -v $(pwd)/connector_data:/root/.cullis \
-#          ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-latest} \
+#          -v $(pwd)/connector_data:/home/cullis/.cullis \
+#          ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0-rc1} \
 #          enroll --site https://mastio.acme.local:9443 \
 #                 --code <INVITE_CODE_FROM_MASTIO_ADMIN> \
 #                 --profile frontdesk
 #
 # Usage:
 #
-#   cp frontdesk.env.example frontdesk.env       # then edit org_id, trust_domain
+#   cp frontdesk.env.example frontdesk.env       # then edit required values
 #   docker compose --env-file frontdesk.env up -d
 #   open http://localhost:8080?user=mario        # demo user switch (dev only)
 #
@@ -43,11 +49,7 @@
 services:
 
   connector:
-    build:
-      context: .
-      dockerfile: Dockerfile.connector
-      args:
-        CONNECTOR_VERSION: ${CONNECTOR_VERSION:-latest}
+    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0-rc1}
     # ``dashboard`` mounts the Ambassador router via web.py lifespan when
     # AMBASSADOR_MODE=shared (cullis_connector/web.py:152). Bind to all
     # interfaces inside the container so nginx can reach it.
@@ -86,8 +88,14 @@ services:
       # writes survive container recreation.
       - ${CONNECTOR_DATA_DIR:-./connector_data}:/home/cullis/.cullis
       # CA bundle for Mastio TLS verification. Path inside the container
-      # is referenced by SSL_CERT_FILE / REQUESTS_CA_BUNDLE.
-      - ${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-../../imp/official_sandbox/certs/cullis-bundle.pem}:/etc/cullis/ca-bundle.pem:ro
+      # is referenced by SSL_CERT_FILE / REQUESTS_CA_BUNDLE. Required —
+      # docker compose substitution leaves the path empty if the env var
+      # is unset, which causes the bind mount to fail with a clear error
+      # at ``up`` time rather than producing a silent TLS handshake
+      # failure later. Export ``CULLIS_FRONTDESK_CA_BUNDLE_HOST`` in
+      # frontdesk.env to point at your Mastio's CA chain (or the org's
+      # corporate root if Mastio TLS is rooted there).
+      - ${CULLIS_FRONTDESK_CA_BUNDLE_HOST:?must point to your Mastio CA chain PEM}:/etc/cullis/ca-bundle.pem:ro
     # In dev with the Mastio published on the docker host (rather than a
     # routable hostname), the Connector reaches it via host.docker.internal.
     # Production deployments route over a real DNS name; this entry is a
@@ -96,32 +104,16 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - frontdesk_net
-      # Join the sandbox's orga-internal network so the Connector can
-      # reach mastio-nginx-a:9443 by hostname. official_sandbox-only:
-      # production has the Mastio behind a real DNS / routable IP.
-      - sandbox-orga
     restart: unless-stopped
 
   cullis-chat:
-    # Build from source for now; future Phase 8.5 publishes
-    # ghcr.io/cullis-security/cullis-chat and we switch to image:.
-    #
-    # ADR-019 Phase 8b-2b: this image is now nginx-static (port 8080),
-    # not the Astro Node server (port 4321). The /api/session/* and
-    # /v1/* proxying to the Connector lives in the outer nginx layer
-    # below; this inner container only serves the prerendered HTML +
-    # bundled JS/CSS.
-    #
-    # CULLIS_BRAND build arg flips the SPA brand identity at compile
-    # time (Phase 3 of the SPA rework, see frontend/cullis-chat/
-    # src/branding/). This bundle is the Frontdesk enterprise surface
-    # so the value is hardcoded; the consumer Cullis Chat build (CI,
-    # desktop installer staging) keeps the Dockerfile default.
-    build:
-      context: ../../frontend/cullis-chat
-      dockerfile: Dockerfile
-      args:
-        CULLIS_BRAND: frontdesk
+    # Frontdesk-branded SPA published by release-chat.yml on every
+    # ``chat-vX.Y.Z`` tag (matrix build, see ``release-chat.yml``).
+    # The image is nginx-static on port 8080 serving prerendered HTML
+    # + bundled JS/CSS. /api/session/* and /v1/* proxying to the
+    # Connector happens in the outer nginx layer below; this inner
+    # container only serves static assets.
+    image: ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION:-0.1.0-rc1}
     expose:
       - "8080"
     depends_on:
@@ -150,8 +142,3 @@ volumes:
 networks:
   frontdesk_net:
     driver: bridge
-  # External network owned by the sandbox/ compose. The Frontdesk
-  # connector joins it to reach mastio-nginx-a:9443 by hostname.
-  sandbox-orga:
-    name: cullis-sandbox-orga
-    external: true
