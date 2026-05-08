@@ -48,6 +48,25 @@
 
 services:
 
+  # ── Init: ensure connector_data ownership matches the cullis user ──
+  # The cullis-connector image runs as user ``cullis`` (uid 10001).
+  # Docker's bind mount preserves the host directory's owner, which on
+  # Linux is typically the operator's uid (1000). Without this init
+  # step the connector container fails the first write to
+  # /home/cullis/.cullis with ``Permission denied``. Run a tiny busybox
+  # as root to chown the bind target before the connector starts. The
+  # service exits 0 on success and the connector's depends_on gates on
+  # service_completed_successfully.
+  init-permissions:
+    image: busybox:stable
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 10001:10001 /data && echo ok"]
+    volumes:
+      - ${CONNECTOR_DATA_DIR:-./connector_data}:/data
+    restart: "no"
+    networks:
+      - frontdesk_net
+
   connector:
     image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0-rc1}
     # ``dashboard`` mounts the Ambassador router via web.py lifespan when
@@ -97,11 +116,17 @@ services:
       # corporate root if Mastio TLS is rooted there).
       - ${CULLIS_FRONTDESK_CA_BUNDLE_HOST:?must point to your Mastio CA chain PEM}:/etc/cullis/ca-bundle.pem:ro
     # In dev with the Mastio published on the docker host (rather than a
-    # routable hostname), the Connector reaches it via host.docker.internal.
-    # Production deployments route over a real DNS name; this entry is a
-    # no-op there.
+    # routable hostname), the Connector reaches it via either alias.
+    # ``host.docker.internal`` matches the Mastio bundle's default Public
+    # URL (PR #521); ``mastio.local`` is the legacy alias still recorded
+    # in the Mastio's NGINX SAN. Production deployments route over a real
+    # DNS name; both entries are no-ops there.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "mastio.local:host-gateway"
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
     networks:
       - frontdesk_net
     restart: unless-stopped
