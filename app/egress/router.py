@@ -1,106 +1,41 @@
-"""POST /v1/llm/chat — DPoP-authenticated egress to the AI gateway.
+"""DEPRECATED ADR-017 — moved to Mastio.
 
-Mastio strips/ignores any client-supplied identity headers and re-stamps
-the call with the agent_id reconstructed from the DPoP-bound JWT. This
-is the trust boundary: a compromised connector cannot impersonate
-another agent on the gateway dashboard, because the gateway only ever
-sees the Mastio-injected `X-Cullis-Agent` (the connector's own header
-on the same name is overwritten in the dispatcher).
+The Court (``app/``) used to expose ``POST /v1/llm/chat`` and forward
+LLM calls to a managed AI gateway (Portkey / LiteLLM / Kong). After
+PR #435 the AI gateway is owned by Mastio (``mcp_proxy/``), so calls
+from agents must traverse Mastio's DPoP + mTLS + policy + audit gates.
+
+Court keeping a parallel egress endpoint was a zero-trust bypass:
+agents that could reach Court directly would have bypassed Mastio's
+PDP entirely. This module now returns ``410 Gone`` on any call to
+``POST /v1/llm/chat`` so operators hitting it get an actionable hint
+to retarget their clients at Mastio's equivalent endpoint.
+
+The live Mastio implementation lives in
+``mcp_proxy/egress/llm_chat_router.py`` and
+``mcp_proxy/egress/ai_gateway.py``.
 """
 from __future__ import annotations
 
-import logging
-import uuid
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.auth.jwt import get_current_agent
-from app.auth.models import TokenPayload
-from app.config import get_settings
-from app.db.audit import log_event
-from app.db.database import get_db
-from app.egress.ai_gateway import GatewayError, dispatch
-from app.egress.schemas import ChatCompletionRequest, ChatCompletionResponse
-
-_log = logging.getLogger("agent_trust.egress")
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/llm", tags=["llm-egress"])
 
 
-@router.post("/chat", response_model=ChatCompletionResponse)
-async def chat_completion(
-    req: ChatCompletionRequest,
-    p: TokenPayload = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-) -> ChatCompletionResponse:
-    if req.stream:
-        # SSE forwarding lands in Phase 2 once the audit chain is wired
-        # to record streamed token totals at the end-of-stream marker.
-        raise HTTPException(
-            status_code=400,
-            detail="stream=true is not supported in Phase 1.",
-        )
+_GONE_DETAIL = (
+    "POST /v1/llm/chat moved to the Mastio AI gateway. Configure clients "
+    "to call the Mastio's /v1/llm/chat endpoint instead. ADR-017."
+)
 
-    settings = get_settings()
-    trace_id = f"trace_{uuid.uuid4().hex[:16]}"
 
-    try:
-        result = await dispatch(
-            req=req,
-            agent_id=p.agent_id,
-            org_id=p.org,
-            trace_id=trace_id,
-            settings=settings,
-        )
-    except GatewayError as exc:
-        await log_event(
-            db,
-            event_type="egress.llm.request",
-            result="error",
-            agent_id=p.agent_id,
-            org_id=p.org,
-            principal_type=p.principal_type,
-            details={
-                "event": "llm.chat_completion",
-                "principal_id": p.agent_id,
-                "principal_type": p.principal_type,
-                "backend": settings.ai_gateway_backend,
-                "provider": settings.ai_gateway_provider,
-                "model": req.model,
-                "trace_id": trace_id,
-                "reason": exc.reason,
-                "upstream_detail": exc.detail,
-            },
-        )
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={"reason": exc.reason, "trace_id": trace_id},
-        ) from exc
+@router.post("/chat", include_in_schema=False)
+async def chat_completion_gone() -> JSONResponse:
+    """Return HTTP 410 Gone on the legacy Court egress endpoint.
 
-    await log_event(
-        db,
-        event_type="egress.llm.request",
-        result="ok",
-        agent_id=p.agent_id,
-        org_id=p.org,
-        principal_type=p.principal_type,
-        details={
-            "event": "llm.chat_completion",
-            "principal_id": p.agent_id,
-            "principal_type": p.principal_type,
-            "backend": result.backend,
-            "provider": result.provider,
-            "model": result.response.model,
-            "trace_id": trace_id,
-            "upstream_request_id": result.upstream_request_id,
-            "latency_ms": result.latency_ms,
-            "prompt_tokens": result.prompt_tokens,
-            "completion_tokens": result.completion_tokens,
-            "total_tokens": result.prompt_tokens + result.completion_tokens,
-            "cost_usd": result.cost_usd,
-            "cache_hit": False,
-        },
-    )
-
-    return result.response
+    The route stays registered (rather than deleted entirely) so callers
+    discover the relocation hint instead of a generic 404. The dispatch
+    helper that used to call the gateway has been removed; no upstream
+    LLM call is reachable through Court anymore.
+    """
+    return JSONResponse(status_code=410, content={"detail": _GONE_DETAIL})
