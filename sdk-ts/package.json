@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node tests/canonical_json.test.mjs"
+    "test": "npm run build && node tests/canonical_json.test.mjs && node tests/decrypt_payload.test.mjs"
   },
   "dependencies": {
     "jose": "^5.0.0"
