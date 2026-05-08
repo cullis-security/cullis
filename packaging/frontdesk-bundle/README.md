@@ -13,7 +13,7 @@ Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One containe
 ## Prerequisites
 
 1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one. The sibling bundle exports its CA to `../cullis-mastio-bundle/certs/org-ca.pem` when extracted from the release tarball, or `../mastio-bundle/certs/org-ca.pem` when running out of a repo checkout — `./deploy.sh` here picks up either automatically.
-2. **An invite code** issued by your Mastio admin (Mastio dashboard → Enrollments → Create invite, target name = `frontdesk`).
+2. **A Mastio admin who can approve enrollments**. The Connector posts a pending row to `/v1/enrollment/start`; the admin approves it from `Mastio dashboard → Enrollments`. There is no pre-minted invite token — this is a device-code flow.
 3. **A Mastio CA bundle PEM** on the host machine. Auto-detected at `../cullis-mastio-bundle/certs/` (release tarball) or `../mastio-bundle/certs/` (repo); otherwise set `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`.
 4. **Docker Compose v2.20+**. The bundle pulls all three images from `ghcr.io`; no repo checkout or `docker build` required.
 
@@ -26,8 +26,8 @@ Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One containe
 That single command:
 
 1. Generates `frontdesk.env` with sensible same-host defaults if it doesn't exist (auto-detecting the Mastio CA path).
-2. Prompts for the invite code (or accepts `--code <invite>`) and the Mastio site URL (defaults to `https://host.docker.internal:9443` for the same-host topology).
-3. Runs the one-shot enrollment via a throwaway `cullis-connector` container, writing the identity material to `./connector_data/`.
+2. Generates a sensible requester identity (`frontdesk@<trust-domain>`) and the Mastio site URL (defaults to `https://host.docker.internal:9443` for the same-host topology).
+3. Runs the device-code enrollment via a throwaway `cullis-connector` container. The container blocks until the Mastio admin approves the pending row at `/proxy/enrollments`; the script prints the URL where to click. Identity material lands in `./connector_data/`.
 4. `docker compose up -d` and waits until `http://localhost:8080` answers.
 5. Prints the SPA URL and a fake-SSO smoke test command.
 
@@ -36,8 +36,8 @@ Re-runs are idempotent: if `connector_data/profiles/<profile>/identity/metadata.
 ### Non-interactive
 
 ```bash
-# Pre-supply the invite code, skip prompts:
-./deploy.sh --code my-invite-code-from-mastio --site https://mastio.acme.local:9443
+# Override requester identity + site URL:
+./deploy.sh --requester-email ops@acme.local --site https://mastio.acme.local:9443
 
 # Already enrolled out-of-band, just bring the stack up:
 ./deploy.sh --skip-enroll
