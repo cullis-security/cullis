@@ -6,10 +6,8 @@ Supports:
   - Local override file (air-gapped deployments)
   - Automatic cache refresh on key-id miss (with rate limiting)
 """
-import base64
 import json
 import logging
-import re
 import time
 
 import httpx
@@ -29,30 +27,16 @@ _EC_JWK_CURVES = {
 _MIN_REFETCH_INTERVAL = 60  # seconds
 
 
-_B64URL_ALPHABET_RE = re.compile(r"^[A-Za-z0-9_-]*$")
+from mcp_proxy.utils.validation import strict_b64url_decode as _strict_b64url_decode
 
 
 def _b64url_decode(s: str) -> bytes:
-    """Strict base64url decode — tolerates padding, rejects garbage bits.
+    """Strict base64url decode — delegates to ``mcp_proxy.utils.validation``.
 
-    Audit F-C-3: even though JWKS is trusted infra, keeping the decoder
-    identical to the DPoP one here prevents drift if someone later feeds
-    attacker-controlled material through this path.
+    Audit S8: previously inlined; now imports from the single vendored copy
+    in mcp_proxy so all Mastio paths stay in sync.
     """
-    if isinstance(s, bytes):
-        s = s.decode("ascii")
-    stripped = s.rstrip("=")
-    if not _B64URL_ALPHABET_RE.fullmatch(stripped):
-        raise ValueError("base64url contains non-url-safe characters")
-    rem = len(stripped) % 4
-    if rem == 1:
-        raise ValueError("base64url length is not valid (length % 4 == 1)")
-    padded = stripped + ("=" * ((4 - rem) % 4))
-    decoded = base64.urlsafe_b64decode(padded)
-    canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
-    if canonical != stripped:
-        raise ValueError("base64url contains non-canonical trailing bits")
-    return decoded
+    return _strict_b64url_decode(s)
 
 
 def _jwk_to_rsa_public_key(jwk: dict) -> RSAPublicKey:
