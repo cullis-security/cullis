@@ -36,11 +36,15 @@ MODE="interactive"
 FORCE=0
 for arg in "$@"; do
     case "$arg" in
-        --defaults) MODE="defaults" ;;
-        --prod)     MODE="prod" ;;
-        --force)    FORCE=1 ;;
+        --defaults)    MODE="defaults" ;;
+        --prod)        MODE="prod" ;;
+        # ``--interactive`` is the implicit default — accept it as an
+        # explicit alias so operators who type it (or scripts that
+        # always pass an explicit mode) don't get a die.
+        --interactive) MODE="interactive" ;;
+        --force)       FORCE=1 ;;
         --help|-h)
-            echo "Usage: $0 [--defaults|--prod] [--force]"
+            echo "Usage: $0 [--defaults|--interactive|--prod] [--force]"
             exit 0
             ;;
         *) die "Unknown argument: $arg (use --help)" ;;
@@ -61,20 +65,28 @@ fi
 [[ -f "$SCRIPT_DIR/frontdesk.env.example" ]] || die "frontdesk.env.example not found"
 
 # Default Mastio CA path: the sibling Mastio bundle exports its Org CA to
-# ./certs/org-ca.pem when ./deploy.sh runs (PR #520). If that file is on
-# disk next to us we wire it as the trust anchor automatically; otherwise
-# the operator has to provide a path.
+# ./certs/org-ca.pem when ./deploy.sh runs (PR #520). The release tarball
+# extracts as ``cullis-mastio-bundle/`` (release-mastio.yml) but the repo
+# layout is ``packaging/mastio-bundle/``; check both so this works whether
+# the operator extracted the tarball next to ours or is running out of a
+# repo checkout.
 default_ca_bundle() {
-    local sibling="$SCRIPT_DIR/../mastio-bundle/certs/org-ca.pem"
-    if [[ -f "$sibling" ]]; then
-        # Use absolute path so docker compose substitution works regardless
-        # of where the operator invokes ./deploy.sh from.
-        local abs_dir
-        abs_dir="$(cd "$(dirname "$sibling")" && pwd)"
-        echo "${abs_dir}/$(basename "$sibling")"
-    else
-        echo ""
-    fi
+    local candidates=(
+        "$SCRIPT_DIR/../cullis-mastio-bundle/certs/org-ca.pem"
+        "$SCRIPT_DIR/../mastio-bundle/certs/org-ca.pem"
+    )
+    local sibling
+    for sibling in "${candidates[@]}"; do
+        if [[ -f "$sibling" ]]; then
+            # Use absolute path so docker compose substitution works
+            # regardless of where the operator invokes ./deploy.sh from.
+            local abs_dir
+            abs_dir="$(cd "$(dirname "$sibling")" && pwd)"
+            echo "${abs_dir}/$(basename "$sibling")"
+            return
+        fi
+    done
+    echo ""
 }
 
 case "$MODE" in
@@ -92,7 +104,10 @@ case "$MODE" in
         TRUST_DOMAIN="${CULLIS_FRONTDESK_TRUST_DOMAIN:-${ORG_ID}.test}"
         CA_BUNDLE="${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-$(default_ca_bundle)}"
         if [[ -z "$CA_BUNDLE" ]]; then
-            warn "No Mastio CA bundle found at ../mastio-bundle/certs/org-ca.pem"
+            warn "No Mastio CA bundle found next to this bundle."
+            warn "Looked at ../cullis-mastio-bundle/certs/org-ca.pem and"
+            warn "../mastio-bundle/certs/org-ca.pem (depending on whether"
+            warn "you extracted the release tarball or run from a repo)."
             warn "Set CULLIS_FRONTDESK_CA_BUNDLE_HOST in frontdesk.env to a"
             warn "valid path before running ./deploy.sh, otherwise compose"
             warn "will fail at ``up`` time with a clear error."
@@ -114,7 +129,8 @@ case "$MODE" in
         CA_BUNDLE="${CA_BUNDLE:-${ca_prompt_default}}"
         if [[ ! -f "$CA_BUNDLE" ]]; then
             warn "CA bundle path '$CA_BUNDLE' does not exist on disk."
-            warn "Run ../mastio-bundle/deploy.sh first to generate it, or"
+            warn "Run the sibling Mastio bundle's deploy.sh first to"
+            warn "generate it, or"
             warn "edit frontdesk.env later before ./deploy.sh."
         fi
         ;;

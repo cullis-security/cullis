@@ -12,9 +12,9 @@ Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One containe
 
 ## Prerequisites
 
-1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one (the sibling bundle exports its CA to `../mastio-bundle/certs/org-ca.pem`, which `./deploy.sh` here picks up automatically).
+1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one. The sibling bundle exports its CA to `../cullis-mastio-bundle/certs/org-ca.pem` when extracted from the release tarball, or `../mastio-bundle/certs/org-ca.pem` when running out of a repo checkout — `./deploy.sh` here picks up either automatically.
 2. **An invite code** issued by your Mastio admin (Mastio dashboard → Enrollments → Create invite, target name = `frontdesk`).
-3. **A Mastio CA bundle PEM** on the host machine. Auto-detected when the sibling Mastio bundle is at `../mastio-bundle/`; otherwise set `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`.
+3. **A Mastio CA bundle PEM** on the host machine. Auto-detected at `../cullis-mastio-bundle/certs/` (release tarball) or `../mastio-bundle/certs/` (repo); otherwise set `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`.
 4. **Docker Compose v2.20+**. The bundle pulls all three images from `ghcr.io`; no repo checkout or `docker build` required.
 
 ## Quickstart (deploy.sh)
