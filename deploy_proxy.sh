@@ -118,7 +118,7 @@ COMPOSE_FILES=""
 # ── Down early-exit ─────────────────────────────────────────────────────────
 if [[ "$ACTION" == "down" ]]; then
     step "Stopping MCP Proxy"
-    $COMPOSE $COMPOSE_FILES --env-file proxy.env down 2>/dev/null \
+    $COMPOSE $COMPOSE_FILES --env-file deploy/proxy/proxy.env down 2>/dev/null \
         || $COMPOSE $COMPOSE_FILES down
     ok "Proxy stopped"
     exit 0
@@ -127,7 +127,7 @@ fi
 # ── proxy.env — create if missing, validate in prod ─────────────────────────
 step "Environment configuration (proxy.env)"
 
-if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
+if [[ ! -f "$SCRIPT_DIR/deploy/proxy/proxy.env" ]]; then
     warn "proxy.env not found — generating one"
     if [[ "$MODE" == "production" ]]; then
         die "--prod requires proxy.env to exist with real values. Run: BROKER_URL=https://broker.example.com PROXY_PUBLIC_URL=https://proxy.myorg.example.com ./scripts/generate-proxy-env.sh --prod"
@@ -138,7 +138,7 @@ fi
 # ── Pre-flight validation for --prod ────────────────────────────────────────
 if [[ "$MODE" == "production" ]]; then
     _errors=()
-    _load_env() { grep -E "^$1=" "$SCRIPT_DIR/proxy.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+    _load_env() { grep -E "^$1=" "$SCRIPT_DIR/deploy/proxy/proxy.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
     _admin="$(_load_env MCP_PROXY_ADMIN_SECRET)"
     if [[ -z "$_admin" || "$_admin" == "change-me-in-production" ]]; then
@@ -181,8 +181,8 @@ fi
 step "Deploying Cullis MCP Proxy (${MODE}, $([ $SHARED_BROKER -eq 1 ] && echo shared-broker || echo standalone))"
 
 if [[ "$ACTION" == "rebuild" ]]; then
-    echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env build --no-cache${RESET}"
-    $COMPOSE $COMPOSE_FILES --env-file proxy.env build --no-cache
+    echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file deploy/proxy/proxy.env build --no-cache${RESET}"
+    $COMPOSE $COMPOSE_FILES --env-file deploy/proxy/proxy.env build --no-cache
     ok "Images rebuilt"
 fi
 
@@ -195,8 +195,8 @@ if [[ $SHARED_BROKER -eq 1 ]]; then
     fi
 fi
 
-echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up --build -d${RESET}"
-$COMPOSE $COMPOSE_FILES --env-file proxy.env up --build -d
+echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file deploy/proxy/proxy.env up --build -d${RESET}"
+$COMPOSE $COMPOSE_FILES --env-file deploy/proxy/proxy.env up --build -d
 ok "Containers started"
 
 # ── Wait for health ─────────────────────────────────────────────────────────
@@ -210,7 +210,7 @@ step "Waiting for services"
 # self-signed off the Org CA — operators who care about strict
 # verification can extract /var/lib/mastio/nginx-certs/org-ca.crt
 # from the mcp-proxy container and pass --cacert.
-PROXY_PORT="$(grep -E '^MCP_PROXY_PORT=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+PROXY_PORT="$(grep -E '^MCP_PROXY_PORT=' "$SCRIPT_DIR/deploy/proxy/proxy.env" 2>/dev/null | cut -d= -f2-)"
 PROXY_PORT="${PROXY_PORT:-9443}"
 
 echo -n "  Proxy + nginx "
@@ -228,8 +228,8 @@ for i in $(seq 1 60); do
 done
 
 # ── Summary ─────────────────────────────────────────────────────────────────
-BROKER_URL="$(grep -E '^MCP_PROXY_BROKER_URL=' "$SCRIPT_DIR/proxy.env" | cut -d= -f2-)"
-PUBLIC_URL="$(grep -E '^MCP_PROXY_PROXY_PUBLIC_URL=' "$SCRIPT_DIR/proxy.env" | cut -d= -f2-)"
+BROKER_URL="$(grep -E '^MCP_PROXY_BROKER_URL=' "$SCRIPT_DIR/deploy/proxy/proxy.env" | cut -d= -f2-)"
+PUBLIC_URL="$(grep -E '^MCP_PROXY_PROXY_PUBLIC_URL=' "$SCRIPT_DIR/deploy/proxy/proxy.env" | cut -d= -f2-)"
 
 echo ""
 echo -e "${GREEN}${BOLD}MCP Proxy deployed (${MODE}).${RESET}"

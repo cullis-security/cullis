@@ -144,7 +144,7 @@ The sandbox's MCP catalog server reads a handful of `SEED_MCP_*` variables to pr
 
 ## Environment templates
 
-Start from `.env.example` at the repo root and `proxy.env.example` under `mcp_proxy/`. Both carry the complete variable list with commentary; this page is the authoritative definition when the two drift.
+Start from `.env.example` at the repo root and `deploy/proxy/proxy.env.example`. Both carry the complete variable list with commentary; this page is the authoritative definition when the two drift.
 
 For the minimal production Mastio `.env`:
 
