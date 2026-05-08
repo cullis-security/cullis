@@ -7,6 +7,7 @@ the shadow-mode test (commit 8).
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -250,3 +251,39 @@ def test_record_agent_request_ignores_exceptions():
 
     # Exception is swallowed — helper never propagates.
     record_agent_request(_Request(), "agent-a")
+
+
+# ── regression test: L4-H7 atomic bucket counter ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_concurrent_threads_no_lost_increments(engine):
+    """Regression for L4-H7: concurrent record() calls must not lose counts.
+
+    Spawns N=100 threads, each calling record() once for the same agent+bucket.
+    Under the old code the non-atomic read-modify-write could lose increments
+    intermittently (the documented 'traffic_recorder timing flake' CI gotcha).
+    Under the fixed code the final count must be exactly N, deterministically.
+
+    Uses ThreadPoolExecutor so the threads are truly concurrent (not asyncio
+    tasks, which are cooperative and would not expose the race). Asyncio tasks
+    would not exercise the race because they yield only at await points and
+    record() has none.
+    """
+    r = TrafficRecorder(engine)
+    N = 100
+
+    with ThreadPoolExecutor(max_workers=N) as pool:
+        futures = [pool.submit(r.record, "agent-concurrent") for _ in range(N)]
+        for f in futures:
+            f.result()  # re-raise any exception from worker threads
+
+    # All N increments must be accounted for in a single bucket.
+    total = sum(
+        count
+        for buckets in r._buckets.values()
+        for count in buckets.values()
+    )
+    assert total == N, (
+        f"expected {N} increments, got {total}: lost {N - total} under concurrency"
+    )
