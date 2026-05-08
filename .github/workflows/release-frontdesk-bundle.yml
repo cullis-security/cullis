@@ -1,0 +1,170 @@
+# Release pipeline for the Cullis Frontdesk container bundle (ADR-019 Phase 7).
+#
+# Triggered by pushing a tag of the form `frontdesk-bundle-vX.Y.Z`. On
+# tag push:
+#
+#   1. Stage packaging/frontdesk-bundle/ into a dist directory.
+#   2. Package as tar.gz + zip (versioned + stable-name aliases).
+#   3. Create a GitHub Release with the artefacts.
+#
+# The Frontdesk bundle is just configuration: it pulls the Connector
+# and Chat images from ghcr.io at ./deploy.sh time. Those images are
+# released independently by release-connector.yml and release-chat.yml,
+# so this workflow has no Docker build / push step. The bundle's
+# docker-compose.yml defaults (CONNECTOR_VERSION, CHAT_VERSION) are
+# the source of truth for "which combination we tested" — bump them
+# in main before tagging a new bundle release.
+
+name: release-frontdesk-bundle
+
+on:
+  push:
+    tags:
+      - "frontdesk-bundle-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. Extract version ───────────────────────────────────────────────
+  version:
+    name: Extract version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - name: Extract version from tag
+        id: extract
+        run: |
+          # frontdesk-bundle-v1.2.3 → 1.2.3
+          version="${GITHUB_REF_NAME#frontdesk-bundle-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing cullis-frontdesk-bundle: ${version}"
+
+  # ── 2. Deploy bundle (tar.gz + zip) ─────────────────────────────────
+  build-bundle:
+    name: Build deploy bundle
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAGING="dist/cullis-frontdesk-bundle"
+          mkdir -p "${STAGING}"
+
+          # Copy bundle files explicitly to avoid shipping operator
+          # artefacts that may have appeared during dogfood (frontdesk.env
+          # with real values, connector_data/ with enrolled identity).
+          cp packaging/frontdesk-bundle/docker-compose.yml          "${STAGING}/"
+          cp packaging/frontdesk-bundle/frontdesk.env.example       "${STAGING}/"
+          cp packaging/frontdesk-bundle/README.md                   "${STAGING}/"
+          cp packaging/frontdesk-bundle/deploy.sh                   "${STAGING}/"
+          cp packaging/frontdesk-bundle/generate-frontdesk-env.sh   "${STAGING}/"
+          cp -r packaging/frontdesk-bundle/nginx                    "${STAGING}/"
+
+          chmod +x "${STAGING}/deploy.sh" "${STAGING}/generate-frontdesk-env.sh"
+          ls -lah "${STAGING}/"
+
+      - name: Package tar.gz + zip
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # Versioned + stable-name copies (the latter for docs that
+          # don't want to pin a specific version in curl one-liners).
+          tar czf "cullis-frontdesk-bundle-${VERSION}.tar.gz" cullis-frontdesk-bundle
+          tar czf "cullis-frontdesk-bundle.tar.gz"            cullis-frontdesk-bundle
+          zip -qr "cullis-frontdesk-bundle-${VERSION}.zip"    cullis-frontdesk-bundle
+          zip -qr "cullis-frontdesk-bundle.zip"               cullis-frontdesk-bundle
+          ls -lah *.tar.gz *.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: |
+            dist/cullis-frontdesk-bundle-*.tar.gz
+            dist/cullis-frontdesk-bundle-*.zip
+            dist/cullis-frontdesk-bundle.tar.gz
+            dist/cullis-frontdesk-bundle.zip
+          retention-days: 7
+
+  # ── 3. GitHub Release ────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-bundle, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: dist
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          if [[ -f packaging/frontdesk-bundle/CHANGELOG.md ]]; then
+            awk "/^## \\[?v?${version}\\]?/{flag=1; next} /^## /{flag=0} flag" \
+              packaging/frontdesk-bundle/CHANGELOG.md > release-notes.md || true
+          fi
+          if [[ ! -s release-notes.md ]]; then
+            cat > release-notes.md <<NOTES
+          Cullis Frontdesk Bundle ${GITHUB_REF_NAME}
+
+          ## Quickstart
+
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/cullis-frontdesk-bundle.tar.gz | tar xz
+          cd cullis-frontdesk-bundle/
+          ./deploy.sh
+          \`\`\`
+
+          Brings up the multi-user Frontdesk stack (nginx + Cullis Chat
+          SPA + Connector in shared mode) on \`http://localhost:8080\`.
+          Requires a reachable Mastio (deploy one first with
+          [\`packaging/mastio-bundle/\`](https://github.com/${{ github.repository }}/releases?q=mastio)).
+
+          \`./deploy.sh\` generates \`frontdesk.env\` with same-host
+          defaults, runs the Connector enrollment one-shot (prompts for
+          the invite code), and waits for health. ADR-019 rev 3 Phase 7.
+
+          ## Artifacts
+
+          - **Bundle**: \`cullis-frontdesk-bundle-${version}.tar.gz\` / \`.zip\`
+          - **Stable-name aliases** (for docs without version pinning):
+            \`cullis-frontdesk-bundle.tar.gz\` / \`.zip\`
+          - **Embedded images** (pulled at \`./deploy.sh\` time, not
+            shipped in the tarball):
+            - \`ghcr.io/${{ github.repository_owner }}/cullis-connector\` (\`CONNECTOR_VERSION\`)
+            - \`ghcr.io/${{ github.repository_owner }}/cullis-chat-frontdesk\` (\`CHAT_VERSION\`)
+
+          Pin both image versions in \`frontdesk.env\` for production.
+          NOTES
+          fi
+          cat release-notes.md
+
+      - name: Create release
+        # Pinned to SHA — same audit lineage as the other release-*.yml.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Cullis Frontdesk Bundle ${{ github.ref_name }}"
+          body_path: release-notes.md
+          files: |
+            dist/cullis-frontdesk-bundle-*.tar.gz
+            dist/cullis-frontdesk-bundle-*.zip
+            dist/cullis-frontdesk-bundle.tar.gz
+            dist/cullis-frontdesk-bundle.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
