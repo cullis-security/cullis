@@ -10,6 +10,7 @@ Flow:
   4. Approved org → agents can authenticate
 """
 from datetime import datetime, timezone, timedelta
+from typing import Any
 
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
@@ -610,80 +611,86 @@ async def rotate_org_mastio_pubkey(
             detail=f"malformed proof: {exc}",
         ) from exc
 
-    cached = await rotate_dedupe.get(org_id, proof.signature_b64u)
-    if cached is not None:
-        # Idempotent replay within the 600s freshness window. The cached
-        # body carries the original ``rotated_at`` so the client can see
-        # this is a retry of a call that already succeeded.
-        return MastioPubkeyRotateResponse(**cached)
+    async def _do_rotation() -> dict[str, Any]:
+        """Verify-and-commit closure run under the dedupe atomic claim.
 
-    org = await get_org_by_id(db, org_id)
-    if org is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Organization not found")
-    if not org.mastio_pubkey:
-        # Rotation requires a prior pin. First-pin happens via the
-        # admin flow (``PATCH /admin/orgs/{id}/mastio-pubkey``) or the
-        # /onboarding/join + /onboarding/attach bootstraps.
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            detail="organization has no pinned mastio pubkey; use the admin flow for first-pin",
-        )
+        Audit L4-H4: previously ``get → verify → store`` was three
+        independent locked steps, so two concurrent retries with the
+        SAME proof both passed the dedupe ``get``, both verified, and
+        both appended ``admin.mastio_pubkey_rotated`` rows to the
+        per-org audit chain. ``claim_or_wait`` guarantees this closure
+        executes EXACTLY ONCE per ``(org_id, signature_b64u)``; concurrent
+        callers attach to the same Future and observe the same result
+        (or the same rejection — failures are NOT cached so a transient
+        error still re-verifies on retry).
+        """
+        org = await get_org_by_id(db, org_id)
+        if org is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Organization not found")
+        if not org.mastio_pubkey:
+            # Rotation requires a prior pin. First-pin happens via the
+            # admin flow (``PATCH /admin/orgs/{id}/mastio-pubkey``) or the
+            # /onboarding/join + /onboarding/attach bootstraps.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="organization has no pinned mastio pubkey; use the admin flow for first-pin",
+            )
 
-    _validate_mastio_pubkey(body.new_pubkey_pem)
+        _validate_mastio_pubkey(body.new_pubkey_pem)
 
-    expected_old_kid = compute_kid_from_pubkey_pem(org.mastio_pubkey)
-    try:
-        verify_proof(
-            proof,
-            expected_old_pubkey_pem=org.mastio_pubkey,
-            expected_old_kid=expected_old_kid,
-        )
-    except ContinuityProofError as exc:
+        expected_old_kid = compute_kid_from_pubkey_pem(org.mastio_pubkey)
+        try:
+            verify_proof(
+                proof,
+                expected_old_pubkey_pem=org.mastio_pubkey,
+                expected_old_kid=expected_old_kid,
+            )
+        except ContinuityProofError as exc:
+            await log_event(
+                db, "admin.mastio_pubkey_rotate_rejected", "fail",
+                org_id=org_id,
+                details={"reason": str(exc), "old_kid": expected_old_kid},
+            )
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail=f"continuity proof rejected: {exc}",
+            ) from exc
+
+        # Proof-bound consistency: the pubkey in the body must be the one
+        # the proof signed over. Defends against a rebind where an
+        # attacker replays a valid proof but swaps ``new_pubkey_pem`` in
+        # the envelope for a pubkey they control.
+        if proof.new_pubkey_pem != body.new_pubkey_pem:
+            await log_event(
+                db, "admin.mastio_pubkey_rotate_rejected", "fail",
+                org_id=org_id,
+                details={"reason": "new_pubkey_pem mismatch between envelope and proof"},
+            )
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="new_pubkey_pem in envelope does not match the one signed in the proof",
+            )
+
+        await update_org_mastio_pubkey(db, org_id, body.new_pubkey_pem)
+        rotated_at = datetime.now(timezone.utc).isoformat()
         await log_event(
-            db, "admin.mastio_pubkey_rotate_rejected", "fail",
+            db, "admin.mastio_pubkey_rotated", "ok",
             org_id=org_id,
-            details={"reason": str(exc), "old_kid": expected_old_kid},
+            details={
+                "old_kid": expected_old_kid,
+                "new_kid": proof.new_kid,
+                "rotated_at": rotated_at,
+            },
         )
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            detail=f"continuity proof rejected: {exc}",
-        ) from exc
-
-    # Proof-bound consistency: the pubkey in the body must be the one
-    # the proof signed over. Defends against a rebind where an
-    # attacker replays a valid proof but swaps ``new_pubkey_pem`` in
-    # the envelope for a pubkey they control.
-    if proof.new_pubkey_pem != body.new_pubkey_pem:
-        await log_event(
-            db, "admin.mastio_pubkey_rotate_rejected", "fail",
-            org_id=org_id,
-            details={"reason": "new_pubkey_pem mismatch between envelope and proof"},
-        )
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            detail="new_pubkey_pem in envelope does not match the one signed in the proof",
-        )
-
-    await update_org_mastio_pubkey(db, org_id, body.new_pubkey_pem)
-    rotated_at = datetime.now(timezone.utc).isoformat()
-    await log_event(
-        db, "admin.mastio_pubkey_rotated", "ok",
-        org_id=org_id,
-        details={
-            "old_kid": expected_old_kid,
+        return {
+            "org_id": org_id,
             "new_kid": proof.new_kid,
             "rotated_at": rotated_at,
-        },
+        }
+
+    response_body = await rotate_dedupe.claim_or_wait(
+        org_id, proof.signature_b64u, _do_rotation,
     )
-    response_body = {
-        "org_id": org_id,
-        "new_kid": proof.new_kid,
-        "rotated_at": rotated_at,
-    }
-    # Cache AFTER the commit + audit so retries short-circuit. Failed
-    # paths (404, 409, 401, 400) fall through without touching the
-    # cache, so a transient failure still re-verifies on retry.
-    await rotate_dedupe.store(org_id, proof.signature_b64u, response_body)
     return MastioPubkeyRotateResponse(**response_body)
 
 
