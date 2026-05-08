@@ -107,7 +107,7 @@
             <div class="flex items-center justify-between gap-3 mb-2">
                 <p class="text-[10px] text-gray-500 uppercase tracking-[0.2em]">Org ID (share with Court admin)</p>
                 <button type="button"
-                        onclick="navigator.clipboard.writeText({{ org_id|tojson }}); this.innerText='Copied ✓'; setTimeout(()=>this.innerText='Copy', 1500);"
+                        data-copy="{{ org_id|e }}"
                         class="px-2 py-1 text-[10px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/20">
                     Copy
                 </button>
