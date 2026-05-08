@@ -136,17 +136,31 @@ class Session:
         self.used_nonces.add(nonce)
 
     def store_message(self, sender_agent_id: str, payload: dict, nonce: str,
-                      signature: str | None = None, client_seq: int | None = None) -> int:
-        """Store the message in the session inbox and return the assigned seq."""
+                      signature: str | None = None, client_seq: int | None = None,
+                      timestamp: datetime | None = None) -> int:
+        """Store the message in the session inbox and return the assigned seq.
+
+        ``timestamp`` is the *signer's* wire timestamp (seconds since epoch
+        is converted to UTC datetime by the caller). When omitted, the
+        StoredMessage default_factory falls back to ``datetime.now(utc)``,
+        which is broker-side and discards the signer's claim — that mode
+        exists only for legacy callers that don't carry a signed timestamp
+        (transaction tokens, internal injections). Audit W1.6: the broker
+        used to silently overwrite the signed timestamp with its local
+        now() for every send, breaking SDK session-poll consumers that
+        rely on the signer's clock for ordering inferences."""
         seq = self._next_seq
-        self._messages.append(StoredMessage(
+        msg_kwargs = dict(
             seq=seq,
             sender_agent_id=sender_agent_id,
             payload=payload,
             nonce=nonce,
             signature=signature,
             client_seq=client_seq,
-        ))
+        )
+        if timestamp is not None:
+            msg_kwargs["timestamp"] = timestamp
+        self._messages.append(StoredMessage(**msg_kwargs))
         self._next_seq += 1
         return seq
 

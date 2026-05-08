@@ -624,8 +624,17 @@ async def send_message(
         # (false-positive is safe — it just blocks a replayed nonce).
         session.cache_nonce(envelope.nonce)
 
-        seq = session.store_message(current_agent.agent_id, envelope.payload, envelope.nonce,
-                                    envelope.signature, client_seq=envelope.client_seq)
+        # Audit W1.6 — preserve the signer's wire timestamp instead of
+        # overwriting with broker-side now(). MessageEnvelope.timestamp
+        # is unix seconds UTC; convert to a tz-aware datetime for the
+        # StoredMessage row (consumers like the SDK session-poller infer
+        # ordering and skew from this value).
+        signer_ts = datetime.fromtimestamp(envelope.timestamp, tz=timezone.utc)
+        seq = session.store_message(
+            current_agent.agent_id, envelope.payload, envelope.nonce,
+            envelope.signature, client_seq=envelope.client_seq,
+            timestamp=signer_ts,
+        )
         # M1.2 — record activity to defer idle timeout
         session.touch()
 
