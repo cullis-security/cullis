@@ -17,22 +17,16 @@ ADR-009 flow. Phase 3 flips this to NOT NULL.
 """
 from __future__ import annotations
 
-import base64
-
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.utils.validation import strict_b64url_decode
+
 
 COUNTERSIG_HEADER = "X-Cullis-Mastio-Signature"
-
-
-def _b64url_decode_nopad(data: str) -> bytes:
-    """Decode base64url with or without padding (see feedback_base64url_nopad)."""
-    padding = "=" * ((4 - len(data) % 4) % 4)
-    return base64.urlsafe_b64decode(data + padding)
 
 
 def verify_mastio_countersig(
@@ -78,7 +72,7 @@ def verify_mastio_countersig(
         )
 
     try:
-        signature = _b64url_decode_nopad(signature_b64.strip())
+        signature = strict_b64url_decode(signature_b64.strip())
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

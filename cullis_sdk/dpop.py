@@ -234,5 +234,6 @@ def _ec_from_private_jwk(jwk: dict) -> ec.EllipticCurvePrivateKey:
 
 
 def _b64url_decode(s: str) -> bytes:
-    pad = "=" * (-len(s) % 4)
-    return base64.urlsafe_b64decode(s + pad)
+    """Strict base64url decode — delegates to the canonical vendored implementation."""
+    from cullis_sdk._b64url import strict_b64url_decode as _strict
+    return _strict(s)

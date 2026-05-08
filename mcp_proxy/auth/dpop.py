@@ -20,7 +20,6 @@ import hmac as _hmac
 import json
 import logging
 import os
-import re
 import time
 from urllib.parse import urlparse, urlunparse
 
@@ -31,6 +30,10 @@ from fastapi import HTTPException, Response, status
 import jwt as jose_jwt
 
 from mcp_proxy.config import get_settings
+from mcp_proxy.utils.validation import (
+    canonicalize_b64url as _canonicalize_b64url_impl,
+    strict_b64url_decode as _strict_b64url_decode,
+)
 
 _log = logging.getLogger("mcp_proxy")
 
@@ -78,50 +81,13 @@ def set_dpop_nonce_header(response: Response) -> None:
 # Base64url helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# url-safe base64 alphabet (RFC 4648 section 5). Excludes ``=`` — padding
-# is tolerated below but not part of the "payload" alphabet. We reject
-# whitespace, vanilla ``+``/``/``, and anything else outside the set.
-_B64URL_ALPHABET_RE = re.compile(r"^[A-Za-z0-9_-]*$")
-
-
 def _b64url_decode(s: str | bytes) -> bytes:
-    """Strict base64url decode — tolerates padding, rejects garbage bits.
+    """Strict base64url decode — delegates to ``mcp_proxy.utils.validation``.
 
-    Audit F-C-3: mirrors ``app.utils.validation.strict_b64url_decode``.
-    The mcp_proxy package deliberately has no runtime dependency on
-    ``app/``, so the helper is inlined here. Behavior must stay in sync:
-
-      * Accepts the input with OR without trailing ``=`` (TS SDK does
-        not pad; some server-side paths do).
-      * Rejects whitespace / non-url-safe chars / excess padding.
-      * Rejects partial-quantum inputs whose trailing char has garbage
-        bits in the unused low-order positions — Python's stdlib
-        silently discards those, which means two distinct wire encodings
-        decode to the same bytes and break JKT canonicalization.
+    Audit S8: previously inlined; now imports from the single vendored copy
+    so all Mastio paths stay in sync with ``app.utils.validation``.
     """
-    if isinstance(s, bytes):
-        try:
-            s = s.decode("ascii")
-        except UnicodeDecodeError as exc:
-            raise ValueError("base64url input is not ASCII") from exc
-    stripped = s.rstrip("=")
-    if not _B64URL_ALPHABET_RE.fullmatch(stripped):
-        raise ValueError("base64url contains non-url-safe characters")
-    rem = len(stripped) % 4
-    if rem == 1:
-        raise ValueError("base64url length is not valid (length % 4 == 1)")
-    padded = stripped + ("=" * ((4 - rem) % 4))
-    try:
-        decoded = base64.urlsafe_b64decode(padded)
-    except Exception as exc:
-        raise ValueError(f"base64url decode failed: {exc}") from exc
-    canonical = base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii")
-    if canonical != stripped:
-        raise ValueError(
-            "base64url contains non-canonical trailing bits — "
-            "decoded bytes do not round-trip to the input"
-        )
-    return decoded
+    return _strict_b64url_decode(s)
 
 
 def _canonicalize_b64url(s: str) -> str:
@@ -130,7 +96,7 @@ def _canonicalize_b64url(s: str) -> str:
     Used for JKT canonicalization — collapses padding / tail-bit variants
     of the same key into a single canonical form before hashing.
     """
-    return base64.urlsafe_b64encode(_b64url_decode(s)).rstrip(b"=").decode("ascii")
+    return _canonicalize_b64url_impl(s)
 
 
 def _b64url_encode(b: bytes) -> str:
