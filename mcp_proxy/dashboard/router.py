@@ -3018,6 +3018,56 @@ async def badge_enrollments(request: Request):
     return HTMLResponse("")
 
 
+@router.get("/badge/users")
+async def badge_users(request: Request):
+    """Return user-principal count badge fragment for the sidebar."""
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+    try:
+        from mcp_proxy.db import count_user_principals
+        n = await count_user_principals()
+    except Exception:  # table may not exist in pre-migrated setups
+        return HTMLResponse("")
+    if n:
+        return HTMLResponse(
+            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-accent-500/15 text-accent-400">{n}</span>'
+        )
+    return HTMLResponse("")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Users — local user principals (ADR-020 / ADR-021)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(request: Request):
+    """Read-only listing of user principals registered on this Mastio.
+
+    Backed by ``local_user_principals``, the same table the admin API
+    at ``/v1/admin/users`` writes into. Rows appear here whenever a
+    Frontdesk SSO user touches the CSR endpoint (``upsert_from_csr``)
+    or an admin pre-creates them via ``POST /v1/admin/users``.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    try:
+        from mcp_proxy.db import list_user_principals
+        users = await list_user_principals()
+    except Exception as exc:  # noqa: BLE001 — table may not exist on legacy DBs
+        _log.warning("users_page: list_user_principals failed: %s", exc)
+        users = []
+
+    return templates.TemplateResponse("users.html", _ctx(
+        request, session,
+        active="users",
+        users=users,
+    ))
+
+
 @router.get("/badge/audit")
 async def badge_audit(request: Request):
     """Return recent audit count badge fragment."""

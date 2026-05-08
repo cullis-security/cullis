@@ -570,6 +570,39 @@ async def list_agents() -> list[dict]:
         return [_agent_row_to_dict(row) for row in result.mappings().all()]
 
 
+async def list_user_principals() -> list[dict]:
+    """List user principals registered on this Mastio.
+
+    Pairs with the dashboard ``/proxy/users`` page. Reads the same
+    ``local_user_principals`` table the admin API at
+    ``/v1/admin/users`` exposes — one row per Frontdesk SSO user that
+    has either touched the CSR endpoint at least once
+    (``upsert_from_csr`` populator) or been pre-created via
+    ``POST /v1/admin/users``. Ordered most-recently-created first so
+    the dashboard top row is the latest signup.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT principal_id, user_name, display_name, reach, "
+                "       surface, cert_thumbprint, created_at, last_active_at "
+                "  FROM local_user_principals "
+                " ORDER BY created_at DESC"
+            )
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def count_user_principals() -> int:
+    """Cheap count for the sidebar badge on /proxy/users."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text("SELECT COUNT(*) AS n FROM local_user_principals")
+        )
+        row = result.mappings().first()
+        return int(row["n"]) if row else 0
+
+
 async def deactivate_agent(agent_id: str) -> bool:
     """Soft-delete an agent by setting ``is_active=0``.
 
