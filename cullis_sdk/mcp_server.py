@@ -7,13 +7,16 @@ Run standalone:
 Or configure in Claude Desktop / Claude Code as an MCP server.
 
 Environment variables:
-    BROKER_URL       — Broker address (required)
-    AGENT_ID         — Agent identifier (required)
-    ORG_ID           — Organization identifier (required)
-    AGENT_CERT_PATH  — Path to PEM certificate (required unless using Vault)
-    AGENT_KEY_PATH   — Path to PEM private key (required unless using Vault)
-    VAULT_ADDR       — Vault address (optional, for credential loading)
-    VAULT_TOKEN      — Vault token (optional)
+    BROKER_URL              — Broker address (required)
+    AGENT_ID                — Agent identifier (required)
+    ORG_ID                  — Organization identifier (required)
+    AGENT_CERT_PATH         — Path to PEM certificate (required unless using Vault)
+    AGENT_KEY_PATH          — Path to PEM private key (required unless using Vault)
+    VAULT_ADDR              — Vault address (optional, for credential loading)
+    VAULT_TOKEN             — Vault token (optional)
+    CULLIS_MCP_VERIFY_TLS   — Set to "false"/"0"/"no" to disable TLS verification
+                              of the broker (dev only, against self-signed certs).
+                              Default: verify.
 """
 from __future__ import annotations
 
@@ -74,7 +77,22 @@ def cullis_connect(
         return "Error: org_id is required (or set ORG_ID env var)"
 
     try:
-        client = CullisClient(broker, verify_tls=False)
+        # TLS verification: default ON (matches CullisClient default). Operators
+        # working against a self-signed broker in dev can opt out with
+        # CULLIS_MCP_VERIFY_TLS=false; CullisClient still refuses verify_tls=False
+        # when CULLIS_ENV=production unless CULLIS_SDK_ALLOW_INSECURE_TLS=1.
+        _verify_env = os.environ.get("CULLIS_MCP_VERIFY_TLS", "").strip().lower()
+        verify_tls = _verify_env not in {"0", "false", "no"}
+        if not verify_tls:
+            print(
+                "WARNING: CULLIS_MCP_VERIFY_TLS is disabled — broker TLS "
+                "verification OFF. Use only for local dev against a self-"
+                "signed broker.",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        client = CullisClient(broker, verify_tls=verify_tls)
 
         # Try Vault first if configured
         vault_addr = os.environ.get("VAULT_ADDR", "")
