@@ -31,7 +31,7 @@ Companion to ADR-016. This document is the operational map: phase-by-phase deliv
 
 Files added or extended:
 
-- `docs/adrs/0016-llm-guardian-bidirectional.md` (this PR brings it from Proposed to Accepted once reviewed).
+- ADR-0016 LLM Guardian bidirectional (archived to `imp/adrs/0016-llm-guardian-bidirectional.md` during the 2026-05 ADR rewrite, will be re-published once reviewed).
 - `mcp_proxy/guardian/__init__.py`
 - `mcp_proxy/guardian/endpoint.py` — `POST /v1/guardian/inspect`, mTLS-authenticated, returns `pass` for everything (no logic yet). Supports the `direction`, `peer_agent_id`, `msg_id`, `payload_b64` body shape from the ADR. Always emits an `audit_id` and a signed ticket so the SDK side can be developed against a real response.
 - `mcp_proxy/guardian/registry.py` — `Tool` ABC + `register_tool(direction, mode, fn)`. Plugin entry point `cullis.guardian_tools` for downstream plugins.
