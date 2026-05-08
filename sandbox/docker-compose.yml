@@ -107,15 +107,9 @@ services:
       # demo point look broken: the cookie kept validating across
       # reboots because the signature stayed good.
       KMS_BACKEND: "local"
-      # ADR-017 Phase 1 — AI gateway egress. Court runs litellm_embedded
-      # by default, which routes /v1/llm/chat to Anthropic when the key
-      # is present. Without the key the dispatcher 503s and Cullis Chat /
-      # any agent doing chat_completion fails. Pulled from host env so
-      # the sandbox-mcp .env (existing dogfood key) is reused without
-      # secret duplication.
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      AI_GATEWAY_BACKEND: "litellm_embedded"
-      AI_GATEWAY_PROVIDER: "anthropic"
+      # NB: AI gateway env (ANTHROPIC_API_KEY / AI_GATEWAY_*) lives on the
+      # Mastio service now, not here. PR #517 returned Court /v1/llm/chat
+      # to a 410 Gone per ADR-017 (gateway moved from Court to Mastio).
       BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
       BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
       # ADR-004 PR B — proxy-only topology. Agents now reach the broker
