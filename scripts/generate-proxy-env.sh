@@ -42,19 +42,20 @@ for arg in "$@"; do
     esac
 done
 
-OUT="$PROJECT_DIR/proxy.env"
+mkdir -p "$PROJECT_DIR/deploy/proxy"
+OUT="$PROJECT_DIR/deploy/proxy/proxy.env"
 if [[ -f "$OUT" && "$FORCE" -eq 0 ]]; then
     if [[ "$MODE" != "interactive" ]]; then
-        ok "Keeping existing proxy.env (use --force to overwrite)"
+        ok "Keeping existing deploy/proxy/proxy.env (use --force to overwrite)"
         exit 0
     fi
-    warn "proxy.env already exists"
+    warn "deploy/proxy/proxy.env already exists"
     read -rp "  Overwrite with fresh secrets? [y/N]: " reply
-    [[ "$reply" =~ ^[Yy] ]] || { ok "Keeping existing proxy.env"; exit 0; }
+    [[ "$reply" =~ ^[Yy] ]] || { ok "Keeping existing deploy/proxy/proxy.env"; exit 0; }
 fi
 
 command -v openssl >/dev/null || die "openssl is required"
-[[ -f "$PROJECT_DIR/proxy.env.example" ]] || die "proxy.env.example not found"
+[[ -f "$PROJECT_DIR/deploy/proxy/proxy.env.example" ]] || die "deploy/proxy/proxy.env.example not found"
 
 if [[ "$MODE" == "prod" ]]; then
     [[ -n "${BROKER_URL:-}" ]]       || die "--prod requires BROKER_URL env var"
@@ -98,7 +99,7 @@ case "$MODE" in
         ;;
 esac
 
-cp "$PROJECT_DIR/proxy.env.example" "$OUT"
+cp "$PROJECT_DIR/deploy/proxy/proxy.env.example" "$OUT"
 sed -i "s|^MCP_PROXY_ENVIRONMENT=.*|MCP_PROXY_ENVIRONMENT=${ENVIRONMENT}|"           "$OUT"
 sed -i "s|^MCP_PROXY_ADMIN_SECRET=.*|MCP_PROXY_ADMIN_SECRET=${ADMIN_SECRET}|"        "$OUT"
 sed -i "s|^MCP_PROXY_DASHBOARD_SIGNING_KEY=.*|MCP_PROXY_DASHBOARD_SIGNING_KEY=${SIGNING_KEY}|" "$OUT"

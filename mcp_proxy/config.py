@@ -17,7 +17,7 @@ _INSECURE_DEFAULT_SECRET = "change-me-in-production"
 
 
 class ProxySettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file="proxy.env", env_prefix="MCP_PROXY_", extra="ignore")
+    model_config = SettingsConfigDict(env_file="deploy/proxy/proxy.env", env_prefix="MCP_PROXY_", extra="ignore")
 
     # Auth / Broker
     broker_jwks_url: str = ""  # e.g. "https://broker.company.com/.well-known/jwks.json"
