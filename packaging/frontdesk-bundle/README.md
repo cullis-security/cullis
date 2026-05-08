@@ -12,40 +12,46 @@ Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One containe
 
 ## Prerequisites
 
-1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one.
-2. **An invite code** issued by your Mastio admin (`/v1/admin/invites` on the Mastio dashboard).
-3. **A Mastio CA bundle PEM** on the host machine, exported as `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`. Without it the Connector can boot but every Mastio call fails the TLS handshake.
+1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one (the sibling bundle exports its CA to `../mastio-bundle/certs/org-ca.pem`, which `./deploy.sh` here picks up automatically).
+2. **An invite code** issued by your Mastio admin (Mastio dashboard → Enrollments → Create invite, target name = `frontdesk`).
+3. **A Mastio CA bundle PEM** on the host machine. Auto-detected when the sibling Mastio bundle is at `../mastio-bundle/`; otherwise set `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`.
 4. **Docker Compose v2.20+**. The bundle pulls all three images from `ghcr.io`; no repo checkout or `docker build` required.
 
-## One-shot enrollment
-
-The bundle does not enroll the Connector for you. Run this once before `docker compose up`:
+## Quickstart (deploy.sh)
 
 ```bash
-docker run --rm -it \
-  -v $(pwd)/connector_data:/home/cullis/.cullis \
-  ghcr.io/cullis-security/cullis-connector:0.4.0-rc1 \
-  enroll \
-    --site https://mastio.acme.local:9443 \
-    --code <INVITE_CODE_FROM_MASTIO_ADMIN> \
-    --profile frontdesk
+./deploy.sh
 ```
 
-This writes the cert + key + config to the local `connector_data/` directory. The bundle mounts that directory into the Connector container; subsequent `docker compose up` calls reuse the same identity.
+That single command:
 
-If you wipe `connector_data/`, you must re-enroll.
+1. Generates `frontdesk.env` with sensible same-host defaults if it doesn't exist (auto-detecting the Mastio CA path).
+2. Prompts for the invite code (or accepts `--code <invite>`) and the Mastio site URL (defaults to `https://host.docker.internal:9443` for the same-host topology).
+3. Runs the one-shot enrollment via a throwaway `cullis-connector` container, writing the identity material to `./connector_data/`.
+4. `docker compose up -d` and waits until `http://localhost:8080` answers.
+5. Prints the SPA URL and a fake-SSO smoke test command.
 
-## Bring the bundle up
+Re-runs are idempotent: if `connector_data/profiles/<profile>/identity/metadata.json` exists, the enrollment step is skipped.
+
+### Non-interactive
 
 ```bash
-cp frontdesk.env.example frontdesk.env
-# Edit frontdesk.env:
-#   - CULLIS_FRONTDESK_ORG_ID, CULLIS_FRONTDESK_TRUST_DOMAIN: match what
-#     you registered on the Mastio.
-#   - CULLIS_FRONTDESK_CA_BUNDLE_HOST: path on this host to the Mastio
-#     CA chain PEM. Required, no default.
+# Pre-supply the invite code, skip prompts:
+./deploy.sh --code my-invite-code-from-mastio --site https://mastio.acme.local:9443
 
-docker compose --env-file frontdesk.env up -d
+# Already enrolled out-of-band, just bring the stack up:
+./deploy.sh --skip-enroll
+
+# Production: requires a pre-provisioned frontdesk.env with real values
+./deploy.sh --prod
+```
+
+### Manual generate (no deploy)
+
+```bash
+./generate-frontdesk-env.sh --interactive   # prompts for ORG_ID, trust domain, CA path
+./generate-frontdesk-env.sh --defaults      # same-host defaults, no prompts
+./generate-frontdesk-env.sh --prod          # validates env vars, fails fast
 ```
 
 The bundle exposes nginx on the host port from `FRONTDESK_HTTP_PORT` (default `8080`).
@@ -105,8 +111,8 @@ For oauth2-proxy specifically, the upstream config `--pass-user-headers=true` is
 ## Tear down
 
 ```bash
-docker compose down            # stop containers, keep connector_data volume
-docker compose down -v         # also wipe connector_data (forces re-enrollment)
+./deploy.sh --down             # stop containers, keep connector_data
+docker compose --env-file frontdesk.env down -v   # also wipe connector_data (forces re-enrollment)
 ```
 
 ## Known limitations
