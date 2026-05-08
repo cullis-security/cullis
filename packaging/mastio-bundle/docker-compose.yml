@@ -43,20 +43,29 @@ services:
       MCP_PROXY_BROKER_URL:        ${MCP_PROXY_BROKER_URL:-}
       MCP_PROXY_BROKER_JWKS_URL:   ${MCP_PROXY_BROKER_JWKS_URL:-}
       MCP_PROXY_PDP_URL:           ${MCP_PROXY_PDP_URL:-http://mcp-proxy:9100/pdp/policy}
-      # Default ``https://localhost:9443`` covers the dev / quick-try
-      # path where the operator runs ``./deploy.sh`` on a laptop and
-      # connects local agents at ``https://localhost:9443``. Production
-      # deploys MUST override via ``proxy.env``: the agent's DPoP htu
-      # carries the public hostname they actually reach the Mastio at,
-      # and the server validates the proof against this exact URL +
-      # path. Mismatch → 401 ``Invalid DPoP proof: htu mismatch`` on
-      # every egress call. ``--proxy-headers`` (#346) does NOT
-      # auto-detect this — htu validation requires the URL the agent
-      # sees end-to-end, including the public hostname.
-      MCP_PROXY_PROXY_PUBLIC_URL:  ${MCP_PROXY_PROXY_PUBLIC_URL:-https://localhost:9443}
+      # Default ``https://host.docker.internal:9443`` covers BOTH the
+      # dev / quick-try path (browser on the host resolves
+      # host.docker.internal to 127.0.0.1) AND the multi-container
+      # scenario where a sibling bundle like packaging/frontdesk-bundle/
+      # reaches the Mastio across docker networks. ``localhost:9443``
+      # silently breaks the moment a second component is introduced
+      # because ``localhost`` inside a container is the container itself,
+      # not the docker host. Production deploys MUST override via
+      # ``proxy.env``: the agent's DPoP htu carries the public hostname
+      # they actually reach the Mastio at, and the server validates the
+      # proof against this exact URL + path. Mismatch → 401
+      # ``Invalid DPoP proof: htu mismatch`` on every egress call.
+      # ``--proxy-headers`` (#346) does NOT auto-detect this — htu
+      # validation requires the URL the agent sees end-to-end.
+      MCP_PROXY_PROXY_PUBLIC_URL:  ${MCP_PROXY_PROXY_PUBLIC_URL:-https://host.docker.internal:9443}
       MCP_PROXY_ALLOWED_ORIGINS:   ${MCP_PROXY_ALLOWED_ORIGINS:-}
       MCP_PROXY_NGINX_CERT_DIR:    ${MCP_PROXY_NGINX_CERT_DIR:-/var/lib/mastio/nginx-certs}
-      MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost}
+      # SAN covers the three host-side names the cert can validate at:
+      # ``localhost`` (host browser default), ``mastio.local`` (legacy
+      # alias), ``host.docker.internal`` (sibling container scenario,
+      # PR #520+ default). Any custom public URL is added in front of
+      # this list by ./deploy.sh during proxy.env generation.
+      MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost,host.docker.internal}
       SSL_CERT_FILE:               ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       REQUESTS_CA_BUNDLE:          ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}

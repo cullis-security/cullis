@@ -145,21 +145,29 @@ if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
     bash "$SCRIPT_DIR/generate-proxy-env.sh" --defaults
 
     # Critical: agents validate DPoP htu against MCP_PROXY_PROXY_PUBLIC_URL.
-    # Without an explicit public URL the laptop default (localhost:9443) is
-    # baked in, and any agent reaching the Mastio over a non-localhost
-    # hostname (Docker host on a LAN, internal DNS, public hostname) hits
-    # 401 ``Invalid DPoP proof: htu mismatch`` on every egress. Ask up
-    # front so the operator never finds out post-deploy.
+    # Without an explicit public URL the laptop default is baked in, and
+    # any agent reaching the Mastio over a different hostname hits 401
+    # ``Invalid DPoP proof: htu mismatch`` on every egress. Ask up front
+    # so the operator never finds out post-deploy.
+    #
+    # The default ``host.docker.internal:9443`` covers BOTH the browser
+    # on the host (resolves to 127.0.0.1 via the host's hosts file or
+    # docker desktop's automatic mapping) AND a sibling docker container
+    # such as the Frontdesk Connector reaching the Mastio across docker
+    # networks. ``localhost:9443`` only works for the host browser case
+    # and silently breaks the moment a second component (Frontdesk,
+    # second Mastio, agent on a different docker network) is introduced.
     echo ""
     echo "  ${BOLD}Where will agents reach this Mastio?${RESET}"
-    echo "    ${GRAY}- Laptop quick-try: just press Enter (uses https://localhost:9443)${RESET}"
-    echo "    ${GRAY}- Internal server / VM: enter the public URL agents resolve at${RESET}"
+    echo "    ${GRAY}- Laptop / single VM: just press Enter (uses https://host.docker.internal:9443)${RESET}"
+    echo "      ${GRAY}covers host browser AND sibling containers (Frontdesk bundle, etc.)${RESET}"
+    echo "    ${GRAY}- Internal server with stable DNS: enter the public URL agents resolve at${RESET}"
     echo "    ${GRAY}  e.g. https://mastio.acme.local  or  https://192.168.10.42:9443${RESET}"
     echo "    ${GRAY}- Internet-facing: the LB/ingress hostname${RESET}"
     echo "    ${GRAY}  e.g. https://mastio.myorg.example.com${RESET}"
     echo ""
-    read -rp "  Public URL [https://localhost:9443]: " _public_url
-    _public_url="${_public_url:-https://localhost:9443}"
+    read -rp "  Public URL [https://host.docker.internal:9443]: " _public_url
+    _public_url="${_public_url:-https://host.docker.internal:9443}"
 
     # Strip any pre-existing line and re-add (proxy.env from the
     # generator may already carry an empty one).
@@ -171,17 +179,21 @@ if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
     # Extract the hostname (no scheme, no port) and bake it into the
     # nginx server cert SAN list. Without this, an agent that connects
     # to ``https://mastio.acme.local:9443`` with verify_tls=True fails
-    # the TLS handshake — the cert only carries the default
-    # ``mastio.local,localhost`` SANs and the hostname doesn't match.
-    # ``sed`` strips the scheme and port; the result is empty for the
-    # localhost default, in which case we keep the SAN at its default.
+    # the TLS handshake — the cert only carries the default SANs and
+    # the hostname doesn't match. ``sed`` strips the scheme and port.
+    # We always include host.docker.internal alongside so a sibling
+    # container (Frontdesk Connector) reaching the Mastio across docker
+    # networks completes the handshake whether the operator picked the
+    # default or a custom public URL.
     _public_host="$(echo "$_public_url" | sed -E 's|^https?://||; s|:[0-9]+$||; s|/.*$||')"
-    if [[ -n "$_public_host" && "$_public_host" != "localhost" ]]; then
-        sed -i.bak '/^#*[[:space:]]*MCP_PROXY_NGINX_SAN=/d' "$SCRIPT_DIR/proxy.env"
-        rm -f "$SCRIPT_DIR/proxy.env.bak"
-        echo "MCP_PROXY_NGINX_SAN=${_public_host},mastio.local,localhost" >> "$SCRIPT_DIR/proxy.env"
-        ok "proxy.env: MCP_PROXY_NGINX_SAN=${_public_host},mastio.local,localhost"
+    _san="mastio.local,localhost,host.docker.internal"
+    if [[ -n "$_public_host" && "$_public_host" != "localhost" && "$_public_host" != "host.docker.internal" ]]; then
+        _san="${_public_host},${_san}"
     fi
+    sed -i.bak '/^#*[[:space:]]*MCP_PROXY_NGINX_SAN=/d' "$SCRIPT_DIR/proxy.env"
+    rm -f "$SCRIPT_DIR/proxy.env.bak"
+    echo "MCP_PROXY_NGINX_SAN=${_san}" >> "$SCRIPT_DIR/proxy.env"
+    ok "proxy.env: MCP_PROXY_NGINX_SAN=${_san}"
 fi
 
 if [[ "$MODE" == "production" ]]; then
@@ -201,8 +213,10 @@ if [[ "$MODE" == "production" ]]; then
     _public="$(_load_env MCP_PROXY_PROXY_PUBLIC_URL)"
     if [[ -z "$_public" ]]; then
         _errors+=("MCP_PROXY_PROXY_PUBLIC_URL is empty in production — set the public URL where internal agents reach this Mastio (e.g. https://mastio.myorg.example.com)")
-    elif [[ "$_public" == "https://localhost:9443" || "$_public" == "http://localhost:9100" ]]; then
-        _errors+=("MCP_PROXY_PROXY_PUBLIC_URL still localhost — set the public URL where internal agents reach this Mastio")
+    elif [[ "$_public" == "https://localhost:9443" \
+         || "$_public" == "http://localhost:9100" \
+         || "$_public" == "https://host.docker.internal:9443" ]]; then
+        _errors+=("MCP_PROXY_PROXY_PUBLIC_URL still a dev default ($_public) — set the public URL where internal agents reach this Mastio")
     elif [[ "$_public" == http://* ]]; then
         _errors+=("MCP_PROXY_PROXY_PUBLIC_URL uses plain HTTP — ADR-014 requires HTTPS via the mastio-nginx sidecar (default port 9443)")
     fi
