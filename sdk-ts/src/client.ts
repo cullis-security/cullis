@@ -19,7 +19,12 @@ import {
   createDPoPProof,
   generateDPoPKeyPair,
 } from "./auth.js";
-import { signMessage, encryptForAgent, decryptFromAgent } from "./crypto.js";
+import {
+  signMessage,
+  verifyMessageSignature,
+  encryptForAgent,
+  decryptFromAgent,
+} from "./crypto.js";
 import type {
   BrokerClientOptions,
   SessionResponse,
@@ -388,12 +393,22 @@ export class BrokerClient {
     });
     const messages = JSON.parse(resp.text) as InboxMessage[];
 
-    // Decrypt each message
-    return messages.map((msg) => this.decryptPayload(msg, sessionId));
+    // Decrypt each message in parallel (each may fetch the sender cert
+    // from the registry; the pubkey cache de-duplicates per-agent
+    // round trips within the TTL window).
+    return Promise.all(messages.map((msg) => this.decryptPayload(msg, sessionId)));
   }
 
   /**
    * Get an agent's public key PEM from the registry (TTL-cached).
+   *
+   * Prefers ``cert_pem`` (full X.509) over ``public_key_pem`` (bare SPKI)
+   * to match the Python SDK's behaviour. The H7 audit fix on
+   * ``verifyMessageSignature`` rejects bare SPKI — callers that need to
+   * verify inner signatures (e.g. ``decryptPayload``) require the full
+   * cert. Older brokers that don't populate ``cert_pem`` still work for
+   * encryption (``createPublicKey`` accepts both forms) but inner-sig
+   * verification will fail loudly with a clear error.
    */
   async getAgentPublicKey(
     agentId: string,
@@ -408,12 +423,22 @@ export class BrokerClient {
     // ADR-010 Phase 6a — public-key lookup served under /v1/federation/.
     const path = `/v1/federation/agents/${agentId}/public-key`;
     const resp = await this.authedRequest("GET", path);
-    const data = JSON.parse(resp.text) as { public_key_pem: string };
+    const data = JSON.parse(resp.text) as {
+      cert_pem?: string | null;
+      public_key_pem?: string | null;
+    };
+    const pem = data.cert_pem || data.public_key_pem;
+    if (!pem) {
+      throw new Error(
+        `Registry returned no key material for ${agentId} ` +
+          "(neither cert_pem nor public_key_pem)",
+      );
+    }
     this.pubkeyCache.set(agentId, {
-      pem: data.public_key_pem,
+      pem,
       fetchedAt: Date.now(),
     });
-    return data.public_key_pem;
+    return pem;
   }
 
   // ── RFQ (Request for Quote) ──────────────────────────────────
@@ -577,12 +602,27 @@ export class BrokerClient {
   }
 
   /**
-   * Decrypt the payload of a received message if it is E2E encrypted.
+   * Decrypt the payload of a received message if it is E2E encrypted,
+   * AND verify the inner (plaintext) signature for non-repudiation.
+   *
+   * The inner signature is the only proof that the sender's *private*
+   * key produced the plaintext: a compromised broker can substitute
+   * the ciphertext after the AES-GCM key has been unwrapped, and AES-GCM
+   * alone (which only authenticates against the broker-controllable
+   * AAD) would not catch this. Skipping the inner-sig check would let
+   * the broker forge messages silently, breaking the entire
+   * non-repudiation property the protocol promises to recipients.
+   *
+   * Audit reference: L9-C1 (sdk-ts, 2026-05-08). Mirrors the Python
+   * ``cullis_sdk.client._fetch_pubkey_proxy_then_broker`` +
+   * ``verify_inner_signature`` pattern (cullis_sdk/client.py:2689).
+   *
+   * Throws on any cryptographic failure (decrypt or verify).
    */
-  private decryptPayload(
+  private async decryptPayload(
     msg: InboxMessage,
     sessionId: string,
-  ): InboxMessage {
+  ): Promise<InboxMessage> {
     if (!this.signingKeyPem) {
       return msg;
     }
@@ -604,7 +644,9 @@ export class BrokerClient {
     const senderAgentId = msg.sender_agent_id;
     const clientSeq = msg.client_seq;
 
-    const [plaintextPayload] = decryptFromAgent(
+    // 1. Decrypt — recovers both the plaintext payload AND the inner
+    //    signature the sender produced over that plaintext.
+    const [plaintextPayload, innerSignature] = decryptFromAgent(
       cipherBlob,
       this.signingKeyPem,
       sessionId,
@@ -612,6 +654,66 @@ export class BrokerClient {
       clientSeq,
     );
 
+    // 2. Fetch the sender's certificate (TTL-cached). H7 audit fix:
+    //    ``verifyMessageSignature`` rejects bare SPKI — registry
+    //    response must carry the full cert under ``cert_pem``.
+    const senderCertPem = await this.getAgentPublicKey(senderAgentId);
+
+    // 3. Convert the wire-side timestamp back into the seconds-since-epoch
+    //    integer the sender signed against. The broker serialises its
+    //    stored ``datetime`` as ISO-8601, but ``signMessage`` consumed an
+    //    epoch int; we accept either shape so this stays robust to the
+    //    broker normalising the field.
+    const ts = parseTimestamp(msg.timestamp);
+
+    // 4. Verify. Throws on cert/binding/signature failure — propagate
+    //    rather than masking, since a verify failure means a forged
+    //    plaintext (broker compromise) or a misconfigured peer.
+    try {
+      verifyMessageSignature(
+        senderCertPem,
+        innerSignature,
+        sessionId,
+        senderAgentId,
+        msg.nonce,
+        ts,
+        plaintextPayload,
+        clientSeq,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `inner signature verification failed for message from ` +
+          `${senderAgentId} (seq=${msg.seq}): ${reason}`,
+      );
+    }
+
     return { ...msg, payload: plaintextPayload };
   }
+}
+
+/**
+ * Best-effort coercion of the wire ``timestamp`` field to seconds since
+ * the Unix epoch (the integer form ``signMessage`` consumed at send).
+ *
+ * The broker's ``InboxMessage`` Pydantic model serialises a stored
+ * ``datetime`` as ISO-8601, but the sender's inner-signature canonical
+ * was built with ``Math.floor(Date.now()/1000)`` (an int). Accept both
+ * shapes:
+ *   - number → trusted as-is
+ *   - numeric string → parsed as int
+ *   - ISO-8601 string → parsed via ``Date.parse`` and floored to seconds
+ */
+function parseTimestamp(value: string | number): number {
+  if (typeof value === "number") {
+    return Math.floor(value);
+  }
+  if (/^-?\d+$/.test(value)) {
+    return parseInt(value, 10);
+  }
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw new Error(`Cannot parse message timestamp: ${value}`);
+  }
+  return Math.floor(ms / 1000);
 }
