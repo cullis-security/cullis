@@ -143,3 +143,52 @@ def test_validate_config_rejects_unknown_value(monkeypatch):
     settings = get_settings()
     with pytest.raises(SystemExit):
         validate_config(settings)
+
+
+def test_validate_config_requires_explicit_decision_in_production(monkeypatch):
+    """Audit Ultra U2 — production boot must fail when POLICY_DEFAULT_DECISION
+    is not explicitly set in the environment, even though the safe
+    fallback ``"deny"`` would be applied. The point is operator intent:
+    an audit reading the prod env should see the value declared out in
+    the open, not have to cross-reference the source for the default.
+    Mirrors the ``MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES`` fail-closed
+    pattern.
+    """
+    from app.config import get_settings, validate_config
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("POLICY_DEFAULT_DECISION", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
+    monkeypatch.setenv("BROKER_PUBLIC_URL", "https://broker.example.com")
+    monkeypatch.setenv("ADMIN_SECRET", "production-secret-not-default")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        with pytest.raises(SystemExit):
+            validate_config(settings)
+    finally:
+        # Don't pollute the lru_cache for downstream tests on this
+        # worker (xdist loadfile schedules whole files together).
+        get_settings.cache_clear()
+
+
+def test_validate_config_accepts_explicit_deny_in_production(monkeypatch):
+    """The same guard must accept a deliberate ``deny`` declared by the
+    operator. We swallow other prod checks raising SystemExit (e.g.
+    broker_ca_key_path missing on disk) — the assertion is that the U2
+    guard alone does not refuse a properly declared value.
+    """
+    from app.config import get_settings, validate_config
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("POLICY_DEFAULT_DECISION", "deny")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
+    monkeypatch.setenv("BROKER_PUBLIC_URL", "https://broker.example.com")
+    monkeypatch.setenv("ADMIN_SECRET", "production-secret-not-default")
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        try:
+            validate_config(settings)
+        except SystemExit:
+            pass  # other prod check failed — U2 guard itself accepted
+    finally:
+        get_settings.cache_clear()

@@ -116,7 +116,13 @@ class Settings(BaseSettings):
     # entirely): the dispatcher still runs and emits an audit row marking
     # the decision as a default-fallback, so reviewers can grep for
     # ``policy_default_allow`` after the fact. See issue #461.
-    policy_default_decision: str = "deny"  # "allow" | "deny"
+    # ``None`` here means "operator did not declare anything explicitly".
+    # Audit Ultra U2 (validate_config below) requires production deploys
+    # to set this in the environment so the audited posture is visible
+    # in ops manifests rather than buried in a hardcoded library default.
+    # In non-production environments ``None`` falls through to the safe
+    # ``"deny"`` value at the call site (see ``app.policy.webhook``).
+    policy_default_decision: str | None = None  # None | "allow" | "deny"
     # SSRF escape hatch for the PDP webhook validator. When False (the
     # production default) the broker rejects any webhook URL that resolves
     # to a private/loopback/link-local/reserved IP. Set to True ONLY for
@@ -218,10 +224,14 @@ def validate_config(settings: "Settings") -> None:
     """
     is_production = settings.environment == "production"
 
-    # POLICY_DEFAULT_DECISION must be one of the two known values
-    # regardless of environment — typo guard. Production additionally
-    # refuses 'allow' (further down in the production-only block).
-    if settings.policy_default_decision not in ("allow", "deny"):
+    # POLICY_DEFAULT_DECISION must be one of the two known values when
+    # set (typo guard). ``None`` is the audit Ultra U2 sentinel for
+    # "operator didn't declare anything"; production rejects it below,
+    # non-production tolerates it (the webhook callsite falls back to
+    # a safe ``"deny"``).
+    if settings.policy_default_decision is not None and (
+        settings.policy_default_decision not in ("allow", "deny")
+    ):
         _startup_logger.critical(
             "POLICY_DEFAULT_DECISION is %r — expected 'allow' or 'deny'.",
             settings.policy_default_decision,
@@ -230,6 +240,24 @@ def validate_config(settings: "Settings") -> None:
 
     # ── Fatal checks (production only) ─────────────────────────────────────
     if is_production:
+        # Audit Ultra U2 — require an EXPLICIT POLICY_DEFAULT_DECISION
+        # in production rather than silently inheriting the safe library
+        # fallback. The fallback is safe (``"deny"``) but doesn't signal
+        # operator intent; an audit reading prod config should see the
+        # value declared in env/manifests, not have to cross-reference
+        # the source. Detected via the ``None`` sentinel on the model:
+        # Pydantic only fills the field from env / explicit kwargs, so
+        # ``None`` means the operator declared nothing.
+        if settings.policy_default_decision is None:
+            _startup_logger.critical(
+                "POLICY_DEFAULT_DECISION is not set. Production deploys "
+                "must declare the policy default explicitly ('allow' or "
+                "'deny'); the safe fallback is for development only. "
+                "Set POLICY_DEFAULT_DECISION=deny in your env to confirm "
+                "the intended fail-closed posture.",
+            )
+            raise SystemExit(1)
+
         # Refuse 'allow' fall-through in production before checking the
         # rest of the infra config — it's a security regression and we
         # want the operator to see this signal even if database_url is

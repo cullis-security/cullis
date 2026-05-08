@@ -38,6 +38,11 @@ def _prod_broker_settings(**overrides) -> Settings:
         dashboard_signing_key="strong-random-dashboard-key",
         redis_url="redis://redis:6379/0",
         kms_backend="vault",
+        # Audit Ultra U2 — production validate_config now requires an
+        # explicit policy_default_decision. Every prod-shaped helper
+        # therefore declares one (we don't care which value: tests that
+        # need "allow" override locally).
+        policy_default_decision="deny",
     )
     base.update(overrides)
     return Settings(**base)

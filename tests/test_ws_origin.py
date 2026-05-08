@@ -167,6 +167,8 @@ def _prod_settings(**overrides) -> Settings:
         dashboard_signing_key="strong-signing-key",
         redis_url="redis://redis:6379/0",
         kms_backend="vault",
+        # Audit Ultra U2 — prod validate_config requires explicit decl.
+        policy_default_decision="deny",
     )
     base.update(overrides)
     return Settings(**base)
