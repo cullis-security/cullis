@@ -44,6 +44,77 @@ def get_jwks_client():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Wave 3 U4 — federation httpx client mTLS upgrade
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _upgrade_federation_client_to_mtls(app, agent_mgr, settings) -> None:
+    """Rebuild ``app.state.reverse_proxy_client`` with the Mastio leaf cert
+    as the TLS client certificate, so the Court can verify the live TLS
+    session was terminated by a holder of the same key as the pinned
+    ``organizations.mastio_pubkey``.
+
+    The previous (no-cert) client created earlier in the lifespan is
+    closed before the rebuild so its connection pool isn't leaked. The
+    SSLContext is built explicitly because httpx 0.28 silently drops the
+    ``cert=`` argument when ``verify=`` is also a non-bool — the SDK
+    already hit this and works around it the same way (cullis_sdk/
+    client.py).
+    """
+    import ssl
+    import tempfile
+    import httpx as _httpx
+
+    leaf_cert_pem, leaf_key_pem = agent_mgr.get_mastio_credentials()
+
+    ssl_ctx = ssl.create_default_context()
+    if not settings.broker_verify_tls:
+        # Match the legacy unverified semantic when the operator opts
+        # out via ``broker_verify_tls=false`` (sandbox / tests where the
+        # broker uses an untrusted self-signed cert).
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    # ``load_cert_chain`` only accepts file paths, not in-memory PEM.
+    # Write to NamedTemporaryFile, load, then unlink — the SSLContext
+    # holds the parsed material in memory after load, so removing the
+    # file is safe and avoids leaving the leaf private key on disk.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".pem", delete=False,
+    ) as cert_f:
+        cert_f.write(leaf_cert_pem)
+        cert_path = cert_f.name
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".pem", delete=False,
+    ) as key_f:
+        key_f.write(leaf_key_pem)
+        key_path = key_f.name
+
+    try:
+        ssl_ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+    finally:
+        os.unlink(cert_path)
+        os.unlink(key_path)
+
+    # Close the no-cert client created earlier so its pool isn't leaked.
+    old_client = getattr(app.state, "reverse_proxy_client", None)
+    if old_client is not None:
+        try:
+            await old_client.aclose()
+        except Exception as exc:  # pragma: no cover — defensive close
+            _log.debug("reverse_proxy_client old close: %s", exc)
+
+    app.state.reverse_proxy_client = _httpx.AsyncClient(
+        timeout=30.0,
+        verify=ssl_ctx,
+        follow_redirects=False,
+    )
+    _log.info(
+        "Wave 3 U4 — federation httpx client upgraded with Mastio leaf "
+        "client cert (mTLS toward broker)",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Lifespan
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -116,6 +187,13 @@ async def lifespan(app: FastAPI):
 
         # ADR-004 PR A — reverse-proxy httpx client. One shared AsyncClient
         # so the forwarder re-uses HTTP/2 connections across requests.
+        # Wave 3 U4 — the client cert is added in a second pass below,
+        # after ``ensure_mastio_identity`` has minted/loaded the leaf.
+        # We initialize the client here without a cert so any code path
+        # that runs between this point and the upgrade still has a usable
+        # client. The upgrade is a close+rebuild; in practice nothing
+        # uses the client during that window because the bridge isn't
+        # wired yet.
         import httpx as _httpx
         app.state.reverse_proxy_broker_url = broker_url
         app.state.reverse_proxy_client = _httpx.AsyncClient(
@@ -159,6 +237,21 @@ async def lifespan(app: FastAPI):
             await agent_mgr.ensure_mastio_identity()
         except Exception as exc:  # defensive — never block lifespan on this
             _log.warning("Mastio identity bootstrap failed: %s", exc)
+
+        # Wave 3 U4 — bidirectional mTLS toward the broker. Once the
+        # Mastio leaf is loaded, rebuild the federation httpx client with
+        # the leaf cert as the TLS client cert. The Court verifies the
+        # cert's pubkey against the pinned ``organizations.mastio_pubkey``
+        # — same key as the JWT countersig, no new schema. Federation
+        # mode only; standalone keeps reverse_proxy_client=None.
+        if not settings.standalone and getattr(agent_mgr, "mastio_loaded", False):
+            try:
+                await _upgrade_federation_client_to_mtls(app, agent_mgr, settings)
+            except Exception as exc:
+                _log.warning(
+                    "Wave 3 U4 mTLS upgrade failed (broker uplink will "
+                    "still work via JWT countersig only): %s", exc,
+                )
 
         # ADR-014 — emit the TLS server cert that the nginx sidecar
         # serves on 9443. The CA bundle (public Org CA cert) goes

@@ -10,6 +10,7 @@ from app.auth.models import TokenRequest, TokenResponse, TokenPayload
 from app.auth.jwt import create_access_token, get_current_agent
 from app.auth import mastio_countersig
 from app.auth.mastio_countersig import COUNTERSIG_HEADER
+from app.auth.mastio_mtls import enforce_if_present as enforce_mastio_mtls
 from app.auth.x509_verifier import verify_client_assertion
 from app.auth.dpop import verify_dpop_proof, build_htu
 from app.config import get_settings
@@ -142,6 +143,25 @@ async def issue_token(
                 details={"reason": "mastio_countersig_missing_or_invalid"},
             )
             raise
+
+        # ── Wave 3 U4 — bidirectional mTLS verify-if-present ─────────────────
+        # User principals already covered by enforce_on_token_request short-
+        # circuit (no countersig check, no mTLS check) since the user's KMS-
+        # held key isn't on the Mastio. Agents/workloads check both layers.
+        if principal_type != "user":
+            from app.registry.org_store import get_org_by_id as _get_org_for_mtls
+            org_record = await _get_org_for_mtls(db, org_id)
+            if org_record is not None and org_record.mastio_pubkey:
+                try:
+                    enforce_mastio_mtls(request, org_record.mastio_pubkey)
+                except HTTPException:
+                    AUTH_DENY_COUNTER.add(1, {"reason": "mastio_mtls"})
+                    await log_event(
+                        db, "auth.token_request", "denied",
+                        agent_id=agent_id, org_id=org_id,
+                        details={"reason": "mastio_mtls_pubkey_mismatch"},
+                    )
+                    raise
 
         # ── Registry lookup ──────────────────────────────────────────────────
         if principal_type == "user":

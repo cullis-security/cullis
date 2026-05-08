@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_countersig
+from app.auth.mastio_mtls import enforce_if_present as enforce_mastio_mtls
 from app.db.database import get_db
 from app.db.audit import log_event
 from app.registry.org_store import get_org_by_id
@@ -177,6 +178,25 @@ async def publish_agent(
                      "agent_id": body.agent_id},
         )
         raise
+
+    # 2b. Wave 3 U4 — bidirectional mTLS verify-if-present. A peer cert
+    #     bound to the same key as ``mastio_pubkey`` is a stronger proof
+    #     than the JWT countersig alone (binds the live TLS session to
+    #     the org's signing key). Phase 1: log + 403 on mismatch, no-op
+    #     when no peer cert is presented. Phase 2 will add per-org
+    #     ``require_mtls`` to flip "missing" → 403.
+    try:
+        verified = enforce_mastio_mtls(request, org.mastio_pubkey)
+    except HTTPException:
+        await log_event(
+            db, "federation.publish_rejected", "denied",
+            org_id=org_id,
+            details={"reason": "mastio_mtls_pubkey_mismatch",
+                     "agent_id": body.agent_id},
+        )
+        raise
+    if verified:
+        _log.debug("federation.publish_agent: mastio mTLS verified for %s", org_id)
 
     # 3. Validate the agent cert chains to the org CA (unless we're only
     #    recording a revocation — a revoked agent's cert chain doesn't
@@ -332,6 +352,18 @@ async def publish_stats(
             db, "federation.stats_rejected", "denied",
             org_id=body.org_id,
             details={"reason": "countersig_invalid"},
+        )
+        raise
+
+    # Wave 3 U4 — bidirectional mTLS verify-if-present (mirrors
+    # publish-agent). 403 on key mismatch, no-op when absent.
+    try:
+        enforce_mastio_mtls(request, org.mastio_pubkey)
+    except HTTPException:
+        await log_event(
+            db, "federation.stats_rejected", "denied",
+            org_id=body.org_id,
+            details={"reason": "mastio_mtls_pubkey_mismatch"},
         )
         raise
 
