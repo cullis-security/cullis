@@ -7,10 +7,34 @@ Each session has a unique ID and tracks:
 - who receives it (target)
 - current status
 - already used nonces (message-level replay protection)
+
+Concurrency model (audit L4-H1):
+The store carries TWO locks with distinct purposes.
+
+- ``_lock`` (``asyncio.Lock``): coarse, transaction-scope lock held by
+  callers around "read-validate-mutate-persist" sequences that span an
+  ``await`` (typically ``await save_session(db, ...)``). It serializes
+  coroutines but is useless against threadpool callers because
+  ``asyncio.Lock`` is not thread-safe. Existing routers use this.
+- ``_state_lock`` (``threading.RLock``): fine-grained, held internally by
+  every mutation method around the in-memory ``self._sessions`` dict and
+  ``Session.status`` writes. Reentrant so ``create`` can call
+  ``_evict_stale`` while still holding it. Defends against the
+  ``RuntimeError: dictionary changed size during iteration`` race that
+  would surface if any caller ever ran the store off the event loop
+  thread (e.g. FastAPI sync endpoints scheduled to the threadpool, future
+  background workers, the dashboard's BackgroundTasks). On the current
+  single-threaded asyncio runtime the lock is uncontended.
+
+Mutation methods MUST acquire ``_state_lock``. Iteration over
+``self._sessions`` MUST snapshot under the lock (``list(...)``) before
+yielding the values to the caller. No ``await`` is performed inside
+``_state_lock``: it only guards in-memory transitions.
 """
 import asyncio
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
@@ -169,7 +193,13 @@ class SessionStore:
             if active_cap_per_agent is not None
             else SESSION_CAP_ACTIVE_PER_AGENT
         )
-        self._lock = asyncio.Lock()  # protects state transitions (accept/reject/close)
+        # ``_lock`` is the transaction-scope lock for callers that need to
+        # straddle an ``await`` (e.g. mutate-then-persist). ``_state_lock`` is
+        # the in-memory dict guard acquired by every mutation method below;
+        # it is reentrant so ``create`` can call ``_evict_stale`` without
+        # deadlock. See the module docstring for the full contract.
+        self._lock = asyncio.Lock()
+        self._state_lock = threading.RLock()
 
     # ── Eviction ─────────────────────────────────────────────────────────
 
@@ -185,12 +215,13 @@ class SessionStore:
         them to CLOSED and emit a ``session.closed`` event with reason
         ``ttl_expired`` before they disappear.
         """
-        to_remove = [
-            sid for sid, s in self._sessions.items()
-            if s.status in (SessionStatus.closed, SessionStatus.denied)
-        ]
-        for sid in to_remove:
-            del self._sessions[sid]
+        with self._state_lock:
+            to_remove = [
+                sid for sid, s in self._sessions.items()
+                if s.status in (SessionStatus.closed, SessionStatus.denied)
+            ]
+            for sid in to_remove:
+                del self._sessions[sid]
         if to_remove:
             _log.info("Evicted %d stale session(s) from in-memory store", len(to_remove))
         return len(to_remove)
@@ -204,9 +235,11 @@ class SessionStore:
         only ACTIVE is capped; PENDING is rate-limited at the route level
         and auto-swept when it times out).
         """
+        with self._state_lock:
+            snapshot = list(self._sessions.values())
         return sum(
             1
-            for s in self._sessions.values()
+            for s in snapshot
             if s.status == SessionStatus.active
             and (s.initiator_agent_id == agent_id or s.target_agent_id == agent_id)
         )
@@ -219,59 +252,71 @@ class SessionStore:
         target_org_id: str,
         requested_capabilities: list[str],
     ) -> Session:
-        # Evict stale sessions before checking the cap
-        self._evict_stale()
+        # The whole sequence (evict → cap check → cap-per-agent → insert) must
+        # be atomic w.r.t. concurrent mutations, otherwise two creators can
+        # both observe ``len < _MAX_SESSIONS`` and overflow the cap. RLock is
+        # required so the inner ``_evict_stale`` and ``count_active_for_agent``
+        # calls reacquire without deadlock.
+        with self._state_lock:
+            # Evict stale sessions before checking the cap
+            self._evict_stale()
 
-        if len(self._sessions) >= self._MAX_SESSIONS:
-            raise RuntimeError(
-                f"Session store full ({self._MAX_SESSIONS} sessions) — "
-                "cannot create new session"
+            if len(self._sessions) >= self._MAX_SESSIONS:
+                raise RuntimeError(
+                    f"Session store full ({self._MAX_SESSIONS} sessions) — "
+                    "cannot create new session"
+                )
+
+            # M1.4 per-agent ACTIVE cap (applies to the initiator; the target's
+            # cap is re-checked when they accept).
+            active_for_initiator = self.count_active_for_agent(initiator_agent_id)
+            if active_for_initiator >= self._active_cap_per_agent:
+                raise AgentSessionCapExceeded(
+                    agent_id=initiator_agent_id,
+                    current=active_for_initiator,
+                    cap=self._active_cap_per_agent,
+                )
+
+            session_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc)
+            session = Session(
+                session_id=session_id,
+                initiator_agent_id=initiator_agent_id,
+                initiator_org_id=initiator_org_id,
+                target_agent_id=target_agent_id,
+                target_org_id=target_org_id,
+                requested_capabilities=requested_capabilities,
+                created_at=now,
+                expires_at=now + self._ttl,
             )
-
-        # M1.4 per-agent ACTIVE cap (applies to the initiator; the target's
-        # cap is re-checked when they accept).
-        active_for_initiator = self.count_active_for_agent(initiator_agent_id)
-        if active_for_initiator >= self._active_cap_per_agent:
-            raise AgentSessionCapExceeded(
-                agent_id=initiator_agent_id,
-                current=active_for_initiator,
-                cap=self._active_cap_per_agent,
-            )
-
-        session_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
-        session = Session(
-            session_id=session_id,
-            initiator_agent_id=initiator_agent_id,
-            initiator_org_id=initiator_org_id,
-            target_agent_id=target_agent_id,
-            target_org_id=target_org_id,
-            requested_capabilities=requested_capabilities,
-            created_at=now,
-            expires_at=now + self._ttl,
-        )
-        self._sessions[session_id] = session
-        return session
+            self._sessions[session_id] = session
+            return session
 
     def get(self, session_id: str) -> Session | None:
-        session = self._sessions.get(session_id)
-        if session and session.is_expired() and session.status != SessionStatus.closed:
-            session.status = SessionStatus.closed
-        return session
+        # The TTL-expiry side-effect mutates ``session.status``, so the read
+        # has to happen under the state lock to stay consistent with concurrent
+        # ``close`` / ``activate`` callers.
+        with self._state_lock:
+            session = self._sessions.get(session_id)
+            if session and session.is_expired() and session.status != SessionStatus.closed:
+                session.status = SessionStatus.closed
+            return session
 
     def activate(self, session_id: str) -> Session | None:
-        session = self.get(session_id)
-        if session and session.status == SessionStatus.pending:
-            session.status = SessionStatus.active
-            session.touch()
-        return session
+        with self._state_lock:
+            session = self.get(session_id)
+            if session and session.status == SessionStatus.pending:
+                session.status = SessionStatus.active
+                session.touch()
+            return session
 
     def reject(self, session_id: str) -> Session | None:
-        session = self.get(session_id)
-        if session and session.status == SessionStatus.pending:
-            session.status = SessionStatus.denied
-            session.close_reason = SessionCloseReason.rejected
-        return session
+        with self._state_lock:
+            session = self.get(session_id)
+            if session and session.status == SessionStatus.pending:
+                session.status = SessionStatus.denied
+                session.close_reason = SessionCloseReason.rejected
+            return session
 
     def close(
         self,
@@ -284,12 +329,13 @@ class SessionStore:
         the ``session.closed`` event (M1.3). The event emission itself
         lives at the router level — this method only mutates state.
         """
-        session = self._sessions.get(session_id)
-        if session and session.status != SessionStatus.closed:
-            session.status = SessionStatus.closed
-            if session.close_reason is None:
-                session.close_reason = reason
-        return session
+        with self._state_lock:
+            session = self._sessions.get(session_id)
+            if session and session.status != SessionStatus.closed:
+                session.status = SessionStatus.closed
+                if session.close_reason is None:
+                    session.close_reason = reason
+            return session
 
     def close_all_for_agent(
         self,
@@ -297,16 +343,24 @@ class SessionStore:
         reason: SessionCloseReason = SessionCloseReason.normal,
     ) -> list[Session]:
         """Close all active/pending sessions involving the given agent.
-        Returns the list of sessions that were closed."""
+        Returns the list of sessions that were closed.
+
+        Snapshots the current sessions under ``_state_lock`` before iterating,
+        so a concurrent ``create`` can never trigger
+        ``RuntimeError: dictionary changed size during iteration`` (audit L4-H1).
+        Mutation of each session's status also happens under the same lock so
+        the close decision is atomic w.r.t. ``activate`` / ``close``.
+        """
         closed = []
-        for s in self._sessions.values():
-            if s.status in (SessionStatus.active, SessionStatus.pending) and (
-                s.initiator_agent_id == agent_id or s.target_agent_id == agent_id
-            ):
-                s.status = SessionStatus.closed
-                if s.close_reason is None:
-                    s.close_reason = reason
-                closed.append(s)
+        with self._state_lock:
+            for s in list(self._sessions.values()):
+                if s.status in (SessionStatus.active, SessionStatus.pending) and (
+                    s.initiator_agent_id == agent_id or s.target_agent_id == agent_id
+                ):
+                    s.status = SessionStatus.closed
+                    if s.close_reason is None:
+                        s.close_reason = reason
+                    closed.append(s)
         return closed
 
     def find_stale(
@@ -323,7 +377,9 @@ class SessionStore:
         close events with the right reason.
         """
         out: list[tuple[Session, SessionCloseReason]] = []
-        for s in self._sessions.values():
+        with self._state_lock:
+            snapshot = list(self._sessions.values())
+        for s in snapshot:
             if s.status in (SessionStatus.closed, SessionStatus.denied):
                 continue
             if s.is_expired():
@@ -333,8 +389,10 @@ class SessionStore:
         return out
 
     def list_for_agent(self, agent_id: str, *, limit: int = 100, offset: int = 0) -> list[Session]:
+        with self._state_lock:
+            snapshot = list(self._sessions.values())
         matches = [
-            s for s in self._sessions.values()
+            s for s in snapshot
             if s.initiator_agent_id == agent_id or s.target_agent_id == agent_id
         ]
         if limit <= 0:
