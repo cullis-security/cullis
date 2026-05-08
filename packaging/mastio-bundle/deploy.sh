@@ -295,6 +295,24 @@ for i in $(seq 1 60); do
     fi
 done
 
+# ── Export Org CA to host filesystem ───────────────────────────────────────
+# The Org CA is generated at first boot inside the mcp-proxy container's
+# named volume. Downstream consumers (Frontdesk Connector enroll, mTLS
+# verify, manual curl smoke) need it as a trust anchor on the host. Copy
+# it out so operators don't have to docker cp by hand.
+CERT_DIR="$SCRIPT_DIR/certs"
+mkdir -p "$CERT_DIR"
+PROXY_CID="$($COMPOSE $COMPOSE_FILES ps -q mcp-proxy 2>/dev/null || true)"
+ORG_CA_HOST="$CERT_DIR/org-ca.pem"
+if [[ -n "$PROXY_CID" ]] && docker cp "$PROXY_CID:/var/lib/mastio/nginx-certs/org-ca.crt" "$ORG_CA_HOST" 2>/dev/null; then
+    chmod 644 "$ORG_CA_HOST"
+    ok "Org CA exported to ./certs/org-ca.pem"
+else
+    warn "Could not export Org CA — retrieve manually:"
+    warn "  docker cp ${COMPOSE_PROJECT_NAME}-mcp-proxy-1:/var/lib/mastio/nginx-certs/org-ca.crt ./certs/org-ca.pem"
+    rm -f "$ORG_CA_HOST" 2>/dev/null
+fi
+
 PUBLIC_URL="$(grep -E '^MCP_PROXY_PROXY_PUBLIC_URL=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
 PUBLIC_URL="${PUBLIC_URL:-https://localhost:${PROXY_PORT}}"
 
@@ -303,6 +321,10 @@ echo -e "${GREEN}${BOLD}Cullis Mastio deployed (${MODE}).${RESET}"
 echo ""
 echo -e "  ${BOLD}Dashboard${RESET}        ${GRAY}${PUBLIC_URL}/proxy/login${RESET}"
 echo -e "  ${BOLD}Health${RESET}           ${GRAY}${PUBLIC_URL}/health${RESET}"
+if [[ -f "$ORG_CA_HOST" ]]; then
+    echo -e "  ${BOLD}Org CA${RESET}           ${GRAY}./certs/org-ca.pem${RESET}"
+    echo -e "                   ${GRAY}use as CULLIS_FRONTDESK_CA_BUNDLE_HOST when bringing up the Frontdesk bundle${RESET}"
+fi
 echo ""
 if [[ "$MODE" == "development" ]]; then
     echo "  Next steps (development):"
