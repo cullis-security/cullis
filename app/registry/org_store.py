@@ -56,6 +56,12 @@ class OrganizationRecord(Base):
     # session allows every mutation). See app/dashboard/router.py for
     # the enforcement and unseal flow.
     sealed = Column(Boolean, nullable=False, default=False, server_default="0")
+    # Wave 3 U4 Phase 2 — when true, federation endpoints reject Mastio
+    # calls that don't present a TLS client cert binding to ``mastio_pubkey``.
+    # Default false preserves Phase 1 verify-if-present (cert optional).
+    require_mastio_mtls = Column(
+        Boolean, nullable=False, default=False, server_default="0",
+    )
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())

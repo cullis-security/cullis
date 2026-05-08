@@ -145,3 +145,37 @@ def enforce_if_present(request: Request, mastio_pubkey_pem: str) -> bool:
         return False
     verify_mastio_cert_pubkey(cert, mastio_pubkey_pem)
     return True
+
+
+def enforce_if_required(
+    request: Request,
+    mastio_pubkey_pem: str,
+    *,
+    require: bool,
+) -> bool:
+    """Phase 2 helper: like :func:`enforce_if_present` but escalates a
+    missing peer cert to 403 when ``require`` is True.
+
+    Returns True if a cert was presented and verified. Raises 403 on
+    mismatch (always) or on absence when ``require`` is True.
+
+    Operators flip ``require`` (per-org column ``require_mastio_mtls``)
+    once the Court's terminating layer (uvicorn ssl_cert_reqs=optional
+    or nginx with ssl_verify_client + header pass-through) is wired to
+    actually surface the peer cert. Until then ``require=False`` keeps
+    the verify-if-present semantic so a half-deployed setup doesn't
+    self-DoS.
+    """
+    cert = extract_mastio_cert(request)
+    if cert is None:
+        if require:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "organization requires Mastio mTLS but no peer "
+                    "certificate was presented to the Court"
+                ),
+            )
+        return False
+    verify_mastio_cert_pubkey(cert, mastio_pubkey_pem)
+    return True
