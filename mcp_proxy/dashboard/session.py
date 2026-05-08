@@ -228,7 +228,13 @@ def set_session(
         _COOKIE_NAME, signed,
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        # Audit M-IO-1 — strict denies the cookie on cross-site requests
+        # entirely, blocking CSRF + login-flow leaks via top-level
+        # navigations from third-party sites. Safe for the proxy
+        # session cookie because the proxy never receives links from
+        # external origins (the OIDC redirect flow uses a separate
+        # _OIDC_STATE_COOKIE that must stay ``lax`` for the IdP round-trip).
+        samesite="strict",
         secure=_use_secure,
     )
     return csrf_token
@@ -237,7 +243,7 @@ def set_session(
 def clear_session(response: Response) -> None:
     """Delete the session cookie."""
     response.delete_cookie(
-        _COOKIE_NAME, samesite="lax", secure=_should_set_secure_cookie(),
+        _COOKIE_NAME, samesite="strict", secure=_should_set_secure_cookie(),
     )
 
 
