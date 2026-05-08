@@ -46,14 +46,32 @@ def _record(nonce: str) -> None:
     _persist_received()
 
 
-def wait_for_http(url: str, timeout: float = 60.0) -> bool:
-    # ``url`` is the Mastio's https endpoint behind the per-org nginx
-    # sidecar (ADR-014); the Org CA is self-signed in the sandbox, so
-    # we disable cert verification here (matches the SDK's
-    # ``verify_tls=False``).
+def wait_for_http(
+    url: str,
+    timeout: float = 60.0,
+    ca_bundle_path: "str | pathlib.Path | None" = None,
+) -> bool:
+    """Poll ``url`` until it returns a non-5xx status or ``timeout`` expires.
+
+    ``ca_bundle_path`` is forwarded to httpx as ``verify=`` for HTTPS
+    targets.  When ``None`` httpx falls back to the system trust store
+    (``verify=True``).  ``verify=False`` is intentionally absent: a
+    misconfigured TLS chain must fail here, not silently pass and produce
+    a false-positive readiness signal (see audit finding F-L11-03 and the
+    PR #365 regression post-mortem).
+
+    For plain-HTTP targets (``url`` starting with ``http://``) the
+    ``ca_bundle_path`` argument is ignored — there is no TLS handshake.
+    """
     import httpx
+    # Only supply a custom CA bundle for HTTPS targets; httpx ignores
+    # ``verify`` for HTTP but passing a path would be misleading.
+    if url.startswith("https://"):
+        verify: "str | bool" = str(ca_bundle_path) if ca_bundle_path is not None else True
+    else:
+        verify = True  # HTTP: verify= is a no-op, True is the safe default
     deadline = time.monotonic() + timeout
-    with httpx.Client(verify=False, timeout=2.0) as client:
+    with httpx.Client(verify=verify, timeout=2.0) as client:
         while time.monotonic() < deadline:
             try:
                 r = client.get(url)
@@ -209,7 +227,16 @@ def main() -> int:
     auto_send = os.environ.get("AGENT_AUTO_SEND", "false").lower() in ("1", "true", "yes")
     self_id = f"{org_id}::{name}"
 
-    if not wait_for_http(f"{broker}/health", timeout=60):
+    # Resolve the Org CA bundle that bootstrap writes under /state/{org}/ca.pem.
+    # bootstrap is declared as a depends_on predecessor in docker-compose so the
+    # file exists before this container starts; we derive the path here (before
+    # _auth_identity_dir) so wait_for_http can verify the Mastio TLS cert against
+    # the correct CA instead of skipping verification entirely.
+    # Chicken-and-egg note: if the URL is HTTP (e.g. during local dev without
+    # the nginx sidecar), ca_bundle_path is still derived but wait_for_http
+    # ignores it for non-HTTPS targets — no verify=False anywhere.
+    ca_bundle_path = pathlib.Path("/state") / org_id / "ca.pem"
+    if not wait_for_http(f"{broker}/health", timeout=60, ca_bundle_path=ca_bundle_path):
         print(f"[{self_id}] FAIL: broker {broker} not reachable",
               file=sys.stderr, flush=True)
         return 1
