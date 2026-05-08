@@ -177,6 +177,29 @@ function copyToClipboard(text) {
         showToast('Copied to clipboard', 'success');
     });
 }
+
+// Delegated handler for inline copy buttons. Buttons opt in via
+// ``data-copy="<value>"``; the original button text is restored after
+// 1500ms. This replaces the per-button inline ``onclick="navigator.
+// clipboard.writeText({{ x|tojson }}); …"`` pattern, which was unsafe
+// inside double-quoted HTML attributes — Jinja's ``|tojson`` emits
+// quoted JSON, the inner ``"`` terminated the attribute and the rest
+// of the JS leaked into the DOM as visible text.
+document.addEventListener('click', function(ev) {
+    var btn = ev.target.closest('[data-copy]');
+    if (!btn) return;
+    var text = btn.getAttribute('data-copy');
+    if (text === null) return;
+    navigator.clipboard.writeText(text).then(function() {
+        if (!btn.dataset.copyOriginal) {
+            btn.dataset.copyOriginal = btn.textContent.trim();
+        }
+        btn.textContent = btn.dataset.copyDone || 'Copied ✓';
+        setTimeout(function() {
+            btn.textContent = btn.dataset.copyOriginal;
+        }, 1500);
+    });
+});
 </script>
 </body>
 </html>

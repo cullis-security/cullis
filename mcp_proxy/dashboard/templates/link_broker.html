@@ -16,7 +16,7 @@
         <div class="flex items-center gap-3">
             <code class="text-sm text-white break-all flex-1" style="font-family: 'JetBrains Mono', monospace;">{{ org_id }}</code>
             <button type="button"
-                    onclick="navigator.clipboard.writeText({{ org_id|tojson }}); this.innerText='Copied ✓'; setTimeout(()=>this.innerText='Copy', 1500);"
+                    data-copy="{{ org_id|e }}"
                     class="px-2 py-1 text-[10px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/20">
                 Copy
             </button>
