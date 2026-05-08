@@ -57,6 +57,35 @@ templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
+def _safe_redirect(next_url: object, fallback: str = "/dashboard") -> str:
+    """Validate a caller-supplied redirect target and return a safe local path.
+
+    Rejects anything that could cause an open-redirect (H-IO-1):
+    - non-string values
+    - absolute URLs  (``https://...``)
+    - protocol-relative URLs  (``//evil.example/x``)
+    - backslash-relative URLs  (``/\\evil``)
+    - empty / whitespace-only strings
+
+    Only accepts paths that start with ``/`` and whose parsed ``netloc``
+    is empty (i.e., no host component), which is the standard urllib test
+    for relative-same-origin URLs.
+    """
+    if not isinstance(next_url, str) or not next_url.strip():
+        return fallback
+    # Block protocol-relative (//host) and backslash variants (/\host)
+    if next_url.startswith("//") or next_url.startswith("/\\"):
+        return fallback
+    # Must start with a single slash (no scheme, no authority)
+    if not next_url.startswith("/"):
+        return fallback
+    # Belt-and-suspenders: urlparse must see no scheme and no netloc
+    parsed = urlparse(next_url)
+    if parsed.scheme or parsed.netloc:
+        return fallback
+    return next_url
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Login / Logout
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1714,7 +1743,9 @@ async def org_unseal_reauth_form(request: Request, org_id: str,
     org = await get_org_by_id(db, org_id)
     if org is None:
         return RedirectResponse(url="/dashboard/orgs", status_code=303)
-    next_url = request.query_params.get("next", "/dashboard/orgs")
+    next_url = _safe_redirect(
+        request.query_params.get("next"), fallback="/dashboard/orgs"
+    )
     return templates.TemplateResponse(
         "org_unseal_reauth.html",
         _ctx(request, session, active="orgs", org=org, next_url=next_url,
@@ -1742,11 +1773,11 @@ async def org_unseal_reauth_submit(request: Request, org_id: str,
     )
     form_data = await request.form()
     password = form_data.get("password", "")
-    next_url = form_data.get("next", "/dashboard/orgs")
-    # Only allow same-origin redirects — reject absolute URLs to prevent an
-    # admin being bounced off the dashboard after re-auth.
-    if not isinstance(next_url, str) or not next_url.startswith("/"):
-        next_url = "/dashboard/orgs"
+    # Validate the redirect target (H-IO-1): reject protocol-relative and
+    # absolute URLs to prevent open-redirect after admin re-auth.
+    next_url = _safe_redirect(
+        form_data.get("next"), fallback="/dashboard/orgs"
+    )
 
     stored_hash = await get_admin_secret_hash()
     if not password or not verify_admin_password(password, stored_hash):
