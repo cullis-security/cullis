@@ -168,7 +168,9 @@ if [[ -z "$CA_BUNDLE" || ! -f "$CA_BUNDLE" ]]; then
     err "Mastio CA bundle not found at: ${CA_BUNDLE:-<unset>}"
     err "Edit frontdesk.env: set CULLIS_FRONTDESK_CA_BUNDLE_HOST to the path"
     err "of your Mastio's Org CA. The sibling Mastio bundle exports it to"
-    err "../mastio-bundle/certs/org-ca.pem when ./deploy.sh runs there."
+    err "../cullis-mastio-bundle/certs/org-ca.pem (release tarball) or"
+    err "../mastio-bundle/certs/org-ca.pem (repo layout) when its"
+    err "./deploy.sh runs."
     exit 1
 fi
 ok "CA bundle: $CA_BUNDLE"
