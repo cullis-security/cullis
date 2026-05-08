@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -93,7 +94,15 @@ class TrafficRecorder:
         self._engine = engine
         self._flush_interval_s = float(flush_interval_s)
         # agent_id → bucket_ts → count
+        # Protected by _lock: record() may be called from multiple threads
+        # (or asyncio tasks running on different thread-pool workers) concurrently.
+        # The read-modify-write `agent_buckets[bucket] = get(..., 0) + 1` is NOT
+        # atomic under CPython even though individual dict ops are — the GIL can
+        # be released between the LOAD and the STORE bytecodes. A threading.Lock
+        # costs microseconds and is safe to acquire from both sync and async
+        # contexts because we never hold it across an await.
         self._buckets: dict[str, dict[str, int]] = {}
+        self._lock = threading.Lock()
         self._flush_task: asyncio.Task | None = None
         self._stopped = False
         # Counters exposed via the admin observability endpoint.
@@ -108,15 +117,21 @@ class TrafficRecorder:
         bucket. Cheap: one dict lookup + one increment. Runs in the
         request's own task so a slow auth dep doesn't block other
         agents' records.
+
+        Thread-safe: the read-modify-write on the bucket counter is
+        protected by ``self._lock``. The lock is held for nanoseconds
+        (two dict ops) so contention is negligible even under high
+        concurrency.
         """
         if not agent_id:
             return
         bucket = _bucket_ts_iso()
-        agent_buckets = self._buckets.get(agent_id)
-        if agent_buckets is None:
-            self._buckets[agent_id] = {bucket: 1}
-            return
-        agent_buckets[bucket] = agent_buckets.get(bucket, 0) + 1
+        with self._lock:
+            agent_buckets = self._buckets.get(agent_id)
+            if agent_buckets is None:
+                self._buckets[agent_id] = {bucket: 1}
+                return
+            agent_buckets[bucket] = agent_buckets.get(bucket, 0) + 1
 
     async def start(self) -> None:
         if self._flush_task is not None:
@@ -175,10 +190,12 @@ class TrafficRecorder:
     async def _flush_once(self) -> None:
         if not self._buckets:
             return
-        # Atomic swap: Python ref assignment is a single bytecode, and
-        # all record() calls happen in the same asyncio event loop, so
-        # between the two lines below no other record() can run.
-        pending, self._buckets = self._buckets, {}
+        # Swap under the lock so no in-flight record() writes get lost
+        # between the emptiness check and the reference swap.
+        with self._lock:
+            if not self._buckets:
+                return
+            pending, self._buckets = self._buckets, {}
         try:
             await self._write_pending(pending)
             self.flush_count += 1
