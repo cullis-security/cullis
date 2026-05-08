@@ -280,4 +280,9 @@ async def test_csr_endpoint_400_san_mismatch(client, auth_as_acme):
         },
     )
     assert r.status_code == 400
-    assert "does not match" in r.json()["detail"]
+    # H-IO-2: HTTP layer masks CSR validation specifics ("SPIFFE id X does
+    # not match Y" → "CSR validation failed"). The inner CsrValidationError
+    # still carries the diagnostic detail for the server log; the response
+    # body must not echo it (audit lane H-IO-2 Phase A). Asserting the
+    # masked surface keeps this guard in place against future regressions.
+    assert r.json()["detail"] == "CSR validation failed"
