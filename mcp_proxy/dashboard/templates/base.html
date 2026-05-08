@@ -178,6 +178,7 @@ function copyToClipboard(text) {
     });
 }
 
+{% raw %}
 // Delegated handler for inline copy buttons. Buttons opt in via
 // ``data-copy="<value>"``; the original button text is restored after
 // 1500ms. This replaces the per-button inline ``onclick="navigator.
@@ -185,6 +186,7 @@ function copyToClipboard(text) {
 // inside double-quoted HTML attributes — Jinja's ``|tojson`` emits
 // quoted JSON, the inner ``"`` terminated the attribute and the rest
 // of the JS leaked into the DOM as visible text.
+{% endraw %}
 document.addEventListener('click', function(ev) {
     var btn = ev.target.closest('[data-copy]');
     if (!btn) return;
