@@ -3,16 +3,23 @@
 # Triggered by pushing a tag of the form `chat-vX.Y.Z`. On tag push:
 #
 #   1. Build the Astro static bundle and verify it.
-#   2. Build and push the multi-arch Docker image (nginx-served static
-#      SPA) to ghcr.io.
-#   3. Create a GitHub Release with the image reference.
+#   2. Build and push two multi-arch Docker images (nginx-served static
+#      SPA) to ghcr.io, one per brand:
+#        - ghcr.io/<owner>/cullis-chat            (CULLIS_BRAND=cullis-chat)
+#        - ghcr.io/<owner>/cullis-chat-frontdesk  (CULLIS_BRAND=frontdesk)
+#   3. Create a GitHub Release with both image references.
 #
-# The Cullis Chat is a static SPA. The Frontdesk container bundle and
-# the Connector desktop installer ship their own copies of the same
-# build (the bundle pulls this image at deploy time, the desktop
-# installer embeds dist/ in the wheel via scripts/build-spa.sh). This
-# image is the canonical reference for self-hosters who want the SPA
-# behind their own reverse proxy without the rest of the bundle.
+# Why two images: ``CULLIS_BRAND`` is a build-time SPA constant
+# (``frontend/cullis-chat/src/branding/``) that flips logo, palette,
+# copy and naming between the consumer Cullis Chat and the enterprise
+# Frontdesk surface. Server-side multi-user vs single-user behaviour
+# lives in the Connector (``AMBASSADOR_MODE``), not in the SPA, so the
+# two images share identical JS/CSS bundles modulo the brand constants.
+#
+# The Connector desktop installer keeps embedding the consumer build
+# inside its Python wheel via ``scripts/build-spa.sh``; the Frontdesk
+# container bundle pulls ``cullis-chat-frontdesk`` directly at deploy
+# time and no longer rebuilds the SPA from source.
 #
 # No Helm chart and no tar.gz bundle: the SPA is a single nginx
 # container; everything that needs orchestration is in the Mastio /
@@ -78,10 +85,26 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Releasing cullis-chat: ${version}"
 
-  # ── 3. Docker image → ghcr.io ───────────────────────────────────────
+  # ── 3. Docker images → ghcr.io ──────────────────────────────────────
+  #
+  # Matrix builds one image per brand on the same tag. The two images
+  # share the same Dockerfile + npm build; only the ``CULLIS_BRAND``
+  # build arg differs.
   build-docker:
-    name: Build & push Docker image
+    name: Build & push (${{ matrix.brand }})
     needs: [test, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - brand: cullis-chat
+            image: cullis-chat
+            title: Cullis Chat
+            description: Identity-aware chat SPA for the Cullis federated agent-trust network (consumer build)
+          - brand: frontdesk
+            image: cullis-chat-frontdesk
+            title: Cullis Chat (Frontdesk brand)
+            description: Frontdesk-branded build of the Cullis Chat SPA, consumed by the Frontdesk container bundle
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -106,7 +129,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/cullis-chat
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           flavor: |
             latest=false
           tags: |
@@ -114,8 +137,8 @@ jobs:
             type=match,pattern=chat-v(\d+\.\d+)\..*,group=1,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
           labels: |
-            org.opencontainers.image.title=Cullis Chat
-            org.opencontainers.image.description=Identity-aware chat SPA for the Cullis federated agent-trust network
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
 
@@ -125,16 +148,13 @@ jobs:
           context: frontend/cullis-chat
           file: frontend/cullis-chat/Dockerfile
           platforms: linux/amd64,linux/arm64
-          # Default brand = cullis-chat (consumer). The Frontdesk bundle
-          # rebuilds with --build-arg CULLIS_BRAND=frontdesk at deploy
-          # time; it does not consume this image.
           build-args: |
-            CULLIS_BRAND=cullis-chat
+            CULLIS_BRAND=${{ matrix.brand }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.brand }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.brand }}
 
   # ── 4. GitHub Release ────────────────────────────────────────────────
   release:
@@ -164,7 +184,7 @@ jobs:
             cat > release-notes.md <<NOTES
           Release ${GITHUB_REF_NAME}
 
-          ## Quickstart
+          ## Quickstart (consumer build)
 
           \`\`\`bash
           docker run --rm -p 8080:8080 ghcr.io/${OWNER}/cullis-chat:${version}
@@ -175,18 +195,17 @@ jobs:
           Connector or Mastio (the SPA expects a same-origin cookie
           minted by \`POST /api/session/init\`).
 
-          ## Artifact
+          ## Artifacts
 
-          - **Docker image**: \`ghcr.io/${OWNER}/cullis-chat:${version}\`
+          - **Consumer image**: \`ghcr.io/${OWNER}/cullis-chat:${version}\`
+          - **Frontdesk-branded image**: \`ghcr.io/${OWNER}/cullis-chat-frontdesk:${version}\`
 
-          ## Topology
-
-          The Frontdesk container bundle pulls this image automatically
-          at deploy time. The Connector desktop installer ships an
-          embedded copy of the same SPA build inside its Python wheel
-          and does not pull this image. Use the standalone image when
-          you want to self-host the SPA behind your own reverse proxy
-          without the rest of the bundle.
+          Both images share the same JS/CSS bundle. They differ only in
+          \`CULLIS_BRAND\` (logo, palette, copy, naming). The Frontdesk
+          container bundle pulls the second image automatically at
+          deploy time; the Connector desktop installer embeds the
+          consumer build inside its Python wheel via
+          \`scripts/build-spa.sh\` and does not pull either image.
           NOTES
           fi
           cat release-notes.md
