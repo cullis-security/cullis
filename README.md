@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="cullis-mark.svg" alt="Cullis" width="120"><br><br>
+  <img src="branding/cullis-mark.svg" alt="Cullis" width="120"><br><br>
   <strong>Cullis — Zero-trust identity and audit for AI agents.</strong><br>
   Start air-gapped in your organization. Scale to cross-company federation without redeploy.
 </p>
