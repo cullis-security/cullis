@@ -15,15 +15,22 @@
 #   --down            stop + remove containers
 #   --pull            re-pull images (otherwise pulled on first up)
 #
-# Enrollment:
-#   --code <invite>   skip the invite-code prompt
-#   --site <url>      override CULLIS_SITE_URL for the enroll step
-#   --skip-enroll     bring the bundle up assuming connector_data is already
-#                     enrolled out-of-band
+# Enrollment (device-code flow — there is no pre-minted invite token in
+# the Mastio architecture; the Connector posts its public key + identity
+# claim to /v1/enrollment/start and the admin approves the pending row in
+# /proxy/enrollments. The docker run below blocks until that happens.):
+#   --requester-email <addr>   email the Mastio admin sees in the pending
+#                              row (default: frontdesk@<trust-domain>)
+#   --requester-name <name>    display name in the pending row
+#                              (default: "Frontdesk Bundle (<profile>)")
+#   --site <url>               override CULLIS_SITE_URL for the enroll step
+#   --skip-enroll              bring the bundle up assuming connector_data
+#                              is already enrolled out-of-band
 #
 # Examples:
 #   ./deploy.sh                                      # interactive
-#   ./deploy.sh --code abc123 --site https://mastio.acme.local:9443
+#   ./deploy.sh --requester-email ops@acme.local
+#   ./deploy.sh --site https://mastio.acme.local:9443
 #   ./deploy.sh --skip-enroll                        # second run, identity exists
 #   ./deploy.sh --down                               # stop + remove
 #
@@ -59,12 +66,15 @@ tree required). Default = dev mode, prompts for missing values.
 
 Options:
   (no flags)                  Dev mode: generate frontdesk.env if missing,
-                              prompt for invite code at enrollment time
+                              run the device-code enrollment one-shot
   --prod                      Production: fail-fast on insecure defaults,
                               frontdesk.env must exist with real values
   --down                      Stop and remove containers
   --pull                      Force-pull the images before starting
-  --code <invite>             Pre-supply the invite code (skip prompt)
+  --requester-email <addr>    Email the Mastio admin sees in the pending
+                              enrollment row. Default: frontdesk@<trust-domain>
+  --requester-name <name>     Display name in the pending row.
+                              Default: "Frontdesk Bundle (<profile>)"
   --site <url>                Mastio URL the Connector enrolls against,
                               defaults to https://host.docker.internal:9443
                               for the same-host topology
@@ -88,28 +98,34 @@ EOF
 ACTION="up"
 MODE="development"
 FORCE_PULL=0
-INVITE_CODE=""
+CLI_REQUESTER_EMAIL=""
+CLI_REQUESTER_NAME=""
 CLI_SITE_URL=""
 SKIP_ENROLL=0
 
 while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
-        --down)         ACTION="down"; shift ;;
-        --pull)         FORCE_PULL=1; shift ;;
-        --prod)         MODE="production"; shift ;;
-        --skip-enroll)  SKIP_ENROLL=1; shift ;;
-        --code)
+        --down)             ACTION="down"; shift ;;
+        --pull)             FORCE_PULL=1; shift ;;
+        --prod)             MODE="production"; shift ;;
+        --skip-enroll)      SKIP_ENROLL=1; shift ;;
+        --requester-email)
             shift
-            [[ $# -gt 0 && "$1" != --* ]] || die "--code requires an invite code"
-            INVITE_CODE="$1"; shift ;;
-        --code=*)       INVITE_CODE="${arg#--code=}"; shift ;;
+            [[ $# -gt 0 && "$1" != --* ]] || die "--requester-email requires a value"
+            CLI_REQUESTER_EMAIL="$1"; shift ;;
+        --requester-email=*) CLI_REQUESTER_EMAIL="${arg#--requester-email=}"; shift ;;
+        --requester-name)
+            shift
+            [[ $# -gt 0 && "$1" != --* ]] || die "--requester-name requires a value"
+            CLI_REQUESTER_NAME="$1"; shift ;;
+        --requester-name=*) CLI_REQUESTER_NAME="${arg#--requester-name=}"; shift ;;
         --site)
             shift
             [[ $# -gt 0 && "$1" != --* ]] || die "--site requires a URL"
             CLI_SITE_URL="$1"; shift ;;
-        --site=*)       CLI_SITE_URL="${arg#--site=}"; shift ;;
-        --help|-h)      print_help; exit 0 ;;
+        --site=*)           CLI_SITE_URL="${arg#--site=}"; shift ;;
+        --help|-h)          print_help; exit 0 ;;
         *) die "Unknown argument: $arg (use --help)" ;;
     esac
 done
@@ -225,33 +241,39 @@ else
     fi
     ok "Site URL: $SITE_URL"
 
-    if [[ -z "$INVITE_CODE" ]]; then
-        echo ""
-        echo "  ${BOLD}Get an invite code from the Mastio dashboard:${RESET}"
-        # Translate host.docker.internal back to localhost for the browser
-        # hint, since the operator opens the dashboard from the host.
-        _dashboard_url="${SITE_URL/host.docker.internal/localhost}"
-        echo "    1. Open ${_dashboard_url}/proxy/login"
-        echo "    2. Go to Enrollments → Create invite (target name: ${CONNECTOR_PROFILE})"
-        echo "    3. Paste the generated code below"
-        echo ""
-        read -rp "  Invite code: " INVITE_CODE
-        [[ -n "$INVITE_CODE" ]] || die "Invite code is required to enroll"
-    fi
+    # Default identity for the pending enrollment row. The admin sees
+    # ``REQUESTER_NAME <REQUESTER_EMAIL>`` in /proxy/enrollments and
+    # decides whether to approve. There is no ``invite code`` in the
+    # Mastio architecture — this is a device-code flow (Connector posts
+    # its public key + identity claim, admin approves out-of-band).
+    REQUESTER_EMAIL="${CLI_REQUESTER_EMAIL:-frontdesk@${TRUST_DOMAIN:-localhost}}"
+    REQUESTER_NAME="${CLI_REQUESTER_NAME:-Frontdesk Bundle (${CONNECTOR_PROFILE})}"
 
-    # Resolve to absolute path so docker volume mount works regardless of
-    # where the operator invokes the script from. ``DATA_DIR_ABS`` was
-    # already resolved above for the chown step.
+    # Translate host.docker.internal back to localhost for the browser
+    # hint, since the operator opens the dashboard from the host.
+    _dashboard_url="${SITE_URL/host.docker.internal/localhost}"
+
+    echo ""
+    echo "  ${BOLD}Approval workflow${RESET}"
+    echo "    ${GRAY}1. The next docker run posts a pending enrollment to Mastio.${RESET}"
+    echo "    ${GRAY}2. Open ${_dashboard_url}/proxy/enrollments in your browser.${RESET}"
+    echo "    ${GRAY}3. You should see a row for: ${REQUESTER_NAME} <${REQUESTER_EMAIL}>${RESET}"
+    echo "    ${GRAY}4. Click Approve, set agent_id = ${CONNECTOR_PROFILE} (or your choice).${RESET}"
+    echo "    ${GRAY}5. The connector container below polls until the cert lands.${RESET}"
+    echo ""
+
+    # Resolve CA bundle to absolute path so the docker volume mount works
+    # regardless of where the operator invokes the script from.
+    # ``DATA_DIR_ABS`` was already resolved above for the chown step.
     CA_BUNDLE_ABS="$(cd "$(dirname "$CA_BUNDLE")" && pwd)/$(basename "$CA_BUNDLE")"
 
     # Use a bridge network with host-gateway so the URL the Connector
     # uses to reach Mastio at enroll-time matches what it will use at
     # runtime (compose attaches the same host-gateway extra_hosts to the
-    # connector service). Without this, ``--network host`` would let the
-    # enroll succeed via localhost but the saved site_url in
-    # metadata.json would not resolve from the bridge network at runtime.
-    echo ""
-    docker run --rm \
+    # connector service). The container exits 0 once Mastio approves;
+    # the script unblocks and continues to ``compose up``. ``-it`` so the
+    # operator sees the polling status messages while waiting.
+    docker run --rm -it \
         --add-host "host.docker.internal:host-gateway" \
         -v "${DATA_DIR_ABS}:/home/cullis/.cullis" \
         -v "${CA_BUNDLE_ABS}:/etc/cullis/ca-bundle.pem:ro" \
@@ -259,10 +281,12 @@ else
         -e REQUESTS_CA_BUNDLE=/etc/cullis/ca-bundle.pem \
         "ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION}" \
         enroll \
-            --site "$SITE_URL" \
-            --code "$INVITE_CODE" \
+            --site-url "$SITE_URL" \
             --profile "$CONNECTOR_PROFILE" \
-        || die "Enrollment failed — verify the Mastio is reachable at $SITE_URL and the invite code is valid"
+            --requester-name "$REQUESTER_NAME" \
+            --requester-email "$REQUESTER_EMAIL" \
+            --reason "Frontdesk container bundle deploy.sh" \
+        || die "Enrollment failed — verify the Mastio is reachable at $SITE_URL and that you approved the pending row at ${_dashboard_url}/proxy/enrollments"
 
     if [[ ! -f "$ENROLLMENT_METADATA" ]]; then
         die "Enrollment finished without writing metadata to $ENROLLMENT_METADATA — check container logs above"
