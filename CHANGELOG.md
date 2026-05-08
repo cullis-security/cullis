@@ -7,6 +7,74 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.0-rc1] — 2026-05-08
+
+First connector minor since `connector-v0.3.6` (1 May). Folds ~17
+PRs of work driven by ADR-019 (Cullis Frontdesk) and ADR-021
+(shared-mode + multi-user KMS). Pre-release tag (`-rc1`) so the
+image lands on `ghcr.io` for end-to-end validation before the
+final v0.4.0 cut.
+
+### Highlights
+
+- **Ambassador, single-mode and shared-mode** ([#406], [#417],
+  [#418], [#428], [#430]): the Connector now exposes an
+  OpenAI-compatible Ambassador surface. `AMBASSADOR_MODE=single`
+  serves the desktop user (one local identity); `=shared` serves
+  N users behind an SSO-terminating reverse proxy via per-user
+  cookie + UserPrincipalKMS-signed requests.
+- **Cullis Chat SPA at `/chat`** ([#429], [#432]–[#434]): the
+  static SPA mounts directly under the Connector dashboard,
+  authenticated by the same cookie minted at `/api/session/init`.
+  PyInstaller binaries embed the bundle so single-user installs
+  work with no extra server.
+- **Shared-mode → Mastio CSR + MCP roundtrip** ([#437], [#442],
+  [#445]): per-user CSR endpoint is owned by the Mastio (moved
+  off Court), the Connector mints a per-user agent cert on
+  cookie issuance, and shared-mode requests reach MCP servers
+  with the right user identity attached to the audit chain.
+- **`/v1/inbox` passthrough on shared ambassador** ([#488]): the
+  inbox endpoints (list/ack/archive) bypass the Mastio hop and
+  call the broker directly with the user's own cert+key.
+- **Dashboard restyle to the cullis.io design system** ([#425],
+  [#426]): tokens, palette, typography aligned to the public
+  site.
+
+### Fixed
+
+- **`cullis-connector` Docker image now installs the
+  `[dashboard]` extra** ([#436]): previously `cullis-connector
+  dashboard` ImportError'd on `fastapi`. The Frontdesk container
+  bundle no longer needs its `Dockerfile.connector` wrapper as a
+  workaround.
+- **`/chat` gated behind enrollment** ([#433]): pre-enrollment
+  visits redirect to `/setup` instead of rendering the SPA with
+  a missing identity.
+
+### Notes
+
+- `cullis-sdk>=0.1.3` is now required at runtime for the
+  user-principal factory + `chat_completion`. The wheel install
+  pins this transitively.
+- Ambassador cookie TTL defaults to 1h (`CULLIS_FRONTDESK_COOKIE_TTL_S`).
+
+[#406]: https://github.com/cullis-security/cullis/pull/406
+[#417]: https://github.com/cullis-security/cullis/pull/417
+[#418]: https://github.com/cullis-security/cullis/pull/418
+[#425]: https://github.com/cullis-security/cullis/pull/425
+[#426]: https://github.com/cullis-security/cullis/pull/426
+[#428]: https://github.com/cullis-security/cullis/pull/428
+[#429]: https://github.com/cullis-security/cullis/pull/429
+[#430]: https://github.com/cullis-security/cullis/pull/430
+[#432]: https://github.com/cullis-security/cullis/pull/432
+[#433]: https://github.com/cullis-security/cullis/pull/433
+[#434]: https://github.com/cullis-security/cullis/pull/434
+[#436]: https://github.com/cullis-security/cullis/pull/436
+[#437]: https://github.com/cullis-security/cullis/pull/437
+[#442]: https://github.com/cullis-security/cullis/pull/442
+[#445]: https://github.com/cullis-security/cullis/pull/445
+[#488]: https://github.com/cullis-security/cullis/pull/488
+
 ## [v0.3.1] — 2026-05-07 (cullis-mastio)
 
 First minor since `mastio-v0.3.0-rc3` (29 April). Folds 116 commits
