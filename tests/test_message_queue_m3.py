@@ -187,6 +187,65 @@ async def test_queue_depth_counts_only_pending(db_session):
 
 
 @pytest.mark.asyncio
+async def test_sweep_expired_concurrent_no_duplicate_notices():
+    """L4-H5 regression: two concurrent sweep_expired calls on the same
+    expired rows must together emit each msg_id EXACTLY ONCE.
+
+    Two *separate* AsyncSession objects share the same in-memory SQLite DB
+    to model the multi-worker scenario (each worker has its own session).
+    SQLite serialises writes so the race is deterministic: the first
+    sweeper's UPDATE claims all rows; the second's UPDATE matches 0 rows
+    (delivery_status is no longer PENDING) and returns an empty list.
+    The semantic invariant is: rowcount-as-truth means no duplicates.
+    """
+    import asyncio
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///file:mq_concurrent?mode=memory&cache=shared&uri=true",
+        future=True,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    # Seed expired rows using one session.
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    msg_ids = []
+    async with maker() as seed_session:
+        for i in range(3):
+            mid, _ = await mq.enqueue(
+                seed_session,
+                session_id="s", recipient_agent_id="r",
+                sender_agent_id="a", ciphertext=b"c", seq=i, ttl_seconds=1,
+            )
+            row = await seed_session.get(ProxyMessageQueueRecord, mid)
+            row.ttl_expires_at = past
+            msg_ids.append(mid)
+        await seed_session.commit()
+
+    # Open two independent sessions to simulate two sweeper workers.
+    async with maker() as session_a, maker() as session_b:
+        notices_a, notices_b = await asyncio.gather(
+            mq.sweep_expired(session_a),
+            mq.sweep_expired(session_b),
+        )
+
+    await engine.dispose()
+
+    all_emitted = [n.msg_id for n in notices_a] + [n.msg_id for n in notices_b]
+
+    # Every expired msg_id must appear at most once across both calls.
+    assert len(all_emitted) == len(set(all_emitted)), (
+        f"Duplicate expiry notices detected: {all_emitted}"
+    )
+    # And together they must cover all three expired messages.
+    assert set(all_emitted) == set(msg_ids), (
+        f"Expected all expired ids {msg_ids}, got {all_emitted}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_bump_attempts_increments_only_pending(db_session):
     mid, _ = await mq.enqueue(
         db_session,

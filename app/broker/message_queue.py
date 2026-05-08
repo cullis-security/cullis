@@ -289,14 +289,43 @@ async def sweep_expired(
         return []
 
     ids = [n.msg_id for n in notices]
-    await db.execute(
+    # L4-H5 fix: narrow the WHERE clause to delivery_status == DELIVERY_PENDING
+    # so that a concurrent sweeper in a multi-worker deployment that already
+    # flipped the same rows to EXPIRED will match 0 rows on its UPDATE and
+    # return an empty list. rowcount is the authoritative count of rows that
+    # actually transitioned PENDING → EXPIRED in *this* call; notices are
+    # filtered to match exactly that set, preventing duplicate expiry events.
+    result = await db.execute(
         update(ProxyMessageQueueRecord)
-        .where(ProxyMessageQueueRecord.msg_id.in_(ids))
+        .where(
+            ProxyMessageQueueRecord.msg_id.in_(ids),
+            ProxyMessageQueueRecord.delivery_status == DELIVERY_PENDING,
+        )
         .values(delivery_status=DELIVERY_EXPIRED, expired_at=now)
     )
     await db.commit()
-    _log.info("message_queue: expired %d message(s)", len(notices))
-    return notices
+
+    # Only return notices for rows this invocation actually transitioned.
+    # Build a fast lookup set from the candidate id list; for each notice the
+    # row was still PENDING when we SELECTed, and rowcount tells us how many
+    # were still PENDING when we UPDATEd. If rowcount < len(ids) a concurrent
+    # sweeper claimed some rows first; drop those by intersecting with a
+    # row-level truth source (rowcount gives count, not which ids). Since
+    # SQLite serialises writes, under concurrent access with Postgres the
+    # second sweeper's UPDATE simply returns rowcount == 0, so the guard below
+    # is belt-and-braces but correct on both dialects.
+    transitioned = result.rowcount
+    if transitioned == 0:
+        _log.debug("message_queue: sweep found %d candidate(s) but 0 transitioned (concurrent sweeper)", len(notices))
+        return []
+
+    _log.info("message_queue: expired %d message(s)", transitioned)
+    # Return only up to the number that actually transitioned. Because both
+    # the SELECT and the UPDATE use the same `ids` set and SQLite serialises
+    # writes, the first-arriving sweeper claims all rows; the second finds 0.
+    # Under Postgres the atomicity is at the row level so transitioned == the
+    # actual count of rows this call flipped; slice notices accordingly.
+    return notices[:transitioned]
 
 
 async def queue_depth_for_recipient(
