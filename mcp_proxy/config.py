@@ -240,6 +240,17 @@ class ProxySettings(BaseSettings):
     # Accepts redis:// or rediss:// URLs.
     redis_url: str = ""
 
+    # Audit L1-H1 / Ultra U-DD-1: in production the DPoP JTI store and the
+    # login-challenge nonce store both refuse to fall back to in-memory
+    # when Redis is unavailable, because a multi-worker deploy without a
+    # shared store silently allows replay across workers (RFC 9449
+    # violation). Single-instance / single-worker production deployments
+    # that genuinely don't need Redis can opt out by setting this flag to
+    # true; the existing warning is then preserved. Default: secure
+    # (refuse). Mirrors the Court's hard-raise but keeps the legitimate
+    # single-instance Mastio path explicit rather than implicit.
+    allow_inmemory_security_stores: bool = False
+
     # Egress DPoP mode — audit F-B-11 Phase 1 (#181).
     # Controls whether ``/v1/egress/*`` handlers accept a DPoP proof
     # (RFC 9449) in addition to the legacy ``X-API-Key`` bearer:
