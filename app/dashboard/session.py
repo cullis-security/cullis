@@ -241,7 +241,13 @@ def set_session(response: Response, role: str = "admin", org_id: str | None = No
         _COOKIE_NAME, signed,
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        # Audit M-IO-1 — strict denies the cookie on cross-site requests
+        # entirely, blocking CSRF + login-flow leaks via top-level
+        # navigations from third-party sites. Safe for the dashboard
+        # session cookie because the dashboard never receives links from
+        # external origins (the OIDC redirect flow uses a separate
+        # _OIDC_STATE_COOKIE that must stay ``lax`` for the IdP round-trip).
+        samesite="strict",
         secure=is_https,
     )
     return csrf_token
@@ -285,7 +291,7 @@ def add_reauth_scope(
         _COOKIE_NAME, signed,
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        samesite="strict",  # see audit M-IO-1 note above
         secure=is_https,
     )
 
@@ -294,7 +300,7 @@ def clear_session(response: Response) -> None:
     """Delete the session cookie."""
     from app.config import get_settings
     is_https = "https" in get_settings().broker_public_url.lower() if get_settings().broker_public_url else False
-    response.delete_cookie(_COOKIE_NAME, samesite="lax", secure=is_https)
+    response.delete_cookie(_COOKIE_NAME, samesite="strict", secure=is_https)
 
 
 def require_login(request: Request) -> DashboardSession | RedirectResponse:
