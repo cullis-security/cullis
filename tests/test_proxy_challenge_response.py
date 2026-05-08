@@ -399,3 +399,65 @@ async def test_in_memory_store_cross_agent_isolation():
     assert await store.consume("bob", "n") is False
     # Alice can still consume.
     assert await store.consume("alice", "n") is True
+
+
+# ── factory: production fail-closed (audit L1-M4 / Ultra U-DD-1) ─────
+
+
+@pytest.mark.asyncio
+async def test_factory_refuses_in_memory_in_production_by_default(monkeypatch):
+    """Production + no Redis without explicit opt-in must RAISE rather
+    than silently fall back to in-memory; multi-worker HA deploys would
+    otherwise let a captured login nonce be replayed across workers.
+    """
+    from mcp_proxy.auth import challenge_store as cs_mod
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.redis import pool as redis_pool
+
+    monkeypatch.setattr(redis_pool, "get_redis", lambda: None)
+    monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
+    monkeypatch.delenv("MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES", raising=False)
+    get_settings.cache_clear()
+
+    cs_mod.reset_challenge_store()
+    try:
+        with pytest.raises(RuntimeError, match="login challenge store requires Redis"):
+            cs_mod._init_store()
+    finally:
+        get_settings.cache_clear()
+        cs_mod.reset_challenge_store()
+
+
+@pytest.mark.asyncio
+async def test_factory_allows_in_memory_in_production_with_explicit_optin(monkeypatch):
+    """Single-instance / single-worker production deployments that don't
+    need Redis can opt out via ``MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES
+    =true``. The factory then keeps the legacy in-memory + warning
+    behaviour.
+    """
+    from mcp_proxy.auth import challenge_store as cs_mod
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.redis import pool as redis_pool
+
+    monkeypatch.setattr(redis_pool, "get_redis", lambda: None)
+    monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
+    monkeypatch.setenv("MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES", "true")
+    get_settings.cache_clear()
+
+    warnings: list[str] = []
+
+    def _record(msg, *args, **kwargs):
+        warnings.append(str(msg) % args if args else str(msg))
+
+    monkeypatch.setattr(cs_mod._log, "warning", _record)
+
+    cs_mod.reset_challenge_store()
+    try:
+        store = cs_mod._init_store()
+        assert isinstance(store, cs_mod.InMemoryChallengeStore)
+        assert any("single-instance" in msg for msg in warnings), (
+            f"expected single-instance warning, got: {warnings}"
+        )
+    finally:
+        get_settings.cache_clear()
+        cs_mod.reset_challenge_store()

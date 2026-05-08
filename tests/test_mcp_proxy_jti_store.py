@@ -108,22 +108,44 @@ async def test_factory_returns_redis_when_available(monkeypatch):
         jti_mod.reset_dpop_jti_store()
 
 
-async def test_factory_allows_in_memory_in_production_single_instance(monkeypatch):
-    """Audit F-B-12 — unlike the broker, Mastio supports a legitimate
-    single-instance production mode. The factory must NOT raise when
-    prod + no Redis; it logs a warning and returns in-memory so
-    single-worker deploys keep working.
-
-    Intercept ``_log.warning`` directly on the module under test —
-    pytest's caplog misses records on CI because the ``mcp_proxy``
-    logger is configured with ``propagate=False`` (see
-    ``mcp_proxy/logging_setup.py``). A module-level monkeypatch has no
-    dependency on logging framework behaviour.
+async def test_factory_refuses_in_memory_in_production_by_default(monkeypatch):
+    """Audit L1-H1 / Ultra U-DD-1 — production + no Redis without explicit
+    opt-in must RAISE rather than silently fall back to in-memory. Multi-
+    worker HA deploys would otherwise allow cross-worker DPoP replay
+    (RFC 9449 violation).
     """
     from mcp_proxy.config import get_settings
 
     monkeypatch.setattr(redis_pool, "get_redis", lambda: None)
     monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
+    monkeypatch.delenv("MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES", raising=False)
+    get_settings.cache_clear()
+
+    jti_mod.reset_dpop_jti_store()
+    try:
+        with pytest.raises(RuntimeError, match="DPoP JTI store requires Redis"):
+            jti_mod._init_store()
+    finally:
+        get_settings.cache_clear()
+        jti_mod.reset_dpop_jti_store()
+
+
+async def test_factory_allows_in_memory_in_production_with_explicit_optin(monkeypatch):
+    """Single-instance / single-worker production deployments that don't
+    need Redis can opt out via ``MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES
+    =true``. The factory then keeps the legacy in-memory + warning
+    behaviour. The broker (Court) raises unconditionally; this opt-in
+    preserves the legitimate Mastio single-instance path.
+
+    Intercept ``_log.warning`` directly on the module — pytest's caplog
+    misses records because the ``mcp_proxy`` logger is configured with
+    ``propagate=False``.
+    """
+    from mcp_proxy.config import get_settings
+
+    monkeypatch.setattr(redis_pool, "get_redis", lambda: None)
+    monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
+    monkeypatch.setenv("MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES", "true")
     get_settings.cache_clear()
 
     warnings: list[str] = []
@@ -137,7 +159,6 @@ async def test_factory_allows_in_memory_in_production_single_instance(monkeypatc
     try:
         store = jti_mod._init_store()
         assert isinstance(store, jti_mod.InMemoryDpopJtiStore)
-        # Warning must be emitted so operators see the single-instance constraint.
         assert any("single-instance" in msg for msg in warnings), (
             f"expected single-instance warning, got: {warnings}"
         )

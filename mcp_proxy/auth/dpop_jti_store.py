@@ -89,17 +89,17 @@ _store: DpopJtiStore | None = None
 def _init_store() -> DpopJtiStore:
     """Select the best available backend.
 
-    Mastio has a legitimate single-instance production mode (single-tenant
-    intra-org, SQLite + in-memory) where Redis is unnecessary. That differs
-    from the multi-tenant broker (``app/``), which *always* requires Redis
-    in production. So the factory does not refuse in-memory in production —
-    it only logs a warning. ``validate_config`` surfaces the same warning
-    at startup.
+    Production posture: refuse the in-memory fallback unless the operator
+    has explicitly opted in via
+    ``MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true``. The Court raises
+    unconditionally (multi-tenant); the Mastio supports a legitimate
+    single-instance production mode but makes that choice explicit
+    rather than silent (audit L1-H1 / Ultra U-DD-1). Without the opt-in,
+    a multi-worker HA deploy that lost Redis would silently allow DPoP
+    replay across workers within the ``iat`` window (RFC 9449 violation).
 
-    Operators running Mastio multi-worker (HA) MUST set
-    ``MCP_PROXY_REDIS_URL``; otherwise each worker holds an independent
-    JTI dict and a captured DPoP proof can be replayed N× across workers
-    within the ``iat`` window (RFC 9449).
+    Dev/test (``environment != "production"``) keeps the warning-only
+    path for ergonomics.
     """
     from mcp_proxy.redis.pool import get_redis
     from mcp_proxy.config import get_settings
@@ -109,12 +109,28 @@ def _init_store() -> DpopJtiStore:
         _log.info("DPoP JTI store: Redis")
         return RedisDpopJtiStore(redis)
 
-    if get_settings().environment == "production":
+    settings = get_settings()
+    if settings.environment == "production":
+        if not settings.allow_inmemory_security_stores:
+            _log.critical(
+                "DPoP JTI store: Redis unavailable in production and "
+                "MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES is not set. "
+                "Refusing the in-memory fallback to avoid cross-worker "
+                "replay of DPoP proofs (RFC 9449). Set MCP_PROXY_REDIS_URL "
+                "for HA, or set MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true "
+                "to acknowledge a single-instance/single-worker deployment.",
+            )
+            raise RuntimeError(
+                "DPoP JTI store requires Redis in production unless "
+                "MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true is set "
+                "(audit L1-H1 / Ultra U-DD-1)."
+            )
         _log.warning(
             "DPoP JTI store: Redis unavailable in production — using "
-            "in-memory. This is safe only for single-instance/single-worker "
-            "deployments. Multi-worker/HA deploys MUST set "
-            "MCP_PROXY_REDIS_URL (see audit F-B-12)."
+            "in-memory because MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES "
+            "is set. Safe only for single-instance/single-worker "
+            "deployments; multi-worker/HA deploys MUST set "
+            "MCP_PROXY_REDIS_URL."
         )
 
     _log.info("DPoP JTI store: in-memory")

@@ -126,8 +126,15 @@ _store: ChallengeStore | None = None
 
 
 def _init_store() -> ChallengeStore:
-    """Select the best available backend. Warns in production when only
-    the in-memory store is available (multi-worker can race).
+    """Select the best available backend.
+
+    Production posture: refuse the in-memory fallback unless the operator
+    has explicitly opted in via
+    ``MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true``. Without the opt-in,
+    a multi-worker HA deploy that lost Redis would silently allow a
+    captured login nonce to be consumed on one worker and replayed on
+    another. Mirrors :mod:`mcp_proxy.auth.dpop_jti_store` (audit L1-M4 /
+    Ultra U-DD-1).
     """
     from mcp_proxy.config import get_settings
     from mcp_proxy.redis.pool import get_redis
@@ -137,13 +144,27 @@ def _init_store() -> ChallengeStore:
         _log.info("login challenge store: Redis")
         return RedisChallengeStore(redis)
 
-    if get_settings().environment == "production":
+    settings = get_settings()
+    if settings.environment == "production":
+        if not settings.allow_inmemory_security_stores:
+            _log.critical(
+                "login challenge store: Redis unavailable in production "
+                "and MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES is not set. "
+                "Refusing the in-memory fallback to avoid cross-worker "
+                "replay of login nonces. Set MCP_PROXY_REDIS_URL for HA, "
+                "or set MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true to "
+                "acknowledge a single-instance/single-worker deployment.",
+            )
+            raise RuntimeError(
+                "login challenge store requires Redis in production "
+                "unless MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true is "
+                "set (audit L1-M4 / Ultra U-DD-1)."
+            )
         _log.warning(
             "login challenge store: Redis unavailable in production — "
-            "falling back to in-memory. Safe only for single-instance/"
-            "single-worker deployments. Multi-worker/HA deploys MUST set "
-            "MCP_PROXY_REDIS_URL; otherwise a captured login nonce can be "
-            "consumed on one worker and replayed on another."
+            "using in-memory because MCP_PROXY_ALLOW_INMEMORY_SECURITY_"
+            "STORES is set. Safe only for single-instance/single-worker "
+            "deployments."
         )
 
     _log.info("login challenge store: in-memory")
