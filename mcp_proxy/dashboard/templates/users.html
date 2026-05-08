@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block header_title %}Users{% endblock %}
+{% block content %}
+<div class="max-w-6xl">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-semibold text-white uppercase tracking-wider">User Principals</h2>
+            <p class="text-xs text-gray-600 mt-0.5">
+                {{ users | length }} registered
+                <span class="text-gray-700 mx-1">&middot;</span>
+                Per-user identity for Frontdesk shared mode (ADR-020 / ADR-021)
+            </p>
+        </div>
+    </div>
+
+    <!-- Context banner — explain how rows land here, since the page
+         is read-only and operators arriving from the install path
+         expect a "Create user" button that does not exist by design. -->
+    <div class="mb-6 p-4 bg-surface-900/60 border border-gray-800/50 rounded-lg text-xs text-gray-500 leading-relaxed">
+        Rows appear here automatically the first time a user authenticates
+        through a Frontdesk container — the SSO header reaches the
+        Connector Ambassador, the Ambassador asks Mastio to mint a
+        per-user cert via <code class="text-accent-400/80">/v1/principals/csr</code>,
+        and the CSR signing path upserts the principal into this table.
+        Pre-create rows out-of-band via
+        <code class="text-accent-400/80">POST /v1/admin/users</code>
+        (X-Admin-Secret) when you need a row before the first SSO touch.
+    </div>
+
+    <!-- Table -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm">
+        <table class="w-full">
+            <thead>
+                <tr class="border-b border-gray-800/60">
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">User</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Principal ID</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Reach</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Surface</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Last active</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Created</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-800/40">
+                {% for u in users %}
+                <tr class="table-row-hover transition-colors align-top">
+                    <td class="px-5 py-4">
+                        <div class="text-sm text-white">
+                            {{ u.display_name or u.user_name }}
+                        </div>
+                        {% if u.display_name %}
+                        <div class="text-[11px] text-gray-500 font-mono">{{ u.user_name }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4">
+                        <code class="text-[11px] font-mono text-accent-400/80 break-all" title="{{ u.principal_id }}">
+                            {{ u.principal_id }}
+                        </code>
+                        <button type="button"
+                                data-copy="{{ u.principal_id|e }}"
+                                class="ml-1 text-[10px] text-gray-600 hover:text-gray-300 uppercase tracking-wider">
+                            copy
+                        </button>
+                    </td>
+                    <td class="px-5 py-4">
+                        {% if u.reach == 'cross' %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30">
+                            cross-org
+                        </span>
+                        {% elif u.reach == 'both' %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30">
+                            both
+                        </span>
+                        {% else %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-gray-500/10 text-gray-400 border border-gray-500/30">
+                            intra-org
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">
+                        {% if u.surface %}
+                        {{ u.surface }}
+                        {% else %}
+                        <span class="text-gray-700 italic">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
+                        {% if u.last_active_at %}
+                        {{ u.last_active_at[:19] }}
+                        {% else %}
+                        <span class="text-gray-700 italic">never</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
+                        {{ u.created_at[:19] if u.created_at else '—' }}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not users %}
+                <tr>
+                    <td colspan="6" class="px-5 py-16 text-center">
+                        <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                        </svg>
+                        <p class="text-sm text-gray-600">No user principals yet</p>
+                        <p class="text-xs text-gray-700 mt-1">
+                            The first Frontdesk SSO sign-in (or
+                            <code>POST /v1/admin/users</code>) will register
+                            a row here.
+                        </p>
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
