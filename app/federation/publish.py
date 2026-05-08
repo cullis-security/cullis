@@ -71,9 +71,12 @@ def _verify_cert_chain(cert_pem: str, org_ca_pem: str) -> x509.Certificate:
     try:
         cert = x509.load_pem_x509_certificate(cert_pem.encode())
     except Exception as exc:
+        # Audit H-IO-2 — cryptography parse-error strings can echo
+        # ASN.1 internals; log for ops, return a generic 400.
+        _log.warning("federation publish: malformed cert_pem: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"cert_pem: malformed PEM ({exc})",
+            detail="cert_pem: malformed PEM",
         ) from exc
 
     try:

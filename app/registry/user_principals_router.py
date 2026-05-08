@@ -160,9 +160,11 @@ async def sign_csr(
     try:
         _spiffe_uri, principal_org = parse_principal_id_to_spiffe(body.principal_id)
     except ValueError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("principals.csr: invalid principal_id: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid principal_id: {exc}",
+            detail="invalid principal_id",
         ) from exc
 
     if token.org != principal_org:
@@ -177,9 +179,12 @@ async def sign_csr(
             principal_id=body.principal_id,
         )
     except CsrValidationError as exc:
+        # Audit H-IO-2 — CSR validation errors can echo OpenSSL/cryptography
+        # internals (ASN.1, DER, key params); log for ops, return generic.
+        _log.warning("principals.csr: CSR validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail="CSR validation failed",
         ) from exc
 
     _log.info(

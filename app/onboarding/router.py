@@ -9,6 +9,7 @@ Flow:
      or rejects with POST /admin/orgs/{org_id}/reject
   4. Approved org → agents can authenticate
 """
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -648,9 +649,13 @@ async def rotate_org_mastio_pubkey(
     try:
         proof = ContinuityProof.from_dict(body.proof)
     except ValueError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        logging.getLogger("agent_trust").warning(
+            "mastio rotate: malformed proof: %s", exc,
+        )
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            detail=f"malformed proof: {exc}",
+            detail="malformed proof",
         ) from exc
 
     async def _do_rotation() -> dict[str, Any]:
@@ -688,6 +693,10 @@ async def rotate_org_mastio_pubkey(
                 expected_old_kid=expected_old_kid,
             )
         except ContinuityProofError as exc:
+            # Audit H-IO-2 — keep the specific reason in the audit row
+            # (operator-only) but mask it on the wire. The rotate path
+            # is reachable without admin auth (the proof IS the auth)
+            # so leak surface is wider than typical admin endpoints.
             await log_event(
                 db, "admin.mastio_pubkey_rotate_rejected", "fail",
                 org_id=org_id,
@@ -695,7 +704,7 @@ async def rotate_org_mastio_pubkey(
             )
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
-                detail=f"continuity proof rejected: {exc}",
+                detail="continuity proof rejected",
             ) from exc
 
         # Proof-bound consistency: the pubkey in the body must be the one

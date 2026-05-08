@@ -238,8 +238,11 @@ async def _create_session_inner(body, current_agent, store, db, span):
             detail=f"Too many active sessions ({exc.current}/{exc.cap}) — close some before opening new ones",
         )
     except RuntimeError as exc:
+        # Audit H-IO-2 — don't echo arbitrary RuntimeError text to the
+        # client. Log for ops, return a generic 503.
+        _log.warning("session create runtime failure: %s", exc)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail=str(exc))
+                            detail="session create temporarily unavailable")
     await save_session(db, session)
 
     SESSION_CREATED_COUNTER.add(1, {"initiator_org": current_agent.org})
@@ -563,12 +566,14 @@ async def send_message(
                 db, current_agent, actual_hash,
             )
         except ValueError as exc:
+            # Audit H-IO-2 — keep the specific reason in the audit row
+            # (operator-only) but mask it in the HTTP detail.
             await log_event(db, "broker.transaction_rejected", "denied",
                             agent_id=current_agent.agent_id, session_id=session_id,
                             org_id=current_agent.org,
                             details={"reason": str(exc), "txn_jti": current_agent.jti})
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Transaction token invalid: {exc}")
+                                detail="transaction token invalid")
         await log_event(db, "broker.transaction_executed", "ok",
                         agent_id=current_agent.agent_id, session_id=session_id,
                         org_id=current_agent.org,
