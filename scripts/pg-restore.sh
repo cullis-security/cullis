@@ -45,11 +45,13 @@ fi
 # Determine if compressed
 if [[ "${BACKUP_FILE}" == *.gz ]]; then
     log "Restoring from compressed backup: ${BACKUP_FILE}"
-    gunzip -c "${BACKUP_FILE}" | docker compose -f "${PROJECT_DIR}/docker-compose.yml" \
+    gunzip -c "${BACKUP_FILE}" | docker compose --project-directory "${PROJECT_DIR}" \
+        -f "${PROJECT_DIR}/deploy/compose/docker-compose.yml" \
         exec -T postgres psql -U "${PG_USER}" -d "${PG_DB}" --single-transaction
 else
     log "Restoring from backup: ${BACKUP_FILE}"
-    docker compose -f "${PROJECT_DIR}/docker-compose.yml" \
+    docker compose --project-directory "${PROJECT_DIR}" \
+        -f "${PROJECT_DIR}/deploy/compose/docker-compose.yml" \
         exec -T postgres psql -U "${PG_USER}" -d "${PG_DB}" --single-transaction < "${BACKUP_FILE}"
 fi
 

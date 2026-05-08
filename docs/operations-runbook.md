@@ -28,11 +28,11 @@ docker inspect --format '{{.State.ExitCode}} {{.State.Error}}' $(docker compose 
 1. If **Exit 3**: uvicorn was told to shut down. Check logs for the last
    "Waiting for application startup" line — what came right after is the
    real fault (Alembic, Vault, Postgres).
-2. If **Exit 137**: OOM killed. Bump memory in `docker-compose.prod.yml`
+2. If **Exit 137**: OOM killed. Bump memory in `deploy/compose/docker-compose.prod.yml`
    under `deploy.resources.limits.memory` and `docker compose up -d`.
 3. If **Exit 1 / 2** (uncaught exception): look for traceback in logs.
    Common causes below.
-4. Restart: `docker compose -f docker-compose.yml -f docker-compose.prod.yml restart broker`.
+4. Restart: `docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.prod.yml restart broker`.
 
 ### Verify
 - `/health` returns 200.
@@ -57,7 +57,7 @@ docker compose logs --tail=100 postgres
 
 ### Recover
 1. If Postgres container **OOM / exited**: increase memory in
-   `docker-compose.prod.yml`, then `docker compose up -d postgres`.
+   `deploy/compose/docker-compose.prod.yml`, then `docker compose up -d postgres`.
 2. If **disk full**: `df -h /var/lib/docker`. Rotate/compress old audit
    rows (`audit_log` is append-only; safe to archive rows older than N
    days to cold storage).
@@ -101,7 +101,7 @@ docker compose exec vault vault operator unseal -address=https://127.0.0.1:8200 
 After unseal, restart the broker so it re-authenticates with the scoped
 token that should still be valid (30d TTL):
 ```
-docker compose -f docker-compose.yml -f docker-compose.prod.yml restart broker
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.prod.yml restart broker
 ```
 
 ### Recover (scoped token expired)
@@ -112,7 +112,7 @@ docker compose exec -e VAULT_TOKEN="$(jq -r .root_token vault/vault-keys.json)" 
     | jq -r .auth.client_token > vault/broker-token
 
 sed -i "s|^VAULT_TOKEN=.*|VAULT_TOKEN=$(cat vault/broker-token)|" .env
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d broker
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.prod.yml up -d broker
 ```
 
 ### Verify
@@ -243,7 +243,7 @@ Broker re-bootstraps from `ADMIN_SECRET` env on next boot.
 NEW="$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)"
 sed -i "s|^ADMIN_SECRET=.*|ADMIN_SECRET=$NEW|" .env
 # Also clear the stored hash as in (a)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d broker
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.prod.yml up -d broker
 echo "New admin secret: $NEW"
 ```
 

@@ -51,7 +51,7 @@ docker inspect --format '{{.State.ExitCode}} {{.State.Error}}' \
 **Recover**
 
 1. **Exit 3** (uvicorn told to shut down) — read the last `Waiting for application startup` log line; the failure on the next line is the real fault (Alembic, Vault, or Postgres).
-2. **Exit 137** (OOM killed) — raise `deploy.resources.limits.memory` in `docker-compose.prod.yml` and `docker compose up -d proxy`.
+2. **Exit 137** (OOM killed) — raise `deploy.resources.limits.memory` in `deploy/compose/docker-compose.prod.yml` and `docker compose up -d proxy`.
 3. **Exit 1 / 2** (uncaught exception) — scan logs for the traceback. See sections 2–4 below for common root causes.
 4. Restart: `docker compose restart proxy`.
 
@@ -78,7 +78,7 @@ docker compose logs --tail=100 postgres
 
 **Recover**
 
-1. **OOM / exited** — bump memory in `docker-compose.prod.yml`, then `docker compose up -d postgres`.
+1. **OOM / exited** — bump memory in `deploy/compose/docker-compose.prod.yml`, then `docker compose up -d postgres`.
 2. **Disk full** — `df -h /var/lib/docker`. The `audit_log` table is append-only; archive rows older than N days to cold storage.
 3. **Corruption** — restore from the most recent backup: `./scripts/pg-restore.sh <backup.sql.gz>`. Data loss window = last successful backup.
 
