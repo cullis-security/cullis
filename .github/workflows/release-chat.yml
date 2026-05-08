@@ -1,0 +1,202 @@
+# Release pipeline for the Cullis Chat SPA (ADR-019 Phase 8b).
+#
+# Triggered by pushing a tag of the form `chat-vX.Y.Z`. On tag push:
+#
+#   1. Build the Astro static bundle and verify it.
+#   2. Build and push the multi-arch Docker image (nginx-served static
+#      SPA) to ghcr.io.
+#   3. Create a GitHub Release with the image reference.
+#
+# The Cullis Chat is a static SPA. The Frontdesk container bundle and
+# the Connector desktop installer ship their own copies of the same
+# build (the bundle pulls this image at deploy time, the desktop
+# installer embeds dist/ in the wheel via scripts/build-spa.sh). This
+# image is the canonical reference for self-hosters who want the SPA
+# behind their own reverse proxy without the rest of the bundle.
+#
+# No Helm chart and no tar.gz bundle: the SPA is a single nginx
+# container; everything that needs orchestration is in the Mastio /
+# Court charts and bundles, not here.
+
+name: release-chat
+
+on:
+  push:
+    tags:
+      - "chat-v*"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: frontend/cullis-chat
+
+jobs:
+  # ── 1. Build verification ────────────────────────────────────────────
+  test:
+    name: Build SPA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/cullis-chat/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static bundle
+        run: npm run build
+
+      - name: Verify dist/ output
+        run: |
+          test -d dist
+          test -f dist/index.html
+          ls -lah dist/
+
+  # ── 2. Extract version ───────────────────────────────────────────────
+  version:
+    name: Extract version
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+    steps:
+      - name: Extract version from tag
+        id: extract
+        # Workflow-level defaults.run.working-directory is overridden
+        # here because the version job has no checkout (no tree to cd
+        # into); GITHUB_REF_NAME is enough.
+        working-directory: ./
+        run: |
+          # chat-v1.2.3 → 1.2.3
+          version="${GITHUB_REF_NAME#chat-v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Releasing cullis-chat: ${version}"
+
+  # ── 3. Docker image → ghcr.io ───────────────────────────────────────
+  build-docker:
+    name: Build & push Docker image
+    needs: [test, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: ./
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cullis-chat
+          flavor: |
+            latest=false
+          tags: |
+            type=match,pattern=chat-v(.*),group=1
+            type=match,pattern=chat-v(\d+\.\d+)\..*,group=1,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-alpha') && !contains(github.ref_name, '-beta') }}
+          labels: |
+            org.opencontainers.image.title=Cullis Chat
+            org.opencontainers.image.description=Identity-aware chat SPA for the Cullis federated agent-trust network
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v5
+        with:
+          context: frontend/cullis-chat
+          file: frontend/cullis-chat/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          # Default brand = cullis-chat (consumer). The Frontdesk bundle
+          # rebuilds with --build-arg CULLIS_BRAND=frontdesk at deploy
+          # time; it does not consume this image.
+          build-args: |
+            CULLIS_BRAND=cullis-chat
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── 4. GitHub Release ────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-docker, version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: ./
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract changelog section
+        id: changelog
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          version="${VERSION}"
+          if [[ -f CHANGELOG.md ]]; then
+            awk "/^## \\[?v?${version}\\]?/{flag=1; next} /^## /{flag=0} flag" CHANGELOG.md \
+              > release-notes.md || true
+          fi
+          if [[ ! -s release-notes.md ]]; then
+            cat > release-notes.md <<NOTES
+          Release ${GITHUB_REF_NAME}
+
+          ## Quickstart
+
+          \`\`\`bash
+          docker run --rm -p 8080:8080 ghcr.io/${OWNER}/cullis-chat:${version}
+          \`\`\`
+
+          The SPA is served on \`:8080\`. Front it with your own reverse
+          proxy and point \`/api/session/*\` and \`/v1/*\` at a Cullis
+          Connector or Mastio (the SPA expects a same-origin cookie
+          minted by \`POST /api/session/init\`).
+
+          ## Artifact
+
+          - **Docker image**: \`ghcr.io/${OWNER}/cullis-chat:${version}\`
+
+          ## Topology
+
+          The Frontdesk container bundle pulls this image automatically
+          at deploy time. The Connector desktop installer ships an
+          embedded copy of the same SPA build inside its Python wheel
+          and does not pull this image. Use the standalone image when
+          you want to self-host the SPA behind your own reverse proxy
+          without the rest of the bundle.
+          NOTES
+          fi
+          cat release-notes.md
+
+      - name: Create release
+        # Pinned to SHA (was @v2 floating major) — audit 2026-04-30 lane 8 M5.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Cullis Chat ${{ github.ref_name }}"
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') }}
