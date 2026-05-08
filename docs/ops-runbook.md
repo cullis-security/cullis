@@ -92,8 +92,10 @@ The script:
 4. Prints a cron line for renewal — **add it manually**, the script does
    not install crons. Suggested cron:
    ```cron
-   0 3 * * * cd /opt/cullis && docker compose -f docker-compose.yml \
-       -f docker-compose.prod.yml -f docker-compose.letsencrypt.yml \
+   0 3 * * * cd /opt/cullis && docker compose \
+       -f deploy/compose/docker-compose.yml \
+       -f deploy/compose/docker-compose.prod.yml \
+       -f deploy/compose/docker-compose.letsencrypt.yml \
        run --rm certbot renew --quiet && \
        docker compose exec nginx nginx -s reload
    ```

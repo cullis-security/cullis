@@ -30,7 +30,7 @@ services:
     expose:
       - "9100"
     # nginx/mastio/mastio.conf hard-codes ``proxy_pass http://mcp-proxy:9100``
-    # (matches the service name in docker-compose.proxy.yml). The
+    # (matches the service name in deploy/compose/docker-compose.proxy.yml). The
     # standalone compose keeps the historical service name ``proxy``
     # for shell-friendliness, so we add ``mcp-proxy`` as a network
     # alias to keep the nginx config repo-shared without a fork.

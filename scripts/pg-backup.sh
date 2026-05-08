@@ -34,7 +34,7 @@ log() {
 
 # Run pg_dump inside the postgres container, compress, save to host
 log "Starting backup: ${BACKUP_FILE}"
-if docker compose -f "${PROJECT_DIR}/docker-compose.yml" exec -T postgres \
+if docker compose --project-directory "${PROJECT_DIR}" -f "${PROJECT_DIR}/deploy/compose/docker-compose.yml" exec -T postgres \
     pg_dump -U "${PG_USER}" "${PG_DB}" | gzip > "${BACKUP_DIR}/${BACKUP_FILE}"; then
     SIZE=$(du -h "${BACKUP_DIR}/${BACKUP_FILE}" | cut -f1)
     log "Backup successful: ${BACKUP_FILE} (${SIZE})"

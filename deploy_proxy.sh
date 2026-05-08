@@ -45,10 +45,14 @@ die()  { err "$1"; exit 1; }
 step() { echo -e "\n${BOLD}── $1 ──${RESET}"; }
 
 # ── docker compose binary ───────────────────────────────────────────────────
+# --project-directory keeps relative paths in the compose files (./nginx,
+# ./certs, build: .) resolving against the repo root even though the compose
+# files themselves now live under deploy/compose/. The base compose file is
+# baked into $COMPOSE so callers without an explicit -f keep working.
 if docker compose version &>/dev/null 2>&1; then
-    COMPOSE="docker compose"
+    COMPOSE="docker compose --project-directory $SCRIPT_DIR -f deploy/compose/docker-compose.proxy.yml"
 elif command -v docker-compose &>/dev/null; then
-    COMPOSE="docker-compose"
+    COMPOSE="docker-compose --project-directory $SCRIPT_DIR -f deploy/compose/docker-compose.proxy.yml"
 else
     die "docker compose is not installed"
 fi
@@ -106,9 +110,10 @@ done
 # Default = standalone (private proxy_net + MCP_PROXY_STANDALONE=true
 # in the base compose). The shared-broker override layers on broker_net
 # + MCP_PROXY_STANDALONE=false.
-COMPOSE_FILES="-f docker-compose.proxy.yml"
-[[ $SHARED_BROKER -eq 1 ]]   && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.proxy.shared-broker.yml"
-[[ "$MODE" == "production" ]] && COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.proxy.prod.yml"
+# Base compose is already in $COMPOSE; here we add only the overlays.
+COMPOSE_FILES=""
+[[ $SHARED_BROKER -eq 1 ]]   && COMPOSE_FILES="$COMPOSE_FILES -f deploy/compose/docker-compose.proxy.shared-broker.yml"
+[[ "$MODE" == "production" ]] && COMPOSE_FILES="$COMPOSE_FILES -f deploy/compose/docker-compose.proxy.prod.yml"
 
 # ── Down early-exit ─────────────────────────────────────────────────────────
 if [[ "$ACTION" == "down" ]]; then

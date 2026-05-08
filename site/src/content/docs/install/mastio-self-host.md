@@ -85,8 +85,10 @@ What the script does:
 3. Reloads nginx pointing at `/etc/letsencrypt/live/<domain>/fullchain.pem`
 4. Prints a renewal cron line — **add it manually**:
    ```cron
-   0 3 * * * cd /opt/cullis && docker compose -f docker-compose.yml \
-       -f docker-compose.prod.yml -f docker-compose.letsencrypt.yml \
+   0 3 * * * cd /opt/cullis && docker compose \
+       -f deploy/compose/docker-compose.yml \
+       -f deploy/compose/docker-compose.prod.yml \
+       -f deploy/compose/docker-compose.letsencrypt.yml \
        run --rm certbot renew --quiet && \
        docker compose exec nginx nginx -s reload
    ```
