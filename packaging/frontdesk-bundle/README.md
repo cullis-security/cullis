@@ -14,7 +14,8 @@ Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One containe
 
 1. **A reachable Mastio.** The Connector enrolls against it and forwards requests to its proxy + audit chain. Stand one up with `packaging/mastio-bundle/` if you do not already have one.
 2. **An invite code** issued by your Mastio admin (`/v1/admin/invites` on the Mastio dashboard).
-3. **Docker Compose v2.20+** for the bundle, plus the cullis-connector image (built once or pulled from `ghcr.io/cullis-security/cullis-connector`).
+3. **A Mastio CA bundle PEM** on the host machine, exported as `CULLIS_FRONTDESK_CA_BUNDLE_HOST` in `frontdesk.env`. Without it the Connector can boot but every Mastio call fails the TLS handshake.
+4. **Docker Compose v2.20+**. The bundle pulls all three images from `ghcr.io`; no repo checkout or `docker build` required.
 
 ## One-shot enrollment
 
@@ -22,8 +23,8 @@ The bundle does not enroll the Connector for you. Run this once before `docker c
 
 ```bash
 docker run --rm -it \
-  -v $(pwd)/connector_data:/root/.cullis \
-  ghcr.io/cullis-security/cullis-connector:latest \
+  -v $(pwd)/connector_data:/home/cullis/.cullis \
+  ghcr.io/cullis-security/cullis-connector:0.4.0-rc1 \
   enroll \
     --site https://mastio.acme.local:9443 \
     --code <INVITE_CODE_FROM_MASTIO_ADMIN> \
@@ -38,13 +39,27 @@ If you wipe `connector_data/`, you must re-enroll.
 
 ```bash
 cp frontdesk.env.example frontdesk.env
-# Edit frontdesk.env: set CULLIS_FRONTDESK_ORG_ID and CULLIS_FRONTDESK_TRUST_DOMAIN
-# to match what you registered on the Mastio.
+# Edit frontdesk.env:
+#   - CULLIS_FRONTDESK_ORG_ID, CULLIS_FRONTDESK_TRUST_DOMAIN: match what
+#     you registered on the Mastio.
+#   - CULLIS_FRONTDESK_CA_BUNDLE_HOST: path on this host to the Mastio
+#     CA chain PEM. Required, no default.
 
 docker compose --env-file frontdesk.env up -d
 ```
 
 The bundle exposes nginx on the host port from `FRONTDESK_HTTP_PORT` (default `8080`).
+
+### Image versions
+
+The compose file pins sensible defaults via env vars:
+
+| Variable | Default | Image |
+|---|---|---|
+| `CONNECTOR_VERSION` | `0.4.0-rc1` | `ghcr.io/cullis-security/cullis-connector` |
+| `CHAT_VERSION`      | `0.1.0-rc1` | `ghcr.io/cullis-security/cullis-chat-frontdesk` |
+
+Pin both in production via `frontdesk.env` rather than relying on the defaults shipped with the bundle.
 
 ## Smoke test (dev fake-SSO)
 
