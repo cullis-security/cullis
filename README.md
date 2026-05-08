@@ -67,7 +67,32 @@ them, no agent re-enrollment.
 
 ---
 
-## Quickstart
+## Quickstart — single host (bundles)
+
+For a single-host evaluation: a Mastio + multi-user Frontdesk chat in two
+commands, no repo clone needed. Both bundles pull the published images
+from `ghcr.io` and configure themselves with sensible defaults.
+
+**Requirements**: Docker Engine with Compose v2, ~2 GB RAM.
+
+```bash
+# 1. Mastio (org gateway + first-boot Org CA + dashboard on :9443)
+curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-mastio-bundle.tar.gz | tar xz
+cd cullis-mastio-bundle && ./deploy.sh
+
+# 2. Frontdesk (multi-user chat on :8080, enrolls against the Mastio above)
+cd ..
+curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-frontdesk-bundle.tar.gz | tar xz
+cd cullis-frontdesk-bundle && ./deploy.sh
+```
+
+The Mastio dashboard is at `https://localhost:9443/proxy/login` (self-signed
+TLS, accept the warning); the Frontdesk SPA is at `http://localhost:8080`.
+See [`packaging/mastio-bundle/README.md`](packaging/mastio-bundle/README.md)
+and [`packaging/frontdesk-bundle/README.md`](packaging/frontdesk-bundle/README.md)
+for production overrides (custom hostname, oauth2-proxy + IDP, image pinning).
+
+## Quickstart — full enterprise stack (sandbox)
 
 Boot the full enterprise stack — Court + 2 Mastios + 3 agents + 2 MCP servers
 in 2 organizations, wired with SPIRE, Keycloak, Vault and Postgres — then
