@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cullis Frontdesk — Generate frontdesk.env (no secrets, just wiring)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Frontdesk inherits identity from the Connector profile (cert + key minted
+# by Mastio during enrollment). There are no secrets to generate here —
+# this script only fills in the wiring vars: org slug, trust domain, CA
+# bundle path, image versions.
+#
+# Usage:
+#   ./generate-frontdesk-env.sh              # Interactive
+#   ./generate-frontdesk-env.sh --defaults   # Sensible same-host defaults
+#   ./generate-frontdesk-env.sh --prod       # Needs ORG_ID + TRUST_DOMAIN +
+#                                            # CA_BUNDLE_HOST env vars
+#   ./generate-frontdesk-env.sh --force      # Overwrite existing frontdesk.env
+#
+# Environment variables (used by --prod, optional elsewhere):
+#   CULLIS_FRONTDESK_ORG_ID           — org slug, e.g. ``acme``
+#   CULLIS_FRONTDESK_TRUST_DOMAIN     — SPIFFE TD, e.g. ``acme.prod``
+#   CULLIS_FRONTDESK_CA_BUNDLE_HOST   — host path to Mastio CA chain PEM
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
+BOLD=$'\033[1m'; GRAY=$'\033[90m'; RESET=$'\033[0m'
+ok()   { echo -e "  ${GREEN}✓${RESET}  $1"; }
+warn() { echo -e "  ${YELLOW}!${RESET}  $1"; }
+err()  { echo -e "  ${RED}✗${RESET}  $1"; }
+die()  { err "$1"; exit 1; }
+
+MODE="interactive"
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --defaults) MODE="defaults" ;;
+        --prod)     MODE="prod" ;;
+        --force)    FORCE=1 ;;
+        --help|-h)
+            echo "Usage: $0 [--defaults|--prod] [--force]"
+            exit 0
+            ;;
+        *) die "Unknown argument: $arg (use --help)" ;;
+    esac
+done
+
+OUT="$SCRIPT_DIR/frontdesk.env"
+if [[ -f "$OUT" && "$FORCE" -eq 0 ]]; then
+    if [[ "$MODE" != "interactive" ]]; then
+        ok "Keeping existing frontdesk.env (use --force to overwrite)"
+        exit 0
+    fi
+    warn "frontdesk.env already exists"
+    read -rp "  Overwrite with fresh values? [y/N]: " reply
+    [[ "$reply" =~ ^[Yy] ]] || { ok "Keeping existing frontdesk.env"; exit 0; }
+fi
+
+[[ -f "$SCRIPT_DIR/frontdesk.env.example" ]] || die "frontdesk.env.example not found"
+
+# Default Mastio CA path: the sibling Mastio bundle exports its Org CA to
+# ./certs/org-ca.pem when ./deploy.sh runs (PR #520). If that file is on
+# disk next to us we wire it as the trust anchor automatically; otherwise
+# the operator has to provide a path.
+default_ca_bundle() {
+    local sibling="$SCRIPT_DIR/../mastio-bundle/certs/org-ca.pem"
+    if [[ -f "$sibling" ]]; then
+        # Use absolute path so docker compose substitution works regardless
+        # of where the operator invokes ./deploy.sh from.
+        local abs_dir
+        abs_dir="$(cd "$(dirname "$sibling")" && pwd)"
+        echo "${abs_dir}/$(basename "$sibling")"
+    else
+        echo ""
+    fi
+}
+
+case "$MODE" in
+    prod)
+        [[ -n "${CULLIS_FRONTDESK_ORG_ID:-}" ]]         || die "--prod requires CULLIS_FRONTDESK_ORG_ID env var"
+        [[ -n "${CULLIS_FRONTDESK_TRUST_DOMAIN:-}" ]]   || die "--prod requires CULLIS_FRONTDESK_TRUST_DOMAIN env var"
+        [[ -n "${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-}" ]] || die "--prod requires CULLIS_FRONTDESK_CA_BUNDLE_HOST env var (path to Mastio CA chain PEM)"
+        [[ -f "${CULLIS_FRONTDESK_CA_BUNDLE_HOST}" ]]   || die "CA bundle not found at: ${CULLIS_FRONTDESK_CA_BUNDLE_HOST}"
+        ORG_ID="${CULLIS_FRONTDESK_ORG_ID}"
+        TRUST_DOMAIN="${CULLIS_FRONTDESK_TRUST_DOMAIN}"
+        CA_BUNDLE="${CULLIS_FRONTDESK_CA_BUNDLE_HOST}"
+        ;;
+    defaults)
+        ORG_ID="${CULLIS_FRONTDESK_ORG_ID:-acme}"
+        TRUST_DOMAIN="${CULLIS_FRONTDESK_TRUST_DOMAIN:-${ORG_ID}.test}"
+        CA_BUNDLE="${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-$(default_ca_bundle)}"
+        if [[ -z "$CA_BUNDLE" ]]; then
+            warn "No Mastio CA bundle found at ../mastio-bundle/certs/org-ca.pem"
+            warn "Set CULLIS_FRONTDESK_CA_BUNDLE_HOST in frontdesk.env to a"
+            warn "valid path before running ./deploy.sh, otherwise compose"
+            warn "will fail at ``up`` time with a clear error."
+            CA_BUNDLE="./MUST_SET_TO_MASTIO_CA_BUNDLE_PATH"
+        fi
+        ;;
+    interactive)
+        echo ""
+        _default_ca="$(default_ca_bundle)"
+        ca_prompt_default="${_default_ca:-./mastio-org-ca.pem}"
+
+        read -rp "  Org ID [acme]: " ORG_ID
+        ORG_ID="${ORG_ID:-acme}"
+
+        read -rp "  SPIFFE trust domain [${ORG_ID}.test]: " TRUST_DOMAIN
+        TRUST_DOMAIN="${TRUST_DOMAIN:-${ORG_ID}.test}"
+
+        read -rp "  Mastio CA bundle path [${ca_prompt_default}]: " CA_BUNDLE
+        CA_BUNDLE="${CA_BUNDLE:-${ca_prompt_default}}"
+        if [[ ! -f "$CA_BUNDLE" ]]; then
+            warn "CA bundle path '$CA_BUNDLE' does not exist on disk."
+            warn "Run ../mastio-bundle/deploy.sh first to generate it, or"
+            warn "edit frontdesk.env later before ./deploy.sh."
+        fi
+        ;;
+esac
+
+cp "$SCRIPT_DIR/frontdesk.env.example" "$OUT"
+sed -i "s|^CULLIS_FRONTDESK_ORG_ID=.*|CULLIS_FRONTDESK_ORG_ID=${ORG_ID}|"               "$OUT"
+sed -i "s|^CULLIS_FRONTDESK_TRUST_DOMAIN=.*|CULLIS_FRONTDESK_TRUST_DOMAIN=${TRUST_DOMAIN}|" "$OUT"
+sed -i "s|^CULLIS_FRONTDESK_CA_BUNDLE_HOST=.*|CULLIS_FRONTDESK_CA_BUNDLE_HOST=${CA_BUNDLE}|" "$OUT"
+
+ok "Wrote ${OUT}"
+echo ""
+echo -e "  ${BOLD}CULLIS_FRONTDESK_ORG_ID${RESET}          ${GRAY}${ORG_ID}${RESET}"
+echo -e "  ${BOLD}CULLIS_FRONTDESK_TRUST_DOMAIN${RESET}    ${GRAY}${TRUST_DOMAIN}${RESET}"
+echo -e "  ${BOLD}CULLIS_FRONTDESK_CA_BUNDLE_HOST${RESET}  ${GRAY}${CA_BUNDLE}${RESET}"
+echo ""
