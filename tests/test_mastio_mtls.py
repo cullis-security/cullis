@@ -23,6 +23,7 @@ from app.auth.mastio_mtls import (
     extract_mastio_cert,
     verify_mastio_cert_pubkey,
     enforce_if_present,
+    enforce_if_required,
 )
 
 
@@ -192,3 +193,38 @@ def test_enforce_cert_mismatch_raises_403():
     with pytest.raises(HTTPException) as exc:
         enforce_if_present(req, other_pubkey_pem)
     assert exc.value.status_code == 403
+
+
+# ─── enforce_if_required (Phase 2) ───────────────────────────────────
+
+def test_enforce_required_no_cert_raises_403():
+    _, _, pubkey_pem, _ = _mint_pair()
+    req = _request_with_header(None)
+    with pytest.raises(HTTPException) as exc:
+        enforce_if_required(req, pubkey_pem, require=True)
+    assert exc.value.status_code == 403
+    assert "no peer certificate" in exc.value.detail
+
+
+def test_enforce_required_no_cert_no_require_returns_false():
+    """require=False keeps the verify-if-present behavior."""
+    _, _, pubkey_pem, _ = _mint_pair()
+    req = _request_with_header(None)
+    assert enforce_if_required(req, pubkey_pem, require=False) is False
+
+
+def test_enforce_required_cert_match_returns_true():
+    _, _, pubkey_pem, cert_pem = _mint_pair()
+    req = _request_with_header(quote(cert_pem))
+    assert enforce_if_required(req, pubkey_pem, require=True) is True
+
+
+def test_enforce_required_cert_mismatch_raises_403_regardless_of_require():
+    """Mismatch is fatal whether require is True or False."""
+    _, _, _, cert_pem = _mint_pair()
+    _, _, other_pubkey_pem, _ = _mint_pair()
+    req = _request_with_header(quote(cert_pem))
+    for require in (True, False):
+        with pytest.raises(HTTPException) as exc:
+            enforce_if_required(req, other_pubkey_pem, require=require)
+        assert exc.value.status_code == 403

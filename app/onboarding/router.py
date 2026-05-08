@@ -539,6 +539,48 @@ async def patch_org_mastio_pubkey(
     }
 
 
+class RequireMastioMtlsPatch(BaseModel):
+    """Body for ``PATCH /v1/admin/orgs/{org_id}/require-mtls`` —
+    Wave 3 U4 Phase 2 toggle.
+    """
+    require_mastio_mtls: bool
+
+
+@admin_router.patch("/orgs/{org_id}/require-mtls",
+                    dependencies=[Depends(_require_admin)])
+async def patch_org_require_mastio_mtls(
+    org_id: str,
+    body: RequireMastioMtlsPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    """Wave 3 U4 Phase 2 — flip per-org Mastio mTLS enforcement.
+
+    When true, federation endpoints (``/v1/auth/token``,
+    ``/v1/federation/publish-agent``, ``/v1/federation/publish-stats``)
+    reject Mastio calls that don't present a TLS client cert binding
+    to the pinned ``mastio_pubkey``. Default false preserves the Phase 1
+    verify-if-present behavior, so the flip is opt-in once the
+    deployment's terminating layer is wired to surface the peer cert
+    (uvicorn ``ssl_cert_reqs=optional`` or nginx ``ssl_verify_client``
+    + ``X-Cullis-Mastio-Cert`` header pass-through).
+    """
+    org = await get_org_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Organization not found")
+
+    org.require_mastio_mtls = body.require_mastio_mtls
+    await db.commit()
+    await log_event(
+        db, "admin.require_mastio_mtls_patched", "ok",
+        org_id=org_id,
+        details={"require_mastio_mtls": body.require_mastio_mtls},
+    )
+    return {
+        "org_id": org_id,
+        "require_mastio_mtls": body.require_mastio_mtls,
+    }
+
+
 class MastioPubkeyRotateRequest(BaseModel):
     """Body for ``POST /onboarding/orgs/{org_id}/mastio-pubkey/rotate``.
 

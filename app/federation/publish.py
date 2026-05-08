@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_countersig
-from app.auth.mastio_mtls import enforce_if_present as enforce_mastio_mtls
+from app.auth.mastio_mtls import enforce_if_required as enforce_mastio_mtls
 from app.db.database import get_db
 from app.db.audit import log_event
 from app.registry.org_store import get_org_by_id
@@ -179,19 +179,21 @@ async def publish_agent(
         )
         raise
 
-    # 2b. Wave 3 U4 — bidirectional mTLS verify-if-present. A peer cert
-    #     bound to the same key as ``mastio_pubkey`` is a stronger proof
-    #     than the JWT countersig alone (binds the live TLS session to
-    #     the org's signing key). Phase 1: log + 403 on mismatch, no-op
-    #     when no peer cert is presented. Phase 2 will add per-org
-    #     ``require_mtls`` to flip "missing" → 403.
+    # 2b. Wave 3 U4 — bidirectional mTLS. A peer cert bound to the same
+    #     key as ``mastio_pubkey`` binds the live TLS session to the org's
+    #     signing key (stronger than JWT countersig alone). Phase 2: when
+    #     ``organizations.require_mastio_mtls`` is true, missing cert →
+    #     403; otherwise verify-if-present (Phase 1 backward compat).
     try:
-        verified = enforce_mastio_mtls(request, org.mastio_pubkey)
+        verified = enforce_mastio_mtls(
+            request, org.mastio_pubkey,
+            require=bool(org.require_mastio_mtls),
+        )
     except HTTPException:
         await log_event(
             db, "federation.publish_rejected", "denied",
             org_id=org_id,
-            details={"reason": "mastio_mtls_pubkey_mismatch",
+            details={"reason": "mastio_mtls_failed",
                      "agent_id": body.agent_id},
         )
         raise
@@ -355,15 +357,19 @@ async def publish_stats(
         )
         raise
 
-    # Wave 3 U4 — bidirectional mTLS verify-if-present (mirrors
-    # publish-agent). 403 on key mismatch, no-op when absent.
+    # Wave 3 U4 — bidirectional mTLS (mirrors publish-agent). 403 on
+    # mismatch always; missing cert → 403 only when the org has
+    # ``require_mastio_mtls`` set.
     try:
-        enforce_mastio_mtls(request, org.mastio_pubkey)
+        enforce_mastio_mtls(
+            request, org.mastio_pubkey,
+            require=bool(org.require_mastio_mtls),
+        )
     except HTTPException:
         await log_event(
             db, "federation.stats_rejected", "denied",
             org_id=body.org_id,
-            details={"reason": "mastio_mtls_pubkey_mismatch"},
+            details={"reason": "mastio_mtls_failed"},
         )
         raise
 
