@@ -179,10 +179,12 @@ async def test_rotate_rejects_proof_signed_by_foreign_key(client: AsyncClient):
     # rejects for kid mismatch (signature would fail too — either
     # condition is enough).
     assert r.status_code == 401
-    assert (
-        "kid" in r.json()["detail"].lower()
-        or "signature" in r.json()["detail"].lower()
-    )
+    # Audit H-IO-2 — the broker now masks the specific reason
+    # (kid mismatch vs signature failure) on the wire; the audit row
+    # still carries it for ops triage. This test asserts the contract
+    # at the wire boundary: any continuity proof failure is a 401 with
+    # the generic prefix.
+    assert "continuity proof rejected" in r.json()["detail"].lower()
 
     # Pin unchanged.
     stored = await _fetch_pubkey("rotate-foreign")
@@ -233,7 +235,9 @@ async def test_rotate_rejects_stale_proof(client: AsyncClient):
         json={"new_pubkey_pem": new_pub, "proof": proof.to_dict()},
     )
     assert r.status_code == 401
-    assert "freshness" in r.json()["detail"].lower()
+    # Audit H-IO-2 — wire detail is generic; freshness specifics live
+    # in the audit log only.
+    assert "continuity proof rejected" in r.json()["detail"].lower()
 
 
 async def test_rotate_rejects_malformed_proof(client: AsyncClient):
@@ -246,4 +250,6 @@ async def test_rotate_rejects_malformed_proof(client: AsyncClient):
         json={"new_pubkey_pem": new_pub, "proof": {"old_kid": "only-this"}},
     )
     assert r.status_code == 400
-    assert "missing" in r.json()["detail"].lower()
+    # Audit H-IO-2 — the parser's "missing field X" detail no longer
+    # leaks through; only the generic prefix.
+    assert "malformed proof" in r.json()["detail"].lower()

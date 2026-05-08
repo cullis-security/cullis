@@ -12,8 +12,11 @@ import base64
 import datetime
 import hashlib
 import hmac
+import logging
 import time as _time
 import urllib.parse
+
+_log = logging.getLogger(__name__)
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -186,9 +189,13 @@ def _walk_chain(
                         f"signature not produced by the next cert in the chain"),
             )
         except ValueError as exc:
+            # Audit H-IO-2 — don't leak exception internals (cryptography
+            # error strings can echo cert subject/issuer details). Log
+            # locally for ops, return a generic 401 to the caller.
+            _log.warning("certificate chain verification failed: %s", exc)
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
-                detail=f"certificate chain verification failed: {exc}",
+                detail="certificate chain verification failed",
             )
 
 
@@ -322,9 +329,14 @@ async def _verify_client_assertion_inner(assertion, db, _span, _t0, request=None
             try:
                 principal = spiffe_to_principal(svid_spiffe_uri)
             except ValueError as exc:
+                # Audit H-IO-2 — don't leak parse error internals.
+                _log.warning(
+                    "SPIFFE SAN principal parse failed for %s: %s",
+                    svid_spiffe_uri, exc,
+                )
                 raise HTTPException(
                     status.HTTP_401_UNAUTHORIZED,
-                    detail=f"SPIFFE SAN principal parse failed: {exc}",
+                    detail="SPIFFE SAN principal format invalid",
                 )
             # Org consistency: the SPIFFE org segment must match the org
             # we just resolved by trust_domain. Refuse cross-org SAN

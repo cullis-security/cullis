@@ -1,4 +1,5 @@
 import hmac
+import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
@@ -187,8 +188,13 @@ async def upload_org_ca_certificate(
     except HTTPException:
         raise
     except Exception as exc:
+        # Audit H-IO-2 — cryptography parse-error strings can echo
+        # ASN.1/DER internals; log for ops, return a generic 400.
+        logging.getLogger("agent_trust").warning(
+            "org_router: invalid CA certificate: %s", exc,
+        )
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            detail=f"Invalid CA certificate: {exc}")
+                            detail="Invalid CA certificate")
 
     # If replacing an existing CA, invalidate all agent cert thumbprints for this org
     # so they must re-authenticate with certs signed by the new CA
