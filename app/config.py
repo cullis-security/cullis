@@ -51,16 +51,19 @@ class Settings(BaseSettings):
     injection_llm_judge_enabled: bool = True
     injection_llm_confidence_threshold: float = 0.7
 
-    # ADR-017 Phase 1 — AI gateway egress (LLM calls forwarded to a managed
-    # gateway like Portkey / LiteLLM / Kong). Mastio reconstructs the agent
-    # identity from the DPoP-bound cert and injects it as a trusted header
-    # toward the gateway. The provider key (e.g. ANTHROPIC_API_KEY) is
-    # passed via Bearer in this spike; KMS-stored managed-virtual-keys are
-    # the Phase 3 hardening (see imp/portkey-integration-mapping.md).
-    ai_gateway_backend: str = "litellm_embedded"  # "litellm_embedded" | "portkey" | "litellm_proxy" | "kong"
-    ai_gateway_url: str = "http://localhost:8787"  # only consulted when backend != litellm_embedded
-    ai_gateway_provider: str = "anthropic"       # gateway-side provider slug
-    ai_gateway_request_timeout_s: float = 30.0
+    # DEPRECATED ADR-017 — AI gateway egress moved to Mastio (PR #435).
+    # These fields stay defined so older deployments that still set
+    # ``AI_GATEWAY_*`` env vars on the Court process don't fail validation
+    # at startup. They are NOT read anywhere in ``app/`` anymore: Court no
+    # longer forwards LLM calls. The live equivalents are
+    # ``MCP_PROXY_AI_GATEWAY_BACKEND`` / ``..._URL`` / ``..._PROVIDER`` /
+    # ``..._REQUEST_TIMEOUT_S`` on Mastio (see ``mcp_proxy/config.py``).
+    # Operators should migrate their env config and drop the Court-side
+    # values; these settings will be removed in a future major.
+    ai_gateway_backend: str = "litellm_embedded"  # DEPRECATED — use MCP_PROXY_AI_GATEWAY_BACKEND on Mastio
+    ai_gateway_url: str = "http://localhost:8787"  # DEPRECATED — use MCP_PROXY_AI_GATEWAY_URL on Mastio
+    ai_gateway_provider: str = "anthropic"       # DEPRECATED — use MCP_PROXY_AI_GATEWAY_PROVIDER on Mastio
+    ai_gateway_request_timeout_s: float = 30.0   # DEPRECATED — use MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S on Mastio
 
     # Redis — used for DPoP JTI store, rate limiting, and WebSocket pub/sub.
     # Empty string disables Redis; all components fall back to in-memory.
