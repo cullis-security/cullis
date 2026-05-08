@@ -182,7 +182,26 @@ fi
 
 # ── Enrollment one-shot ─────────────────────────────────────────────────────
 mkdir -p "$DATA_DIR"
-ENROLLMENT_METADATA="$DATA_DIR/profiles/${CONNECTOR_PROFILE}/identity/metadata.json"
+DATA_DIR_ABS="$(cd "$DATA_DIR" && pwd)"
+ENROLLMENT_METADATA="$DATA_DIR_ABS/profiles/${CONNECTOR_PROFILE}/identity/metadata.json"
+
+# Ensure the bind target is owned by uid 10001 (the cullis user inside
+# the connector image), otherwise the enrollment one-shot below + the
+# connector container at runtime fail to write identity material with
+# ``Permission denied`` on Linux where the host uid is typically 1000.
+# The compose-up path has the same fix via an ``init-permissions``
+# service (PR #524); this handles the enroll-time path that runs first.
+_data_uid="$(stat -c '%u' "$DATA_DIR_ABS" 2>/dev/null || echo 0)"
+if [[ "$_data_uid" != "10001" ]]; then
+    if docker run --rm --user 0:0 \
+            -v "${DATA_DIR_ABS}:/data" \
+            busybox:stable chown -R 10001:10001 /data >/dev/null 2>&1; then
+        ok "connector_data ownership normalized to uid 10001"
+    else
+        warn "Could not chown ${DATA_DIR_ABS} via docker"
+        warn "Run manually if enrollment fails: sudo chown -R 10001:10001 ${DATA_DIR_ABS}"
+    fi
+fi
 
 if [[ -f "$ENROLLMENT_METADATA" ]]; then
     ok "Connector profile '${CONNECTOR_PROFILE}' already enrolled"
@@ -218,10 +237,10 @@ else
         [[ -n "$INVITE_CODE" ]] || die "Invite code is required to enroll"
     fi
 
-    # Resolve to absolute paths so docker volume mounts work regardless of
-    # where the operator invokes the script from.
+    # Resolve to absolute path so docker volume mount works regardless of
+    # where the operator invokes the script from. ``DATA_DIR_ABS`` was
+    # already resolved above for the chown step.
     CA_BUNDLE_ABS="$(cd "$(dirname "$CA_BUNDLE")" && pwd)/$(basename "$CA_BUNDLE")"
-    DATA_DIR_ABS="$(cd "$DATA_DIR" && pwd)"
 
     # Use a bridge network with host-gateway so the URL the Connector
     # uses to reach Mastio at enroll-time matches what it will use at
