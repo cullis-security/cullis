@@ -228,10 +228,16 @@ async def _handle_stream(
             yield "data: [DONE]\n\n"
         except GatewayError as exc:
             terminated_with_error = exc
+            # Audit H-IO-2 — ``exc.detail`` comes from str(exc) of the
+            # underlying httpx / LiteLLM / pydantic error and would echo
+            # provider chatter (timeouts, auth-key fragments, schema
+            # mismatch text) back to the SSE consumer. Keep it in the
+            # audit row below for ops triage; on the wire emit only the
+            # stable reason tag + trace id.
             err_frame = {
                 "error": {
                     "type": exc.reason,
-                    "message": exc.detail or exc.reason,
+                    "message": exc.reason,
                     "trace_id": trace_id,
                 },
             }

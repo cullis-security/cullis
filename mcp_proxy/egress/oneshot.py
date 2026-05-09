@@ -183,7 +183,17 @@ async def send_oneshot(
     try:
         path = decide_route(body.recipient_id, local_org, trust_domain)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Audit H-IO-2 — ``decide_route`` raises ValueError for any
+        # malformed recipient form. The library text leaks parser state;
+        # log it for ops, return a stable 400 to the caller.
+        logger.warning(
+            "oneshot decide_route rejected recipient=%r: %s",
+            body.recipient_id, exc,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="invalid recipient_id",
+        ) from exc
 
     # Reach gate (migration 0017): refuse before we build any envelope
     # or touch the audit chain. A per-agent denied event is still
@@ -286,9 +296,16 @@ async def send_oneshot(
                 org_id=local_org,
                 details={**audit_details, "reason": f"broker_forward_failed: {exc}"},
             )
+            # Audit H-IO-2 — broker exception text can carry httpx/library
+            # internals; the audit row above keeps the specific reason for
+            # ops, the wire stays generic.
+            logger.warning(
+                "oneshot broker forward failed for %s: %s",
+                agent.agent_id, exc,
+            )
             raise HTTPException(
                 status_code=502,
-                detail=f"Broker forward failed: {exc}",
+                detail="broker forward failed",
             ) from exc
 
         broker_msg_id = result.get("msg_id", "")

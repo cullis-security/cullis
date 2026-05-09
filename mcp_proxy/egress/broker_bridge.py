@@ -150,9 +150,15 @@ class BrokerBridge:
             async with httpx.AsyncClient(verify=self._verify_tls, timeout=30.0) as http:
                 resp = await http.post(url, json=body)
         except httpx.HTTPError as exc:
+            # Audit H-IO-2 — httpx error text leaks transport/connection
+            # internals. Log full for ops triage, return a stable detail.
+            logger.warning(
+                "court unreachable during mastio pubkey rotation (%s): %s",
+                url, exc,
+            )
             raise HTTPException(
                 status_code=502,
-                detail=f"court unreachable during rotation: {exc}",
+                detail="court unreachable during rotation",
             ) from exc
 
         if resp.status_code >= 500:
