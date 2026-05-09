@@ -42,6 +42,44 @@ _log = logging.getLogger("cullis_connector.ambassador.router")
 router = APIRouter(tags=["ambassador"])
 
 
+def _per_user_credentials(request: Request):
+    """Return ``request.state.user_credentials`` or ``None``.
+
+    Wrapped so the chat-completions handler can stay tidy even though
+    Starlette's request.state is just a plain object (``getattr`` to
+    ride out the missing-attr branch on legacy paths).
+    """
+    return getattr(request.state, "user_credentials", None)
+
+
+def _build_user_client(request: Request, cred: Any):
+    """Construct a per-request CullisClient logged in as ``cred``.
+
+    Mirrors ``cullis_connector/ambassador/shared/router.py::
+    _build_user_client``: uses ``CullisClient.from_user_principal_pem``
+    so the user's cert is presented at the TLS handshake. The
+    site_url is read from the Ambassador state (set by
+    ``install_ambassador``).
+    """
+    state = getattr(request.app.state, "ambassador", None)
+    if state is None:
+        raise HTTPException(503, "Ambassador not initialized on this app")
+    site_url = state.get("site_url") or ""
+    if not site_url:
+        raise HTTPException(
+            503, "Ambassador site_url unknown — cannot build per-user client",
+        )
+    from cullis_sdk import CullisClient
+    client = CullisClient.from_user_principal_pem(
+        site_url,
+        principal_id=cred.principal_id,
+        cert_pem=cred.cert_pem,
+        key_pem=cred.key_pem,
+    )
+    client.login_via_proxy_with_local_key()
+    return client
+
+
 # ── unauth liveness probe ───────────────────────────────────────────
 
 def _enforce_loopback(request: Request) -> None:
@@ -120,18 +158,44 @@ def chat_completions(req: ChatCompletionRequest, request: Request):
     client_holder: AmbassadorClient = state["client"]
     body = req.model_dump(exclude_none=True)
 
-    try:
-        client = client_holder.get()
-    except Exception as exc:
-        _log.exception("ambassador SDK login failed")
-        raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+    # ADR-025 Phase 3 — when AUTH_MODE=local + a per-user cert was
+    # bound to the request by ``cert_middleware``, prefer it over the
+    # Connector-agent client_holder. Mirrors how the shared-mode
+    # router builds a per-user CullisClient (see
+    # ``ambassador/shared/router.py::_build_user_client``) so the
+    # downstream Mastio sees the user's SPIFFE id, not the Connector's
+    # agent id, on chat traffic.
+    user_creds = _per_user_credentials(request)
+    if user_creds is not None:
+        try:
+            client = _build_user_client(request, user_creds)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log.exception(
+                "user-bound CullisClient build failed for %s",
+                user_creds.principal_id,
+            )
+            raise HTTPException(
+                502, f"per-user Cullis cloud login failed: {exc}",
+            ) from exc
+    else:
+        try:
+            client = client_holder.get()
+        except Exception as exc:
+            _log.exception("ambassador SDK login failed")
+            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
 
     try:
         response, truncated = run_tool_use_loop(client, body, max_iters=8)
     except Exception as exc:
         # Defensive: any auth-shaped error invalidates the cached
-        # client so the next request re-logs in fresh.
-        client_holder.invalidate()
+        # client so the next request re-logs in fresh. Per-user
+        # clients are short-lived (built fresh above) so there is no
+        # cache to invalidate; agent-bound traffic still goes through
+        # ``client_holder``.
+        if user_creds is None:
+            client_holder.invalidate()
         _log.exception("tool-use loop failed")
         raise HTTPException(502, f"Cullis cloud call failed: {exc}") from exc
 

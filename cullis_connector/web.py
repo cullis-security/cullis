@@ -361,6 +361,96 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
     )
 
 
+def _maybe_install_local_user_provisioner(
+    app: FastAPI, config: ConnectorConfig,
+) -> None:
+    """Wire ADR-025 Phase 3 — local-mode UserPrincipal CSR + cert binding.
+
+    Stashes on ``app.state``:
+
+      - ``local_user_cache``    — :class:`UserCredentialCache` (1h TTL)
+      - ``local_provisioner``   — :class:`LocalUserProvisioner`
+      - ``local_csr_transport`` — kept alive for SDK token cache
+
+    Also registers the per-request cert middleware on the same
+    ``config_dir``. The middleware is idempotent and safe to leave
+    installed even when the provisioner is unwired (it bails out early
+    when no provisioner is on app.state).
+
+    Silent no-op when:
+
+      - the agent identity (``identity/agent.{crt,key}``) is missing
+        — pre-enrollment dashboards. Once the operator finishes
+        enrollment they restart the dashboard to pick this up.
+      - the import chain fails (defensive — a missing dep should not
+        crash the entire dashboard).
+    """
+    if not has_identity(config.config_dir):
+        _log.info(
+            "ADR-025 Phase 3 provisioner deferred: no identity at %s yet",
+            config.config_dir,
+        )
+        return
+
+    try:
+        from cullis_connector.ambassador.shared.credentials import (
+            UserCredentialCache,
+        )
+        from cullis_connector.ambassador.shared.provisioning import (
+            SdkMastioCsrTransport,
+        )
+        from cullis_connector.auth.cert_middleware import (
+            install_cert_middleware,
+        )
+        from cullis_connector.identity.csr_flow import LocalUserProvisioner
+    except ImportError:
+        _log.exception(
+            "ADR-025 Phase 3 provisioner import failed; skipping",
+        )
+        return
+
+    # Mastio URL: prefer the same env the Frontdesk container uses so
+    # one variable wires both shared and local mode. Fall back to the
+    # site_url written into identity/metadata.json at enrollment.
+    mastio_url = os.environ.get("CULLIS_FRONTDESK_MASTIO_URL", "").rstrip("/")
+    if not mastio_url:
+        try:
+            bundle = load_identity(config.config_dir)
+            mastio_url = (bundle.metadata.site_url or config.site_url).rstrip("/")
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "ADR-025 Phase 3 provisioner skipped: cannot read identity metadata: %s",
+                exc,
+            )
+            return
+    if not mastio_url:
+        _log.warning(
+            "ADR-025 Phase 3 provisioner skipped: no Mastio URL "
+            "(CULLIS_FRONTDESK_MASTIO_URL or site_url)",
+        )
+        return
+
+    transport = SdkMastioCsrTransport(
+        config_dir=config.config_dir,
+        base_url=mastio_url,
+        verify_tls=config.verify_arg,
+    )
+    cache = UserCredentialCache()
+    provisioner = LocalUserProvisioner(mastio=transport, cache=cache)
+
+    app.state.local_csr_transport = transport
+    app.state.local_user_cache = cache
+    app.state.local_provisioner = provisioner
+
+    # Cert middleware reads the same config_dir as the login router so
+    # the persisted binding is read out of the same users.db file.
+    install_cert_middleware(app, config_dir=config.config_dir)
+    _log.info(
+        "ADR-025 Phase 3 local provisioner mounted: mastio=%s",
+        mastio_url,
+    )
+
+
 def _maybe_install_shared_ambassador(
     app: FastAPI,
     config: ConnectorConfig,
@@ -582,6 +672,14 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             "ADR-025 admin /admin/users + /api/auth/* mounted (AUTH_MODE=%s)",
             auth_mode,
         )
+        # ADR-025 Phase 3 — wire post-login CSR + per-request cert
+        # binding. Only when local mode is active AND the agent
+        # identity is on disk (``SdkMastioCsrTransport`` reads
+        # ``identity/agent.{crt,key}`` to authenticate to Mastio).
+        # Pre-enrollment dashboards leave the provisioner unwired;
+        # the login router will return ``provisioning="skipped"`` and
+        # the cert middleware silently passes through.
+        _maybe_install_local_user_provisioner(app, config)
     else:
         _log.info(
             "ADR-025 admin /admin/users NOT mounted (AUTH_MODE=%s)", auth_mode,
