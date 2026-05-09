@@ -57,6 +57,14 @@ RUN mkdir -p /data /var/lib/mastio/nginx-certs && \
 
 ENV PYTHONPATH=/app
 ENV MCP_PROXY_DATABASE_URL=sqlite+aiosqlite:////data/mcp_proxy.db
+
+# Surface the Mastio release version on /health. release-mastio.yml passes
+# ``--build-arg VERSION=<tag>``; un-passed builds fall back to ``dev`` so a
+# developer-laptop curl yields ``"version":"dev"`` rather than a stale literal
+# that drifts from the running tag.
+ARG VERSION=dev
+ENV CULLIS_MASTIO_VERSION=${VERSION}
+
 # cullis-enterprise#11 — Python defaults stderr to block-buffering when
 # connected to a pipe (container stdio goes through a pipe to the runtime).
 # Under burst load, logging.StreamHandler(sys.stderr) records accumulate

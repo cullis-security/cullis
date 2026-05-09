@@ -31,6 +31,14 @@ from mcp_proxy.logging_setup import configure_json_logging
 configure_json_logging()
 _log = logging.getLogger("mcp_proxy")
 
+
+# Mastio version surfaced on /health. Injected at image build time via
+# ``--build-arg VERSION=...`` (release-mastio.yml passes the tag-derived
+# version, e.g. ``0.3.2``). Falls back to ``dev`` for source-checkout runs
+# so curl on a developer laptop yields ``"version":"dev"`` rather than a
+# stale literal that drifts from the running tag.
+_MASTIO_VERSION = os.environ.get("CULLIS_MASTIO_VERSION", "dev")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # JWKS client reference (set during lifespan)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1198,7 +1206,7 @@ async def health(request: Request):
         underneath. Stdlib-verifier cross-org federation silently
         401s; remediation is ``POST /pki/rotate-ca``.
     """
-    body: dict = {"status": "ok", "version": "0.1.0"}
+    body: dict = {"status": "ok", "version": _MASTIO_VERSION}
     warnings: list[str] = []
     agent_mgr = getattr(request.app.state, "agent_manager", None)
     if agent_mgr is not None and getattr(
