@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+
+<div class="panel">
+    <div class="panel-head">
+        <div class="panel-eyebrow">Cullis · Sign in</div>
+        <h1 class="panel-title">Sign in to <em>your workspace</em></h1>
+        <p class="panel-sub">
+            Use the credentials your administrator gave you. If you
+            haven't set a password yet, use the temporary one and you'll
+            be prompted to change it.
+        </p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error" id="login-error">{{ error }}</div>
+    {% endif %}
+
+    <form id="login-form" class="form" novalidate>
+        <div class="field">
+            <label class="field-label" for="user_name">Username</label>
+            <input
+                id="user_name"
+                name="user_name"
+                type="text"
+                autocomplete="username"
+                autocapitalize="none"
+                spellcheck="false"
+                required>
+        </div>
+
+        <div class="field">
+            <label class="field-label" for="password">Password</label>
+            <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required>
+        </div>
+
+        <div class="form-actions">
+            <button class="btn btn-primary" type="submit" id="login-submit">
+                Sign in
+            </button>
+        </div>
+    </form>
+</div>
+
+<script>
+(function() {
+    var form = document.getElementById('login-form');
+    if (!form) { return; }
+    form.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        var btn = document.getElementById('login-submit');
+        if (btn) { btn.disabled = true; }
+        var user_name = document.getElementById('user_name').value;
+        var password = document.getElementById('password').value;
+        fetch('/api/auth/login', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_name: user_name, password: password }),
+        }).then(function(r) {
+            if (!r.ok) {
+                return r.json().then(function(j) {
+                    throw new Error(j.detail || 'Sign in failed');
+                });
+            }
+            return r.json();
+        }).then(function(j) {
+            if (j.must_change_password) {
+                window.location.href = '/change-password';
+            } else {
+                window.location.href = '/';
+            }
+        }).catch(function(err) {
+            var box = document.getElementById('login-error');
+            if (!box) {
+                box = document.createElement('div');
+                box.className = 'alert alert-error';
+                box.id = 'login-error';
+                form.parentNode.insertBefore(box, form);
+            }
+            box.textContent = err.message || 'Sign in failed';
+            if (btn) { btn.disabled = false; }
+        });
+    });
+})();
+</script>
+
+{% endblock %}
