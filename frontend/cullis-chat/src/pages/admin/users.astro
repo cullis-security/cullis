@@ -1,0 +1,40 @@
+---
+// Admin Users tab — ADR-025 Phase 5.
+//
+// Server-side gate: the /admin/users endpoints require the
+// X-Admin-Secret header (cullis_connector/admin/users_router.py). The
+// SPA prompts for the secret on first load and stores it only in
+// sessionStorage so it does not survive a tab close. This page does
+// not enforce auth — it is the React island that fails closed if
+// the secret is missing or rejected.
+import '../../styles/tokens.css';
+import '../../styles/globals.css';
+import '../../styles/auth.css';
+import AdminUsers from '../../components/admin/AdminUsers.tsx';
+import brand from '@brand/config';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="theme-color" content="#0a0f1a" />
+    <meta name="description" content={`Admin · users · ${brand.displayName}`} />
+    <meta name="referrer" content="same-origin" />
+    <meta name="robots" content="noindex" />
+    <title>{`Admin users · ${brand.displayName}`}</title>
+    <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}${brand.logoMark}`} />
+  </head>
+  <body class="auth-body">
+    <AdminUsers client:load />
+  </body>
+</html>
+
+<style is:global>
+  body.auth-body {
+    overflow-y: auto;
+    height: auto;
+    min-height: 100vh;
+  }
+</style>

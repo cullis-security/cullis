@@ -10,6 +10,7 @@
 
 import IdentityBadge from './IdentityBadge.tsx';
 import ModelPicker from './ModelPicker.tsx';
+import TopBarSessionMenu from './auth/TopBarSessionMenu.tsx';
 import brand from '@brand/config';
 
 const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
@@ -33,6 +34,7 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
       <span class="status-label">connected</span>
     </span>
     <IdentityBadge client:load />
+    <TopBarSessionMenu client:load />
     {auditToggleEnabled && (
       <button
         type="button"
@@ -278,6 +280,75 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     color: var(--accent-cyan);
     font-size: 1rem;
     line-height: 1;
+  }
+
+  /* Session menu — Logout + Admin link (ADR-025 Phase 5).
+     React island, so styles need :global. */
+  :global(.topbar-session-menu) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  :global(.topbar-link) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.7rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-button);
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-family: var(--font-mono);
+    transition: border-color var(--t-fast) var(--ease-soft),
+                color var(--t-fast) var(--ease-soft);
+  }
+
+  :global(.topbar-link:hover) {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+  }
+
+  :global(.topbar-link .folio) {
+    border-right: 1px solid var(--border-subtle);
+    padding-right: 0.5rem;
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  :global(.topbar-link-label) {
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+  }
+
+  :global(.topbar-logout) {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.75rem;
+    cursor: pointer;
+    transition: border-color var(--t-fast) var(--ease-soft),
+                color var(--t-fast) var(--ease-soft);
+  }
+
+  :global(.topbar-logout:hover:not(:disabled)) {
+    border-color: var(--accent-amber);
+    color: var(--accent-amber);
+  }
+
+  :global(.topbar-logout:disabled) {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   @media (max-width: 1100px) {
