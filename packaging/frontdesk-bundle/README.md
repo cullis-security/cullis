@@ -1,14 +1,20 @@
 # Cullis Frontdesk — multi-user container bundle
 
-Deploys Cullis Chat as a corporate web app, identity-aware via SSO. One container per N concurrent users, audit attributed per user. Implements ADR-019 rev 3 Phase 7.
+Deploys Cullis Chat as a corporate web app, identity-aware. One container per N concurrent users, audit attributed per user. Implements ADR-019 rev 3 Phase 7 + ADR-025 dual-mode auth.
+
+## Auth mode (default: ADR-025 local)
+
+By default the bundle ships **ADR-025 `AUTH_MODE=local`**: the SPA serves a real `/login` form backed by a `users.db` (bcrypt hashed); the admin pre-creates accounts via `POST /admin/users` with `X-Admin-Secret`; each post-login session mints a per-user UserPrincipal cert at the sibling Mastio. Audit chain shows the actual employee, not a shared placeholder.
 
 ```
 [browser Mario] ──┐
-[browser Anna]  ──┼─→ [nginx :8080] ──→ [Cullis Chat SPA] ──→ [Connector :7777, AMBASSADOR_MODE=shared]
-[browser Luca]  ──┘     ↑                                        ↓ DPoP+mTLS, per-user keys via UserPrincipalKMS
-                        SSO: oauth2-proxy + IDP                  ↓
-                        injects X-Forwarded-User             [Cullis Mastio cloud]
+[browser Anna]  ──┼─→ [nginx :8080] ──→ [Cullis Chat SPA] ──→ [Connector :7777, AUTH_MODE=local]
+[browser Luca]  ──┘     ↑                                        ↓ DPoP+mTLS, per-user UserPrincipal cert
+                        /login form (real bcrypt auth)            ↓
+                        admin provisions via /admin/users    [Cullis Mastio]
 ```
+
+**Legacy shared-mode SSO** (pre-v0.2.0): set `AMBASSADOR_MODE=shared` in `frontdesk.env` to fall back to the `X-Forwarded-User` injection pattern. Kept for back-compat with existing deploys; new deploys should prefer `AUTH_MODE=local` or wire OIDC delegation upstream of the bundle (oauth2-proxy + corporate IdP).
 
 ## Prerequisites
 
