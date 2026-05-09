@@ -564,13 +564,23 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     # for SMB deployments without a corporate IdP). Set AUTH_MODE=oidc
     # to skip the mount entirely so the local-users surface does not
     # exist at all in IdP-only deployments.
-    auth_mode = os.environ.get("AUTH_MODE", "local").strip().lower() or "local"
+    #
+    # Phase 2 — additionally mount the local login + session router
+    # under the same gate so /login, /api/auth/* and the cookie-issuing
+    # endpoints exist exactly when admin pre-creation does.
+    from cullis_connector.identity.auth_mode import (
+        MODE_LOCAL, read_auth_mode,
+    )
+    auth_mode = read_auth_mode()
     app.state.auth_mode = auth_mode
-    if auth_mode == "local":
+    if auth_mode == MODE_LOCAL:
         from cullis_connector.admin.users_router import router as _users_router
+        from cullis_connector.auth.local_router import router as _auth_local_router
         app.include_router(_users_router)
+        app.include_router(_auth_local_router)
         _log.info(
-            "ADR-025 admin /admin/users mounted (AUTH_MODE=%s)", auth_mode,
+            "ADR-025 admin /admin/users + /api/auth/* mounted (AUTH_MODE=%s)",
+            auth_mode,
         )
     else:
         _log.info(
@@ -613,6 +623,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         if (
             request.url.path.startswith("/v1/")
             or request.url.path.startswith("/api/session/")
+            or request.url.path.startswith("/api/auth/")
             or request.url.path.startswith("/admin/")
         ):
             # ``/admin/*`` runs its own constant-time ``X-Admin-Secret``
@@ -620,6 +631,16 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             # is not auto-attached by browsers, so the route is not a
             # CSRF vector — mirroring the exemption already granted to
             # the Bearer-token path below.
+            #
+            # ``/api/auth/*`` (ADR-025 Phase 2) is the login bootstrap:
+            # the browser does not yet have a session cookie when it
+            # POSTs /api/auth/login, so a CSRF token derived from the
+            # session is impossible by construction. We instead require
+            # JSON content-type on these routes (browsers will not
+            # auto-set ``application/json`` on a cross-origin form-POST
+            # without an Origin/Referer header that the SameSite=Strict
+            # cookie already gates) — the router uses Pydantic-bound
+            # JSON bodies which 422 on form-encoded payloads.
             return await call_next(request)
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):
             authz = request.headers.get("authorization", "")
