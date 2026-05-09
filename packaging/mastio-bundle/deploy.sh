@@ -285,6 +285,16 @@ if [[ $SHARED_BROKER -eq 1 ]]; then
     fi
 fi
 
+# Pre-create the bind-mount target for the optional corporate CA bundle.
+# docker-compose.yml mounts ``${CULLIS_CERTS_DIR:-./certs}:/certs:ro``;
+# if the directory does not exist when ``compose up`` runs, Docker
+# auto-creates it as ``root:root`` and the post-up ``docker cp org-ca``
+# step further down (run as the host user) cannot write into it. Creating
+# it here as the invoking user keeps ownership host-side and the export
+# works without sudo.
+CERT_DIR="${CULLIS_CERTS_DIR:-$SCRIPT_DIR/certs}"
+mkdir -p "$CERT_DIR"
+
 echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d${RESET}"
 $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
 ok "Containers started"
@@ -314,10 +324,16 @@ done
 # named volume. Downstream consumers (Frontdesk Connector enroll, mTLS
 # verify, manual curl smoke) need it as a trust anchor on the host. Copy
 # it out so operators don't have to docker cp by hand.
-CERT_DIR="$SCRIPT_DIR/certs"
-mkdir -p "$CERT_DIR"
 PROXY_CID="$($COMPOSE $COMPOSE_FILES ps -q mcp-proxy 2>/dev/null || true)"
 ORG_CA_HOST="$CERT_DIR/org-ca.pem"
+# If a previous ``compose up`` (e.g. before the pre-mkdir fix landed)
+# created ``./certs`` as root, reclaim ownership before docker cp so the
+# host user can write into it without sudo. Cheap no-op when ownership is
+# already correct.
+if [[ ! -w "$CERT_DIR" ]]; then
+    docker run --rm -v "$CERT_DIR:/target" --entrypoint /bin/sh \
+        alpine -c "chown -R $(id -u):$(id -g) /target" >/dev/null 2>&1 || true
+fi
 if [[ -n "$PROXY_CID" ]] && docker cp "$PROXY_CID:/var/lib/mastio/nginx-certs/org-ca.crt" "$ORG_CA_HOST" 2>/dev/null; then
     chmod 644 "$ORG_CA_HOST"
     ok "Org CA exported to ./certs/org-ca.pem"
