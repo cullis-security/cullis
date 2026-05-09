@@ -3,20 +3,26 @@
 Self-contained Mastio deploy. Pulls the published image from GHCR, no
 source tree required.
 
-## Quickstart (3 commands)
+## Quickstart (2 commands, you already have this tarball)
 
 ```bash
-curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.1/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle/
 ./deploy.sh
 ```
 
-Newer Mastio releases are listed at
-<https://github.com/cullis-security/cullis/releases?q=mastio-v>; the
-URL above is pinned because GitHub's `releases/latest/` marker is
-shared across all bundles in this repo (Mastio + Frontdesk + Court +
-Chat + Connector) and would 404 the moment a non-Mastio release takes
-the Latest slot.
+This README ships **inside** the bundle tarball, so by the time you
+are reading it you have already extracted the code. To grab a fresh
+download from scratch, see <https://cullis.io/download/> for the
+current recommended URL — that page tracks the latest rc / stable
+release. The full Mastio version list is at
+<https://github.com/cullis-security/cullis/releases?q=mastio-v>.
+
+> Why no pinned ``curl ...`` URL here? The download URL must point at a
+> specific release tag, but the README ships *inside* the tarball; a
+> hard-coded version drifts the moment a newer rc/stable cuts and
+> readers paste a stale URL even though they are already running a
+> newer bundle. The cullis.io/download page above is updated atomically
+> with each release.
 
 Open `https://localhost:9443/proxy/login` (the browser will warn — the
 TLS cert is signed by your auto-generated Org CA, not a public CA).
