@@ -37,16 +37,31 @@ export function redirectToLogin(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // ADR-025 Phase 5 follow-up (bug N20, 2026-05-09 VM dogfood):
+  // ``/api/session/init`` is only mounted when the Connector runs in
+  // shared mode (AMBASSADOR_MODE=shared). In local mode the SPA
+  // already has its session cookie minted by /api/auth/login, so
+  // calling /api/session/init returns 403 and clutters the UI with a
+  // misleading error banner. Probe runtime-info first and skip the
+  // legacy bootstrap when ``auth_mode === 'local'``.
+  const info = await fetchRuntimeInfo();
+  if (info && info.auth_mode === 'local') {
+    // The local-mode session cookie was issued by /api/auth/login.
+    // If the user is on a chat page without a valid cookie (cookie
+    // expired, never logged in), the IdentityBadge whoami probe will
+    // catch the 401 and redirect to /login — that's the right entry
+    // point in local mode, NOT /api/session/init.
+    return;
+  }
   try {
     await initSession();
     return;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
-      // Only chase the local-mode redirect when the Connector says
-      // it is in local mode. In OIDC mode we let the caller surface
-      // the error so the UI can render an SSO bootstrap link.
-      const info = await fetchRuntimeInfo();
-      if (info && info.auth_mode === 'local') {
+      // Defensive: runtime-info absent (older Connector image) but
+      // session/init says we are not signed in — assume local-mode
+      // semantics and redirect to /login.
+      if (!info) {
         redirectToLogin();
       }
     }
