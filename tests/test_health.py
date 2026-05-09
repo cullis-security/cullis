@@ -51,3 +51,10 @@ async def test_health_legacy_still_works(client):
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
     assert "version" in resp.json()
+
+
+# NB: Mastio /health (mcp_proxy.main) is tested separately —
+# tests/test_proxy_health_version.py covers the version surface there.
+# The ``client`` fixture above wires the Court app (app.main), which has
+# its own /health endpoint backed by ``settings.app_version`` and is the
+# subject of the assertions in this file.
