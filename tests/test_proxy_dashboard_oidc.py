@@ -338,3 +338,51 @@ async def test_login_page_hides_sso_button_when_unconfigured(proxy_app):
 # the partial endpoint were removed in this PR — peer-org discovery
 # now lives exclusively on ``/proxy/network``. See
 # ``project_reach_enforcement`` + the PR description for the migration.
+
+
+# ── _oidc_redirect_uri fallback chain ────────────────────────────────
+
+
+def _fake_request(base_url: str = "http://localhost:9100/"):
+    """Minimal Request stub exposing ``base_url`` for ``_oidc_redirect_uri``."""
+    class _R:
+        pass
+    r = _R()
+    r.base_url = base_url
+    return r
+
+
+def test_oidc_redirect_uri_prefers_dedicated_setting(monkeypatch):
+    from mcp_proxy import config as _config
+    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+
+    s = _config.get_settings()
+    monkeypatch.setattr(s, "oidc_redirect_uri_base", "http://localhost:9100")
+    monkeypatch.setattr(s, "proxy_public_url", "https://mastio-nginx-a:9443")
+
+    uri = _oidc_redirect_uri(_fake_request("http://internal/"))
+    assert uri == "http://localhost:9100/proxy/oidc/callback"
+
+
+def test_oidc_redirect_uri_falls_back_to_proxy_public_url(monkeypatch):
+    from mcp_proxy import config as _config
+    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+
+    s = _config.get_settings()
+    monkeypatch.setattr(s, "oidc_redirect_uri_base", "")
+    monkeypatch.setattr(s, "proxy_public_url", "https://example.com")
+
+    uri = _oidc_redirect_uri(_fake_request())
+    assert uri == "https://example.com/proxy/oidc/callback"
+
+
+def test_oidc_redirect_uri_falls_back_to_request_base_url(monkeypatch):
+    from mcp_proxy import config as _config
+    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+
+    s = _config.get_settings()
+    monkeypatch.setattr(s, "oidc_redirect_uri_base", "")
+    monkeypatch.setattr(s, "proxy_public_url", "")
+
+    uri = _oidc_redirect_uri(_fake_request("http://localhost:9100/"))
+    assert uri == "http://localhost:9100/proxy/oidc/callback"

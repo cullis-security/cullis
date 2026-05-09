@@ -267,6 +267,11 @@ services:
       # match. Pin it here so ``_build_htu`` returns the URL the agent
       # actually signed.
       MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-nginx-a:9443"
+      # OIDC redirect_uri must be browser-reachable AND registered on
+      # Keycloak. Realm seed registers ``http://localhost:9100/...``
+      # (host-side) and ``http://proxy-a:9100/...`` (in-network).
+      # Distinct from PROXY_PUBLIC_URL above which is the TLS sidecar.
+      MCP_PROXY_OIDC_REDIRECT_URI_BASE: "http://localhost:9100"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
       # ADR-017 native AI gateway on Mastio (post-2026-05-06 architectural
       # fix): the Mastio dispatches LLM calls itself via litellm_embedded.
@@ -601,6 +606,9 @@ services:
       MCP_PROXY_BROKER_JWKS_URL:   "http://broker:8000/.well-known/jwks.json"
       # ADR-014 — see proxy-a rationale; pin htu to the orgb sidecar.
       MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-nginx-b:9443"
+      # OIDC redirect_uri — see proxy-a comment. Realm seed registers
+      # ``http://localhost:9200/...`` + ``http://proxy-b:9100/...``.
+      MCP_PROXY_OIDC_REDIRECT_URI_BASE: "http://localhost:9200"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-b"
       MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
       MCP_PROXY_ORG_ID:            "orgb"
