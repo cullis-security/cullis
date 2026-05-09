@@ -142,11 +142,37 @@ fi
 # ── frontdesk.env — create if missing, validate in prod ─────────────────────
 step "Environment configuration (frontdesk.env)"
 
+# Magic placeholder that ``generate-frontdesk-env.sh --defaults`` writes
+# when it cannot auto-detect the sibling Mastio CA path. If the user
+# re-runs deploy.sh after a sibling-bundle bring-up that exported the
+# CA, we should regenerate the env so auto-detect picks up the new
+# state. Otherwise the placeholder leaks all the way to the docker
+# compose layer which fails with a confusing "CA bundle not found".
+_PLACEHOLDER_CA_PATH="./MUST_SET_TO_MASTIO_CA_BUNDLE_PATH"
+
+_env_has_placeholder_ca() {
+    [[ -f "$SCRIPT_DIR/frontdesk.env" ]] || return 1
+    grep -qE "^CULLIS_FRONTDESK_CA_BUNDLE_HOST=${_PLACEHOLDER_CA_PATH}\$" \
+        "$SCRIPT_DIR/frontdesk.env"
+}
+
 if [[ ! -f "$SCRIPT_DIR/frontdesk.env" ]]; then
     warn "frontdesk.env not found — generating one"
     if [[ "$MODE" == "production" ]]; then
         die "--prod requires frontdesk.env to exist. Run: CULLIS_FRONTDESK_ORG_ID=acme CULLIS_FRONTDESK_TRUST_DOMAIN=acme.prod CULLIS_FRONTDESK_CA_BUNDLE_HOST=/path/to/ca.pem ./generate-frontdesk-env.sh --prod"
     fi
+    bash "$SCRIPT_DIR/generate-frontdesk-env.sh" --defaults
+elif _env_has_placeholder_ca; then
+    # Pre-existing frontdesk.env still pinning the unconfigured magic
+    # placeholder (e.g. the sibling Mastio bundle was not yet up at the
+    # time of the previous run). Regenerate so the freshly-exported CA
+    # gets picked up by the auto-detect block in
+    # generate-frontdesk-env.sh.
+    if [[ "$MODE" == "production" ]]; then
+        die "frontdesk.env still has the placeholder CA path (${_PLACEHOLDER_CA_PATH}). Set CULLIS_FRONTDESK_CA_BUNDLE_HOST to a real PEM path and rerun --prod."
+    fi
+    warn "frontdesk.env has the placeholder CA path — regenerating to pick up the sibling Mastio bundle"
+    rm -f "$SCRIPT_DIR/frontdesk.env"
     bash "$SCRIPT_DIR/generate-frontdesk-env.sh" --defaults
 fi
 
