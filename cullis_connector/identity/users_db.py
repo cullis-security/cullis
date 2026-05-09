@@ -17,6 +17,7 @@ bcrypt hashes are not readable by other local users on the host.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -38,11 +39,34 @@ _log = logging.getLogger("cullis_connector.identity.users_db")
 USERS_DB_FILENAME = "users.db"
 
 
-# Per-config_dir engine cache. Each ConnectorConfig.config_dir maps to
-# a single AsyncEngine for the lifetime of the process. This keeps
-# WAL/journal connections warm and avoids the "database is locked"
-# class of error from a fresh engine being spun up on every request.
-_engines: dict[Path, AsyncEngine] = {}
+# Per-(config_dir, event_loop_id) engine cache. Each ConnectorConfig.config_dir
+# maps to a single AsyncEngine PER asyncio event loop for the lifetime of that
+# loop. This keeps WAL/journal connections warm and avoids the "database is
+# locked" class of error from a fresh engine being spun up on every request,
+# while also preventing cross-loop pollution that breaks pytest-asyncio shards
+# (the connection pool ties to the loop that opened it; reusing the engine on
+# a different loop fails with "There is no current event loop in thread").
+#
+# The loop key is ``id(loop)`` rather than the loop object itself so a closed
+# loop can be GCed without the cache holding it alive. Stale entries (loop
+# closed) are detected and replaced lazily by ``_users_engine``.
+_engines: dict[tuple[Path, int], AsyncEngine] = {}
+
+
+def _current_loop_key() -> int:
+    """Return the id of the current running loop, or 0 if none.
+
+    Sync entrypoints (e.g. fastapi.testclient.TestClient bridging into
+    an async route) may call into this module without a running loop;
+    those flows still need a working engine, so we fall back to a stable
+    0-key bucket. The pytest-asyncio session loop case takes the running
+    branch and gets its own per-loop engine.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return 0
+    return id(loop)
 
 
 def _users_db_path(config_dir: Path) -> Path:
@@ -50,8 +74,13 @@ def _users_db_path(config_dir: Path) -> Path:
 
 
 def _users_engine(config_dir: Path) -> AsyncEngine:
-    """Return (creating if needed) the cached AsyncEngine for ``config_dir``."""
-    key = Path(config_dir).resolve()
+    """Return (creating if needed) the cached AsyncEngine for ``config_dir``.
+
+    Cache is keyed by ``(config_dir, current_loop_id)`` so a fresh
+    pytest-asyncio loop gets its own engine instead of inheriting a
+    stale one whose connection pool is bound to a closed loop.
+    """
+    key = (Path(config_dir).resolve(), _current_loop_key())
     engine = _engines.get(key)
     if engine is not None:
         return engine
@@ -130,7 +159,24 @@ async def get_users_session(
 
 
 async def dispose_users_engines() -> None:
-    """Tear down all cached engines — used by tests for isolation."""
-    while _engines:
-        _, engine = _engines.popitem()
-        await engine.dispose()
+    """Tear down all cached engines — used by tests for isolation.
+
+    Engines created on the *current* event loop are awaited cleanly
+    (closing aiosqlite connections + shutting down the pool). Engines
+    bound to a different loop (e.g. a closed pytest-asyncio loop from
+    a previous test) cannot be awaited safely; we just drop the
+    reference and let GC reclaim them.
+    """
+    current = _current_loop_key()
+    keys = list(_engines.keys())
+    for key in keys:
+        engine = _engines.pop(key, None)
+        if engine is None:
+            continue
+        _, loop_id = key
+        if loop_id == current and current != 0:
+            try:
+                await engine.dispose()
+            except Exception as exc:  # pragma: no cover — best-effort
+                _log.debug("dispose_users_engines: %s", exc)
+        # else: engine bound to a foreign/closed loop — drop the ref.
