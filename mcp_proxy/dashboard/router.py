@@ -2449,6 +2449,9 @@ async def mastio_key_rotate(request: Request):
         )
         raise
     except Exception as exc:
+        # Audit H-IO-2 — audit row carries the full reason; HTTP detail
+        # is generic so an attacker can't probe rotation internals.
+        _log.warning("mastio_key.rotate failed (old_kid=%s): %s", old_kid, exc)
         await log_audit(
             agent_id="admin",
             action="mastio_key.rotate",
@@ -2457,7 +2460,7 @@ async def mastio_key_rotate(request: Request):
         )
         raise HTTPException(
             status_code=500,
-            detail=f"rotation failed: {exc}",
+            detail="rotation failed",
         ) from exc
 
     # Rebuild the LocalIssuer so subsequent token mints use the new signer.
@@ -2548,13 +2551,22 @@ async def mastio_key_complete_staged(request: Request):
     try:
         result = await agent_mgr.complete_staged_rotation(decision)
     except RuntimeError as exc:
+        # Audit H-IO-2 — audit row carries the full reason; HTTP detail
+        # is generic so an attacker can't probe internal staging state.
+        _log.warning(
+            "mastio_key.complete_staged failed (decision=%s): %s",
+            decision, exc,
+        )
         await log_audit(
             agent_id="admin",
             action="mastio_key.complete_staged",
             status="failure",
             detail=f"decision={decision}, reason={exc}",
         )
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="complete-staged rotation failed",
+        ) from exc
 
     # Rebuild LocalIssuer so local-token issuance resumes. Mirrors the
     # rebuild that runs at the end of the rotate endpoint above — the

@@ -90,9 +90,12 @@ class NemoJudge(Judge):
         except RuntimeError as exc:
             return Judge.unavailable(judge=self.name, detail=str(exc))
         except Exception as exc:
+            # Audit H-IO-2 — exc text leaks LLMRails / LiteLLM internals;
+            # keep the stable ``rails_load_failed`` tag, drop the inner
+            # exception text. Server log carries the full reason.
             _log.warning("nemo rails load failed: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"rails_load_failed: {exc}",
+                judge=self.name, detail="rails_load_failed",
             )
 
         text = payload.decode("utf-8", errors="replace")
@@ -101,9 +104,12 @@ class NemoJudge(Judge):
                 rails.generate, messages=[{"role": "user", "content": text}],
             )
         except Exception as exc:
+            # Audit H-IO-2 — exc text from rails.generate can leak prompt
+            # template fragments and provider error bodies; keep the tag,
+            # drop the inner text. Server log carries the full reason.
             _log.warning("nemo rails generate failed: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"rails_generate_failed: {exc}",
+                judge=self.name, detail="rails_generate_failed",
             )
 
         # NeMo response shape: {"role": "assistant", "content": "..."}.

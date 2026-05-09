@@ -80,8 +80,11 @@ class PortkeyJudge(Judge):
                 if self._owns_http and client is not self._http:
                     await client.aclose()
         except httpx.HTTPError as exc:
+            # Audit H-IO-2 — httpx exc text leaks upstream URL / TLS / DNS
+            # detail; keep the ``http_error`` tag, drop the inner text.
+            _log.warning("portkey http error: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"http_error: {exc}",
+                judge=self.name, detail="http_error",
             )
 
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -93,8 +96,11 @@ class PortkeyJudge(Judge):
         try:
             data = resp.json()
         except ValueError as exc:
+            # Audit H-IO-2 — JSON decoder exc text quotes upstream body
+            # bytes; keep the tag, drop inner text.
+            _log.warning("portkey malformed response: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"malformed_response: {exc}",
+                judge=self.name, detail="malformed_response",
             )
 
         # Portkey shape: ``verdict: "pass" | "fail"`` + per-check details.

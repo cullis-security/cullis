@@ -55,9 +55,12 @@ class LlamaGuardJudge(Judge):
         try:
             from litellm import acompletion
         except ImportError as exc:
+            # Audit H-IO-2 — ImportError text echoes module path / version
+            # internals; keep the stable tag, drop the inner text.
+            _log.warning("llama_guard litellm import failed: %s", exc)
             return Judge.unavailable(
                 judge=self.name,
-                detail=f"litellm_not_installed: {exc}",
+                detail="litellm_not_installed",
             )
 
         text = payload.decode("utf-8", errors="replace")
@@ -77,16 +80,22 @@ class LlamaGuardJudge(Judge):
                 timeout=self._timeout,
             )
         except Exception as exc:
+            # Audit H-IO-2 — upstream exc text leaks provider URL / API
+            # error body / TLS detail; keep the tag, drop inner text.
+            _log.warning("llama_guard upstream error: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"upstream_error: {exc}",
+                judge=self.name, detail="upstream_error",
             )
 
         latency_ms = int((time.perf_counter() - started) * 1000)
         try:
             content = response.choices[0].message.content or ""
         except Exception as exc:
+            # Audit H-IO-2 — exc text from response decode quotes upstream
+            # body bytes; keep the tag, drop inner text.
+            _log.warning("llama_guard malformed response: %s", exc)
             return Judge.unavailable(
-                judge=self.name, detail=f"malformed_response: {exc}",
+                judge=self.name, detail="malformed_response",
             )
 
         verdict = content.strip().lower()

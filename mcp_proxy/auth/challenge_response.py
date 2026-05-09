@@ -269,13 +269,15 @@ async def sign_challenged_assertion(
         chain = _load_chain(x5c_der)
         _verify_chain(chain, ca_cert)
     except ValueError as exc:
+        # Audit H-IO-2 — chain failure text leaks cryptography lib internals
+        # (ASN.1 / OID / signature alg); log for ops, return generic.
         _log.info(
             "login challenge rejected for %s: x509 chain invalid: %s",
             agent.agent_id, exc,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"x509 chain: {exc}",
+            detail="x509 chain verification failed",
         ) from exc
 
     leaf = chain[0]
@@ -291,13 +293,16 @@ async def sign_challenged_assertion(
         except Exception:
             pass
         _log_clock_skew_hint(exc, agent.agent_id)
+        # Audit H-IO-2 — jwt-library exception text would let an attacker
+        # probe which check (signature, exp, kid, claim shape) failed;
+        # log for ops, return generic.
         _log.info(
             "login challenge rejected for %s: assertion invalid: %s",
             agent.agent_id, exc,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"assertion: {exc}",
+            detail="assertion invalid",
         ) from exc
 
     # sub must match the cert holder — prevents agent A from using
