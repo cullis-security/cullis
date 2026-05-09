@@ -66,6 +66,13 @@ dependencies = [
     "cryptography>=41.0.0",
     "PyYAML>=6.0",
     "bcrypt>=4.0",
+    # ADR-025 Phase 1/3/4 — local-auth users.db, audit log, cert
+    # session map. Imported at module level by
+    # ``cullis_connector.identity.{users,users_db,audit,cert_session_map}``,
+    # which web.build_app loads even in the non-dashboard binary path,
+    # so they cannot live behind the optional ``dashboard`` extra.
+    "sqlalchemy[asyncio]>=2.0",
+    "aiosqlite>=0.19",
 ]
 
 [project.optional-dependencies]
