@@ -3511,14 +3511,19 @@ async def settings_local_password(request: Request):
 def _oidc_redirect_uri(request: Request) -> str:
     """Build the OIDC callback URL.
 
-    Prefers the configured proxy_public_url (so the IdP sees a stable
-    externally-reachable URL), falls back to the request base URL for
-    dev/test environments.
+    Prefers oidc_redirect_uri_base (browser-reachable URL the IdP has
+    registered), then proxy_public_url (legacy single-knob deploys),
+    then the request base URL for dev/test. The first two are distinct
+    because proxy_public_url pins DPoP htu to the internal TLS sidecar
+    (e.g. mastio-nginx:9443), which is not browser-reachable nor
+    registered on the IdP — using it as redirect_uri yields a 400
+    ``Invalid parameter: redirect_uri`` from Keycloak.
     """
     from mcp_proxy.config import get_settings as _s
-    pub = _s().proxy_public_url
-    if pub:
-        return pub.rstrip("/") + "/proxy/oidc/callback"
+    settings = _s()
+    base = settings.oidc_redirect_uri_base or settings.proxy_public_url
+    if base:
+        return base.rstrip("/") + "/proxy/oidc/callback"
     return str(request.base_url).rstrip("/") + "/proxy/oidc/callback"
 
 

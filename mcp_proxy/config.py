@@ -26,6 +26,14 @@ class ProxySettings(BaseSettings):
 
     proxy_public_url: str = ""  # for DPoP htu validation
 
+    # OIDC callback base URL — must be browser-reachable AND registered
+    # as a redirect_uri on the IdP. Distinct from proxy_public_url
+    # because that one pins the DPoP htu to the internal TLS sidecar
+    # (e.g. mastio-nginx:9443) which the host browser cannot resolve
+    # and which Keycloak does not have registered as a redirect_uri.
+    # Falls back to proxy_public_url, then request.base_url.
+    oidc_redirect_uri_base: str = ""
+
     # KMS backend for the Org CA (and, in follow-up, Mastio leaf keys).
     # ``local`` keeps the keys in proxy_config DB (current default,
     # works for community + small deploys). Other values dispatch to
