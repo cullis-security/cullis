@@ -34,6 +34,15 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from cullis_connector.ambassador.shared.wire import bootstrap_cookie_secret
+from cullis_connector.identity.cert_session_map import (
+    delete_binding,
+    derive_session_id,
+    record_binding,
+)
+from cullis_connector.identity.csr_flow import (
+    LocalProvisioningError,
+    LocalUserProvisioner,
+)
 from cullis_connector.identity.local_session import (
     LOCAL_SESSION_COOKIE_NAME,
     LOCAL_SESSION_TTL_SEC,
@@ -109,6 +118,20 @@ class LoginResponse(BaseModel):
     must_change_password: bool
     principal_name: str
     exp: int
+    # ADR-025 Phase 3 — post-login Mastio CSR result.
+    #
+    #   "ok"       — cert minted + bound to session, /v1/* ready to go
+    #   "deferred" — Mastio refused / unreachable; password verification
+    #                still succeeded so the cookie is issued, but
+    #                /v1/* will return 502 until /api/auth/reprovision
+    #                eventually succeeds. The SPA reads
+    #                ``X-Cullis-Provisioning-Failed: true`` to surface
+    #                a banner.
+    #   "skipped"  — local provisioner not wired on this app (e.g. the
+    #                connector identity isn't on disk yet, or
+    #                local-mode boot bailed out). Login still works,
+    #                /v1/* is gated upstream.
+    provisioning: str = "skipped"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -134,6 +157,21 @@ class RuntimeInfoResponse(BaseModel):
     auth_mode: str
     login_url: str
     require_change_password_url: str
+
+
+class ReprovisionResponse(BaseModel):
+    """Manual retry result for ``POST /api/auth/reprovision``.
+
+    Returns ``ok=True`` when a cert is now bound, ``ok=False`` with a
+    short ``detail`` when Mastio refused (the SPA shows the banner
+    again). Idempotent — a hit on a still-valid cache entry returns
+    ``ok=True`` with ``cached=True``.
+    """
+
+    ok: bool
+    cached: bool = False
+    principal_id: str = ""
+    detail: str = ""
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -247,6 +285,96 @@ def _client_ip(request: Request) -> str:
     return ""
 
 
+def _local_provisioner(request: Request) -> LocalUserProvisioner | None:
+    """Return the bound :class:`LocalUserProvisioner` or ``None`` when not wired.
+
+    The Connector boot path (``web.build_app``) seeds
+    ``app.state.local_provisioner`` only when local-mode is active AND
+    the agent identity is on disk. Pre-enrollment dashboards or non-
+    local-mode deploys leave it ``None`` so the login router can still
+    hand out cookies (the password check is independent of CSR).
+    """
+    return getattr(request.app.state, "local_provisioner", None)
+
+
+async def _bind_login_cert(
+    request: Request,
+    payload: LocalSessionPayload,
+) -> tuple[str, str | None]:
+    """Provision + persist a cert for ``payload``. Return ``(status, detail)``.
+
+    ``status`` is one of:
+
+      - ``"ok"``       cert minted (or cache-hit) + persistence row written
+      - ``"deferred"`` Mastio refused; cookie still issued, banner state
+                       returned to the SPA via header + body
+      - ``"skipped"``  no provisioner wired on this app
+
+    The function is forgiving by design: every failure mode collapses
+    to ``deferred`` rather than raising, so the login flow never
+    crashes mid-flight just because the Mastio is unreachable. The
+    original exception detail is bubbled up so an operator can
+    correlate against the Mastio audit log.
+    """
+    provisioner = _local_provisioner(request)
+    if provisioner is None:
+        return "skipped", None
+    try:
+        cred = await provisioner.provision_for_user(payload.user_name)
+    except LocalProvisioningError as exc:
+        return "deferred", str(exc)
+    except Exception as exc:  # noqa: BLE001 — defensive; never crash login
+        _log.warning(
+            "unexpected provisioning failure user_name=%s: %s",
+            payload.user_name, exc,
+        )
+        return "deferred", str(exc)
+
+    # Persist the binding so a Connector restart can re-resolve the
+    # cookie → principal_id without re-asking the user.
+    try:
+        thumbprint = _cert_thumbprint(cred.cert_pem)
+    except Exception as exc:  # noqa: BLE001 — best effort breadcrumb
+        _log.warning(
+            "could not compute cert thumbprint for %s: %s",
+            cred.principal_id, exc,
+        )
+        thumbprint = ""
+    session_id = derive_session_id(
+        iat=payload.iat, user_name=payload.user_name,
+    )
+    try:
+        await record_binding(
+            _config_dir(request),
+            session_id=session_id,
+            user_name=payload.user_name,
+            principal_id=cred.principal_id,
+            cert_thumbprint=thumbprint,
+            cert_not_after=cred.cert_not_after.isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001 — DB hiccup still leaves
+        # the cert in the in-process cache so /v1/* works for the
+        # current process; rebind on next login.
+        _log.warning(
+            "could not persist cert binding for %s: %s",
+            cred.principal_id, exc,
+        )
+    return "ok", None
+
+
+def _cert_thumbprint(cert_pem: str) -> str:
+    """SHA-256 hex of the cert DER. Lazily import cryptography so a
+    test that monkey-patches the provisioner does not pull
+    ``cryptography`` into module import.
+    """
+    import hashlib
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    cert = x509.load_pem_x509_certificate(cert_pem.encode("utf-8"))
+    der = cert.public_bytes(encoding=serialization.Encoding.DER)
+    return hashlib.sha256(der).hexdigest()
+
+
 # ── Server-side fallback HTML ────────────────────────────────────────────
 
 
@@ -322,26 +450,79 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
     )
     secret = _cookie_secret(request)
     cookie_value = issue_local_cookie(payload, secret)
+
+    # ADR-025 Phase 3 — post-login UserPrincipal CSR. Best-effort: a
+    # Mastio outage degrades to ``provisioning="deferred"`` rather
+    # than rejecting the login (the password was correct). The SPA
+    # surfaces a banner from the response header so the user knows
+    # ``/v1/*`` will 502 until reprovisioning succeeds.
+    if user.must_change_password:
+        # Skip the CSR roundtrip when the user is being bounced to
+        # /change-password — we'll mint after the password change so
+        # the cert is bound to the post-change session, not a session
+        # that's about to be replaced.
+        provisioning = "skipped"
+        provisioning_detail: str | None = None
+    else:
+        provisioning, provisioning_detail = await _bind_login_cert(
+            request, payload,
+        )
+
     body_out = LoginResponse(
         ok=True,
         must_change_password=payload.must_change_password,
         principal_name=payload.principal_name,
         exp=payload.exp,
+        provisioning=provisioning,
     )
     response = JSONResponse(body_out.model_dump())
+    if provisioning == "deferred":
+        # Header is the SPA's signal to render the banner — the body
+        # already carries the same info but headers survive any caller
+        # that strips JSON fields it does not recognise.
+        response.headers["X-Cullis-Provisioning-Failed"] = "true"
+        if provisioning_detail:
+            # Truncate to keep the header well under 2KB; the full
+            # detail is in the audit log + Mastio side.
+            response.headers["X-Cullis-Provisioning-Detail"] = (
+                provisioning_detail[:256]
+            )
     _set_cookie(response, cookie_value)
     _record_login_attempt(ip, body.user_name, success=True)
     # Never log the password — only the username + result.
     _log.info(
-        "local login ok user_name=%s must_change=%s",
-        user.user_name, payload.must_change_password,
+        "local login ok user_name=%s must_change=%s provisioning=%s",
+        user.user_name, payload.must_change_password, provisioning,
     )
     return response
 
 
 @router.post("/api/auth/logout")
 async def logout(request: Request) -> JSONResponse:
-    """Invalidate the cookie. No-op when called without one."""
+    """Invalidate the cookie + drop the persisted cert binding.
+
+    No-op when called without a cookie. We deliberately keep the cert
+    in the in-process cache (it expires on TTL) so a follow-up login
+    by the same user inside the cache window can fast-path. The
+    persisted binding row is dropped here so a forensic dump of
+    users.db cannot link a cookie that was logged out to its cert.
+    """
+    raw = request.cookies.get(LOCAL_SESSION_COOKIE_NAME, "")
+    if raw:
+        secret = _cookie_secret(request)
+        payload = parse_local_cookie(raw, secret)
+        if payload is not None:
+            session_id = derive_session_id(
+                iat=payload.iat, user_name=payload.user_name,
+            )
+            try:
+                async with get_users_session(_config_dir(request)) as session:
+                    await delete_binding(session, session_id)
+            except Exception as exc:  # noqa: BLE001 — best effort
+                _log.warning(
+                    "could not delete cert binding for %s: %s",
+                    payload.user_name, exc,
+                )
     response = JSONResponse({"ok": True})
     _clear_cookie(response)
     return response
@@ -399,6 +580,15 @@ async def change_password(
     )
     secret = _cookie_secret(request)
     cookie_value = issue_local_cookie(new_payload, secret)
+
+    # ADR-025 Phase 3 — first-login flow ends here; mint the cert now
+    # that the post-change session exists. Same deferred-on-failure
+    # semantics as ``/api/auth/login`` so a Mastio outage doesn't
+    # invalidate a successful password rotation.
+    provisioning, provisioning_detail = await _bind_login_cert(
+        request, new_payload,
+    )
+
     body_out = ChangePasswordResponse(
         ok=True,
         must_change_password=False,
@@ -406,11 +596,78 @@ async def change_password(
         exp=new_payload.exp,
     )
     response = JSONResponse(body_out.model_dump())
+    if provisioning == "deferred":
+        response.headers["X-Cullis-Provisioning-Failed"] = "true"
+        if provisioning_detail:
+            response.headers["X-Cullis-Provisioning-Detail"] = (
+                provisioning_detail[:256]
+            )
     _set_cookie(response, cookie_value)
     _log.info(
-        "local password changed user_name=%s", payload.user_name,
+        "local password changed user_name=%s provisioning=%s",
+        payload.user_name, provisioning,
     )
     return response
+
+
+@router.post("/api/auth/reprovision", response_model=ReprovisionResponse)
+async def reprovision(request: Request) -> JSONResponse:
+    """Manual retry for a deferred CSR call.
+
+    Idempotent — calls into :class:`UserProvisioner.get_or_provision`
+    so a still-valid cache hit returns ``ok=True`` without touching
+    Mastio. The SPA renders a "retry now" button when it sees
+    ``provisioning="deferred"`` on login; that button hits this
+    endpoint.
+
+    Returns 502 when the underlying provisioner errors out so the
+    SPA's banner stays visible until Mastio recovers. The cookie is
+    not touched (still valid; only the cert binding was missing).
+    """
+    payload = await _require_local_session(request)
+    provisioner = _local_provisioner(request)
+    if provisioner is None:
+        body = ReprovisionResponse(
+            ok=False,
+            detail="local provisioner not configured on this Connector",
+        )
+        return JSONResponse(body.model_dump(), status_code=503)
+
+    # Cache check first so an immediate retry after a successful login
+    # does not double-call Mastio. ``get`` is async-safe and lazy-
+    # expires entries past their ``not_after``.
+    coords = provisioner.coordinates_for(payload.user_name)
+    cached = await provisioner.cache.get(coords.principal_id)
+    if cached is not None:
+        body = ReprovisionResponse(
+            ok=True,
+            cached=True,
+            principal_id=cached.principal_id,
+        )
+        return JSONResponse(body.model_dump())
+
+    status_str, detail = await _bind_login_cert(request, payload)
+    if status_str == "ok":
+        body = ReprovisionResponse(
+            ok=True,
+            cached=False,
+            principal_id=coords.principal_id,
+        )
+        return JSONResponse(body.model_dump())
+    body = ReprovisionResponse(
+        ok=False,
+        cached=False,
+        principal_id=coords.principal_id,
+        detail=detail or "provisioning failed",
+    )
+    headers: dict[str, str] = {"X-Cullis-Provisioning-Failed": "true"}
+    if detail:
+        headers["X-Cullis-Provisioning-Detail"] = detail[:256]
+    return JSONResponse(
+        body.model_dump(),
+        status_code=502,
+        headers=headers,
+    )
 
 
 @router.get("/api/auth/whoami-local", response_model=WhoamiLocalResponse)
