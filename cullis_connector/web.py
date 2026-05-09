@@ -558,6 +558,25 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     templates.env.globals["cullis_chat_mounted"] = chat_dist is not None
     app.state.cullis_chat_mounted = chat_dist is not None
 
+    # ── ADR-025 Phase 1 — local user provisioning admin API ─────────────
+    #
+    # Mount only when AUTH_MODE=local (the FrontDesk shared-mode default
+    # for SMB deployments without a corporate IdP). Set AUTH_MODE=oidc
+    # to skip the mount entirely so the local-users surface does not
+    # exist at all in IdP-only deployments.
+    auth_mode = os.environ.get("AUTH_MODE", "local").strip().lower() or "local"
+    app.state.auth_mode = auth_mode
+    if auth_mode == "local":
+        from cullis_connector.admin.users_router import router as _users_router
+        app.include_router(_users_router)
+        _log.info(
+            "ADR-025 admin /admin/users mounted (AUTH_MODE=%s)", auth_mode,
+        )
+    else:
+        _log.info(
+            "ADR-025 admin /admin/users NOT mounted (AUTH_MODE=%s)", auth_mode,
+        )
+
     # ── CSRF / cross-origin guard ────────────────────────────────────────
     #
     # Audit 2026-04-30 lane 5 C1 — every state-changing endpoint on the
@@ -594,7 +613,13 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         if (
             request.url.path.startswith("/v1/")
             or request.url.path.startswith("/api/session/")
+            or request.url.path.startswith("/admin/")
         ):
+            # ``/admin/*`` runs its own constant-time ``X-Admin-Secret``
+            # check (see ``cullis_connector/admin/auth.py``). The header
+            # is not auto-attached by browsers, so the route is not a
+            # CSRF vector — mirroring the exemption already granted to
+            # the Bearer-token path below.
             return await call_next(request)
         if request.method in ("POST", "PUT", "DELETE", "PATCH"):
             authz = request.headers.get("authorization", "")
