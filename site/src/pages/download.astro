@@ -170,16 +170,66 @@ const platforms = [
     <div class="container narrow">
       <div class="eyebrow reveal">
         <span class="eyebrow-number">03</span>
-        Run the Mastio or Court
+        Run the server-side
       </div>
       <h2 class="reveal" data-delay="1">Server-side <em>deployments</em>.</h2>
       <p class="reveal" data-delay="2">
-        The Connector talks to a Mastio; the Mastio federates to a Court.
-        If you need to run either of the two server-side components yourself,
-        the deployment page walks you through Docker Compose, Helm, and
-        single-binary installs.
+        The Connector talks to a Mastio; the Mastio federates to a Court;
+        the Frontdesk bundle gives a multi-user web chat on top of a
+        Mastio. Each ships as a self-contained tarball that pulls its
+        Docker image from <code>ghcr.io</code>; no source checkout needed.
       </p>
-      <div class="server-row reveal" data-delay="3">
+
+      <ul class="server-bundles reveal" data-delay="3">
+        <li>
+          <div class="bundle-head">
+            <strong>Mastio bundle</strong>
+            <span class="bundle-tag">mastio-v0.3.2-rc2</span>
+          </div>
+          <p class="bundle-blurb">
+            Org gateway. First-boot Org CA, dashboard on <code>:9443</code>,
+            agent enrollment + audit chain. The runtime that backs every
+            Connector inside one organization.
+          </p>
+          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.2-rc2/cullis-mastio-bundle.tar.gz | tar xz
+cd cullis-mastio-bundle &amp;&amp; ./deploy.sh</code></pre>
+        </li>
+
+        <li>
+          <div class="bundle-head">
+            <strong>Frontdesk bundle</strong>
+            <span class="bundle-tag">frontdesk-bundle-v0.1.0-rc2</span>
+          </div>
+          <p class="bundle-blurb">
+            Multi-user Cullis Chat (SPA on <code>:8080</code>) co-located
+            with a Mastio on the same host. Adds a shared-mode Connector
+            so multiple human users issue ADR-020 user principals.
+          </p>
+          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.1.0-rc2/cullis-frontdesk-bundle.tar.gz | tar xz
+cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
+        </li>
+
+        <li>
+          <div class="bundle-head">
+            <strong>Court</strong>
+            <span class="bundle-tag">court-v0.1.0-rc1</span>
+          </div>
+          <p class="bundle-blurb">
+            Federation broker between Mastios — registry, hash-chain
+            anchor, cross-org routing. Run one if you need agents in your
+            org to talk to agents in another. Image pull only; Helm chart
+            on the deployment page.
+          </p>
+          <pre class="bundle-cmd"><code>docker pull ghcr.io/cullis-security/cullis-court:0.1.0-rc1</code></pre>
+        </li>
+      </ul>
+
+      <p class="server-note reveal" data-delay="4">
+        Newer release candidates are listed at
+        <a href="https://github.com/cullis-security/cullis/releases" target="_blank" rel="noopener">github.com/cullis-security/cullis/releases</a>.
+        For Helm, single-binary, or air-gapped patterns:
+      </p>
+      <div class="server-row reveal" data-delay="5">
         <a href="/deployment" class="btn btn-primary">Deployment patterns →</a>
         <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">Source on GitHub</a>
       </div>
@@ -516,6 +566,61 @@ const platforms = [
     color: var(--text-secondary);
   }
   .server-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+  .server-bundles {
+    list-style: none;
+    margin: 0 0 2rem;
+    padding: 0;
+    display: grid;
+    gap: 1.5rem;
+  }
+  .server-bundles > li {
+    border: 1px solid var(--border);
+    padding: 1.25rem 1.5rem 1.5rem;
+    background: var(--surface);
+  }
+  .bundle-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+  }
+  .bundle-head strong {
+    font-size: 1.1rem;
+    color: var(--text-primary);
+  }
+  .bundle-tag {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    letter-spacing: 0.04em;
+  }
+  .bundle-blurb {
+    font-size: 0.97rem !important;
+    margin: 0 0 0.85rem !important;
+    color: var(--text-secondary);
+  }
+  .bundle-cmd {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    background: var(--surface-2, #0e0e0e);
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+  }
+  .bundle-cmd code { font-family: inherit; }
+  .server-note {
+    font-size: 0.95rem !important;
+    margin-bottom: 1rem !important;
+  }
+  .server-note a {
+    color: var(--accent, #6ec1ff);
+    text-decoration: underline;
+  }
 
   /* Coming soon */
   .coming { padding: clamp(3rem, 7vw, 6rem) 0; }
