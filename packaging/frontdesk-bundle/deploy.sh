@@ -271,9 +271,20 @@ else
     # uses to reach Mastio at enroll-time matches what it will use at
     # runtime (compose attaches the same host-gateway extra_hosts to the
     # connector service). The container exits 0 once Mastio approves;
-    # the script unblocks and continues to ``compose up``. ``-it`` so the
-    # operator sees the polling status messages while waiting.
-    docker run --rm -it \
+    # the script unblocks and continues to ``compose up``.
+    #
+    # ``-it`` was unconditional in rc1/rc2 — that fails outright in any
+    # non-TTY context (CI runner, ssh pipe, ``echo "" | ./deploy.sh``,
+    # IDE-integrated terminals without tty allocation) with
+    # ``the input device is not a TTY``. Detect ``[ -t 0 ]`` and only
+    # request ``-t`` when stdin is actually a tty. The polling output
+    # streams either way; in non-TTY mode it just lacks the carriage
+    # returns that re-paint the spinner line.
+    DOCKER_TTY_FLAGS=""
+    if [[ -t 0 && -t 1 ]]; then
+        DOCKER_TTY_FLAGS="-it"
+    fi
+    docker run --rm $DOCKER_TTY_FLAGS \
         --add-host "host.docker.internal:host-gateway" \
         -v "${DATA_DIR_ABS}:/home/cullis/.cullis" \
         -v "${CA_BUNDLE_ABS}:/etc/cullis/ca-bundle.pem:ro" \
