@@ -87,7 +87,8 @@ generate-frontdesk-env.sh):
   CULLIS_FRONTDESK_ORG_ID            Org slug, must match Mastio
   CULLIS_FRONTDESK_TRUST_DOMAIN      SPIFFE trust domain, e.g. acme.test
   CULLIS_FRONTDESK_CA_BUNDLE_HOST    Host path to the Mastio CA chain PEM
-  CONNECTOR_VERSION                  cullis-connector image tag (default: 0.4.0-rc1)
+  CONNECTOR_VERSION                  cullis-connector image tag (default: 0.4.0-rc2)
+  CHAT_VERSION                       cullis-chat-frontdesk image tag (default: 0.2.0-rc1)
   CHAT_VERSION                       cullis-chat-frontdesk image tag (default: 0.1.0-rc1)
   CONNECTOR_PROFILE                  Connector profile name (default: frontdesk)
   CONNECTOR_DATA_DIR                 Local dir for enrolled identity (default: ./connector_data)
@@ -156,8 +157,8 @@ _load_env() { grep -E "^$1=" "$SCRIPT_DIR/frontdesk.env" 2>/dev/null | head -1 |
 ORG_ID="$(_load_env CULLIS_FRONTDESK_ORG_ID)"
 TRUST_DOMAIN="$(_load_env CULLIS_FRONTDESK_TRUST_DOMAIN)"
 CA_BUNDLE="$(_load_env CULLIS_FRONTDESK_CA_BUNDLE_HOST)"
-CONNECTOR_VERSION="$(_load_env CONNECTOR_VERSION)";   CONNECTOR_VERSION="${CONNECTOR_VERSION:-0.4.0-rc1}"
-CHAT_VERSION="$(_load_env CHAT_VERSION)";             CHAT_VERSION="${CHAT_VERSION:-0.1.0-rc1}"
+CONNECTOR_VERSION="$(_load_env CONNECTOR_VERSION)";   CONNECTOR_VERSION="${CONNECTOR_VERSION:-0.4.0-rc2}"
+CHAT_VERSION="$(_load_env CHAT_VERSION)";             CHAT_VERSION="${CHAT_VERSION:-0.2.0-rc1}"
 CONNECTOR_PROFILE="$(_load_env CONNECTOR_PROFILE)";   CONNECTOR_PROFILE="${CONNECTOR_PROFILE:-frontdesk}"
 DATA_DIR="$(_load_env CONNECTOR_DATA_DIR)";           DATA_DIR="${DATA_DIR:-./connector_data}"
 HTTP_PORT="$(_load_env FRONTDESK_HTTP_PORT)";         HTTP_PORT="${HTTP_PORT:-8080}"
@@ -349,9 +350,22 @@ echo -e "  ${BOLD}Mastio target${RESET}    ${GRAY}${SITE_URL_DISPLAY}${RESET}"
 echo -e "  ${BOLD}Org${RESET}              ${GRAY}${ORG_ID} (${TRUST_DOMAIN})${RESET}"
 echo -e "  ${BOLD}Profile${RESET}          ${GRAY}${CONNECTOR_PROFILE} (data: ${DATA_DIR})${RESET}"
 echo ""
-echo "  Smoke test (dev fake-SSO injects X-Forwarded-User from ?user=):"
-echo "    open http://localhost:${HTTP_PORT}?user=mario"
-echo "    open http://localhost:${HTTP_PORT}?user=anna   # incognito tab"
+if [[ "${AMBASSADOR_MODE:-}" == "shared" ]]; then
+    echo "  ${YELLOW}Legacy shared mode active${RESET} (AMBASSADOR_MODE=shared)."
+    echo "    open http://localhost:${HTTP_PORT}?user=mario   # X-Forwarded-User dev only"
+    echo "    open http://localhost:${HTTP_PORT}?user=anna    # incognito tab"
+else
+    echo "  Next steps (ADR-025 local-auth):"
+    echo "    1. Pre-create users via the admin API (X-Admin-Secret guarded):"
+    echo ""
+    echo "       ADMIN=\"\$(grep '^MCP_PROXY_ADMIN_SECRET' ../cullis-mastio-bundle/proxy.env | cut -d= -f2-)\""
+    echo "       curl -X POST http://localhost:${HTTP_PORT}/admin/users \\"
+    echo "         -H \"X-Admin-Secret: \$ADMIN\" -H 'Content-Type: application/json' \\"
+    echo "         -d '{\"user_name\":\"mario\",\"password\":\"temp123!\",\"display_name\":\"Mario Rossi\"}'"
+    echo ""
+    echo "    2. Open the SPA in a browser and sign in:"
+    echo "       open http://localhost:${HTTP_PORT}/login"
+fi
 echo ""
 echo "  Useful commands:"
 echo "    $COMPOSE --env-file frontdesk.env logs -f connector"

@@ -6,12 +6,12 @@
 # ghcr.io — the bundle no longer requires a repo checkout or local
 # ``docker build``.
 #
-#   nginx          80   reverse proxy + (dev) fake-SSO injecting X-Forwarded-User
+#   nginx          80   reverse proxy
 #     ↓
 #   cullis-chat    8080 nginx-static SPA, Frontdesk-branded build
 #                       (ghcr.io/cullis-security/cullis-chat-frontdesk)
 #     ↓
-#   connector      7777 cullis-connector dashboard + Ambassador (shared mode)
+#   connector      7777 cullis-connector dashboard + ADR-025 local-auth
 #                       (ghcr.io/cullis-security/cullis-connector)
 #     ↓ DPoP+mTLS
 #   [Cullis Mastio cloud — out of scope for this bundle]
@@ -32,15 +32,26 @@
 #                                                # missing, runs the one-shot
 #                                                # enrollment, brings up the
 #                                                # stack, waits for health
-#   open http://localhost:8080?user=mario        # demo user switch (dev only)
+#   open http://localhost:8080/login             # ADR-025 local-auth login
+#                                                # form (default: AUTH_MODE=local)
 #
 #   Run ``docker compose --env-file frontdesk.env up -d`` directly only if
 #   you have already enrolled the Connector and provisioned frontdesk.env
 #   by hand (see ./deploy.sh source for the underlying steps).
 #
-# Production: replace nginx with oauth2-proxy + your IDP. The
-# X-Forwarded-User header MUST come from a trusted proxy; the Connector
-# refuses requests whose source IP is not in CULLIS_TRUSTED_PROXIES.
+# Default auth: ADR-025 ``AUTH_MODE=local`` ships a real /login form
+# backed by users.db (bcrypt hashed). The admin pre-creates accounts
+# via ``POST /admin/users`` with ``X-Admin-Secret``, then employees
+# sign in. Per-user UserPrincipal certs are minted by the sibling
+# Mastio after each login (post-login CSR flow).
+#
+# Legacy fake-SSO mode: set ``AMBASSADOR_MODE=shared`` in frontdesk.env
+# to fall back to the pre-v0.2.0 ``X-Forwarded-User``-injected pattern.
+# Trusted proxies guard required (``CULLIS_TRUSTED_PROXIES``).
+#
+# Production: in either mode, replace nginx with oauth2-proxy + your
+# IdP for the strongest posture (TLS termination + corporate MFA +
+# OIDC delegation back to Mastio).
 # =============================================================================
 
 services:
@@ -66,9 +77,11 @@ services:
 
   connector:
     image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0-rc2}
-    # ``dashboard`` mounts the Ambassador router via web.py lifespan when
-    # AMBASSADOR_MODE=shared (cullis_connector/web.py:152). Bind to all
-    # interfaces inside the container so nginx can reach it.
+    # ``dashboard`` mounts the local-auth router (ADR-025) by default; the
+    # legacy fake-SSO Ambassador shared-mode is reachable by setting
+    # ``AMBASSADOR_MODE=shared`` explicitly in frontdesk.env. ADR-025
+    # gives a real /login form, bcrypt-hashed users.db, and per-user
+    # UserPrincipal certs minted by the sibling Mastio.
     command: >
       dashboard
       --host 0.0.0.0
@@ -78,13 +91,20 @@ services:
     expose:
       - "7777"
     environment:
-      # Shared mode wiring (ADR-021 PR4c). Required.
-      AMBASSADOR_MODE: shared
+      # ADR-025 dual-mode auth. ``local`` (default) gives the SPA a real
+      # /login form backed by users.db; admin pre-creates accounts via
+      # POST /admin/users with X-Admin-Secret. To fall back to the
+      # legacy ``X-Forwarded-User``-based shared-mode SSO that the bundle
+      # shipped before v0.2.0, set ``AMBASSADOR_MODE=shared`` in
+      # frontdesk.env explicitly (also requires CULLIS_TRUSTED_PROXIES).
+      AUTH_MODE: ${AUTH_MODE:-local}
+      AMBASSADOR_MODE: ${AMBASSADOR_MODE:-}
+      CULLIS_CONNECTOR_ADMIN_SECRET: ${CULLIS_CONNECTOR_ADMIN_SECRET:-}
       CULLIS_FRONTDESK_ORG_ID: ${CULLIS_FRONTDESK_ORG_ID}
       CULLIS_FRONTDESK_TRUST_DOMAIN: ${CULLIS_FRONTDESK_TRUST_DOMAIN}
       # Trust the docker bridge network so X-Forwarded-User from nginx is
-      # accepted. Default covers the bridge networks docker hands out by
-      # default (172.16.0.0/12). Tighten if you know your CIDR.
+      # accepted when (and only when) AMBASSADOR_MODE=shared. Default
+      # covers the bridge networks docker hands out (172.16.0.0/12).
       CULLIS_TRUSTED_PROXIES: ${CULLIS_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       CULLIS_FRONTDESK_COOKIE_TTL_S: ${CULLIS_FRONTDESK_COOKIE_TTL_S:-3600}
       # Where Mastio's CSR endpoint lives. Falls back to site_url when empty.
