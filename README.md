@@ -82,7 +82,7 @@ cd cullis-mastio-bundle && ./deploy.sh
 
 # 2. Frontdesk (multi-user chat on :8080, enrolls against the Mastio above)
 cd ..
-curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.1.0-rc4/cullis-frontdesk-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.2.0-rc1/cullis-frontdesk-bundle.tar.gz | tar xz
 cd cullis-frontdesk-bundle && ./deploy.sh
 ```
 
