@@ -115,9 +115,76 @@ For oauth2-proxy specifically, the upstream config `--pass-user-headers=true` is
 docker compose --env-file frontdesk.env down -v   # also wipe connector_data (forces re-enrollment)
 ```
 
+## Threat model & exposure
+
+The Frontdesk bundle serves **plain HTTP** on `:80` inside the
+container. By default the host port (`8080`) is bound to **`127.0.0.1`
+only**, not `0.0.0.0`. Three exposure modes:
+
+| Mode | Bind | Where Frontdesk is reachable | Coherent with Cullis threat model? |
+|------|------|------------------------------|------------------------------------|
+| Default (dogfood, single-user) | `127.0.0.1:8080` | The host's own browser only | Yes. Localhost is a W3C "secure context" — SPA crypto, Secure cookies, Service Workers all behave as on HTTPS. |
+| LAN multi-user, no TLS | `0.0.0.0:8080` | Any host on the LAN, plain HTTP | **No.** Session cookie + DPoP proofs travel cleartext. A coworker on the same office network can intercept and replay. Not "zero-trust fabric for AI agents" if the SPA-to-Connector hop isn't authenticated. |
+| LAN / internet, with TLS terminator | `0.0.0.0:8080` (or `127.0.0.1` if terminator is on the same host) | The terminator's HTTPS port | Yes. Pattern: `Browser → HTTPS → terminator → :8080 (loopback or LAN) → cullis-chat`. Recommended for any deploy with more than one user. |
+
+To expose Frontdesk over the LAN or the internet, override the bind:
+
+```bash
+# In frontdesk.env
+FRONTDESK_HTTP_BIND=0.0.0.0
+FRONTDESK_HTTP_PORT=8080
+```
+
+…AND put a TLS terminator in front. Below are three minimal recipes.
+
+### oauth2-proxy + corporate IdP
+
+```bash
+# Terminator on the same host as the bundle. oauth2-proxy authenticates
+# the user against your IdP, terminates TLS, and forwards to the bundle.
+docker run -d --name oauth2-proxy \
+  -p 443:4180 \
+  -v $PWD/oauth2-proxy.cfg:/etc/oauth2-proxy.cfg:ro \
+  -v $PWD/tls.crt:/etc/tls.crt:ro -v $PWD/tls.key:/etc/tls.key:ro \
+  quay.io/oauth2-proxy/oauth2-proxy:latest \
+    --config=/etc/oauth2-proxy.cfg \
+    --upstream=http://127.0.0.1:8080 \
+    --tls-cert-file=/etc/tls.crt --tls-key-file=/etc/tls.key
+```
+
+### Caddy with auto-Let's Encrypt
+
+```caddyfile
+frontdesk.acme.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+### Traefik label on the bundle's docker-compose
+
+Add a labels block under the `nginx` service in
+`docker-compose.override.yml`:
+
+```yaml
+services:
+  nginx:
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.frontdesk.rule: "Host(`frontdesk.acme.example.com`)"
+      traefik.http.routers.frontdesk.tls.certresolver: "acme"
+```
+
+If you bind `0.0.0.0:8080` without one of the above, you have just put
+plain-HTTP user-principal authentication on a multi-user network. The
+``zero-trust fabric`` tagline does not survive that. Pick a path.
+
+A ``--with-tls-sidecar`` option that bakes a self-signed cert + nginx
+TLS terminator into the bundle (the same pattern Mastio's
+``mastio-nginx`` uses) is on the roadmap as ADR-024 — track that ADR
+draft for the design discussion.
+
 ## Known limitations
 
-- **No HTTPS in the bundle.** Production deployments terminate TLS at the corporate ingress (or at oauth2-proxy with a cert), upstream of nginx. The bundle binds `:80` on purpose.
 - **No autoscale.** Single Connector replica per bundle; the cookie secret lives on local disk so horizontal scale needs a shared secret store. Roadmap.
 - **Cookie secret rotation** is manual for now: stop the bundle, delete `connector_data/cookie.secret`, restart. Forces every browser to re-init the session, no security incident.
 - **The bundle does not bundle the Mastio.** Cleanly separates concerns; deploy Mastio with `packaging/mastio-bundle/` and point this bundle at it.
