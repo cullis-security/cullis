@@ -1,17 +1,23 @@
 import { useEffect, useState } from 'react';
-import { whoami } from '../lib/api';
-import { ensureSession } from '../lib/session-singleton';
+import { ApiError } from '../lib/api';
+import { whoamiAuto } from '../lib/auth';
+import { ensureSession, redirectToLogin } from '../lib/session-singleton';
 import type { Principal } from '../lib/types';
 
 /**
- * Live identity badge in the TopBar. Reads the principal from
- * the local Astro `/api/session/whoami` route, which forwards to
- * the Ambassador's shared-mode `/api/session/whoami` endpoint and
- * translates the cookie-payload shape into the ADR-020 principal
- * shape we render here. Single mode falls through to a "local"
- * placeholder so the badge still shows something useful.
+ * Live identity badge in the TopBar. Reads the principal via
+ * ``whoamiAuto`` (ADR-025 Phase 5):
  *
- * v0.1 shape (ADR-020): principal_type display em + name.
+ *   1. Try the Ambassador's ``/api/session/whoami`` (ADR-020 shape).
+ *   2. On 401/404, fall back to ``/api/auth/whoami-local`` so local-
+ *      mode Frontdesk users see their username before Mastio CSR
+ *      enrollment completes (Phase 3 deferred-provisioning case).
+ *   3. On any other error, render the offline placeholder.
+ *
+ * If both probes fail with 401 we redirect to ``/login`` rather than
+ * leaving the badge stuck on "offline" — the user is just not signed
+ * in, and the SPA's ``ensureSession`` already redirected anyway, so
+ * we mirror that behaviour from this island for safety.
  */
 export default function IdentityBadge() {
   const [principal, setPrincipal] = useState<Principal | null>(null);
@@ -22,15 +28,16 @@ export default function IdentityBadge() {
     (async () => {
       try {
         await ensureSession();
-        const raw = await whoami();
+        const result = await whoamiAuto();
         if (cancelled) return;
-        const p =
-          raw && typeof raw === 'object' && 'principal' in raw
-            ? (raw as { principal: Principal }).principal
-            : (raw as Principal);
-        setPrincipal(p);
-      } catch {
-        if (!cancelled) setError(true);
+        setPrincipal(result.principal);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          redirectToLogin();
+          return;
+        }
+        setError(true);
       }
     })();
     return () => {
