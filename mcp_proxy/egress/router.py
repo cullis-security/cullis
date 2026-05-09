@@ -349,8 +349,10 @@ async def open_session(
             request_id=request_id,
             duration_ms=duration_ms,
         )
+        # Audit H-IO-2 — keep the exception in the audit row + module
+        # logger for ops; the wire detail must not echo broker internals.
         logger.error("Failed to open session for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.get("/sessions")
@@ -432,7 +434,7 @@ async def accept_session(
             detail=str(exc)[:500],
         )
         logger.error("Failed to accept session for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.post("/sessions/{session_id}/close")
@@ -488,7 +490,7 @@ async def close_session(
             detail=str(exc)[:500],
         )
         logger.error("Failed to close session %s: %s", session_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.post("/send")
@@ -762,7 +764,7 @@ async def send_message(
                 detail=exc.response.text,
             ) from exc
         logger.error("Failed to send message for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.get("/messages/{session_id}")
@@ -835,7 +837,7 @@ async def poll_messages(
                 detail=exc.response.text,
             ) from exc
         logger.error("Failed to poll messages for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.post("/sessions/{session_id}/messages/{msg_id}/ack")
@@ -909,7 +911,17 @@ async def resolve_recipient(
     try:
         trust_domain, target_org, target_agent = parse_recipient(body.recipient_id)
     except InvalidRecipient as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Audit H-IO-2 — InvalidRecipient text leaks parser internals
+        # (which form was tried, what the caller passed). Log for ops,
+        # return a stable 400.
+        logger.warning(
+            "resolve recipient parse failed for %r: %s",
+            body.recipient_id, exc,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="invalid recipient_id",
+        ) from exc
 
     route = decide_route(
         body.recipient_id,
@@ -981,9 +993,15 @@ async def resolve_recipient(
         except HTTPException:
             raise
         except Exception as exc:
+            # Audit H-IO-2 — broker fetch error text reveals court/uplink
+            # internals. Log for ops, generic 502 to caller.
+            logger.warning(
+                "resolve peer public key failed for %s -> %s: %s",
+                agent.agent_id, broker_peer_id, exc,
+            )
             raise HTTPException(
                 status_code=502,
-                detail=f"unable to resolve peer public key: {exc}",
+                detail="unable to resolve peer public key",
             ) from exc
 
     return ResolveResponse(
@@ -1045,7 +1063,15 @@ async def get_agent_public_key(
         # too — ``parse_internal`` rejects them. The caller has to
         # canonicalise to ``org::agent`` since the server cannot
         # safely guess which org the caller meant.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Audit H-IO-2 — log the parse error for ops, mask the wire
+        # detail (parser text leaks which form was tried).
+        logger.warning(
+            "agent public-key parse failed for %r: %s", agent_id, exc,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="invalid agent_id",
+        ) from exc
 
     settings = get_settings()
     route = decide_route(
@@ -1105,9 +1131,14 @@ async def get_agent_public_key(
         except HTTPException:
             raise
         except Exception as exc:
+            # Audit H-IO-2 — same masking as /resolve cross-org branch.
+            logger.warning(
+                "agent public-key broker fetch failed for %s -> %s: %s",
+                agent.agent_id, broker_peer_id, exc,
+            )
             raise HTTPException(
                 status_code=502,
-                detail=f"unable to resolve peer public key: {exc}",
+                detail="unable to resolve peer public key",
             ) from exc
 
     return AgentPublicKeyResponse(
@@ -1305,7 +1336,7 @@ async def discover_agents(
 
     except Exception as exc:
         logger.error("Failed to discover agents for %s: %s", agent.agent_id, exc)
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc
 
 
 @router.post("/tools/invoke")
@@ -1422,4 +1453,4 @@ async def invoke_remote_tool(
         logger.error(
             "Failed to invoke tool %s for %s: %s", body.tool_name, agent.agent_id, exc,
         )
-        raise HTTPException(status_code=502, detail=f"Broker error: {exc}") from exc
+        raise HTTPException(status_code=502, detail="broker error") from exc

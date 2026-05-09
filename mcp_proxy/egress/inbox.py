@@ -123,7 +123,15 @@ async def send_to_inbox(
             org_id=local_org,
             details={**audit_details, "reason": str(exc)},
         )
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        # Audit H-IO-2 — keep the broker's specific reason in the audit
+        # row but mask it on the wire. PermissionError messages from the
+        # broker leak the policy/reach internals to a caller that already
+        # got told "denied".
+        _log.warning("inbox_send denied for %s: %s", agent.agent_id, exc)
+        raise HTTPException(
+            status_code=403,
+            detail="inbox send denied",
+        ) from exc
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — surface broker errors as 502
@@ -134,9 +142,12 @@ async def send_to_inbox(
             org_id=local_org,
             details={**audit_details, "reason": f"broker_forward_failed: {exc}"},
         )
+        # Audit H-IO-2 — log full exception for ops triage, return a
+        # generic 502 so an attacker cannot probe broker internals.
+        _log.warning("inbox_send broker forward failed for %s: %s", agent.agent_id, exc)
         raise HTTPException(
             status_code=502,
-            detail=f"Broker forward failed: {exc}",
+            detail="broker forward failed",
         ) from exc
 
     await append_local_audit(

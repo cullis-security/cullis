@@ -196,7 +196,10 @@ async def test_pubkey_cross_org_bridge_error_502(proxy_app):
     finally:
         app.state.broker_bridge = None
     assert resp.status_code == 502
-    assert "broker unreachable" in resp.json()["detail"]
+    # Audit H-IO-2 — wire detail is the stable masked prefix; the
+    # specific exception text ("broker unreachable") stays in the
+    # server-side log for ops triage.
+    assert resp.json()["detail"] == "unable to resolve peer public key"
 
 
 @pytest.mark.asyncio
