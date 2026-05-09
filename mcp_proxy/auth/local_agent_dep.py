@@ -118,6 +118,29 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
 
+    # ADR-020 — typed principals (user / workload) skip the
+    # internal_agents lookup. Mirrors the analogous branch in
+    # ``_maybe_local_internal_agent`` below + ``client_cert.py``: their
+    # SPIFFE ids live outside the workload registry. Without the
+    # bypass the ingress dep on /v1/mcp 401s every Frontdesk chat
+    # tool-use round-trip even though the LOCAL_TOKEN was minted by
+    # this same Mastio just now.
+    is_typed_principal = (
+        "::user::" in payload.agent_id
+        or "::workload::" in payload.agent_id
+    )
+    if is_typed_principal:
+        return TokenPayload(
+            sub=payload.agent_id,
+            agent_id=payload.agent_id,
+            org=payload.org_id,
+            exp=payload.expires_at,
+            iat=payload.issued_at,
+            jti=payload.jti,
+            scope=[],
+            cnf=None,
+        )
+
     record = await get_agent(payload.agent_id)
     if record is None or not record.get("is_active", True):
         raise HTTPException(
@@ -188,6 +211,46 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
             detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
+
+    # ADR-020 — typed principals (user / workload) authenticate via the
+    # token's ``::user::`` / ``::workload::`` SPIFFE id, validated above
+    # by ``validate_local_token`` against the keystore. They are NOT in
+    # ``internal_agents`` (the workload registry); user principals live
+    # in ``local_user_principals``. Looking them up + 401'ing on
+    # absence is the same trap ``client_cert.py`` had — fixed here for
+    # the LOCAL_TOKEN path so chat / MCP via the Connector's
+    # ``login_via_proxy_with_local_key`` round-trip lands the per-user
+    # InternalAgent envelope downstream consumers (audit, rate-limit)
+    # need to attribute the request correctly.
+    is_typed_principal = (
+        "::user::" in payload.agent_id
+        or "::workload::" in payload.agent_id
+    )
+
+    if is_typed_principal:
+        # ADR-013 Phase 4 — record auth for the anomaly detector.
+        from mcp_proxy.observability.traffic_recorder import record_agent_request
+        record_agent_request(request, payload.agent_id)
+
+        principal_type = (
+            "user" if "::user::" in payload.agent_id else "workload"
+        )
+        # Strip the ``<org>::user::`` prefix to derive a human-readable
+        # display name. Falls back to the full id if the split fails so
+        # downstream logging never sees an empty string.
+        display = payload.agent_id.split("::", 2)[-1] if "::" in payload.agent_id else payload.agent_id
+        from datetime import datetime, timezone
+        return InternalAgent(
+            agent_id=payload.agent_id,
+            display_name=display,
+            capabilities=[],
+            created_at=datetime.now(timezone.utc).isoformat(),
+            is_active=True,
+            cert_pem=None,
+            dpop_jkt=None,
+            reach="intra",
+            principal_type=principal_type,
+        )
 
     record = await get_agent(payload.agent_id)
     if record is None or not record.get("is_active", True):
