@@ -85,11 +85,21 @@ class LocalAuditLog(_Base):
 
 
 # ── Engine cache ──────────────────────────────────────────────────────────
-# One engine per ``config_dir`` so unit tests with isolated tmp dirs do
-# not share state. Guarded by an asyncio lock to avoid two coroutines
-# racing on initial create_all + trigger setup.
-_engine_cache: dict[Path, AsyncEngine] = {}
+# One engine per ``(config_dir, current event loop)``. Pytest-asyncio
+# uses a fresh loop per worker / test; reusing an engine bound to a
+# closed loop produces ``no such table`` failures because the connection
+# pool's loop reference is stale. Mirrors the fix Phase 1 shipped for
+# ``users_db.py`` (commit 600713ff in #548).
+_engine_cache: dict[tuple[Path, int], AsyncEngine] = {}
 _engine_lock = asyncio.Lock()
+
+
+def _current_loop_key() -> int:
+    """Return ``id`` of the running asyncio loop, or 0 when none is active."""
+    try:
+        return id(asyncio.get_running_loop())
+    except RuntimeError:
+        return 0
 
 
 def _users_db_path(config_dir: Path) -> Path:
@@ -97,7 +107,7 @@ def _users_db_path(config_dir: Path) -> Path:
 
 
 def _engine_for(config_dir: Path) -> AsyncEngine | None:
-    return _engine_cache.get(Path(config_dir).resolve())
+    return _engine_cache.get((Path(config_dir).resolve(), _current_loop_key()))
 
 
 async def init_audit_log(config_dir: Path) -> AsyncEngine:
@@ -111,9 +121,10 @@ async def init_audit_log(config_dir: Path) -> AsyncEngine:
     """
     config_dir = Path(config_dir).resolve()
     config_dir.mkdir(parents=True, exist_ok=True)
+    cache_key = (config_dir, _current_loop_key())
 
     async with _engine_lock:
-        cached = _engine_cache.get(config_dir)
+        cached = _engine_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -147,7 +158,7 @@ async def init_audit_log(config_dir: Path) -> AsyncEngine:
             except OSError:  # pragma: no cover — best effort
                 _log.warning("could not chmod 0600 on %s", db_path)
 
-        _engine_cache[config_dir] = engine
+        _engine_cache[cache_key] = engine
         return engine
 
 
