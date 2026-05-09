@@ -6,10 +6,17 @@ source tree required.
 ## Quickstart (3 commands)
 
 ```bash
-curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-mastio-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.1/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle/
 ./deploy.sh
 ```
+
+Newer Mastio releases are listed at
+<https://github.com/cullis-security/cullis/releases?q=mastio-v>; the
+URL above is pinned because GitHub's `releases/latest/` marker is
+shared across all bundles in this repo (Mastio + Frontdesk + Court +
+Chat + Connector) and would 404 the moment a non-Mastio release takes
+the Latest slot.
 
 Open `https://localhost:9443/proxy/login` (the browser will warn — the
 TLS cert is signed by your auto-generated Org CA, not a public CA).

@@ -77,14 +77,21 @@ from `ghcr.io` and configure themselves with sensible defaults.
 
 ```bash
 # 1. Mastio (org gateway + first-boot Org CA + dashboard on :9443)
-curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-mastio-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.1/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle && ./deploy.sh
 
 # 2. Frontdesk (multi-user chat on :8080, enrolls against the Mastio above)
 cd ..
-curl -L https://github.com/cullis-security/cullis/releases/latest/download/cullis-frontdesk-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.1.0-rc1/cullis-frontdesk-bundle.tar.gz | tar xz
 cd cullis-frontdesk-bundle && ./deploy.sh
 ```
+
+> **Why pinned tags, not `releases/latest/`?** GitHub's `Latest` marker
+> points to a single release across the whole repo. Cullis ships two
+> independent bundles (Mastio + Frontdesk) with separate version
+> trains; a `releases/latest/download/cullis-frontdesk-bundle.tar.gz`
+> URL 404s the moment a Mastio release becomes Latest. Newer versions
+> are at <https://github.com/cullis-security/cullis/releases>.
 
 The Mastio dashboard is at `https://localhost:9443/proxy/login` (self-signed
 TLS, accept the warning); the Frontdesk SPA is at `http://localhost:8080`.
