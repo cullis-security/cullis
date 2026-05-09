@@ -35,6 +35,7 @@ becomes optional.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -102,6 +103,43 @@ class PrincipalCoordinates:
         return f"spiffe://{self.principal_id}"
 
 
+def _org_id_from_enrolled_agent(env: dict[str, str]) -> Optional[str]:
+    """Try to extract the org_id from the Connector's enrolled agent_id.
+
+    The Connector's ``cullis-connector enroll`` writes its agent_id in the
+    canonical ``<org_id>::<agent_name>`` form into the profile metadata
+    (``<config_dir>/profiles/<profile>/identity/metadata.json``). When
+    Mastio derives its org_id randomly at first-boot (no env override),
+    the Frontdesk bundle has no way to know that random hex via env, and
+    a CSR with the bundle's default ``acme`` org gets refused with a
+    "principal in a different org" 403. Reading the org_id back from
+    the enrolled agent_id keeps both sides aligned without forcing the
+    operator to copy a random hex into frontdesk.env.
+    """
+    config_dir = (env.get("CULLIS_CONNECTOR_CONFIG_DIR") or "").strip()
+    if not config_dir:
+        # The Connector image runs as ``cullis`` with home
+        # ``/home/cullis`` and the bundle bind-mounts ``connector_data``
+        # there. Default to that path so the resolver works in the
+        # shipped container without extra wiring.
+        config_dir = "/home/cullis/.cullis"
+    profile = (env.get("CONNECTOR_PROFILE") or "frontdesk").strip() or "frontdesk"
+    metadata_path = os.path.join(
+        config_dir, "profiles", profile, "identity", "metadata.json"
+    )
+    try:
+        with open(metadata_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    agent_id = payload.get("agent_id")
+    if not isinstance(agent_id, str) or "::" not in agent_id:
+        return None
+    org, _, _ = agent_id.partition("::")
+    org = org.strip()
+    return org or None
+
+
 def resolve_principal_coordinates(
     user_name: str,
     *,
@@ -109,17 +147,34 @@ def resolve_principal_coordinates(
 ) -> PrincipalCoordinates:
     """Build a :class:`PrincipalCoordinates` from env + user_name.
 
-    Reads ``CULLIS_FRONTDESK_TRUST_DOMAIN`` + ``CULLIS_FRONTDESK_ORG_ID``,
-    falling back to ``laptop`` / ``local`` when either is missing or
-    blank. Empty / whitespace ``user_name`` raises ``ValueError`` so a
-    caller cannot accidentally mint a principal_id with an empty name
+    Resolution order for ``org_id``:
+
+    1. ``CULLIS_FRONTDESK_ORG_ID`` env override (operator decided
+       explicitly).
+    2. The org component of the Connector's *enrolled* ``agent_id``
+       (read from ``profiles/<profile>/identity/metadata.json``). This
+       is the right value 99% of the time: it is the org the sibling
+       Mastio actually uses, so the CSR's principal_id lives in the
+       same org as the Connector cert that signs it.
+    3. ``DEFAULT_ORG_ID`` fallback for fresh installs that have not
+       enrolled yet.
+
+    ``trust_domain`` resolves from env override + fallback. The
+    enrollment payload does not currently carry trust_domain
+    explicitly; until ``cullis-connector enroll`` plumbs it through,
+    operators that override env stay supported and dev/laptop installs
+    land on ``laptop``.
+
+    Empty / whitespace ``user_name`` raises ``ValueError`` so a caller
+    cannot accidentally mint a principal_id with an empty name
     component.
     """
     if not isinstance(user_name, str) or not user_name.strip():
         raise ValueError("user_name must be a non-empty string")
     e = env if env is not None else os.environ
     trust_domain = (e.get(ENV_TRUST_DOMAIN) or "").strip() or DEFAULT_TRUST_DOMAIN
-    org_id = (e.get(ENV_ORG_ID) or "").strip() or DEFAULT_ORG_ID
+    org_env = (e.get(ENV_ORG_ID) or "").strip()
+    org_id = org_env or _org_id_from_enrolled_agent(e) or DEFAULT_ORG_ID
     return PrincipalCoordinates(
         trust_domain=trust_domain,
         org_id=org_id,

@@ -28,6 +28,29 @@ export default function LoginForm() {
   const [retryAfter, setRetryAfter] = useState(0);
   const [provisioningWarn, setProvisioningWarn] = useState<string | null>(null);
 
+  // ADR-025 Phase 5 follow-up (bug N17, 2026-05-09 VM dogfood): if the
+  // browser's password manager auto-fills both fields before React
+  // hydrates, the controlled inputs end up displaying the auto-filled
+  // values but our React state stays at the empty initial value. The
+  // submit button (disabled on ``!userName || !password``) never
+  // re-enables and clicks do nothing. Reading the DOM values once the
+  // hydration is mounted backfills the state so the form behaves the
+  // way the user expects.
+  useEffect(() => {
+    const u = document.getElementById('user_name') as HTMLInputElement | null;
+    const p = document.getElementById('password') as HTMLInputElement | null;
+    if (u && u.value && !userName) setUserName(u.value);
+    if (p && p.value && !password) setPassword(p.value);
+    // Defer one tick so Brave / Chrome autofill (which fires AFTER the
+    // mount event in some flows) has had a chance to populate.
+    const t = setTimeout(() => {
+      if (u && u.value && !userName) setUserName(u.value);
+      if (p && p.value && !password) setPassword(p.value);
+    }, 200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Tick down the retry-after countdown.
   useEffect(() => {
     if (retryAfter <= 0) return;
