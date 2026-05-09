@@ -77,12 +77,12 @@ from `ghcr.io` and configure themselves with sensible defaults.
 
 ```bash
 # 1. Mastio (org gateway + first-boot Org CA + dashboard on :9443)
-curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.2-rc2/cullis-mastio-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.2-rc3/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle && ./deploy.sh
 
 # 2. Frontdesk (multi-user chat on :8080, enrolls against the Mastio above)
 cd ..
-curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.1.0-rc2/cullis-frontdesk-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.1.0-rc3/cullis-frontdesk-bundle.tar.gz | tar xz
 cd cullis-frontdesk-bundle && ./deploy.sh
 ```
 
