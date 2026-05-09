@@ -36,6 +36,19 @@ hiddenimports = [
     "uvicorn.protocols.websockets.auto",
     "uvicorn.protocols.websockets.wsproto_impl",
     "uvicorn.logging",
+    # ADR-025 Phase 1/3/4 — local-auth users.db, audit log, cert
+    # session map. SQLAlchemy + aiosqlite are imported by
+    # cullis_connector.identity.{users_db,audit,cert_session_map};
+    # bcrypt by cullis_connector.identity.users. PyInstaller's static
+    # analysis misses the aiosqlite dialect pulled at runtime by
+    # SQLAlchemy + the bcrypt _bcrypt extension module.
+    "sqlalchemy",
+    "sqlalchemy.dialects.sqlite",
+    "sqlalchemy.dialects.sqlite.aiosqlite",
+    "sqlalchemy.ext.asyncio",
+    "sqlalchemy.orm",
+    "aiosqlite",
+    "bcrypt",
 ]
 
 # Desktop shell deps are imported lazily inside function bodies in
