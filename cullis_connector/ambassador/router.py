@@ -83,10 +83,38 @@ def _build_user_client(request: Request, cred: Any):
 # ── unauth liveness probe ───────────────────────────────────────────
 
 def _enforce_loopback(request: Request) -> None:
-    """Apply ``require_loopback`` only when the Ambassador is configured to."""
+    """Apply ``require_loopback`` only when the Ambassador is configured to.
+
+    ADR-025 escape hatch: when the local cert middleware has resolved a
+    valid ``cullis_session`` cookie into a per-user UserPrincipal cert
+    (``request.state.user_credentials``), the cookie + cert chain is the
+    actual auth gate and the loopback check would only block legitimate
+    browser traffic arriving via the Frontdesk reverse proxy. The
+    handler still re-checks ``user_credentials`` to build the per-user
+    CullisClient, so an unauthenticated request never reaches Mastio.
+    """
+    if _per_user_credentials(request) is not None:
+        return
     state = getattr(request.app.state, "ambassador", None)
     if state and state.get("require_local_only", True):
         require_loopback(request)
+
+
+def _enforce_bearer(request: Request, state: dict) -> None:
+    """Run ``require_bearer`` unless an ADR-025 user cert is already bound.
+
+    The bearer token is the Connector-agent-wide secret (single shared
+    value), so it's the right gate when there's no per-user binding —
+    e.g. Cursor / LibreChat on the laptop. The moment the cert
+    middleware has minted a ``user_credentials`` from the
+    ``cullis_session`` cookie, the request is already authenticated as
+    that user; demanding the shared bearer on top would force the
+    Frontdesk SPA to also know the agent-wide secret, defeating the
+    point of per-user auth.
+    """
+    if _per_user_credentials(request) is not None:
+        return
+    require_bearer(state["bearer_token"])(request)
 
 
 @router.get("/v1/ambassador/health")
@@ -116,7 +144,7 @@ def _get_state(request: Request) -> dict:
 def list_models(request: Request) -> dict:
     _enforce_loopback(request)
     state = _get_state(request)
-    require_bearer(state["bearer_token"])(request)
+    _enforce_bearer(request, state)
     advertised = state["advertised_models"] or ["claude-haiku-4-5"]
     return {
         "object": "list",
@@ -153,7 +181,7 @@ def _completion_envelope(answer: str, model: str) -> dict:
 def chat_completions(req: ChatCompletionRequest, request: Request):
     _enforce_loopback(request)
     state = _get_state(request)
-    require_bearer(state["bearer_token"])(request)
+    _enforce_bearer(request, state)
 
     client_holder: AmbassadorClient = state["client"]
     body = req.model_dump(exclude_none=True)
@@ -233,7 +261,7 @@ async def mcp_passthrough(request: Request) -> JSONResponse:
     """
     _enforce_loopback(request)
     state = _get_state(request)
-    require_bearer(state["bearer_token"])(request)
+    _enforce_bearer(request, state)
 
     try:
         body = await request.json()

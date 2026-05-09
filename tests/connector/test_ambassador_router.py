@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from cullis_connector.config import ConnectorConfig
@@ -413,6 +414,87 @@ def test_chat_completions_accepts_multimodal_content(client, bearer):
         },
     )
     assert resp.status_code == 200
+
+
+# ── ADR-025 bypass for loopback + bearer when user_credentials is bound
+
+
+def _make_request(*, host: str, headers: dict | None = None, user_creds=None) -> Any:
+    """Build a minimal Starlette-compatible Request stand-in for unit
+    testing the auth-gate helpers in isolation. Going through
+    TestClient's middleware stack would have us racing the real cert
+    middleware (which always resets ``user_credentials`` to None
+    before our injection can take); the helpers are pure functions of
+    request state so a hand-rolled stub is the right scope."""
+    from starlette.datastructures import Headers
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/models",
+        "headers": [
+            (k.lower().encode(), v.encode())
+            for k, v in (headers or {}).items()
+        ],
+        "client": (host, 50000),
+        "app": type("_FakeApp", (), {"state": type("_S", (), {"ambassador": {
+            "require_local_only": True,
+            "bearer_token": "expected-bearer-token",
+        }})()})(),
+    }
+    req = Request(scope)
+    req.state.user_credentials = user_creds
+    return req
+
+
+def test_enforce_loopback_blocks_non_loopback_without_user_creds():
+    """Baseline: existing single-user laptop contract must hold."""
+    from cullis_connector.ambassador.router import _enforce_loopback
+    req = _make_request(host="172.20.0.5")
+    with pytest.raises(HTTPException) as excinfo:
+        _enforce_loopback(req)
+    assert excinfo.value.status_code == 403
+
+
+def test_enforce_loopback_bypasses_when_user_credentials_set():
+    """ADR-025: the cookie + cert chain authenticated the user, so the
+    loopback check would only block legitimate browser traffic arriving
+    via the Frontdesk reverse proxy (172.x docker bridge IP)."""
+    from cullis_connector.ambassador.router import _enforce_loopback
+
+    class _Cred:
+        principal_id = "acme.test/acme/user/mario"
+
+    req = _make_request(host="172.20.0.5", user_creds=_Cred())
+    _enforce_loopback(req)  # must not raise
+
+
+def test_enforce_bearer_rejects_without_token_and_without_user_creds():
+    """Baseline: bearer is still the gate when there's no per-user
+    binding (Cursor / LibreChat / laptop SPA single-user mode)."""
+    from cullis_connector.ambassador.router import _enforce_bearer
+
+    req = _make_request(host="127.0.0.1")
+    state = {"bearer_token": "expected-bearer-token"}
+    with pytest.raises(HTTPException) as excinfo:
+        _enforce_bearer(req, state)
+    assert excinfo.value.status_code == 401
+
+
+def test_enforce_bearer_bypasses_when_user_credentials_set():
+    """ADR-025: the SPA logs in via /api/auth/login (bcrypt) and rides
+    the cullis_session cookie thereafter. Forcing the agent-wide bearer
+    on top would defeat per-user auth — every employee would need the
+    Connector secret."""
+    from cullis_connector.ambassador.router import _enforce_bearer
+
+    class _Cred:
+        principal_id = "acme.test/acme/user/mario"
+
+    req = _make_request(host="172.20.0.5", user_creds=_Cred())
+    state = {"bearer_token": "expected-bearer-token"}
+    _enforce_bearer(req, state)  # must not raise
 
 
 def test_local_token_file_is_chmod_600(tmp_path: Path, client):

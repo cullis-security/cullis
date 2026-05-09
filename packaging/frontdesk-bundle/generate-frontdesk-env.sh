@@ -136,14 +136,28 @@ case "$MODE" in
         ;;
 esac
 
+# Mint a Connector admin secret. The Connector validates ``X-Admin-Secret``
+# against ``CULLIS_CONNECTOR_ADMIN_SECRET`` (cullis_connector/admin/auth.py)
+# on POST /admin/users — without this, every provisioning call returns
+# 403 ``admin secret not configured on this Connector`` and the operator
+# is dead-locked at user provisioning. Pre-v0.2.0-rc4 the bundle silently
+# left this empty and the deploy.sh summary pointed at the Mastio's
+# MCP_PROXY_ADMIN_SECRET, which is a different secret on a different
+# component (the Mastio dashboard) and cannot authenticate the Connector
+# admin API. See bug 1 in the v0.2.0 dogfood notes.
+ADMIN_SECRET="${CULLIS_CONNECTOR_ADMIN_SECRET:-$(openssl rand -hex 24)}"
+
 cp "$SCRIPT_DIR/frontdesk.env.example" "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_ORG_ID=.*|CULLIS_FRONTDESK_ORG_ID=${ORG_ID}|"               "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_TRUST_DOMAIN=.*|CULLIS_FRONTDESK_TRUST_DOMAIN=${TRUST_DOMAIN}|" "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_CA_BUNDLE_HOST=.*|CULLIS_FRONTDESK_CA_BUNDLE_HOST=${CA_BUNDLE}|" "$OUT"
+# The example file does not ship the secret line (we mint per-deploy); append.
+echo "CULLIS_CONNECTOR_ADMIN_SECRET=${ADMIN_SECRET}" >> "$OUT"
 
 ok "Wrote ${OUT}"
 echo ""
 echo -e "  ${BOLD}CULLIS_FRONTDESK_ORG_ID${RESET}          ${GRAY}${ORG_ID}${RESET}"
 echo -e "  ${BOLD}CULLIS_FRONTDESK_TRUST_DOMAIN${RESET}    ${GRAY}${TRUST_DOMAIN}${RESET}"
 echo -e "  ${BOLD}CULLIS_FRONTDESK_CA_BUNDLE_HOST${RESET}  ${GRAY}${CA_BUNDLE}${RESET}"
+echo -e "  ${BOLD}CULLIS_CONNECTOR_ADMIN_SECRET${RESET}    ${GRAY}${ADMIN_SECRET:0:8}…${RESET} (provision users via X-Admin-Secret)"
 echo ""
