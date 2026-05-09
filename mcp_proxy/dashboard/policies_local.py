@@ -111,7 +111,9 @@ async def policies_create(request: Request):
     try:
         parsed = json.loads(rules_raw) if rules_raw else {}
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"invalid rules_json: {exc}") from exc
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("policies_local: invalid rules_json: %s", exc)
+        raise HTTPException(status_code=400, detail="invalid rules_json") from exc
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=400, detail="rules_json must be an object")
 

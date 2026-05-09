@@ -366,9 +366,12 @@ async def updates_apply(migration_id: str, request: Request):
             status="failure",
             detail=f"migration_id={migration_id}, error={error_msg}",
         )
+        # Audit H-IO-2 — audit row + server log carry the migration's
+        # underlying exception text; HTTP detail stays generic so the
+        # response can't be used to probe migration internals.
         raise HTTPException(
             status_code=500,
-            detail=f"apply failed: {error_msg}",
+            detail="apply failed",
         )
 
     await _update_status_with_retry(
@@ -453,9 +456,11 @@ async def updates_rollback(migration_id: str, request: Request):
             status="failure",
             detail=f"migration_id={migration_id}, error={error_msg}",
         )
+        # Audit H-IO-2 — audit row + server log carry the migration's
+        # underlying exception text; HTTP detail stays generic.
         raise HTTPException(
             status_code=500,
-            detail=f"rollback failed: {error_msg}",
+            detail="rollback failed",
         )
 
     await _update_status_with_retry(

@@ -82,9 +82,11 @@ async def sign_csr(
             body.principal_id,
         )
     except ValueError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("principals.csr: invalid principal_id: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"invalid principal_id: {exc}",
+            detail="invalid principal_id",
         ) from exc
 
     if token.org != principal_org:
@@ -109,16 +111,22 @@ async def sign_csr(
             agent_manager=agent_manager,
         )
     except CsrValidationError as exc:
+        # Audit H-IO-2 — CSR validation errors can echo OpenSSL/cryptography
+        # internals (ASN.1, DER, key params) and SPIFFE-id mismatch text;
+        # log for ops, return generic.
+        _log.warning("principals.csr: CSR validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail="CSR validation failed",
         ) from exc
     except RuntimeError as exc:
         # Org CA not loaded — surface to the caller as 503 so their
         # provisioner retries instead of failing the user session.
+        # Audit H-IO-2 — log full reason, return a generic detail.
+        _log.warning("principals.csr: Org CA unavailable: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail="Org CA temporarily unavailable",
         ) from exc
 
     _log.info(

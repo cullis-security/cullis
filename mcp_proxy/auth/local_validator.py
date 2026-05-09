@@ -173,9 +173,11 @@ async def require_local_token(request: Request) -> LocalTokenPayload:
             token, keystore, expected_issuer=issuer.issuer,
         )
     except LocalTokenError as exc:
+        # Audit H-IO-2 — server log carries the rejection reason; HTTP
+        # detail is generic so an attacker can't probe which check fired.
         _log.info("local token rejected: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(exc),
+            detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc

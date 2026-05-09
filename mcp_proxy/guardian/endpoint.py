@@ -86,9 +86,16 @@ async def inspect(
             req.payload_b64 + "=" * (-len(req.payload_b64) % 4),
         )
     except (binascii.Error, ValueError) as exc:
+        # Audit H-IO-2 — base64 lib exception text would let an attacker
+        # fingerprint encoder behaviour; keep the structured ``reason``
+        # tag, drop the inner ``error`` field. Log for ops triage.
+        _log.warning(
+            "guardian inspect: malformed payload_b64 from %s: %s",
+            agent.agent_id, exc,
+        )
         raise HTTPException(
             status_code=422,
-            detail={"reason": "malformed_payload_b64", "error": str(exc)},
+            detail={"reason": "malformed_payload_b64"},
         ) from exc
 
     audit_id = uuid.uuid4().hex
@@ -126,9 +133,18 @@ async def inspect(
     except GuardianTicketError as exc:
         # Treat as 503 (config issue) rather than 500 — the operator
         # has a known fix (set/rotate the key).
+        # Audit H-IO-2 — ``exc.detail`` carries the underlying
+        # jwt-library text (key shape, decode failure mode) and would
+        # let a caller probe ticket-key configuration; keep the
+        # structured ``reason`` tag, drop the inner ``error`` field.
+        # Log for ops triage.
+        _log.warning(
+            "guardian inspect: ticket sign failed reason=%s detail=%s",
+            exc.reason, exc.detail or exc.reason,
+        )
         raise HTTPException(
             status_code=503,
-            detail={"reason": exc.reason, "error": exc.detail or exc.reason},
+            detail={"reason": exc.reason},
         ) from exc
 
     try:

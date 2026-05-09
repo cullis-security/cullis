@@ -203,9 +203,11 @@ def _validate_dpop_jwk(dpop_jwk: dict | None) -> str | None:
     try:
         return compute_jkt(dpop_jwk)
     except (ValueError, KeyError) as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("admin.enroll: dpop_jwk is malformed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"dpop_jwk is malformed: {exc}",
+            detail="dpop_jwk is malformed",
         ) from exc
 
 
@@ -245,9 +247,12 @@ async def enroll_byoca(
     try:
         cert = x509.load_pem_x509_certificate(body.cert_pem.encode())
     except ValueError as exc:
+        # Audit H-IO-2 — cryptography ValueError leaks ASN.1/DER/OpenSSL
+        # internals; log for ops, return generic.
+        _log.warning("admin.enroll byoca: cert_pem PEM parse failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"cert_pem is not a valid X.509 PEM: {exc}",
+            detail="cert_pem is not a valid X.509 PEM",
         ) from exc
 
     # Step 2 — key matches cert.
@@ -404,9 +409,13 @@ async def _resolve_trust_bundle(body_override: str | None) -> x509.Certificate:
     try:
         return x509.load_pem_x509_certificate(pem.encode())
     except ValueError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning(
+            "admin.enroll spiffe: trust_bundle_pem PEM parse failed: %s", exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"trust_bundle_pem is not a valid X.509 PEM: {exc}",
+            detail="trust_bundle_pem is not a valid X.509 PEM",
         ) from exc
 
 
@@ -455,9 +464,11 @@ async def enroll_spiffe(
     try:
         svid = x509.load_pem_x509_certificate(body.svid_pem.encode())
     except ValueError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("admin.enroll spiffe: svid_pem PEM parse failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"svid_pem is not a valid X.509 PEM: {exc}",
+            detail="svid_pem is not a valid X.509 PEM",
         ) from exc
 
     # Step 2 — key matches SVID.

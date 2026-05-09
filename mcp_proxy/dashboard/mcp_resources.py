@@ -78,9 +78,13 @@ def _parse_allowed_domains(raw: str) -> list[str]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning(
+            "mcp_resources: invalid allowed_domains JSON: %s", exc,
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"invalid allowed_domains JSON: {exc}",
+            detail="invalid allowed_domains JSON",
         ) from exc
     if not isinstance(parsed, list):
         raise HTTPException(

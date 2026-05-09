@@ -109,10 +109,12 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
         # kid matched this Mastio but validation still failed — that's a
         # spoofing or tamper attempt, surface 401 rather than falling
         # through silently.
+        # Audit H-IO-2 — server log carries the rejection reason; HTTP
+        # detail is generic so an attacker can't probe which check fired.
         _log.info("local token rejected: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"local token: {exc}",
+            detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
 
@@ -179,10 +181,11 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
             token, keystore, expected_issuer=issuer.issuer,
         )
     except LocalTokenError as exc:
+        # Audit H-IO-2 — server log carries the rejection reason.
         _log.info("local token rejected (egress): %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"local token: {exc}",
+            detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
 

@@ -440,9 +440,11 @@ async def register_agent_dpop_jwk(
     try:
         jkt = compute_jkt(jwk)
     except (ValueError, KeyError) as exc:
+        # Audit H-IO-2 — log full parse error, return a generic detail.
+        _log.warning("admin.agents: malformed JWK: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"malformed JWK: {exc}",
+            detail="malformed JWK",
         ) from exc
 
     async with get_db() as conn:
