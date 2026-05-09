@@ -28,6 +28,32 @@ Open `https://localhost:9443/proxy/login` (the browser will warn — the
 TLS cert is signed by your auto-generated Org CA, not a public CA).
 Complete the first-boot wizard and enroll your first agent.
 
+## Enable chat (Anthropic API key)
+
+The Mastio includes an embedded AI gateway (ADR-017) that powers the
+chat completion endpoint used by Cullis Chat and Frontdesk. Without a
+provider key, chat returns HTTP 503 `provider_key_missing` and the UI
+shows an error — registry / MCP / audit keep working regardless.
+
+To enable chat, copy `proxy.env.example` to `proxy.env` (the deploy
+script does this on first run if missing), open it, and set:
+
+```bash
+MCP_PROXY_ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Then restart the bundle:
+
+```bash
+./deploy.sh --pull
+```
+
+Today only Anthropic is wired as upstream provider. OpenAI / Gemini
+are on the roadmap; setting `MCP_PROXY_AI_GATEWAY_PROVIDER` to anything
+other than `anthropic` returns HTTP 501 until the corresponding wiring
+lands. See the AI gateway block in `proxy.env.example` for the full
+list of tunables (backend, provider, sidecar URL, timeout).
+
 ## Pin a release
 
 ```bash
