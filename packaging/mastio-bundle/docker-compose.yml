@@ -84,6 +84,16 @@ services:
       # mapping the value reaches proxy.env and never the lifespan, so
       # chat returns 503 ``provider_key_missing``.
       MCP_PROXY_ANTHROPIC_API_KEY: ${MCP_PROXY_ANTHROPIC_API_KEY:-}
+      # Frontdesk Ambassador admin endpoint. Lets the Mastio dashboard
+      # orchestrate user lifecycle (create / reset / delete) against
+      # the bundle that actually holds the credentials. Empty values
+      # leave /proxy/users in read-only mode.
+      MCP_PROXY_FRONTDESK_AMBASSADOR_URL: ${MCP_PROXY_FRONTDESK_AMBASSADOR_URL:-}
+      MCP_PROXY_FRONTDESK_ADMIN_SECRET:   ${MCP_PROXY_FRONTDESK_ADMIN_SECRET:-}
+      # AI gateway request timeout. The 30 s default is fine for
+      # claude-haiku-4-5 (~3 s) but local Ollama models with chain-of-
+      # thought (qwen3.5, deepseek-r1) routinely take 20-40 s.
+      MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S: ${MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S:-180}
       PROXY_TRUST_DOMAIN:          ${PROXY_TRUST_DOMAIN:-}
       PROXY_INTRA_ORG:             ${PROXY_INTRA_ORG:-}
       PROXY_TRANSPORT_INTRA_ORG:   ${PROXY_TRANSPORT_INTRA_ORG:-}
@@ -101,6 +111,12 @@ services:
       - mastio_nginx_certs:/var/lib/mastio/nginx-certs:rw
     networks:
       - proxy_net
+    # When the Mastio orchestrates user lifecycle on a sibling Frontdesk
+    # bundle (see MCP_PROXY_FRONTDESK_AMBASSADOR_URL), the Frontdesk is
+    # reachable via the docker host gateway. Mirrors the same alias the
+    # Frontdesk bundle uses to talk back to us.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]

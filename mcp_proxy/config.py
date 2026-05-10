@@ -352,6 +352,17 @@ class ProxySettings(BaseSettings):
     guardian_ticket_key: str = ""
     guardian_ticket_ttl_s: int = 30
 
+    # Frontdesk Ambassador admin API target. The Mastio dashboard is
+    # the control plane: when an admin creates/resets/deletes a user
+    # principal from /proxy/users, the Mastio forwards the lifecycle
+    # call to the Frontdesk Ambassador running on this URL, which is
+    # the data plane for password storage (users.db, bcrypt). The
+    # secret is the same value the Frontdesk has under
+    # CULLIS_CONNECTOR_ADMIN_SECRET. Empty defaults keep the dashboard
+    # page read-only (legacy behaviour).
+    frontdesk_ambassador_url: str = ""
+    frontdesk_admin_secret: str = ""
+
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
