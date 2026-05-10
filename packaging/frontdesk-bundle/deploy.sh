@@ -311,7 +311,25 @@ else
     if [[ -t 0 && -t 1 ]]; then
         DOCKER_TTY_FLAGS="-it"
     fi
+
+    # Pin the enroll docker run to the frontdesk_net bridge that the
+    # compose stack will use. Without this, the container lands on the
+    # default bridge, where ``host.docker.internal:host-gateway``
+    # resolves to a gateway IP that on Linux-native Docker is NOT
+    # forwarded to the host's published ports (Docker Desktop on
+    # macOS/Windows fakes the resolution via NAT magic, masking the
+    # bug). Symptom on Linux: ``Could not reach Site at
+    # https://host.docker.internal:9443: timed out`` after 10s. Pre-
+    # creating the user-defined bridge gives the same gateway routing
+    # behaviour the compose-managed Connector container will see.
+    ENROLL_NET="${COMPOSE_PROJECT_NAME}_frontdesk_net"
+    if ! docker network inspect "$ENROLL_NET" >/dev/null 2>&1; then
+        docker network create "$ENROLL_NET" >/dev/null \
+            || die "Could not create docker network ${ENROLL_NET} for the enroll one-shot"
+    fi
+
     docker run --rm $DOCKER_TTY_FLAGS \
+        --network "$ENROLL_NET" \
         --add-host "host.docker.internal:host-gateway" \
         -v "${DATA_DIR_ABS}:/home/cullis/.cullis" \
         -v "${CA_BUNDLE_ABS}:/etc/cullis/ca-bundle.pem:ro" \
