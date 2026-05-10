@@ -13,5 +13,5 @@ Run standalone::
 Or configure in your MCP client of choice. See README for examples.
 """
 
-__version__ = "0.4.0-rc2"
+__version__ = "0.4.0"
 __all__ = ["__version__"]
