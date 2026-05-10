@@ -208,3 +208,56 @@ async def test_cn_fallback_when_san_missing(proxy_app, monkeypatch):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_typed_user_principal_bypasses_internal_agents_lookup(proxy_app):
+    """ADR-020 — user / workload principals are not in
+    ``internal_agents`` (the workload registry); the Frontdesk Connector
+    mints them via ``/v1/principals/csr`` and presents them on
+    ``/v1/llm`` + ``/v1/mcp``. Without the bypass introduced in this
+    PR, every chat request from a Frontdesk SPA 401'd at the gate even
+    though the cert chain was valid (``agent unknown or inactive``).
+    Exercising the dep directly with a UserPrincipal-shaped SPIFFE id."""
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::mario")
+    headers = mtls_headers(cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+    request.app = MagicMock()
+    request.app.state = MagicMock()
+
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    agent = await get_agent_from_client_cert(request)
+
+    # Bypass kicked in: dep returned without consulting internal_agents.
+    assert agent.agent_id == "acme::user::mario"
+    assert agent.principal_type == "user"
+    # Cert pin is correctly skipped — no row to pin against.
+    assert agent.cert_pem is None
+    # Reach is intra by design (typed principals never cross-org egress
+    # as themselves; cross-org goes through the Connector agent's
+    # BrokerBridge which has its own reach gate).
+    assert agent.reach == "intra"
+
+
+@pytest.mark.asyncio
+async def test_typed_workload_principal_bypasses_internal_agents_lookup(proxy_app):
+    """Same bypass for SPIFFE workload principals — symmetric path
+    since both share the ``::workload::`` / ``::user::`` SPIFFE
+    convention and the ADR-020 typed-principal contract."""
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="workload::etl-job")
+    headers = mtls_headers(cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+    request.app = MagicMock()
+    request.app.state = MagicMock()
+
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    agent = await get_agent_from_client_cert(request)
+
+    assert agent.agent_id == "acme::workload::etl-job"
+    assert agent.principal_type == "workload"

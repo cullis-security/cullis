@@ -282,27 +282,33 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
 
     canonical_id = f"{org_id_from_cert}::{agent_name}"
 
-    agent_data = await get_agent(canonical_id)
-    if agent_data is None or not agent_data.get("is_active"):
-        _log.warning(
-            "client cert authentication: no active agent for %s",
-            canonical_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="agent unknown or inactive",
-        )
-
-    # ADR-020 — typed principals (user / workload) skip the cert-pin step.
-    # Their certs rotate every ~1h via ``/v1/principals/csr`` and are not
-    # persisted in ``internal_agents`` (the registry is a *workload*
-    # registry; user principals live in their own table). Identity is
-    # already gated upstream by the nginx mTLS chain walk + the SPIFFE
-    # SAN match the chain enforces, so re-pinning the rotating leaf
-    # would force every fresh login through a registry write the
-    # provisioner doesn't issue.
+    # ADR-020 — typed principals (user / workload) authenticate via the
+    # cert chain (validated upstream by nginx mTLS) plus the SPIFFE SAN
+    # baked into the cert. They are NOT in ``internal_agents`` (that is
+    # the *workload* registry; user principals live in
+    # ``local_user_principals``); the rotating ~1h leaf the
+    # ``/v1/principals/csr`` provisioner mints is never written there.
+    # Looking them up + 401'ing on absence makes every Frontdesk chat
+    # request fail at the gate even though the cert chain is valid.
+    # Skip the registry lookup AND the cert-pin step here, mirroring the
+    # equivalent branch in ``challenge_response.py`` so the two paths
+    # stay symmetric. The trust gate is the chain walk + SPIFFE SAN.
     is_typed_principal = "::user::" in canonical_id or "::workload::" in canonical_id
-    if not is_typed_principal:
+
+    if is_typed_principal:
+        agent_data = None
+    else:
+        agent_data = await get_agent(canonical_id)
+        if agent_data is None or not agent_data.get("is_active"):
+            _log.warning(
+                "client cert authentication: no active agent for %s",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="agent unknown or inactive",
+            )
+
         # Pin the presented cert against the stored one. A renewal that
         # rotated cert_pem in the DB but left the old cert in the wild
         # would fail this — that's the desired behaviour: revocation by
@@ -344,6 +350,29 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
     # ADR-013 Phase 4 — same recorder the api_key path feeds.
     from mcp_proxy.observability.traffic_recorder import record_agent_request
     record_agent_request(request, canonical_id)
+
+    if is_typed_principal:
+        # Build the InternalAgent envelope from the cert + canonical id.
+        # Typed principals are not pinned in ``internal_agents``, so
+        # there's no display_name / capabilities / created_at to read
+        # back; downstream consumers (audit, rate-limit) only need
+        # ``agent_id`` and ``principal_type`` to attribute correctly.
+        # The SPIFFE id pattern is ``<org>::user::<name>`` /
+        # ``<org>::workload::<name>``; the ``principal_type`` mirror
+        # is what audit aggregations key on (see models.py:78).
+        principal_type = "user" if "::user::" in canonical_id else "workload"
+        from datetime import datetime, timezone
+        return InternalAgent(
+            agent_id=canonical_id,
+            display_name=agent_name,
+            capabilities=[],
+            created_at=datetime.now(timezone.utc).isoformat(),
+            is_active=True,
+            cert_pem=None,
+            dpop_jkt=None,
+            reach="intra",
+            principal_type=principal_type,
+        )
 
     return InternalAgent(
         agent_id=agent_data["agent_id"],

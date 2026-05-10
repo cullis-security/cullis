@@ -381,10 +381,24 @@ if [[ "${AMBASSADOR_MODE:-}" == "shared" ]]; then
     echo "    open http://localhost:${HTTP_PORT}?user=mario   # X-Forwarded-User dev only"
     echo "    open http://localhost:${HTTP_PORT}?user=anna    # incognito tab"
 else
+    # The Connector's admin endpoints validate ``X-Admin-Secret`` against
+    # ``CULLIS_CONNECTOR_ADMIN_SECRET`` (cullis_connector/admin/auth.py),
+    # which lives in *this* bundle's frontdesk.env. The Mastio's
+    # ``MCP_PROXY_ADMIN_SECRET`` is a different secret on a different
+    # component and cannot authenticate this admin API — pre-v0.2.0-rc4
+    # the summary mistakenly told operators to use it and they hit 403
+    # on every provisioning call. Surface our secret instead.
+    ADMIN_SECRET="$(_load_env CULLIS_CONNECTOR_ADMIN_SECRET)"
     echo "  Next steps (ADR-025 local-auth):"
     echo "    1. Pre-create users via the admin API (X-Admin-Secret guarded):"
     echo ""
-    echo "       ADMIN=\"\$(grep '^MCP_PROXY_ADMIN_SECRET' ../cullis-mastio-bundle/proxy.env | cut -d= -f2-)\""
+    if [[ -n "$ADMIN_SECRET" ]]; then
+        echo "       ADMIN=\"$ADMIN_SECRET\""
+    else
+        echo "       ADMIN=\"\$(grep '^CULLIS_CONNECTOR_ADMIN_SECRET' frontdesk.env | cut -d= -f2-)\""
+        echo "       # Empty above? generate-frontdesk-env.sh mints one on first run;"
+        echo "       # rerun ./deploy.sh after deleting frontdesk.env to regenerate."
+    fi
     echo "       curl -X POST http://localhost:${HTTP_PORT}/admin/users \\"
     echo "         -H \"X-Admin-Secret: \$ADMIN\" -H 'Content-Type: application/json' \\"
     echo "         -d '{\"user_name\":\"mario\",\"password\":\"temp123!\",\"display_name\":\"Mario Rossi\"}'"
