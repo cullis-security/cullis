@@ -46,19 +46,21 @@
         </button>
     </div>
 
-    <!-- Context banner — explain that the Mastio row is the directory
-         entry, not the credential. The actual login password lives in
-         the Connector's users.db (ADR-025) and is provisioned via the
-         Connector admin API or the Frontdesk dashboard. -->
+    <!-- Context banner — two onboarding paths now coexist:
+         (a) admin sets an initial password here (AD-style), user is
+             forced to rotate it at first sign-in;
+         (b) leave the password blank, the row stays SSO-only and the
+             cert lands on the first Frontdesk SSO touch. -->
     <div class="mb-6 p-4 bg-surface-900/60 border border-gray-800/50 rounded-lg text-xs text-gray-500 leading-relaxed">
-        Creating a user here reserves the principal id and seeds the
-        directory row so downstream policies + audit show the user even
-        before first login. The login password is set on the
-        <strong class="text-gray-300">Connector</strong> (ADR-025 local-auth)
-        via <code class="text-accent-400/80">POST /admin/users</code>
-        with <code class="text-accent-400/80">X-Admin-Secret</code>, or
-        through the Frontdesk admin tab. Rows also land here automatically
-        the first time a user authenticates through a Frontdesk container.
+        Two ways to onboard a user:
+        <span class="text-gray-300">set an initial password</span> (admin hands the
+        credential out-of-band, user is forced to change it at first sign-in
+        on Cullis Chat or the dashboard), or
+        <span class="text-gray-300">leave password blank</span> for SSO-only
+        rows (cert lands on first Frontdesk SSO touch via
+        <code class="text-accent-400/80">/v1/principals/csr</code>). Rows
+        also auto-appear when a brand-new SSO user signs in for the first
+        time.
     </div>
 
     <!-- Create User panel (hidden by default) -->
@@ -102,9 +104,21 @@
                     <p class="text-[10px] text-gray-600 mt-1">Optional hint: which Connector surface this user logs in from (frontdesk, cullis-chat, cli).</p>
                 </div>
             </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Initial Password <span class="text-gray-600 normal-case font-normal tracking-normal">(optional)</span></label>
+                <input type="password" name="password" autocomplete="new-password"
+                       minlength="8" maxlength="128"
+                       placeholder="Leave blank for SSO-only"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+                <p class="text-[10px] text-gray-600 mt-1">
+                    8-128 chars. Hand it out-of-band; the user will be forced
+                    to set their own at first sign-in. Leave blank for
+                    Frontdesk-SSO accounts.
+                </p>
+            </div>
             <p class="text-[10px] text-gray-500 flex items-center gap-1.5">
                 <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                Cert is minted on the first SSO touch (CSR signing path upserts this row).
+                Cert is minted via password-login or first SSO touch — never stored on this dashboard.
             </p>
             <div class="flex items-center gap-3 pt-1">
                 <button type="submit"
@@ -131,18 +145,20 @@
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">User</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Principal ID</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Reach</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Surface</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Last active</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Created</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800/40">
                 {% for u in users %}
                 <tr class="table-row-hover transition-colors align-top">
                     <td class="px-5 py-4">
-                        <div class="text-sm text-white">
+                        <a href="/proxy/users/{{ u.principal_id|urlencode }}" class="text-sm text-white hover:text-accent-400 transition-colors">
                             {{ u.display_name or u.user_name }}
-                        </div>
+                        </a>
                         {% if u.display_name %}
                         <div class="text-[11px] text-gray-500 font-mono">{{ u.user_name }}</div>
                         {% endif %}
@@ -172,6 +188,27 @@
                         </span>
                         {% endif %}
                     </td>
+                    <td class="px-5 py-4">
+                        {% if u.disabled %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Disabled
+                        </span>
+                        {% elif u.must_change_password %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider"
+                              title="Initial password set by admin — user must rotate at first sign-in">
+                            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 pulse-dot"></span>Pending change
+                        </span>
+                        {% elif u.has_password %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-400 uppercase tracking-wider"
+                              title="No local password — Frontdesk SSO only">
+                            <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>SSO-only
+                        </span>
+                        {% endif %}
+                    </td>
                     <td class="px-5 py-4 text-xs text-gray-400 font-mono">
                         {% if u.surface %}
                         {{ u.surface }}
@@ -189,11 +226,17 @@
                     <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
                         {{ u.created_at[:19] if u.created_at else '—' }}
                     </td>
+                    <td class="px-5 py-4">
+                        <a href="/proxy/users/{{ u.principal_id|urlencode }}"
+                           class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-white transition-colors">
+                            Details
+                        </a>
+                    </td>
                 </tr>
                 {% endfor %}
                 {% if not users %}
                 <tr>
-                    <td colspan="6" class="px-5 py-16 text-center">
+                    <td colspan="8" class="px-5 py-16 text-center">
                         <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                                   d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>

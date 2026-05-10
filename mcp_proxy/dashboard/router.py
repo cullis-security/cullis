@@ -3086,16 +3086,41 @@ async def users_page(
     ))
 
 
+def _user_form_redirect(error: str) -> RedirectResponse:
+    from urllib.parse import quote
+    return RedirectResponse(
+        url=f"/proxy/users?error={quote(error)}", status_code=303,
+    )
+
+
+def _user_detail_redirect(principal_id: str, *, message: str | None = None,
+                          error: str | None = None) -> RedirectResponse:
+    from urllib.parse import quote
+    qs = []
+    if message:
+        qs.append(f"message={quote(message)}")
+    if error:
+        qs.append(f"error={quote(error)}")
+    suffix = ("?" + "&".join(qs)) if qs else ""
+    return RedirectResponse(
+        url=f"/proxy/users/{quote(principal_id, safe='')}{suffix}",
+        status_code=303,
+    )
+
+
 @router.post("/users/create")
 async def users_create(request: Request):
     """Form-driven counterpart of ``POST /v1/admin/users``.
 
-    Same idempotent insert into ``local_user_principals``: re-posting an
-    existing ``user_name`` returns the existing row without overwriting
-    metadata so a real SSO touch can't be clobbered by a careless
-    re-create. The cert itself is minted on first
-    ``/v1/principals/csr`` — this row is the directory entry, not the
-    credential.
+    Same idempotent insert into ``local_user_principals`` the X-Admin-Secret
+    API does: re-posting an existing ``user_name`` returns the existing row
+    without overwriting metadata so a real SSO touch can't be clobbered by
+    a careless re-create.
+
+    AD-style password is now optional. When supplied it is bcrypt-hashed
+    (``must_change_password`` flipped to True so the admin's value is
+    never long-lived). When omitted the row stays SSO-only — the cert
+    will land on first ``/v1/principals/csr`` touch as before.
     """
     import re
 
@@ -3115,57 +3140,53 @@ async def users_create(request: Request):
     display_name = str(form.get("display_name", "")).strip()
     reach = str(form.get("reach", "intra")).strip() or "intra"
     surface = str(form.get("surface", "")).strip() or None
+    password = str(form.get("password", "")).strip() or None
 
     if not user_name:
-        return RedirectResponse(
-            url="/proxy/users?error=user_name+is+required",
-            status_code=303,
-        )
+        return _user_form_redirect("user_name is required")
     if not re.fullmatch(r"[a-zA-Z0-9._\-]{1,64}", user_name):
-        return RedirectResponse(
-            url=(
-                "/proxy/users?error=user_name+must+match+[a-zA-Z0-9._-]"
-                "+and+be+at+most+64+chars"
-            ),
-            status_code=303,
+        return _user_form_redirect(
+            "user_name must match [a-zA-Z0-9._-] and be at most 64 chars",
         )
     if reach not in ("intra", "cross", "both"):
-        return RedirectResponse(
-            url="/proxy/users?error=reach+must+be+intra%2C+cross+or+both",
-            status_code=303,
-        )
+        return _user_form_redirect("reach must be intra, cross or both")
+    if password is not None and not (8 <= len(password) <= 128):
+        return _user_form_redirect("password must be 8-128 chars")
 
     org_id = await get_config("org_id") or get_settings().org_id
     if not org_id:
-        return RedirectResponse(
-            url=(
-                "/proxy/users?error=org_id+not+set"
-                "+%E2%80%94+complete+broker+setup+first"
-            ),
-            status_code=303,
+        return _user_form_redirect(
+            "org_id not set — complete broker setup first",
         )
 
     principal_id = f"{org_id}::user::{user_name}"
     now = datetime.now(timezone.utc).isoformat()
+    pw_hash = None
+    if password:
+        from mcp_proxy.admin.users import hash_password
+        pw_hash = await hash_password(password)
 
     try:
         async with get_db() as conn:
             existing = (await conn.execute(
                 _sql_text(
-                    "SELECT principal_id FROM local_user_principals "
+                    "SELECT principal_id, password_hash FROM local_user_principals "
                     "WHERE principal_id = :pid"
                 ),
                 {"pid": principal_id},
-            )).first()
+            )).mappings().first()
             if existing is None:
                 await conn.execute(
                     _sql_text(
                         """
                         INSERT INTO local_user_principals (
                             principal_id, user_name, display_name,
-                            reach, surface, created_at
+                            reach, surface, created_at,
+                            password_hash, must_change_password,
+                            disabled, password_updated_at
                         ) VALUES (
-                            :pid, :uname, :disp, :reach, :surface, :now
+                            :pid, :uname, :disp, :reach, :surface, :now,
+                            :pw, :mcp, :dis, :pwnow
                         )
                         """
                     ),
@@ -3176,19 +3197,241 @@ async def users_create(request: Request):
                         "reach": reach,
                         "surface": surface,
                         "now": now,
+                        "pw": pw_hash,
+                        "mcp": bool(pw_hash),
+                        "dis": bool(False),
+                        "pwnow": now if pw_hash else None,
                     },
                 )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("users_create failed user_name=%s: %s", user_name, exc)
-        from urllib.parse import quote
-        return RedirectResponse(
-            url=f"/proxy/users?error={quote(f'create failed: {exc}')}",
-            status_code=303,
+            elif pw_hash and not existing["password_hash"]:
+                # Top-up: row was pre-created via SSO upsert / metadata-only,
+                # admin is now attaching a local credential to it.
+                await conn.execute(
+                    _sql_text(
+                        """
+                        UPDATE local_user_principals
+                           SET password_hash         = :pw,
+                               must_change_password  = :mcp,
+                               password_updated_at   = :now
+                         WHERE principal_id = :pid
+                        """
+                    ),
+                    {
+                        "pid": principal_id, "pw": pw_hash,
+                        "mcp": bool(True), "now": now,
+                    },
+                )
+            elif pw_hash and existing["password_hash"]:
+                return _user_form_redirect(
+                    "user already has a password — use Reset Password "
+                    "in the user detail Danger Zone to rotate it",
+                )
+    except Exception:  # noqa: BLE001
+        # Never inline the exception text into the user-facing error.
+        # SQLAlchemy DBAPIError stringifies bound parameters, which would
+        # leak the bcrypt password_hash into both the redirect URL (and
+        # therefore reverse-proxy access logs + browser history) and the
+        # rendered page. Log full traceback locally; surface a generic
+        # message to the operator.
+        _log.warning(
+            "users_create failed user_name=%s", user_name, exc_info=True,
+        )
+        return _user_form_redirect(
+            "create failed — check Mastio logs for details",
         )
 
     return RedirectResponse(
         url=f"/proxy/users?new_user_name={user_name}",
         status_code=303,
+    )
+
+
+@router.get("/users/{principal_id:path}", response_class=HTMLResponse)
+async def user_detail_page(
+    request: Request, principal_id: str,
+    message: str | None = None, error: str | None = None,
+):
+    """Detail view for a single user principal — Overview, Activity,
+    Danger Zone tabs. Mirrors ``/proxy/agents/{agent_id}`` but without
+    the Connect tab (user principals don't speak the proxy API
+    directly — they sign in through Cullis Chat / Frontdesk and the
+    cert is minted server-side via ``/v1/principals/csr``).
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from mcp_proxy.db import get_user_principal
+    user = await get_user_principal(principal_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User principal not found")
+
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db, get_config
+    from mcp_proxy.config import get_settings
+    async with get_db() as conn:
+        result = await conn.execute(
+            _sql_text(
+                "SELECT * FROM audit_log WHERE agent_id = :pid "
+                " ORDER BY timestamp DESC LIMIT 20"
+            ),
+            {"pid": principal_id},
+        )
+        audit_entries = [dict(row) for row in result.mappings().all()]
+
+    settings = get_settings()
+    org_id = await get_config("org_id") or settings.org_id or ""
+    trust_domain = (
+        getattr(settings, "trust_domain", None)
+        or getattr(settings, "proxy_trust_domain", None)
+        or "cullis.test"
+    )
+
+    return templates.TemplateResponse("user_detail.html", _ctx(
+        request, session,
+        active="users",
+        user=user,
+        audit_entries=audit_entries,
+        org_id=org_id,
+        trust_domain=trust_domain,
+        action_message=message,
+        error=error,
+    ))
+
+
+async def _require_user_action(request: Request, principal_id: str):
+    """Shared guard for the Danger Zone POST endpoints.
+
+    Returns either a session (good) or a RedirectResponse / HTTPException.
+    Centralised so each lifecycle endpoint stays a 6-line wrapper around
+    one SQL statement.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session, None
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.db import get_user_principal
+    user = await get_user_principal(principal_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User principal not found")
+    return session, user
+
+
+@router.post("/users/{principal_id:path}/deactivate")
+async def user_deactivate(request: Request, principal_id: str):
+    session, _ = await _require_user_action(request, principal_id)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            _sql_text(
+                "UPDATE local_user_principals SET disabled = :dis "
+                " WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id, "dis": bool(True)},
+        )
+    _log.info("dashboard: deactivated principal_id=%s", principal_id)
+    return _user_detail_redirect(
+        principal_id, message="User deactivated. Sign-in is now blocked.",
+    )
+
+
+@router.post("/users/{principal_id:path}/reactivate")
+async def user_reactivate(request: Request, principal_id: str):
+    session, _ = await _require_user_action(request, principal_id)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            _sql_text(
+                "UPDATE local_user_principals SET disabled = :dis "
+                " WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id, "dis": bool(False)},
+        )
+    _log.info("dashboard: reactivated principal_id=%s", principal_id)
+    return _user_detail_redirect(
+        principal_id, message="User reactivated. Sign-in is allowed again.",
+    )
+
+
+@router.post("/users/{principal_id:path}/delete")
+async def user_delete(request: Request, principal_id: str):
+    session, _ = await _require_user_action(request, principal_id)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        await conn.execute(
+            _sql_text(
+                "DELETE FROM local_user_principals WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id},
+        )
+    _log.info("dashboard: deleted principal_id=%s", principal_id)
+    from urllib.parse import quote
+    return RedirectResponse(
+        url=(
+            "/proxy/users?error="
+            + quote(f"User {principal_id} deleted.")
+        ),
+        status_code=303,
+    )
+
+
+@router.post("/users/{principal_id:path}/reset-password")
+async def user_reset_password(request: Request, principal_id: str):
+    session, user = await _require_user_action(request, principal_id)
+    if isinstance(session, RedirectResponse):
+        return session
+
+    from datetime import datetime, timezone
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db
+    from mcp_proxy.admin.users import hash_password
+
+    form = await request.form()
+    new_password = str(form.get("new_password", "")).strip()
+    if not (8 <= len(new_password) <= 128):
+        return _user_detail_redirect(
+            principal_id, error="new password must be 8-128 chars",
+        )
+
+    pw_hash = await hash_password(new_password)
+    now = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        await conn.execute(
+            _sql_text(
+                """
+                UPDATE local_user_principals
+                   SET password_hash         = :pw,
+                       must_change_password  = :mcp,
+                       password_updated_at   = :now
+                 WHERE principal_id = :pid
+                """
+            ),
+            {
+                "pid": principal_id, "pw": pw_hash,
+                "mcp": bool(True), "now": now,
+            },
+        )
+    _log.info("dashboard: reset password for principal_id=%s", principal_id)
+    return _user_detail_redirect(
+        principal_id,
+        message=(
+            "Password reset. Hand the new value to the user out-of-band; "
+            "they will be forced to change it at next sign-in."
+        ),
     )
 
 
