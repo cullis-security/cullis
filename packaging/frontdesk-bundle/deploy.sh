@@ -26,12 +26,24 @@
 #   --site <url>               override CULLIS_SITE_URL for the enroll step
 #   --skip-enroll              bring the bundle up assuming connector_data
 #                              is already enrolled out-of-band
+#   --no-wizard                refuse to fall back to the in-browser setup
+#                              wizard when no Mastio URL is configured —
+#                              fail fast instead. Use in CI / scripted
+#                              deploys where prompting a human is wrong.
+#
+# First-boot wizard:
+#   When no CULLIS_SITE_URL is set (env or --site) and no enrollment
+#   metadata yet exists in connector_data/, the script skips the CLI
+#   one-shot and brings the bundle up directly. The Connector serves a
+#   discovery wizard at /setup/discover that probes nearby Mastios and
+#   pre-populates the enrollment form. Pass --no-wizard to opt out.
 #
 # Examples:
-#   ./deploy.sh                                      # interactive
+#   ./deploy.sh                                      # interactive (or wizard)
 #   ./deploy.sh --requester-email ops@acme.local
 #   ./deploy.sh --site https://mastio.acme.local:9443
 #   ./deploy.sh --skip-enroll                        # second run, identity exists
+#   ./deploy.sh --no-wizard --site …                 # CI: fail-fast, no wizard
 #   ./deploy.sh --down                               # stop + remove
 #
 set -euo pipefail
@@ -80,6 +92,10 @@ Options:
                               for the same-host topology
   --skip-enroll               Skip the enrollment one-shot (use when the
                               connector_data volume is already populated)
+  --no-wizard                 Refuse to fall back to the in-browser setup
+                              wizard when no Mastio URL is configured.
+                              Fail fast instead — use in CI / scripted
+                              deploys where prompting a human is wrong
   --help, -h                  Show this help and exit
 
 Environment variables (loaded from frontdesk.env, set by
@@ -103,6 +119,7 @@ CLI_REQUESTER_EMAIL=""
 CLI_REQUESTER_NAME=""
 CLI_SITE_URL=""
 SKIP_ENROLL=0
+NO_WIZARD=0
 
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -111,6 +128,7 @@ while [[ $# -gt 0 ]]; do
         --pull)             FORCE_PULL=1; shift ;;
         --prod)             MODE="production"; shift ;;
         --skip-enroll)      SKIP_ENROLL=1; shift ;;
+        --no-wizard)        NO_WIZARD=1; shift ;;
         --requester-email)
             shift
             [[ $# -gt 0 && "$1" != --* ]] || die "--requester-email requires a value"
@@ -248,16 +266,34 @@ if [[ "$_data_uid" != "10001" ]]; then
     fi
 fi
 
+WIZARD_MODE=0
 if [[ -f "$ENROLLMENT_METADATA" ]]; then
     ok "Connector profile '${CONNECTOR_PROFILE}' already enrolled"
 elif [[ $SKIP_ENROLL -eq 1 ]]; then
     warn "--skip-enroll: assuming Connector profile is enrolled out-of-band"
+elif [[ -z "${CLI_SITE_URL}${ENV_SITE_URL}" && $NO_WIZARD -eq 0 ]]; then
+    # No Mastio URL configured anywhere and the operator hasn't opted out
+    # of the in-browser wizard. Skip the CLI device-code one-shot and let
+    # the Connector's auto-discovery wizard at /setup/discover handle
+    # enrollment after compose up. The wizard probes nearby Mastios,
+    # pins the CA from /pki/ca.crt, and walks the operator through the
+    # same device-code flow the CLI one-shot would have driven —
+    # only it does it from the browser instead of an interactive prompt.
+    WIZARD_MODE=1
+    warn "No CULLIS_SITE_URL configured — bringing up in browser-wizard mode"
+    warn "After compose up, finish enrollment at http://localhost:${HTTP_PORT}/setup/discover"
 else
     step "Enrolling Connector profile '${CONNECTOR_PROFILE}'"
 
     # Site URL precedence: CLI flag > frontdesk.env CULLIS_SITE_URL > prompt.
+    # ``--no-wizard`` skipped the wizard branch above; if we still have
+    # no URL here, fail fast rather than fall through to a prompt that
+    # would just confuse a CI runner.
     SITE_URL="${CLI_SITE_URL:-${ENV_SITE_URL}}"
     if [[ -z "$SITE_URL" ]]; then
+        if [[ $NO_WIZARD -eq 1 ]]; then
+            die "--no-wizard requires --site or CULLIS_SITE_URL to be set"
+        fi
         echo ""
         echo "  ${BOLD}Where does the Connector reach the Mastio?${RESET}"
         echo "    ${GRAY}- Same host (laptop / single VM): just press Enter${RESET}"
@@ -394,7 +430,19 @@ echo -e "  ${BOLD}Mastio target${RESET}    ${GRAY}${SITE_URL_DISPLAY}${RESET}"
 echo -e "  ${BOLD}Org${RESET}              ${GRAY}${ORG_ID} (${TRUST_DOMAIN})${RESET}"
 echo -e "  ${BOLD}Profile${RESET}          ${GRAY}${CONNECTOR_PROFILE} (data: ${DATA_DIR})${RESET}"
 echo ""
-if [[ "${AMBASSADOR_MODE:-}" == "shared" ]]; then
+if [[ $WIZARD_MODE -eq 1 ]]; then
+    echo "  ${BOLD}${YELLOW}First-boot wizard active${RESET}"
+    echo ""
+    echo "  No Mastio URL was configured, so enrollment hasn't run yet."
+    echo "  Open the wizard in your browser to finish:"
+    echo ""
+    echo "      ${BOLD}http://localhost:${HTTP_PORT}/setup/discover${RESET}"
+    echo ""
+    echo "  The wizard will probe nearby Mastios, show the CA fingerprint"
+    echo "  for visual confirmation, and walk you through enrollment."
+    echo "  After approval lands, refresh the SPA URL above and log in."
+    echo ""
+elif [[ "${AMBASSADOR_MODE:-}" == "shared" ]]; then
     echo "  ${YELLOW}Legacy shared mode active${RESET} (AMBASSADOR_MODE=shared)."
     echo "    open http://localhost:${HTTP_PORT}?user=mario   # X-Forwarded-User dev only"
     echo "    open http://localhost:${HTTP_PORT}?user=anna    # incognito tab"
