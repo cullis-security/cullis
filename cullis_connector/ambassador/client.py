@@ -54,9 +54,22 @@ class AmbassadorClient:
     def _build(self) -> Any:
         """Create + login a fresh CullisClient. Caller holds the lock."""
         from cullis_sdk import CullisClient
+        import os
         import time
 
-        client = CullisClient(self._site_url, verify_tls=self._verify_tls)
+        # CullisClient default timeout is 10 s which kills any chain-
+        # of-thought local Ollama model (qwen3.5, deepseek-r1 routinely
+        # take 20-60 s). Read the same env the rest of the Connector
+        # uses so the SDK and the operator's expectation match.
+        try:
+            req_timeout = float(os.environ.get("CULLIS_REQUEST_TIMEOUT_S", "10"))
+        except ValueError:
+            req_timeout = 10.0
+        client = CullisClient(
+            self._site_url,
+            verify_tls=self._verify_tls,
+            timeout=req_timeout,
+        )
         client.login_from_pem(
             self._agent_id, self._org_id, self._cert_pem, self._key_pem,
         )

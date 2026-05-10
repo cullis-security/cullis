@@ -354,12 +354,23 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
         key_pem=key_pem,
         verify_tls=config.verify_arg,
     )
+    # Loopback enforcement defaults to True for the laptop topology
+    # (Connector bound to 127.0.0.1, defence-in-depth on the bind). In
+    # the Frontdesk bundle the Ambassador sits behind nginx on a private
+    # docker network and the TCP peer is the sidecar IP, not 127.0.0.1
+    # — leaving the check on returns 403 on every ``/api/session/init``.
+    # ``CULLIS_AMBASSADOR_LOOPBACK_ONLY=false`` opts out for that case.
+    _loopback_env = os.environ.get("CULLIS_AMBASSADOR_LOOPBACK_ONLY", "")
+    if _loopback_env.lower() in {"false", "0", "no", "off"}:
+        _require_loopback_effective = False
+    else:
+        _require_loopback_effective = config.ambassador.require_local_only
     install_ambassador(
         app,
         bearer_token=bearer,
         client=holder,
         advertised_models=config.ambassador.advertised_models,
-        require_local_only=config.ambassador.require_local_only,
+        require_local_only=_require_loopback_effective,
     )
     log.info(
         "Ambassador mounted: agent=%s site=%s bearer=*** (saved at %s)",
