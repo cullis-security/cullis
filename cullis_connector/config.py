@@ -262,6 +262,21 @@ def load_config(
     log_level = str(_pick("log_level", "CULLIS_LOG_LEVEL", "info")).lower()
     request_timeout_s = float(_pick("request_timeout_s", "CULLIS_REQUEST_TIMEOUT_S", 10.0))
 
+    # CULLIS_ADVERTISED_MODELS: comma-separated override for the
+    # ``/v1/models`` fallback list. The Ambassador prefers a live fetch
+    # from the Mastio (``client.list_models()``), but the live path can
+    # silently 401 / parse-fail (cert handshake mismatch, AAA gate
+    # changes) and degrade to the in-process fallback. Letting the
+    # operator extend the fallback via env keeps the SPA dropdown
+    # honest: configure the env to mirror the providers actually
+    # enabled in the Mastio (``/proxy/ai-providers``).
+    ambassador_cfg = AmbassadorConfig()
+    raw_models = env_map.get("CULLIS_ADVERTISED_MODELS", "")
+    if raw_models:
+        parsed = [m.strip() for m in raw_models.split(",") if m.strip()]
+        if parsed:
+            ambassador_cfg = AmbassadorConfig(advertised_models=parsed)
+
     return ConnectorConfig(
         site_url=site_url,
         config_dir=config_dir,
@@ -269,4 +284,5 @@ def load_config(
         verify_tls=verify_tls,
         log_level=log_level,
         request_timeout_s=request_timeout_s,
+        ambassador=ambassador_cfg,
     )

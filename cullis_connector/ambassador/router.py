@@ -70,11 +70,17 @@ def _build_user_client(request: Request, cred: Any):
             503, "Ambassador site_url unknown — cannot build per-user client",
         )
     from cullis_sdk import CullisClient
+    import os as _os_timeout
+    try:
+        _req_timeout = float(_os_timeout.environ.get("CULLIS_REQUEST_TIMEOUT_S", "10"))
+    except ValueError:
+        _req_timeout = 10.0
     client = CullisClient.from_user_principal_pem(
         site_url,
         principal_id=cred.principal_id,
         cert_pem=cred.cert_pem,
         key_pem=cred.key_pem,
+        timeout=_req_timeout,
     )
     client.login_via_proxy_with_local_key()
     return client
@@ -491,10 +497,10 @@ def install_ambassador(
         "require_local_only": require_local_only,
     }
     app.include_router(router)
-    # Session endpoints (init / whoami / logout). Lifted into a separate
-    # router so shared mode can mount its own session routes without
-    # colliding (the two modes share AMBASSADOR_MODE-gated lifespan
-    # logic in web.py, never run together).
+    # Session endpoints (init / whoami / logout). The single-mode router
+    # delegates to ``request.state.user_credentials`` when present (see
+    # session_routes.session_whoami) so the SPA's IdentityBadge surfaces
+    # the local-auth user, not the container's bearer identity.
     app.include_router(session_router)
     _log.info(
         "ambassador installed: agent=%s site=%s models=%s",

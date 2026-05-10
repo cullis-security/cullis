@@ -100,6 +100,36 @@ services:
       AUTH_MODE: ${AUTH_MODE:-local}
       AMBASSADOR_MODE: ${AMBASSADOR_MODE:-}
       CULLIS_CONNECTOR_ADMIN_SECRET: ${CULLIS_CONNECTOR_ADMIN_SECRET:-}
+      # Loopback enforcement is the right default on a laptop where the
+      # Ambassador binds to 127.0.0.1, but on the Frontdesk bundle the
+      # Ambassador sits behind nginx on a private docker bridge, so the
+      # TCP peer is the nginx sidecar IP (172.x.x.x), not loopback —
+      # leaving the guard on returns 403 ``Ambassador only accepts
+      # loopback connections`` on every /api/session/init from the SPA.
+      CULLIS_AMBASSADOR_LOOPBACK_ONLY: ${CULLIS_AMBASSADOR_LOOPBACK_ONLY:-false}
+      # Comma-separated list of models the SPA's model picker offers
+      # when the Connector cannot fetch a live list from the Mastio.
+      # Mirror this with /proxy/ai-providers on the Mastio so SSO chat
+      # actually routes — listing a model here without a configured
+      # provider returns 502.
+      CULLIS_ADVERTISED_MODELS: ${CULLIS_ADVERTISED_MODELS:-}
+      # SDK / Connector → Mastio request timeout. 10 s default is fine
+      # for cloud Claude (~3 s) but Ollama chain-of-thought models on
+      # the host can take 30-60 s. Pair with the Mastio's
+      # MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S so the deadline ladder
+      # is consistent end-to-end.
+      CULLIS_REQUEST_TIMEOUT_S: ${CULLIS_REQUEST_TIMEOUT_S:-180}
+      # ADR-025 session cookie gets a ``Secure`` flag by default so
+      # production deployments (TLS-terminated at the nginx edge) refuse
+      # to leak it on HTTP. Browsers treat ``localhost`` as a "secure
+      # context" anyway, so the dogfood-on-laptop case keeps working
+      # with the flag on. But on a LAN IP (192.168.x.x) accessed from a
+      # phone over plain HTTP, the browser will drop the cookie on every
+      # request after login — flipping this to ``1`` removes the Secure
+      # flag and lets the LAN demo flow through. **Cookie travels in
+      # clear over the LAN** when this is on, so do not enable it in
+      # production.
+      CULLIS_CONNECTOR_DEV: ${CULLIS_CONNECTOR_DEV:-}
       CULLIS_FRONTDESK_ORG_ID: ${CULLIS_FRONTDESK_ORG_ID}
       CULLIS_FRONTDESK_TRUST_DOMAIN: ${CULLIS_FRONTDESK_TRUST_DOMAIN}
       # Trust the docker bridge network so X-Forwarded-User from nginx is
@@ -132,15 +162,15 @@ services:
       # frontdesk.env to point at your Mastio's CA chain (or the org's
       # corporate root if Mastio TLS is rooted there).
       - ${CULLIS_FRONTDESK_CA_BUNDLE_HOST:?must point to your Mastio CA chain PEM}:/etc/cullis/ca-bundle.pem:ro
-    # In dev with the Mastio published on the docker host (rather than a
-    # routable hostname), the Connector reaches it via either alias.
-    # ``host.docker.internal`` matches the Mastio bundle's default Public
-    # URL (PR #521); ``mastio.local`` is the legacy alias still recorded
-    # in the Mastio's NGINX SAN. Production deployments route over a real
-    # DNS name; both entries are no-ops there.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-      - "mastio.local:host-gateway"
+    # On Linux ``host.docker.internal:host-gateway`` resolves to the
+    # docker0 bridge IP (172.17.0.1) — which is unreachable across
+    # custom docker bridges because of iptables FORWARD policy. The
+    # Mastio bundle is on a different bridge, so the Connector
+    # times out on every CSR / chat round trip.
+    # Fix: attach the Mastio nginx sidecar to this network at boot
+    # (see deploy.sh) and let docker DNS resolve ``host.docker.internal``
+    # to the Mastio's address inside this bridge. ``extra_hosts`` is
+    # omitted so /etc/hosts does not pre-empt the docker DNS alias.
     depends_on:
       init-permissions:
         condition: service_completed_successfully

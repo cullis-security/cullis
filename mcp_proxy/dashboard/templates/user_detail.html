@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}{{ user.display_name or user.user_name }} — User Principal{% endblock %}
+{% block header_title %}User Principal{% endblock %}
+{% block content %}
+<div class="max-w-5xl">
+
+    <!-- Back link -->
+    <a href="/proxy/users" class="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors mb-6">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+        Back to Users
+    </a>
+
+    {% if action_message %}
+    <div class="mb-6 p-4 bg-emerald-900/10 border border-emerald-600/30 rounded-lg text-xs text-emerald-400">
+        {{ action_message }}
+    </div>
+    {% endif %}
+    {% set _temp_pw = reset_temp_password or new_user_temp_password %}
+    {% if _temp_pw %}
+    <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+        <p class="text-sm font-semibold text-amber-400 mb-2">
+            {% if new_user_temp_password %}User created · one-time temp credential
+            {% else %}Password reset · one-time temp credential{% endif %}
+        </p>
+        <p class="text-xs text-amber-500/80 mb-3">
+            Hand this to <span class="font-mono text-gray-300">{{ user.user_name }}</span> out-of-band. The user is forced to rotate at next sign-in. This value will not be shown again — if you lose it, use <em>Danger Zone → Reset Password</em> to mint a fresh one.
+        </p>
+        <div class="bg-surface-950 border border-amber-700/30 rounded p-3 flex items-center justify-between gap-3">
+            <code class="text-sm text-amber-300 font-mono break-all select-all">{{ _temp_pw }}</code>
+            <button type="button"
+                    data-copy="{{ _temp_pw|e }}"
+                    class="text-[10px] text-gray-400 hover:text-white uppercase tracking-wider border border-gray-700 rounded px-2 py-1">
+                copy
+            </button>
+        </div>
+    </div>
+    {% endif %}
+    {% if error %}
+    <div class="mb-6 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
+    {% endif %}
+
+    <!-- Header -->
+    <div class="flex items-start justify-between mb-6">
+        <div>
+            <h2 class="text-lg font-heading font-semibold text-white">{{ user.display_name or user.user_name }}</h2>
+            <p class="text-xs font-mono text-gray-500 mt-1">{{ user.principal_id }}</p>
+        </div>
+        {% if user.disabled %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Disabled
+        </span>
+        {% elif user.must_change_password %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 pulse-dot"></span>Pending password change
+        </span>
+        {% elif user.has_password %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+        </span>
+        {% else %}
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-400 uppercase tracking-wider">
+            <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>No credential
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- ── Tab Navigation ────────────────────────────────────────────────── -->
+    <div class="flex gap-1 mb-6 border-b border-gray-800">
+        <button type="button" onclick="switchTab('overview')" id="tab-overview"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-[#00e5c7] text-white">
+            Overview
+        </button>
+        <button type="button" onclick="switchTab('activity')" id="tab-activity"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            Activity
+        </button>
+        {% if frontdesk_enabled %}
+        <button type="button" onclick="switchTab('danger')" id="tab-danger"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            Danger Zone
+        </button>
+        {% endif %}
+    </div>
+
+    <!-- TAB 1: Overview -->
+    <div id="panel-overview" class="main-tab-panel">
+
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-6">
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Principal ID</p>
+                    <p class="text-sm text-gray-300 font-mono break-all">{{ user.principal_id }}</p>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">User Name</p>
+                    <p class="text-sm text-gray-300 font-mono">{{ user.user_name }}</p>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Surface</p>
+                    {% if user.surface %}
+                    <p class="text-sm text-gray-300 font-mono">{{ user.surface }}</p>
+                    {% elif user.in_frontdesk %}
+                    <p class="text-sm text-gray-300 font-mono">frontdesk</p>
+                    {% else %}
+                    <p class="text-sm text-gray-700 italic">—</p>
+                    {% endif %}
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Created</p>
+                    <p class="text-sm text-gray-300 font-mono">{{ user.created_at[:19] if user.created_at else '—' }}</p>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Last active</p>
+                    {% if user.last_active_at %}
+                    <p class="text-sm text-gray-300 font-mono">{{ user.last_active_at[:19] }}</p>
+                    {% else %}
+                    <p class="text-sm text-gray-700 italic">never</p>
+                    {% endif %}
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider mb-1">Credential lives at</p>
+                    {% if user.in_frontdesk %}
+                    <p class="text-sm text-violet-400 font-mono">Frontdesk users.db</p>
+                    {% else %}
+                    <p class="text-sm text-gray-700 italic">unknown</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">Authentication</h3>
+            <div class="space-y-3">
+                <div class="flex items-start gap-3">
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider w-32 mt-1">Password</p>
+                    {% if user.has_password %}
+                        {% if user.must_change_password %}
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider">
+                            Set, pending change
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
+                            Set
+                        </span>
+                        {% endif %}
+                        {% if user.password_changed_at %}
+                        <span class="text-[11px] text-gray-600 mt-1.5">
+                            Last updated {{ user.password_changed_at[:19] }}
+                        </span>
+                        {% endif %}
+                    {% else %}
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-500 uppercase tracking-wider">
+                        Not set
+                    </span>
+                    {% endif %}
+                </div>
+                <div class="flex items-start gap-3">
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider w-32 mt-1">Cert thumbprint</p>
+                    {% if user.cert_thumbprint %}
+                    <code class="text-xs text-gray-400 font-mono break-all" title="{{ user.cert_thumbprint }}">{{ user.cert_thumbprint[:32] }}{% if user.cert_thumbprint|length > 32 %}…{% endif %}</code>
+                    {% else %}
+                    <span class="text-xs text-gray-700 italic mt-1">No cert minted yet</span>
+                    {% endif %}
+                </div>
+                <div class="flex items-start gap-3">
+                    <p class="text-[10px] text-gray-600 uppercase tracking-wider w-32 mt-1">SPIFFE</p>
+                    <code class="text-xs text-gray-400 font-mono break-all">spiffe://{{ trust_domain }}/{{ org_id }}/user/{{ user.user_name }}</code>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- TAB 2: Activity -->
+    <div id="panel-activity" class="main-tab-panel hidden">
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg overflow-hidden backdrop-blur-sm">
+            <div class="px-6 py-4 border-b border-gray-800/60">
+                <h3 class="text-sm font-semibold text-white uppercase tracking-wider">Recent Activity</h3>
+                <p class="text-[11px] text-gray-600 mt-1">Last {{ audit_entries|length }} audit row{% if audit_entries|length != 1 %}s{% endif %} attributed to this principal.</p>
+            </div>
+            <table class="w-full">
+                <thead>
+                    <tr class="border-b border-gray-800/40">
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Timestamp</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Action</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Tool</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
+                        <th class="px-5 py-2.5 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Detail</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-800/40">
+                    {% for entry in audit_entries %}
+                    <tr class="table-row-hover transition-colors">
+                        <td class="px-5 py-3 text-xs text-gray-500 font-mono whitespace-nowrap">{{ entry.timestamp[:19] }}</td>
+                        <td class="px-5 py-3 text-xs text-gray-300">{{ entry.action }}</td>
+                        <td class="px-5 py-3 text-xs text-gray-400 font-mono">{{ entry.tool_name or '-' }}</td>
+                        <td class="px-5 py-3">
+                            {% if entry.status == 'success' %}
+                            <span class="text-[10px] text-emerald-400 uppercase tracking-wider">OK</span>
+                            {% elif entry.status == 'denied' %}
+                            <span class="text-[10px] text-red-400 uppercase tracking-wider">Denied</span>
+                            {% elif entry.status == 'error' %}
+                            <span class="text-[10px] text-red-400 uppercase tracking-wider">Error</span>
+                            {% else %}
+                            <span class="text-[10px] text-yellow-400 uppercase tracking-wider">{{ entry.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="px-5 py-3 text-xs text-gray-600 max-w-[200px] truncate" title="{{ entry.detail or '' }}">{{ entry.detail or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not audit_entries %}
+                    <tr><td colspan="5" class="px-5 py-8 text-center text-xs text-gray-600">No recent activity for this principal</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% if frontdesk_enabled %}
+    <!-- TAB 3: Danger Zone -->
+    <div id="panel-danger" class="main-tab-panel hidden">
+        <div class="bg-red-900/5 border border-red-900/20 rounded-lg p-6 space-y-6">
+            <div>
+                <h3 class="text-sm font-semibold text-red-400 uppercase tracking-wider mb-2">Danger Zone</h3>
+                <p class="text-[11px] text-gray-600">Operations on this principal are mostly irreversible. The audit chain keeps the history regardless. The Mastio forwards each action to the Frontdesk Ambassador (the canale that holds the credential).</p>
+            </div>
+
+            <!-- Reset password -->
+            <div class="border-t border-red-900/20 pt-5">
+                <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Reset Password</p>
+                <p class="text-xs text-gray-500 mb-3">
+                    The Mastio mints a 20-char temp credential, forwards it to the Frontdesk, and shows it to you here once. The user is forced to change it at next sign-in.
+                </p>
+                <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/reset-password"
+                      onsubmit="return confirm('Reset this user\'s password? They will need the new value to sign back in.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-amber-600/20 border border-amber-600/30 text-amber-400 rounded hover:bg-amber-600/30 transition-colors">
+                        Reset Password
+                    </button>
+                </form>
+            </div>
+
+            <!-- Delete -->
+            <div class="border-t border-red-900/20 pt-5">
+                <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Delete</p>
+                <p class="text-xs text-gray-500 mb-3">
+                    Removes the row from the Frontdesk users.db and from the Mastio registry. Past audit entries stay in the chain so the principal id remains attributable. Cannot be undone.
+                </p>
+                <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/delete"
+                      onsubmit="return confirm('PERMANENTLY DELETE this user principal? The user will no longer be able to sign in.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-red-600/20 border border-red-600/30 text-red-400 rounded hover:bg-red-600/30 transition-colors">
+                        Delete User
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+</div>
+
+<script>
+function switchTab(name) {
+    document.querySelectorAll('.main-tab-panel').forEach(function(p) { p.classList.add('hidden'); });
+    document.querySelectorAll('.main-tab-btn').forEach(function(b) {
+        b.classList.remove('border-[#00e5c7]', 'text-white');
+        b.classList.add('border-transparent', 'text-gray-500');
+    });
+    document.getElementById('panel-' + name).classList.remove('hidden');
+    var btn = document.getElementById('tab-' + name);
+    btn.classList.add('border-[#00e5c7]', 'text-white');
+    btn.classList.remove('border-transparent', 'text-gray-500');
+}
+</script>
+{% endblock %}
