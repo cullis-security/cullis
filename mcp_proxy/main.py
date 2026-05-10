@@ -1086,6 +1086,12 @@ app.include_router(admin_workloads_router)
 from mcp_proxy.admin.enroll import router as admin_enroll_router
 app.include_router(admin_enroll_router)
 
+# ADR-017 Phase 4 — multi-provider AI gateway credentials managed
+# from the dashboard. Anthropic / OpenAI / Gemini / Bedrock / Vertex
+# / Ollama plug into the embedded LiteLLM at runtime.
+from mcp_proxy.admin.ai_providers import router as admin_ai_providers_router
+app.include_router(admin_ai_providers_router)
+
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
 # Must precede the reverse-proxy catch-all: /v1/federation/agents/{id}/
 # public-key would otherwise fall into the `/v1/federation/*` forward
@@ -1183,6 +1189,11 @@ app.include_router(link_broker_admin_router)
 # landed in #126; this gives operators a UI instead of raw SQL.
 from mcp_proxy.dashboard.policies_local import router as local_policies_router
 app.include_router(local_policies_router)
+
+# ADR-017 Phase 4 — dashboard CRUD for AI provider credentials (the
+# admin secret API surface lives in mcp_proxy.admin.ai_providers).
+from mcp_proxy.dashboard.ai_providers import router as ai_providers_dashboard_router
+app.include_router(ai_providers_dashboard_router)
 
 # Mounted under /proxy/backends; /proxy/mcp-resources is redirected via a
 # small legacy router in the same module (compat for old bookmarks).

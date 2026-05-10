@@ -140,24 +140,47 @@ def _get_state(request: Request) -> dict:
     return state
 
 
+# In-process cache for the upstream model list. The Mastio answer is
+# stable per-deployment until an admin edits AI Providers, so a 30s
+# TTL keeps the chat sidebar snappy without hammering the egress.
+_MODELS_CACHE_TTL_S = 30.0
+_models_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _fallback_models(state: dict) -> list[dict]:
+    advertised = state["advertised_models"] or ["claude-haiku-4-5"]
+    return [
+        {"id": m, "object": "model", "owned_by": "cullis", "created": 0}
+        for m in advertised
+    ]
+
+
 @router.get("/v1/models")
 def list_models(request: Request) -> dict:
     _enforce_loopback(request)
     state = _get_state(request)
     _enforce_bearer(request, state)
-    advertised = state["advertised_models"] or ["claude-haiku-4-5"]
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": m,
-                "object": "model",
-                "owned_by": "cullis",
-                "created": 0,
-            }
-            for m in advertised
-        ],
-    }
+
+    cache_key = state.get("agent_id") or "default"
+    cached = _models_cache.get(cache_key)
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _MODELS_CACHE_TTL_S:
+        return {"object": "list", "data": cached[1]}
+
+    holder = state.get("client")
+    data = _fallback_models(state)
+    if holder is not None:
+        try:
+            client = holder.get()
+            data = client.list_models() or data
+        except Exception as exc:
+            _log.debug(
+                "Mastio /v1/models fetch failed, using advertised fallback: %s",
+                exc,
+            )
+
+    _models_cache[cache_key] = (now, data)
+    return {"object": "list", "data": data}
 
 
 # ── /v1/chat/completions ────────────────────────────────────────────

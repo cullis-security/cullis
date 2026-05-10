@@ -3205,6 +3205,25 @@ class CullisClient:
         resp.raise_for_status()
         return resp.json()
 
+    def list_models(self) -> list[dict]:
+        """Return the OpenAI-compatible model list from Mastio.
+
+        Hits ``GET /v1/egress/models`` (with ``/v1/models`` as a back-
+        compat alias). The Mastio enumerates the providers configured
+        in the ``ai_provider_credentials`` table, surfaces only those
+        whose ``enabled`` is ``True`` and whose required credentials
+        are present, then fans out the static model catalog (Anthropic,
+        OpenAI, Gemini, Bedrock, Vertex) plus a live ``ollama/api/tags``
+        fetch when an Ollama row is configured.
+
+        Returns the ``data`` array verbatim so the Connector Ambassador
+        can pass it straight through to the SPA's ``ModelPicker``.
+        """
+        resp = self._authed_request("GET", "/v1/egress/models")
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data", [])
+
     # ── ADR-007 — MCP aggregator (proxy-side only) ─────────────────
     def list_mcp_tools(self) -> list[dict]:
         """List the MCP tools the authenticated agent can call.
