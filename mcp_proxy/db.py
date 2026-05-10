@@ -1252,3 +1252,131 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
     if "dpop_jkt" in row.keys():
         out["dpop_jkt"] = row["dpop_jkt"]
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI provider credentials (migration 0027)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def get_ai_provider_creds(provider: str) -> dict | None:
+    """Fetch a single AI provider credential row.
+
+    Returns ``{"provider", "creds", "enabled", "updated_at", "updated_by"}``
+    with ``creds`` already JSON-decoded into a dict, or ``None`` when no
+    row exists. Disabled rows are returned as-is so the admin UI can
+    surface ``enabled: false`` without a separate query.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT provider, creds_json, enabled, updated_at, updated_by "
+                "FROM ai_provider_credentials WHERE provider = :p"
+            ),
+            {"p": provider.lower()},
+        )
+        row = result.mappings().first()
+    if row is None:
+        return None
+    try:
+        creds = json.loads(row["creds_json"]) if row["creds_json"] else {}
+    except (TypeError, ValueError):
+        creds = {}
+    return {
+        "provider": row["provider"],
+        "creds": creds,
+        "enabled": bool(row["enabled"]),
+        "updated_at": row["updated_at"],
+        "updated_by": row["updated_by"],
+    }
+
+
+async def list_ai_provider_creds() -> list[dict]:
+    """Return every configured provider row.
+
+    Order is stable (alphabetical by provider) so the dashboard render
+    never flickers between page loads.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT provider, creds_json, enabled, updated_at, updated_by "
+                "FROM ai_provider_credentials ORDER BY provider ASC"
+            ),
+        )
+        rows = result.mappings().all()
+    out: list[dict] = []
+    for row in rows:
+        try:
+            creds = json.loads(row["creds_json"]) if row["creds_json"] else {}
+        except (TypeError, ValueError):
+            creds = {}
+        out.append({
+            "provider": row["provider"],
+            "creds": creds,
+            "enabled": bool(row["enabled"]),
+            "updated_at": row["updated_at"],
+            "updated_by": row["updated_by"],
+        })
+    return out
+
+
+async def upsert_ai_provider_creds(
+    provider: str,
+    creds: Mapping[str, Any],
+    *,
+    enabled: bool = True,
+    updated_by: str | None = None,
+) -> None:
+    """Insert or replace a provider's credentials.
+
+    The dict is serialised to canonical JSON (sorted keys) so audit
+    diffs stay deterministic.
+    """
+    payload = json.dumps(dict(creds), separators=(",", ":"), sort_keys=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """INSERT INTO ai_provider_credentials
+                       (provider, creds_json, enabled, updated_at, updated_by)
+                   VALUES (:p, :c, :en, :ts, :ub)
+                   ON CONFLICT(provider) DO UPDATE SET
+                       creds_json = excluded.creds_json,
+                       enabled    = excluded.enabled,
+                       updated_at = excluded.updated_at,
+                       updated_by = excluded.updated_by"""
+            ),
+            {
+                "p": provider.lower(),
+                "c": payload,
+                "en": bool(enabled),
+                "ts": ts,
+                "ub": updated_by,
+            },
+        )
+
+
+async def delete_ai_provider_creds(provider: str) -> bool:
+    """Remove a provider row. Returns True when a row was deleted."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text("DELETE FROM ai_provider_credentials WHERE provider = :p"),
+            {"p": provider.lower()},
+        )
+    return (result.rowcount or 0) > 0
+
+
+async def set_ai_provider_enabled(provider: str, enabled: bool) -> bool:
+    """Toggle the ``enabled`` flag without rotating credentials."""
+    ts = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "UPDATE ai_provider_credentials "
+                "SET enabled = :en, updated_at = :ts "
+                "WHERE provider = :p"
+            ),
+            {"p": provider.lower(), "en": bool(enabled), "ts": ts},
+        )
+    return (result.rowcount or 0) > 0

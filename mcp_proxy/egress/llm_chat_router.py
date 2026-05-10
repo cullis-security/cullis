@@ -31,12 +31,16 @@ from fastapi.responses import StreamingResponse
 from mcp_proxy.auth.dpop_client_cert import get_agent_from_dpop_client_cert
 from mcp_proxy.auth.rate_limit import get_token_sum_limiter
 from mcp_proxy.config import get_settings
-from mcp_proxy.db import log_audit
+from mcp_proxy.db import list_ai_provider_creds, log_audit
 from mcp_proxy.egress.ai_gateway import (
     GatewayError,
     StreamingDispatch,
     dispatch,
     dispatch_stream,
+)
+from mcp_proxy.egress.provider_catalog import (
+    PROVIDERS,
+    list_available_models,
 )
 from mcp_proxy.egress.schemas import ChatCompletionRequest
 from mcp_proxy.models import InternalAgent
@@ -314,3 +318,43 @@ async def _handle_stream(
             "X-Cullis-Trace": trace_id,
         },
     )
+
+
+@router.get("/v1/egress/models")
+@router.get("/v1/models")
+async def list_models(
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
+) -> dict:
+    """OpenAI-compatible model list filtered by configured providers.
+
+    Returns the union of model ids surfaced by every enabled row in
+    ``ai_provider_credentials``, plus the static Anthropic catalog when
+    a legacy deployment still relies on ``ANTHROPIC_API_KEY`` and has no
+    DB row yet. Disabled rows are skipped so the SPA dropdown reflects
+    what the gateway will actually accept right now.
+
+    Auth: same mTLS+DPoP cert as the chat-completions endpoint, so the
+    Ambassador can fetch the list with the user's principal cert and
+    surface only models the org has paid keys for.
+    """
+    settings = get_settings()
+    rows = await list_ai_provider_creds()
+    enabled: list[tuple[str, dict[str, str]]] = [
+        (r["provider"], dict(r["creds"] or {}))
+        for r in rows
+        if r["enabled"] and r["provider"] in PROVIDERS
+    ]
+
+    # Backward compat: the env-only deployments that have not yet
+    # written an ``ai_provider_credentials`` row should still see the
+    # Anthropic catalog so existing chat clients keep working.
+    has_anthropic_row = any(p == "anthropic" for p, _ in enabled)
+    if not has_anthropic_row and settings.anthropic_api_key:
+        enabled.append(("anthropic", {"api_key": settings.anthropic_api_key}))
+
+    data = await list_available_models(enabled)
+    logger.debug(
+        "egress.models served agent=%s providers=%s count=%d",
+        agent.agent_id, [p for p, _ in enabled], len(data),
+    )
+    return {"object": "list", "data": data}

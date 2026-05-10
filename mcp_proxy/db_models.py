@@ -18,6 +18,7 @@ primary keys use plain Integer + primary_key=True — SQLAlchemy picks SERIAL
 on Postgres and INTEGER on SQLite.
 """
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     Float,
@@ -508,3 +509,27 @@ class AgentQuarantineEvent(Base):
         ),
         Index("idx_quarantine_agent", "agent_id", "quarantined_at"),
     )
+
+
+class AIProviderCredentials(Base):
+    """Per-provider credentials for the embedded LiteLLM AI gateway.
+
+    One row per provider key recognised by
+    :mod:`mcp_proxy.egress.provider_catalog`. ``creds_json`` holds a
+    JSON dict whose shape is provider-specific (``api_key`` for
+    Anthropic/OpenAI/Gemini, AWS triplet for Bedrock, project + service
+    account JSON for Vertex, ``api_base`` for Ollama).
+
+    Plaintext at rest, same trust level as ``proxy_config.org_ca_key``:
+    the Mastio process is the boundary, not the column. Cloud KMS
+    backends in cullis-enterprise can wrap this row through the same
+    plugin hook that wraps the Org CA private key.
+    """
+
+    __tablename__ = "ai_provider_credentials"
+
+    provider = Column(Text, primary_key=True)
+    creds_json = Column(Text, nullable=False)
+    enabled = Column(Boolean, nullable=False, server_default="1")
+    updated_at = Column(Text, nullable=False)
+    updated_by = Column(Text, nullable=True)

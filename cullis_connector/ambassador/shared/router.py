@@ -19,6 +19,7 @@ unchanged — both modes can coexist on the same image.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -261,19 +262,53 @@ async def session_whoami(
 # ── /v1/models ────────────────────────────────────────────────────
 
 
+# Process-local TTL cache keyed on principal_id. The Mastio answer is
+# stable per-org until an admin edits AI Providers, so a 30s TTL keeps
+# the SPA dropdown snappy even with 50 concurrent users.
+_SHARED_MODELS_CACHE_TTL_S = 30.0
+_shared_models_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def _shared_fallback_models(state: SharedAmbassadorState) -> list[dict]:
+    advertised = state.advertised_models or ["claude-haiku-4-5"]
+    return [
+        {"id": m, "object": "model", "owned_by": "cullis", "created": 0}
+        for m in advertised
+    ]
+
+
 @router.get("/v1/models")
 async def list_models(
     request: Request,
-    _payload: SessionPayload = Depends(_require_session),
+    cred: UserCredentials = Depends(_require_credentials),
 ) -> dict:
     state = _state(request)
-    return {
-        "object": "list",
-        "data": [
-            {"id": m, "object": "model", "owned_by": "cullis", "created": 0}
-            for m in (state.advertised_models or ["claude-haiku-4-5"])
-        ],
-    }
+
+    cached = _shared_models_cache.get(cred.principal_id)
+    now = time.monotonic()
+    if cached is not None and (now - cached[0]) < _SHARED_MODELS_CACHE_TTL_S:
+        return {"object": "list", "data": cached[1]}
+
+    data = _shared_fallback_models(state)
+    try:
+        client = _build_user_client(state, cred)
+        try:
+            data = client.list_models() or data
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+    except Exception as exc:
+        _log.debug(
+            "shared ambassador /v1/models fetch failed for %s: %s",
+            cred.principal_id, exc,
+        )
+
+    _shared_models_cache[cred.principal_id] = (now, data)
+    return {"object": "list", "data": data}
 
 
 # ── /v1/chat/completions ─────────────────────────────────────────

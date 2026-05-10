@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}AI Providers{% endblock %}
+{% block header_title %}AI Providers{% endblock %}
+{% block content %}
+<div class="max-w-5xl">
+
+    <!-- Header -->
+    <div class="mb-6">
+        <h2 class="text-lg font-semibold text-white uppercase tracking-wider">AI Providers</h2>
+        <p class="text-xs text-gray-600 mt-0.5">
+            Credentials for the embedded LiteLLM gateway.
+            <span class="text-gray-700 mx-1">&middot;</span>
+            Configure a provider to surface its models in Cullis Chat
+            and Frontdesk.
+        </p>
+    </div>
+
+    {% if request.query_params.get('saved') %}
+    <div class="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded text-xs text-emerald-300">
+        Saved <span class="font-mono">{{ request.query_params['saved'] }}</span>.
+    </div>
+    {% endif %}
+    {% if request.query_params.get('deleted') %}
+    <div class="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-300">
+        Removed credentials for <span class="font-mono">{{ request.query_params['deleted'] }}</span>.
+    </div>
+    {% endif %}
+    {% if request.query_params.get('toggled') %}
+    <div class="mb-4 p-3 bg-accent-400/10 border border-accent-400/20 rounded text-xs text-accent-400">
+        Toggled <span class="font-mono">{{ request.query_params['toggled'] }}</span>.
+    </div>
+    {% endif %}
+
+    <!-- Cards -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {% for p in providers %}
+        <div class="bg-surface-900/40 border border-gray-800/60 rounded-lg p-5 {% if p.configured and not p.enabled %}opacity-70{% endif %}">
+
+            <!-- Card header -->
+            <div class="flex items-start justify-between mb-3">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h3 class="text-sm font-semibold text-white">{{ p.display_name }}</h3>
+                        {% if p.configured and p.enabled %}
+                        <span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">configured</span>
+                        {% elif p.configured and not p.enabled %}
+                        <span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">disabled</span>
+                        {% else %}
+                        <span class="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-800/40 text-gray-500 border border-gray-700/40">not configured</span>
+                        {% endif %}
+                    </div>
+                    <p class="text-[10px] text-gray-600 mt-0.5 font-mono">{{ p.provider }}</p>
+                </div>
+                {% if p.docs_url %}
+                <a href="{{ p.docs_url }}" target="_blank" rel="noopener"
+                   class="text-[10px] uppercase tracking-wider text-gray-500 hover:text-accent-400">docs ↗</a>
+                {% endif %}
+            </div>
+
+            {% if error_provider == p.provider and error %}
+            <div class="mb-3 p-2 bg-red-500/10 border border-red-500/20 rounded text-xs text-red-400">{{ error }}</div>
+            {% endif %}
+
+            <!-- Form -->
+            <form method="post" action="/proxy/ai-providers/{{ p.provider }}/save" class="space-y-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                {% for fld in p.fields %}
+                <div>
+                    <label class="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+                        {{ fld.label }}
+                        {% if fld.required %}<span class="text-amber-500">*</span>{% endif %}
+                    </label>
+                    <input
+                        type="{% if fld.secret %}password{% else %}text{% endif %}"
+                        name="{{ fld.name }}"
+                        placeholder="{{ fld.placeholder }}"
+                        value="{% if fld.secret and p.configured and p.creds_masked.get(fld.name) %}***{% else %}{{ p.creds_masked.get(fld.name, '') }}{% endif %}"
+                        autocomplete="off"
+                        spellcheck="false"
+                        class="w-full px-2 py-1.5 bg-surface-950 border border-gray-800 rounded text-xs font-mono text-gray-200 focus:border-accent-400/50 focus:outline-none">
+                    {% if fld.help_text %}
+                    <p class="text-[10px] text-gray-600 mt-1">{{ fld.help_text }}</p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+
+                <label class="flex items-center gap-2 text-xs text-gray-400">
+                    <input type="checkbox" name="enabled" value="true"
+                        {% if not p.configured or p.enabled %}checked{% endif %}>
+                    <span>Enabled</span>
+                </label>
+
+                <div class="flex items-center gap-2 pt-2 border-t border-gray-800/40">
+                    <button type="submit"
+                        class="px-3 py-1.5 rounded bg-accent-400/10 hover:bg-accent-400/20 text-accent-400 text-xs uppercase tracking-wider border border-accent-400/30">
+                        Save
+                    </button>
+
+                    {% if p.configured %}
+                    <button type="button"
+                        hx-post="/proxy/ai-providers/{{ p.provider }}/test"
+                        hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'
+                        hx-vals='{"csrf_token": "{{ csrf_token }}"}'
+                        hx-target="#test-result-{{ p.provider }}"
+                        hx-swap="innerHTML"
+                        class="px-3 py-1.5 rounded bg-gray-800/40 hover:bg-gray-800/60 text-gray-300 text-xs uppercase tracking-wider border border-gray-700/40">
+                        Test
+                    </button>
+                    {% endif %}
+                </div>
+
+                <div id="test-result-{{ p.provider }}" class="text-xs"></div>
+            </form>
+
+            {% if p.configured %}
+            <div class="mt-3 pt-3 border-t border-gray-800/40 flex items-center justify-between">
+                <p class="text-[10px] text-gray-600">
+                    {% if p.updated_at %}
+                    Updated <span class="font-mono">{{ p.updated_at[:19] }}Z</span>
+                    {% if p.updated_by %} by <span class="font-mono">{{ p.updated_by }}</span>{% endif %}
+                    {% endif %}
+                </p>
+                <form method="post" action="/proxy/ai-providers/{{ p.provider }}/delete"
+                      onsubmit="return confirm('Remove credentials for {{ p.provider }}?');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                        class="text-[10px] uppercase tracking-wider text-red-500/70 hover:text-red-400">
+                        Remove credentials
+                    </button>
+                </form>
+            </div>
+            {% endif %}
+
+            {% if p.dynamic_models and p.configured and p.enabled %}
+            <div class="mt-3 pt-3 border-t border-gray-800/40">
+                <button type="button"
+                    hx-get="/proxy/ai-providers/{{ p.provider }}/ollama-models"
+                    hx-target="#ollama-models-{{ p.provider }}"
+                    hx-swap="innerHTML"
+                    class="text-[10px] uppercase tracking-wider text-gray-500 hover:text-accent-400">
+                    Refresh model list
+                </button>
+                <div id="ollama-models-{{ p.provider }}"></div>
+            </div>
+            {% elif p.static_models %}
+            <div class="mt-3 pt-3 border-t border-gray-800/40">
+                <p class="text-[10px] uppercase tracking-wider text-gray-600 mb-1">Models</p>
+                <div class="flex flex-wrap gap-1">
+                    {% for m in p.static_models %}
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/40 text-gray-400 font-mono">{{ m }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+</div>
+{% endblock %}

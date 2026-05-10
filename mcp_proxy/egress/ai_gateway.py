@@ -23,6 +23,12 @@ from typing import AsyncIterator
 import httpx
 
 from mcp_proxy.config import ProxySettings as Settings
+from mcp_proxy.db import get_ai_provider_creds
+from mcp_proxy.egress.provider_catalog import (
+    PROVIDERS,
+    litellm_kwargs,
+    parse_provider_from_model,
+)
 from mcp_proxy.egress.schemas import ChatCompletionRequest, ChatCompletionResponse
 
 
@@ -144,7 +150,7 @@ async def dispatch_stream(
     """
     backend = settings.ai_gateway_backend.lower()
     if backend == "litellm_embedded":
-        return _build_litellm_stream(
+        return await _build_litellm_stream(
             req=req,
             agent_id=agent_id,
             org_id=org_id,
@@ -170,22 +176,28 @@ async def _call_portkey(
     settings: Settings,
     http_client: httpx.AsyncClient | None,
 ) -> GatewayResult:
-    provider = settings.ai_gateway_provider.lower()
+    # Portkey path is Phase 1 (legacy). It only validates provider=anthropic
+    # against Portkey's chat-completions shim. The credential is still
+    # sourced through the same DB-first resolver so deployments that
+    # have already migrated to dashboard-managed keys keep working
+    # whichever backend they pin.
+    provider, creds = await _resolve_provider_creds(req.model, settings)
     if provider != "anthropic":
         raise GatewayError(
             501,
             f"provider_not_implemented:{provider}",
-            detail="Phase 1 only validates provider='anthropic' against Portkey.",
+            detail="The Portkey backend only supports Anthropic. "
+                   "Switch ai_gateway_backend to litellm_embedded.",
         )
-
-    if not settings.anthropic_api_key:
+    api_key = creds.get("api_key", "")
+    if not api_key:
         raise GatewayError(503, "provider_key_missing")
 
     upstream_url = f"{settings.ai_gateway_url.rstrip('/')}/v1/chat/completions"
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings.anthropic_api_key}",
+        "Authorization": f"Bearer {api_key}",
         "x-portkey-provider": provider,
         "x-portkey-trace-id": trace_id,
         "x-portkey-forward-headers": CULLIS_FORWARD_HEADERS,
@@ -301,6 +313,52 @@ def _map_litellm_exception(exc: Exception) -> GatewayError:
     return GatewayError(status, reason, detail=detail)
 
 
+async def _resolve_provider_creds(
+    model: str,
+    settings: Settings,
+) -> tuple[str, dict[str, str]]:
+    """Pick the provider for a model id and return its credentials.
+
+    Resolution:
+      1. ``parse_provider_from_model`` maps the request model to a
+         provider key (``anthropic``, ``openai``, ...).
+      2. ``ai_provider_credentials`` row drives the credential dict.
+      3. Backward compat: when the row is missing for ``anthropic`` we
+         fall back to ``settings.anthropic_api_key`` so existing
+         deployments that have not yet seeded the table keep working.
+      4. ``provider_not_configured`` is raised on miss + no fallback;
+         ``provider_disabled`` is raised on a row with ``enabled=False``.
+    """
+    provider = parse_provider_from_model(model)
+    if provider not in PROVIDERS:
+        raise GatewayError(
+            501,
+            f"provider_not_implemented:{provider}",
+            detail=f"No catalog entry for provider {provider!r}.",
+        )
+
+    row = await get_ai_provider_creds(provider)
+    if row is None:
+        if provider == "anthropic" and settings.anthropic_api_key:
+            return provider, {"api_key": settings.anthropic_api_key}
+        raise GatewayError(
+            503,
+            "provider_not_configured",
+            detail=(
+                f"Provider {provider!r} is not configured. "
+                "Add credentials in the Mastio dashboard "
+                "(Settings → AI Providers)."
+            ),
+        )
+    if not row["enabled"]:
+        raise GatewayError(
+            503,
+            "provider_disabled",
+            detail=f"Provider {provider!r} is configured but disabled.",
+        )
+    return provider, dict(row["creds"] or {})
+
+
 async def _call_litellm_embedded(
     *,
     req: ChatCompletionRequest,
@@ -311,23 +369,17 @@ async def _call_litellm_embedded(
 ) -> GatewayResult:
     """Call the upstream provider via the LiteLLM library, in-process.
 
-    The model id from the request is forwarded as-is. For Anthropic
-    we expect the caller to pass either ``claude-haiku-4-5`` (LiteLLM
-    auto-detects the provider from the catalogue) or
-    ``anthropic/claude-haiku-4-5`` (explicit). The Mastio metadata is
-    attached via the ``metadata`` kwarg so any LiteLLM callback the
-    operator wires up (Datadog, Langfuse, Postgres) sees the agent
-    identity without us doing extra plumbing.
+    The model id from the request drives provider resolution
+    (``parse_provider_from_model``) and the credentials are read from
+    the ``ai_provider_credentials`` table populated by the Mastio
+    admin dashboard. The Mastio metadata is attached via the
+    ``metadata`` kwarg so any LiteLLM callback the operator wires up
+    (Datadog, Langfuse, Postgres) sees the agent identity without us
+    doing extra plumbing.
     """
-    provider = settings.ai_gateway_provider.lower()
-    if provider != "anthropic":
-        raise GatewayError(
-            501,
-            f"provider_not_implemented:{provider}",
-            detail="Phase 3 only validates provider='anthropic' via LiteLLM.",
-        )
-    if not settings.anthropic_api_key:
-        raise GatewayError(503, "provider_key_missing")
+    body = req.model_dump(exclude_none=True)
+    model = body.pop("model")
+    provider, creds = await _resolve_provider_creds(model, settings)
 
     try:
         import litellm
@@ -347,10 +399,7 @@ async def _call_litellm_embedded(
     # fields (e.g. Anthropic does not accept all OpenAI knobs).
     litellm.drop_params = True
 
-    body = req.model_dump(exclude_none=True)
-    # LiteLLM uses provider-prefixed model ids when ambiguous; pass
-    # through whatever the caller sent.
-    model = body.pop("model")
+    provider_kwargs = litellm_kwargs(provider, creds)
 
     metadata = {
         "cullis_agent_id": agent_id,
@@ -362,8 +411,8 @@ async def _call_litellm_embedded(
     try:
         response = await acompletion(
             model=model,
-            api_key=settings.anthropic_api_key,
             metadata=metadata,
+            **provider_kwargs,
             **body,
         )
     except Exception as exc:
@@ -441,7 +490,7 @@ async def _call_litellm_embedded(
     )
 
 
-def _build_litellm_stream(
+async def _build_litellm_stream(
     *,
     req: ChatCompletionRequest,
     agent_id: str,
@@ -451,20 +500,22 @@ def _build_litellm_stream(
 ) -> StreamingDispatch:
     """Build a ``StreamingDispatch`` backed by ``litellm.acompletion(stream=True)``.
 
-    The acompletion call itself happens lazily on first iteration; raise
-    here for the configuration-time errors (missing key, wrong provider,
-    litellm not installed) so the router can audit them as a non-stream
-    error before opening the SSE response.
+    Resolve the provider + credentials before opening the SSE response
+    so configuration errors (provider not configured, disabled, litellm
+    not installed) are surfaced as a regular non-stream error. The
+    underlying ``acompletion`` call still happens lazily on first
+    iteration of ``_aiter`` so the SSE headers can flush immediately.
     """
-    provider = settings.ai_gateway_provider.lower()
-    if provider != "anthropic":
-        raise GatewayError(
-            501,
-            f"provider_not_implemented:{provider}",
-            detail="Streaming only validates provider='anthropic' via LiteLLM.",
-        )
-    if not settings.anthropic_api_key:
-        raise GatewayError(503, "provider_key_missing")
+    body = req.model_dump(exclude_none=True)
+    model = body.pop("model")
+    body.pop("stream", None)
+    # Ask the upstream for a final usage chunk so we can audit accurate
+    # token + cost numbers after the stream drains. Anthropic + OpenAI +
+    # most LiteLLM-routed providers honour this OpenAI-spec field.
+    stream_options = body.pop("stream_options", None) or {}
+    stream_options.setdefault("include_usage", True)
+
+    provider, creds = await _resolve_provider_creds(model, settings)
 
     try:
         import litellm
@@ -478,17 +529,9 @@ def _build_litellm_stream(
                 "package. Install it via requirements.txt."
             ),
         ) from exc
-
     litellm.drop_params = True
 
-    body = req.model_dump(exclude_none=True)
-    model = body.pop("model")
-    body.pop("stream", None)
-    # Ask the upstream for a final usage chunk so we can audit accurate
-    # token + cost numbers after the stream drains. Anthropic + OpenAI +
-    # most LiteLLM-routed providers honour this OpenAI-spec field.
-    stream_options = body.pop("stream_options", None) or {}
-    stream_options.setdefault("include_usage", True)
+    provider_kwargs = litellm_kwargs(provider, creds)
 
     metadata = {
         "cullis_agent_id": agent_id,
@@ -507,10 +550,10 @@ def _build_litellm_stream(
         try:
             stream = await acompletion(
                 model=model,
-                api_key=settings.anthropic_api_key,
                 metadata=metadata,
                 stream=True,
                 stream_options=stream_options,
+                **provider_kwargs,
                 **body,
             )
         except Exception as exc:
