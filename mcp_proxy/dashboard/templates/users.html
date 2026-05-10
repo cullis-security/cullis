@@ -1,31 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Users{% endblock %}
-{% block header_title %}User Principals{% endblock %}
+{% block header_title %}Users{% endblock %}
 {% block content %}
 <div class="max-w-6xl">
-
-    <!-- New user created — confirm + remind operator they still need to
-         provision the password lato Connector for SSO to land. -->
-    {% if new_user_name %}
-    <div class="mb-6 p-5 bg-emerald-900/10 border border-emerald-600/30 rounded-lg">
-        <div class="flex items-start gap-3">
-            <svg class="w-5 h-5 text-emerald-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            <div class="flex-1">
-                <p class="text-sm font-semibold text-emerald-400 mb-1">User principal created</p>
-                <p class="text-xs text-emerald-500/70 mb-3">
-                    The Mastio reserved the principal id and seeded the
-                    directory row. The cert lands on the first SSO touch
-                    via <code class="text-accent-400/80">/v1/principals/csr</code>.
-                </p>
-                <p class="text-xs text-gray-500 mb-1">User: <span class="font-mono text-gray-400">{{ new_user_name }}</span></p>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    {% if error %}
-    <div class="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
-    {% endif %}
 
     <!-- Header -->
     <div class="flex items-center justify-between mb-6">
@@ -37,104 +14,29 @@
                 Per-user identity for Frontdesk shared mode (ADR-020 / ADR-021)
             </p>
         </div>
-        <button onclick="document.getElementById('create-panel').classList.toggle('hidden')"
-                class="px-4 py-2 text-xs font-semibold rounded transition-all"
-                style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
-                onmouseover="this.style.background='#fff'; this.style.boxShadow='0 0 20px rgba(0,229,199,0.15)'"
-                onmouseout="this.style.background='#00e5c7'; this.style.boxShadow='none'">
-            + Create User
-        </button>
     </div>
 
-    <!-- Context banner — two onboarding paths now coexist:
-         (a) admin sets an initial password here (AD-style), user is
-             forced to rotate it at first sign-in;
-         (b) leave the password blank, the row stays SSO-only and the
-             cert lands on the first Frontdesk SSO touch. -->
+    <!-- Context banner — read-only by design.
+         Mastio is the cert-attribution registry, not the credential
+         store. Passwords + lifecycle live where the Source column
+         points (Frontdesk container admin / Connector desktop /
+         upstream IdP). Surfacing this here matters because operators
+         arriving from the install path otherwise expect a "Create
+         user" button on this page — there isn't one by design. -->
     <div class="mb-6 p-4 bg-surface-900/60 border border-gray-800/50 rounded-lg text-xs text-gray-500 leading-relaxed">
-        Two ways to onboard a user:
-        <span class="text-gray-300">set an initial password</span> (admin hands the
-        credential out-of-band, user is forced to change it at first sign-in
-        on Cullis Chat or the dashboard), or
-        <span class="text-gray-300">leave password blank</span> for SSO-only
-        rows (cert lands on first Frontdesk SSO touch via
-        <code class="text-accent-400/80">/v1/principals/csr</code>). Rows
-        also auto-appear when a brand-new SSO user signs in for the first
-        time.
-    </div>
-
-    <!-- Create User panel (hidden by default) -->
-    <div id="create-panel" class="hidden mb-6 bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
-        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">New User</h3>
-        <form method="post" action="/proxy/users/create" class="space-y-4">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">User Name</label>
-                    <input type="text" name="user_name" required
-                           placeholder="mario"
-                           pattern="[a-zA-Z0-9._\-]{1,64}"
-                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
-                    <p class="text-[10px] text-gray-600 mt-1">Letters, digits, dot, underscore, dash. Becomes the SPIFFE id suffix.</p>
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Display Name</label>
-                    <input type="text" name="display_name"
-                           placeholder="Mario Rossi"
-                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 transition-all">
-                    <p class="text-[10px] text-gray-600 mt-1">Optional label for the dashboard. Falls back to user name.</p>
-                </div>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Reach</label>
-                    <select name="reach"
-                            class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white font-mono transition-all">
-                        <option value="intra" selected>intra-org (same org only)</option>
-                        <option value="cross">cross-org (other orgs only)</option>
-                        <option value="both">both (intra + cross)</option>
-                    </select>
-                    <p class="text-[10px] text-gray-600 mt-1">ADR-020 — controls which networks the user principal can sign into.</p>
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Surface</label>
-                    <input type="text" name="surface"
-                           placeholder="frontdesk"
-                           class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
-                    <p class="text-[10px] text-gray-600 mt-1">Optional hint: which Connector surface this user logs in from (frontdesk, cullis-chat, cli).</p>
-                </div>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Initial Password <span class="text-gray-600 normal-case font-normal tracking-normal">(optional)</span></label>
-                <input type="password" name="password" autocomplete="new-password"
-                       minlength="8" maxlength="128"
-                       placeholder="Leave blank for SSO-only"
-                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
-                <p class="text-[10px] text-gray-600 mt-1">
-                    8-128 chars. Hand it out-of-band; the user will be forced
-                    to set their own at first sign-in. Leave blank for
-                    Frontdesk-SSO accounts.
-                </p>
-            </div>
-            <p class="text-[10px] text-gray-500 flex items-center gap-1.5">
-                <svg class="w-3 h-3 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                Cert is minted via password-login or first SSO touch — never stored on this dashboard.
-            </p>
-            <div class="flex items-center gap-3 pt-1">
-                <button type="submit"
-                        class="px-5 py-2 text-xs font-semibold rounded transition-all"
-                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
-                        onmouseover="this.style.background='#fff'"
-                        onmouseout="this.style.background='#00e5c7'">
-                    Create
-                </button>
-                <button type="button"
-                        onclick="document.getElementById('create-panel').classList.add('hidden')"
-                        class="px-4 py-2 text-xs text-gray-500 border border-gray-700 rounded hover:bg-gray-800 transition-colors">
-                    Cancel
-                </button>
-            </div>
-        </form>
+        This is the Mastio's <strong class="text-gray-300">attribution
+        registry</strong> — one row per principal that has been signed
+        a cert. Credentials live at the Source (see column): a
+        <strong class="text-gray-300">Frontdesk container</strong>
+        admin panel manages multi-user passwords, the
+        <strong class="text-gray-300">Connector desktop</strong>
+        manages single-user keys on the laptop,
+        <strong class="text-gray-300">SSO</strong> rows are governed
+        upstream at the IdP. Rows land here automatically on the first
+        cert mint via <code class="text-accent-400/80">/v1/principals/csr</code>;
+        pre-seed out-of-band with
+        <code class="text-accent-400/80">POST /v1/admin/users</code>
+        (X-Admin-Secret) when needed.
     </div>
 
     <!-- Table -->
@@ -145,20 +47,19 @@
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">User</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Principal ID</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Reach</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Status</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Surface</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider"
+                        title="Where this principal's credential lives — Mastio never holds passwords">Source</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Last active</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Created</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Actions</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-gray-800/40">
                 {% for u in users %}
                 <tr class="table-row-hover transition-colors align-top">
                     <td class="px-5 py-4">
-                        <a href="/proxy/users/{{ u.principal_id|urlencode }}" class="text-sm text-white hover:text-accent-400 transition-colors">
+                        <div class="text-sm text-white">
                             {{ u.display_name or u.user_name }}
-                        </a>
+                        </div>
                         {% if u.display_name %}
                         <div class="text-[11px] text-gray-500 font-mono">{{ u.user_name }}</div>
                         {% endif %}
@@ -189,31 +90,40 @@
                         {% endif %}
                     </td>
                     <td class="px-5 py-4">
-                        {% if u.disabled %}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-500/10 text-red-400 uppercase tracking-wider">
-                            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Disabled
+                        {# Inferred source — derived from ``surface`` hint
+                           (set by the Connector Ambassador on first sign-in)
+                           with a fallback that distinguishes SSO-upserted
+                           rows (cert_thumbprint present, surface NULL)
+                           from admin-pre-seeded rows (no cert yet). #}
+                        {% set _surface = (u.surface or '').lower() %}
+                        {% if 'frontdesk' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-violet-500/10 text-violet-400 border border-violet-400/30"
+                              title="Credential lives in this Frontdesk container's users.db (ADR-025). Manage from the Frontdesk admin panel.">
+                            Frontdesk
                         </span>
-                        {% elif u.must_change_password %}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/10 text-amber-400 uppercase tracking-wider"
-                              title="Initial password set by admin — user must rotate at first sign-in">
-                            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 pulse-dot"></span>Pending change
+                        {% elif 'connector' in _surface or 'cullis-chat' in _surface or 'cli' in _surface or 'desktop' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-info-400/10 text-info-400 border border-info-400/30"
+                              title="Credential lives on the user's laptop in the Connector users.db.">
+                            Connector
                         </span>
-                        {% elif u.has_password %}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">
-                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot"></span>Active
+                        {% elif 'sso' in _surface or 'oidc' in _surface or 'keycloak' in _surface or 'okta' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-400/30"
+                              title="Credential lives at the upstream IdP. Lifecycle is governed there.">
+                            SSO
+                        </span>
+                        {% elif u.cert_thumbprint %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-gray-500/10 text-gray-400 border border-gray-500/30"
+                              title="Cert minted but the surface hint is missing — likely an older Connector or a direct CSR caller.">
+                            Cert-direct
                         </span>
                         {% else %}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-500/10 text-gray-400 uppercase tracking-wider"
-                              title="No local password — Frontdesk SSO only">
-                            <span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>SSO-only
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-400/30"
+                              title="Pre-seeded via POST /v1/admin/users — no cert minted yet, no surface bound. Will resolve on first sign-in.">
+                            Pre-seeded
                         </span>
                         {% endif %}
-                    </td>
-                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">
                         {% if u.surface %}
-                        {{ u.surface }}
-                        {% else %}
-                        <span class="text-gray-700 italic">—</span>
+                        <div class="text-[10px] text-gray-600 font-mono mt-1" title="raw surface hint">{{ u.surface }}</div>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
@@ -226,25 +136,20 @@
                     <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
                         {{ u.created_at[:19] if u.created_at else '—' }}
                     </td>
-                    <td class="px-5 py-4">
-                        <a href="/proxy/users/{{ u.principal_id|urlencode }}"
-                           class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-white transition-colors">
-                            Details
-                        </a>
-                    </td>
                 </tr>
                 {% endfor %}
                 {% if not users %}
                 <tr>
-                    <td colspan="8" class="px-5 py-16 text-center">
+                    <td colspan="6" class="px-5 py-16 text-center">
                         <svg class="w-10 h-10 mx-auto text-gray-800 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                                   d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
                         </svg>
                         <p class="text-sm text-gray-600">No user principals yet</p>
                         <p class="text-xs text-gray-700 mt-1">
-                            Click <span class="text-accent-400">+ Create User</span> to seed one,
-                            or wait for the first Frontdesk SSO sign-in.
+                            The first Frontdesk SSO sign-in (or
+                            <code>POST /v1/admin/users</code>) will register
+                            a row here.
                         </p>
                     </td>
                 </tr>
