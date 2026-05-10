@@ -1,0 +1,65 @@
+{% if found %}
+<p class="field-hint" style="margin-top: 0;">
+    {% if found|length == 1 %}Found one Mastio:{% else %}Found {{ found|length }} candidates:{% endif %}
+</p>
+{% for mastio in found %}
+<div class="found-mastio {% if mastio.mode == 'setup' %}setup-mode{% endif %}">
+    <div class="found-mastio-head">
+        <div>
+            {% if mastio.org_id %}
+            <span class="found-mastio-org">{{ mastio.org_id }}</span>
+            <span class="muted">·</span>
+            {% endif %}
+            <span class="muted">{{ mastio.trust_domain }}</span>
+        </div>
+        {% if mastio.mode == 'configured' %}
+        <span class="badge badge-configured">Configured</span>
+        {% else %}
+        <span class="badge badge-setup">Not yet configured</span>
+        {% endif %}
+    </div>
+    <div class="found-mastio-url">{{ mastio.base_url }}</div>
+    {% if mastio.ca_fingerprint_grouped %}
+    <div class="found-mastio-fp">
+        <span class="muted" style="font-size: 10px; display: block; margin-bottom: 4px;">CA SHA-256 fingerprint:</span>
+        {{ mastio.ca_fingerprint_grouped }}
+    </div>
+    {% endif %}
+
+    {% if mastio.mode == 'configured' and mastio.ca_fingerprint_sha256 %}
+    <form method="post" action="/setup/discover/select" style="margin-top: 12px;">
+        <input type="hidden" name="base_url" value="{{ mastio.base_url }}">
+        <input type="hidden" name="fingerprint" value="{{ mastio.ca_fingerprint_sha256 }}">
+        <button type="submit" class="btn btn-primary">
+            Use this Mastio
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+    </form>
+    {% else %}
+    <p class="field-hint" style="margin-top: 12px;">
+        This Mastio is reachable but not yet configured. Open its
+        admin dashboard to complete first-boot setup, then refresh.
+    </p>
+    {% endif %}
+</div>
+{% endfor %}
+
+{% else %}
+<div class="alert" style="margin-top: 0;">
+    <strong>No Mastio found on local addresses.</strong>
+    <p class="field-hint" style="margin: 8px 0 0 0;">
+        Try entering the URL your admin gave you instead.
+    </p>
+</div>
+{% endif %}
+
+{% if errors %}
+<details class="errors-list">
+    <summary>Probe details ({{ errors|length }} address{{ 'es' if errors|length != 1 else '' }} unreachable)</summary>
+    <ul>
+        {% for err in errors %}
+        <li><span class="mono">{{ err.base_url }}</span> — {{ err.reason }}</li>
+        {% endfor %}
+    </ul>
+</details>
+{% endif %}

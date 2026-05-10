@@ -38,6 +38,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from cullis_connector.config import ConnectorConfig
+from cullis_connector.discovery import (
+    DiscoveredMastio,
+    DiscoveryState,
+    get_or_run_discovery,
+    reset_discovery_cache,
+)
 from cullis_connector.statusline_token import ensure_statusline_token
 from cullis_connector.enrollment import (
     EnrollmentFailed,
@@ -792,6 +798,12 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         desktop installer. The /connected dashboard is still reachable
         directly (or via the tray menu in the desktop wrapper) for
         admin / maintenance flows.
+
+        First-boot default is the auto-discovery wizard at
+        ``/setup/discover``: it probes a few local addresses for a
+        running Mastio and pre-populates the enrollment form. The
+        manual form at ``/setup`` stays reachable via a fallback link
+        on the wizard page.
         """
         if has_identity(config.config_dir):
             if getattr(app.state, "cullis_chat_mounted", False):
@@ -799,26 +811,35 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             return RedirectResponse("/connected", status_code=303)
         if _pending is not None:
             return RedirectResponse("/waiting", status_code=303)
-        return RedirectResponse("/setup", status_code=303)
+        return RedirectResponse("/setup/discover", status_code=303)
 
     @app.get("/setup", response_class=HTMLResponse)
-    def setup_get(request: Request, error: str | None = None) -> Response:
+    def setup_get(
+        request: Request,
+        error: str | None = None,
+        site_url: str | None = None,
+        ca_pinned: str | None = None,
+    ) -> Response:
         # If identity already exists, don't show the form — nothing to do.
         if has_identity(config.config_dir):
             return RedirectResponse("/connected", status_code=303)
 
+        # ``site_url`` and ``ca_pinned`` arrive as query params when the
+        # caller is the auto-discovery wizard handing off to the manual
+        # form with a pre-filled URL and an already-pinned CA.
         return templates.TemplateResponse(
             request,
             "setup.html",
             {
                 "connector_status": "offline",
                 "connector_status_label": "Offline",
-                "site_url": config.site_url or "",
+                "site_url": site_url or config.site_url or "",
                 "requester_name": "",
                 "requester_email": "",
                 "reason": "",
                 "verify_tls_off": not config.verify_tls,
                 "error": error,
+                "ca_pinned_from_wizard": ca_pinned == "1",
             },
         )
 
@@ -1002,6 +1023,126 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             "path": str(ca_path),
             "fingerprint_sha256": fingerprint,
         })
+
+    # ── First-boot auto-discovery wizard ──────────────────────────────
+    #
+    # Probes a small list of local addresses for a running Mastio,
+    # surfaces the ``org_id`` / ``trust_domain`` / CA fingerprint a
+    # confirmed Mastio reports via /.well-known/cullis/connector-bootstrap,
+    # and on operator confirmation hands off to the existing manual
+    # ``/setup`` form with the URL pre-filled and the CA already
+    # pinned. The manual form remains the fallback when discovery
+    # finds nothing.
+
+    def _format_fingerprint(hex_digest: str | None) -> str | None:
+        """Render bare hex as ``AB:CD:EF:..`` groups for visual diffing."""
+        if not hex_digest:
+            return None
+        upper = hex_digest.upper()
+        return ":".join(upper[i:i + 2] for i in range(0, len(upper), 2))
+
+    def _enrich_for_template(
+        mastio: DiscoveredMastio,
+    ) -> dict[str, str | None]:
+        """Pre-format fields the template wants but the dataclass doesn't carry."""
+        return {
+            "base_url": mastio.base_url,
+            "org_id": mastio.org_id,
+            "trust_domain": mastio.trust_domain,
+            "mode": mastio.mode,
+            "ca_fingerprint_sha256": mastio.ca_fingerprint_sha256,
+            "ca_fingerprint_grouped": _format_fingerprint(
+                mastio.ca_fingerprint_sha256,
+            ),
+        }
+
+    @app.get("/setup/discover", response_class=HTMLResponse)
+    def setup_discover_get(request: Request) -> Response:
+        if has_identity(config.config_dir):
+            return RedirectResponse("/connected", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "setup_discovery.html",
+            {
+                "connector_status": "offline",
+                "connector_status_label": "Offline",
+            },
+        )
+
+    @app.get("/api/setup/discover/results", response_class=HTMLResponse)
+    async def api_setup_discover_results(request: Request) -> Response:
+        """HTMX endpoint that runs (or returns cached) discovery results."""
+        if has_identity(config.config_dir):
+            # Identity arrived between page load and HTMX fire — bounce.
+            return HTMLResponse(
+                '<meta http-equiv="refresh" content="0; url=/connected">'
+            )
+        state: DiscoveryState = await get_or_run_discovery()
+        return templates.TemplateResponse(
+            request,
+            "setup_discovery_results.html",
+            {
+                "found": [_enrich_for_template(m) for m in state.found],
+                "errors": state.errors,
+            },
+        )
+
+    @app.post("/setup/discover/select")
+    def setup_discover_select(
+        base_url: str = Form(...),
+        fingerprint: str = Form(...),
+    ) -> Response:
+        """Pin the CA reported by the wizard, then hand off to ``/setup``.
+
+        The pin step re-fetches the CA from the chosen Mastio and
+        verifies the fingerprint still matches what discovery surfaced
+        — same TOCTOU guard as ``setup_pin_ca``. On a mismatch we
+        bounce the operator back to the wizard with an error rather
+        than silently pinning something they didn't see.
+        """
+        if has_identity(config.config_dir):
+            return RedirectResponse("/connected", status_code=303)
+
+        cleaned_url = base_url.strip().rstrip("/")
+        if not cleaned_url.startswith("https://"):
+            return RedirectResponse(
+                "/setup/discover?error=non_https", status_code=303,
+            )
+
+        try:
+            pem, observed_fp = _fetch_ca_pem(cleaned_url)
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            _log.warning("discover-select fetch CA failed: %s", exc)
+            return RedirectResponse(
+                "/setup/discover?error=ca_fetch_failed", status_code=303,
+            )
+
+        expected = fingerprint.lower().replace(":", "")
+        if observed_fp.lower() != expected:
+            _log.warning(
+                "discover-select fingerprint mismatch: expected=%s observed=%s",
+                expected, observed_fp,
+            )
+            # Drop the cache so a re-probe shows the new fingerprint.
+            reset_discovery_cache()
+            return RedirectResponse(
+                "/setup/discover?error=fingerprint_changed", status_code=303,
+            )
+
+        identity_dir = config.config_dir / "identity"
+        identity_dir.mkdir(parents=True, exist_ok=True)
+        ca_path = identity_dir / "ca-chain.pem"
+        ca_path.write_text(pem)
+        try:
+            ca_path.chmod(0o644)
+        except OSError:
+            pass
+
+        # Hand off to the existing manual form with the URL pre-filled
+        # and a flag the form can use to skip the TOFU CA section.
+        from urllib.parse import urlencode
+        qs = urlencode({"site_url": cleaned_url, "ca_pinned": "1"})
+        return RedirectResponse(f"/setup?{qs}", status_code=303)
 
     @app.get("/waiting", response_class=HTMLResponse)
     def waiting_get(request: Request) -> Response:

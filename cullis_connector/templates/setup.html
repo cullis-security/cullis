@@ -23,6 +23,17 @@
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
+{% if ca_pinned_from_wizard %}
+<div class="alert" style="background: rgba(126,203,126,0.10); border: 1px solid rgba(126,203,126,0.25); color: #7ecb7e;">
+    <strong>✓ CA pinned from auto-discovery.</strong>
+    <span class="field-hint" style="margin-left: 6px;">Just complete your details below and request enrollment.</span>
+</div>
+{% else %}
+<p class="field-hint" style="text-align: right; margin-top: 0;">
+    <a href="/setup/discover">← Try auto-discovery instead</a>
+</p>
+{% endif %}
+
 <form method="post" action="/setup" class="panel">
     <div class="panel-head">
         <div class="panel-eyebrow">Enrollment · Step 01</div>
