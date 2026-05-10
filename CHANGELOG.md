@@ -7,6 +7,57 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.0] — 2026-05-11
+
+Stable cut of the v0.4.0 line. Folds five Connector + Ambassador bug
+fixes that landed after `-rc1` during the Frontdesk bundle dogfood
+sprint (2026-05-08 → 2026-05-11). The Ambassador / ADR-019 / ADR-020 /
+ADR-021 headline features are unchanged from `-rc1`; see that section
+below for the full feature set.
+
+### Fixed
+
+- **Connector + SPA bundle dogfood polish** ([#564]): N17 + N20 + N21
+  fixes for the Frontdesk SPA bundle.
+- **ADR-025 chat unblocked end-to-end** ([#565]): admin secret + auth
+  gates + typed-principal bypass. Cullis Chat U2U intra-org now lands
+  the message at the recipient's inbox without manual cert exchange.
+- **First-boot auto-discovery wizard for Mastio** ([#574]): the
+  Connector now finishes enrollment from the browser via the new
+  `/admin/connector-bootstrap` discovery endpoint on the Mastio. No
+  more out-of-band token exchange.
+- **Loopback guard override for docker-bundle topology** ([#582]):
+  `CULLIS_AMBASSADOR_LOOPBACK_ONLY=false` opts the bundle out of the
+  127.0.0.1 IP guard so the nginx sidecar IP can reach
+  `/api/session/init`. The cookie / Bearer gate remains the auth
+  boundary in that topology.
+- **`/api/session/whoami` returns the signed-in user** ([#582]): when
+  a valid ADR-025 `cullis_local_session` cookie is present, surface
+  the local user as the principal instead of the bundle's
+  `::frontdesk` bearer identity. Bearer-only callers (Cursor,
+  OpenWebUI on loopback) untouched.
+- **Ollama chain-of-thought timeout** ([#582]):
+  `CULLIS_REQUEST_TIMEOUT_S` now flows into the SDK
+  `CullisClient(timeout=…)` on every build, so local models like
+  qwen3.5 and deepseek-r1 stop returning 502 after ~12 s.
+
+### Added
+
+- **ADR-020 U2U intra-org dataplane wired end-to-end** ([#569]):
+  per-user agent client construction surfaces the user principal on
+  intra-org sessions; the typed-principal `::` reconstruction gotcha
+  is closed.
+- **`CULLIS_ADVERTISED_MODELS` env override** ([#582]): operator-
+  supplied fallback list for the SPA model dropdown when the live
+  `/v1/models` fetch path degrades.
+
+[v0.4.0]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.4.0
+[#564]: https://github.com/cullis-security/cullis/pull/564
+[#565]: https://github.com/cullis-security/cullis/pull/565
+[#569]: https://github.com/cullis-security/cullis/pull/569
+[#574]: https://github.com/cullis-security/cullis/pull/574
+[#582]: https://github.com/cullis-security/cullis/pull/582
+
 ## [v0.4.0-rc1] — 2026-05-08
 
 First connector minor since `connector-v0.3.6` (1 May). Folds ~17
