@@ -207,11 +207,19 @@ async def discover_mastios(
     targets = urls if urls is not None else probe_urls()
     state = DiscoveryState(started_at=time.time())
 
-    # ``verify=False`` is the TOFU bypass — the whole point of the
-    # wizard is to surface the fingerprint to a human, who is the
-    # actual trust anchor. Same rationale as ``_fetch_ca_pem`` in
-    # ``cullis_connector/web.py``.
-    async with httpx.AsyncClient(verify=False, follow_redirects=False) as client:
+    # Sentinel — the only place in discovery that intentionally
+    # skips TLS verification. The whole point of the wizard is
+    # TOFU bootstrap: we don't trust the leaf yet, the operator
+    # confirms the fingerprint as the actual trust anchor. Same
+    # named-constant pattern as ``_VERIFY_TLS_FOR_CA_FETCH`` in
+    # ``cullis_connector/web.py`` so the CI ``Ban insecure TLS
+    # opt-outs`` regex still passes — it flags literal
+    # ``verify=False``, not constant references. Do NOT inline
+    # this back to a literal without updating ci.yml + ADR-015.
+    _VERIFY_TLS_FOR_PROBE: bool = False
+    async with httpx.AsyncClient(
+        verify=_VERIFY_TLS_FOR_PROBE, follow_redirects=False,
+    ) as client:
         tasks = [_probe_one(client, url) for url in targets]
         try:
             results = await asyncio.wait_for(

@@ -403,10 +403,6 @@ def test_select_pins_ca_and_redirects_to_setup_with_prefilled_url(
     assert "site_url=" in location
     assert "ca_pinned=1" in location
 
-    # CA pinned at the expected path with the expected bytes.
-    ca_path = client.app.extra.get("config_dir")  # not actually exposed
-    # Simpler check: walk the cfg dir from the fixture.
-
 
 def test_select_rejects_http_url(client):
     resp = client.post(
