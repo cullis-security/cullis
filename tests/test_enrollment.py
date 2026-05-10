@@ -306,6 +306,121 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
 
 
 @pytest.mark.asyncio
+async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
+    """Re-approving the same ``agent_id`` with a fresh keypair MUST update
+    ``internal_agents.cert_pem`` to the newly-signed cert.
+
+    Recovery scenario: operator wipes ``connector_data/`` (or the disk
+    dies), reinstalls the Connector, re-runs the enroll one-shot, and
+    the admin re-approves the pending row with the same ``agent_id``.
+    Without this, ``internal_agents.cert_pem`` keeps pinning the OLD
+    cert from the first enrollment, and every mTLS call from the
+    re-keyed Connector dies with ``client cert does not match the
+    registered identity`` until ops manually patches the row.
+
+    Asserts:
+      - the row's ``cert_pem`` reflects the second sign
+      - admin-managed columns (capabilities, federated, reach) are
+        preserved across the re-enroll so a re-approval cannot reset
+        operator decisions
+      - audit_log carries an ``agent.cert_renewed`` event distinct from
+        the original ``agent.create``
+      - ``federation_revision`` is bumped so the publisher republishes
+    """
+    from sqlalchemy import text as _text
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+
+    # First enrollment + approval — establishes the baseline row.
+    pubkey_1 = _rsa_pubkey_pem()
+    async with get_db() as conn:
+        s1 = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey_1,
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+        )
+    async with get_db() as conn:
+        r1 = await service.approve(
+            conn,
+            session_id=s1.session_id,
+            agent_id="frontdesk",
+            capabilities=["procurement.read"],
+            groups=["procurement"],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+    cert_v1 = r1["cert_pem"]
+
+    # Second enrollment + approval — fresh keypair, same agent_id (the
+    # recovery flow). The admin's ``capabilities`` arg here is a stand-in
+    # for a re-approval ritual; it should NOT overwrite the first
+    # approval's stored caps because admin state is preserved.
+    pubkey_2 = _rsa_pubkey_pem()
+    assert pubkey_2 != pubkey_1, "test fixture sanity"
+    async with get_db() as conn:
+        s2 = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey_2,
+            requester_name="A",
+            requester_email="a@x.com",
+            reason="reinstall",
+            device_info=None,
+        )
+    async with get_db() as conn:
+        r2 = await service.approve(
+            conn,
+            session_id=s2.session_id,
+            agent_id="frontdesk",
+            capabilities=["new.cap"],
+            groups=["new"],
+            admin_name="admin2",
+            agent_manager=manager,
+        )
+    cert_v2 = r2["cert_pem"]
+
+    assert cert_v2 != cert_v1, "re-approval must mint a fresh cert"
+
+    async with get_db() as conn:
+        agents = (await conn.execute(
+            _text(
+                "SELECT cert_pem, capabilities, federated, reach, "
+                "federation_revision FROM internal_agents "
+                "WHERE agent_id = 'acme::frontdesk'"
+            ),
+        )).mappings().all()
+        audits = (await conn.execute(
+            _text(
+                "SELECT action FROM audit_log "
+                "WHERE agent_id = 'acme::frontdesk' "
+                "ORDER BY id"
+            ),
+        )).mappings().all()
+
+    # Single row preserved (UPDATE, not duplicate INSERT).
+    assert len(agents) == 1
+    # cert_pem updated to the second-approval signature.
+    assert agents[0]["cert_pem"] == cert_v2
+    # Admin-managed columns held over from the first approval (the
+    # second approve()'s capabilities argument MUST NOT overwrite them).
+    import json as _json
+    assert _json.loads(agents[0]["capabilities"]) == ["procurement.read"]
+    assert agents[0]["reach"] == "both"
+    assert int(agents[0]["federated"]) == 1
+    # Revision bumped so the federation publisher pushes the new cert.
+    assert int(agents[0]["federation_revision"]) >= 2
+
+    # Audit chain: one create (first approve), one cert_renewed (second).
+    actions = [row["action"] for row in audits]
+    assert "agent.create" in actions
+    assert "agent.cert_renewed" in actions
+
+
+@pytest.mark.asyncio
 async def test_approve_shared_mode_skips_auto_baseline_binding(
     db_engine, monkeypatch,
 ):

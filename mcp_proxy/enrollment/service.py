@@ -455,6 +455,58 @@ async def approve(
                 }),
             },
         )
+    else:
+        # Row already exists — this is a re-enrollment of the same
+        # ``agent_id`` (recovery scenario: operator wiped
+        # ``connector_data/`` and re-ran the enroll one-shot, or rotated
+        # the keypair out-of-band). Without overwriting the cert we'd
+        # leave a stale credential pinned in the registry, and every
+        # subsequent mTLS call from the freshly re-keyed Connector would
+        # 401 with ``client cert does not match the registered identity``
+        # against the OLD ``cert_pem``. Update the credential-bearing
+        # columns in place; preserve admin-managed state (display_name,
+        # capabilities, federated, reach, federation_revision) so a
+        # re-enroll cannot reset operator decisions, and bump the
+        # revision so the federation publisher republishes the new cert
+        # to the Court.
+        await conn.execute(
+            text(
+                """UPDATE internal_agents
+                   SET cert_pem = :cert,
+                       device_info = :device,
+                       dpop_jkt = :dpop_jkt,
+                       spiffe_id = :spiffe_id,
+                       enrolled_at = :now,
+                       is_active = 1,
+                       federation_revision = COALESCE(federation_revision, 0) + 1
+                   WHERE agent_id = :aid"""
+            ),
+            {
+                "cert": cert_pem,
+                "device": record.get("device_info"),
+                "dpop_jkt": record.get("dpop_jkt"),
+                "spiffe_id": spiffe_id,
+                "now": now,
+                "aid": canonical_id,
+            },
+        )
+        await conn.execute(
+            text(
+                """INSERT INTO audit_log
+                   (timestamp, agent_id, action, status, detail)
+                   VALUES (:ts, :aid, 'agent.cert_renewed', 'success', :detail)"""
+            ),
+            {
+                "ts": now,
+                "aid": canonical_id,
+                "detail": json.dumps({
+                    "source": "device_code_enrollment",
+                    "session_id": session_id,
+                    "admin": admin_name,
+                    "reason": "re-enrollment of existing agent_id",
+                }),
+            },
+        )
 
     # ADR-021 PR4d follow-up: schedule a baseline binding on the Court so
     # the freshly enrolled agent can pass ``login_via_proxy_with_local_key``
