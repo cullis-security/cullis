@@ -1037,6 +1037,13 @@ app.include_router(jwks_local_router)
 from mcp_proxy.pki.public import router as pki_public_router
 app.include_router(pki_public_router)
 
+# Frontdesk Connector setup wizard — anonymous metadata at
+# /.well-known/cullis/connector-bootstrap so the wizard can probe
+# multiple candidate URLs in parallel and surface ``org_id`` +
+# ``trust_domain`` + CA fingerprint without a side-channel.
+from mcp_proxy.pki.bootstrap import router as pki_bootstrap_router
+app.include_router(pki_bootstrap_router)
+
 # ADR-012 Phase 2 — proxy-native /v1/auth/token. Gated behind
 # ``settings.local_auth_enabled`` so the reverse-proxy path remains the
 # default. MUST be registered before ``build_reverse_proxy_router()`` so
