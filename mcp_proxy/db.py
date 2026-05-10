@@ -570,28 +570,6 @@ async def list_agents() -> list[dict]:
         return [_agent_row_to_dict(row) for row in result.mappings().all()]
 
 
-_USER_SELECT_COLS = (
-    "principal_id, user_name, display_name, reach, surface, "
-    "cert_thumbprint, created_at, last_active_at, "
-    "password_hash, must_change_password, disabled, "
-    "password_updated_at"
-)
-
-
-def _user_row_to_dict(row) -> dict:
-    """Materialise a row including the optional AD-style password fields.
-
-    ``has_password`` / ``must_change_password`` / ``disabled`` are
-    surfaced as plain ``bool`` so Jinja templates don't have to coerce
-    Postgres BOOLEAN vs SQLite INTEGER themselves.
-    """
-    out = dict(row)
-    out["has_password"] = bool(out.pop("password_hash", None))
-    out["must_change_password"] = bool(out.get("must_change_password"))
-    out["disabled"] = bool(out.get("disabled"))
-    return out
-
-
 async def list_user_principals() -> list[dict]:
     """List user principals registered on this Mastio.
 
@@ -606,30 +584,13 @@ async def list_user_principals() -> list[dict]:
     async with get_db() as conn:
         result = await conn.execute(
             text(
-                f"SELECT {_USER_SELECT_COLS} "
+                "SELECT principal_id, user_name, display_name, reach, "
+                "       surface, cert_thumbprint, created_at, last_active_at "
                 "  FROM local_user_principals "
                 " ORDER BY created_at DESC"
             )
         )
-        return [_user_row_to_dict(row) for row in result.mappings().all()]
-
-
-async def get_user_principal(principal_id: str) -> dict | None:
-    """Fetch a single user principal by id, or ``None`` if missing.
-
-    Used by the dashboard detail page (``GET /proxy/users/{id}``).
-    """
-    async with get_db() as conn:
-        result = await conn.execute(
-            text(
-                f"SELECT {_USER_SELECT_COLS} "
-                "  FROM local_user_principals "
-                " WHERE principal_id = :pid"
-            ),
-            {"pid": principal_id},
-        )
-        row = result.mappings().first()
-    return _user_row_to_dict(row) if row else None
+        return [dict(row) for row in result.mappings().all()]
 
 
 async def count_user_principals() -> int:
