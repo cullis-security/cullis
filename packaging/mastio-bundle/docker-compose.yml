@@ -78,6 +78,12 @@ services:
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}
       MCP_PROXY_VAULT_ADDR:        ${MCP_PROXY_VAULT_ADDR:-}
       MCP_PROXY_VAULT_TOKEN:       ${MCP_PROXY_VAULT_TOKEN:-}
+      # Anthropic upstream key for the embedded AI gateway (ADR-017).
+      # Empty default disables /v1/chat/completions cleanly (the rest of
+      # the Mastio still works — registry, MCP, audit). Without this
+      # mapping the value reaches proxy.env and never the lifespan, so
+      # chat returns 503 ``provider_key_missing``.
+      MCP_PROXY_ANTHROPIC_API_KEY: ${MCP_PROXY_ANTHROPIC_API_KEY:-}
       PROXY_TRUST_DOMAIN:          ${PROXY_TRUST_DOMAIN:-}
       PROXY_INTRA_ORG:             ${PROXY_INTRA_ORG:-}
       PROXY_TRANSPORT_INTRA_ORG:   ${PROXY_TRANSPORT_INTRA_ORG:-}
