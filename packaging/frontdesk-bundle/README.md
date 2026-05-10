@@ -41,6 +41,22 @@ That single command:
 
 Re-runs are idempotent: if `connector_data/profiles/<profile>/identity/metadata.json` exists, the enrollment step is skipped.
 
+### First-boot wizard (no Mastio URL configured)
+
+If `CULLIS_SITE_URL` is left empty in `frontdesk.env` (and no `--site` flag is passed), `deploy.sh` skips the CLI device-code one-shot and brings the bundle up in **browser-wizard mode**:
+
+```bash
+./deploy.sh           # frontdesk.env has no CULLIS_SITE_URL
+# … containers start, then the script tells you to open:
+# http://localhost:8080/setup/discover
+```
+
+The wizard probes nearby Mastios on `mastio.local`, `host.docker.internal`, `localhost`, and `172.17.0.1` (all on `:9443`), shows you the `org_id` + `trust_domain` + CA fingerprint each one reports, and on confirmation pins the CA + walks you through the same device-code enrollment the CLI one-shot would have driven.
+
+Falls back to a manual URL form if nothing is found locally. Override the probe list with `CULLIS_DISCOVERY_PROBE_URLS=url1,url2` for unusual topologies (different VM, custom hostnames).
+
+To opt out — useful in CI / scripted deploys where prompting a human is wrong — pass `--no-wizard` and provide `--site` or `CULLIS_SITE_URL`.
+
 ### Non-interactive
 
 ```bash
@@ -49,6 +65,9 @@ Re-runs are idempotent: if `connector_data/profiles/<profile>/identity/metadata.
 
 # Already enrolled out-of-band, just bring the stack up:
 ./deploy.sh --skip-enroll
+
+# CI / scripted deploys: refuse the wizard fallback, fail fast if URL missing
+./deploy.sh --no-wizard --site https://mastio.acme.local:9443
 
 # Production: requires a pre-provisioned frontdesk.env with real values
 ./deploy.sh --prod
