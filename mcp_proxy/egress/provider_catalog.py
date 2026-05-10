@@ -346,7 +346,11 @@ async def fetch_ollama_models(api_base: str, *, timeout_s: float = 2.0) -> list[
         name = entry.get("name") or entry.get("model")
         if not name:
             continue
-        out.append(f"ollama/{name}")
+        # ``ollama_chat/`` routes through LiteLLM's chat-completion path
+        # (Ollama ``/api/chat``); the legacy ``ollama/`` prefix uses
+        # ``/api/generate`` and silently drops messages payloads on some
+        # builds. ``parse_provider_from_model`` accepts both as input.
+        out.append(f"ollama_chat/{name}")
     return out
 
 
