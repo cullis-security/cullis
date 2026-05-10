@@ -343,6 +343,39 @@ else
     rm -f "$ORG_CA_HOST" 2>/dev/null
 fi
 
+# Export Org ID alongside the Org CA. Standalone Mastios derive a
+# 16-char hex id from the Org CA at first boot (proxy_config.org_id);
+# downstream bundles (Frontdesk in particular) need it to set
+# CULLIS_FRONTDESK_ORG_ID. Without this, generate-frontdesk-env.sh
+# defaults to ``acme`` / ``acme.test`` which doesn't match the Mastio,
+# and a SPIFFE id mismatch surfaces only at runtime when the audit
+# chain attribution starts looking wrong. Read the value out of the
+# health endpoint via curl + jq is fragile (jq may be missing, the
+# endpoint shape evolves); read it directly from the sqlite DB the
+# Mastio writes at first boot.
+ORG_ID_HOST="$CERT_DIR/org-id"
+if [[ -n "$PROXY_CID" ]]; then
+    ORG_ID_VAL="$(docker exec "$PROXY_CID" python3 -c "
+import sqlite3
+try:
+    c = sqlite3.connect('/data/mcp_proxy.db')
+    row = c.execute(\"SELECT value FROM proxy_config WHERE key='org_id'\").fetchone()
+    print(row[0] if row else '')
+except Exception:
+    print('')
+" 2>/dev/null)"
+    ORG_ID_VAL="${ORG_ID_VAL//[$'\t\r\n ']}"
+    if [[ -n "$ORG_ID_VAL" ]]; then
+        echo "$ORG_ID_VAL" > "$ORG_ID_HOST"
+        chmod 644 "$ORG_ID_HOST"
+        ok "Org ID exported to ./certs/org-id (${ORG_ID_VAL})"
+    else
+        warn "Could not read org_id from proxy_config — Frontdesk bundle"
+        warn "will fall back to its default org slug. Set"
+        warn "CULLIS_FRONTDESK_ORG_ID manually in frontdesk.env."
+    fi
+fi
+
 PUBLIC_URL="$(grep -E '^MCP_PROXY_PROXY_PUBLIC_URL=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
 PUBLIC_URL="${PUBLIC_URL:-https://localhost:${PROXY_PORT}}"
 
@@ -356,13 +389,23 @@ if [[ -f "$ORG_CA_HOST" ]]; then
     echo -e "                   ${GRAY}use as CULLIS_FRONTDESK_CA_BUNDLE_HOST when bringing up the Frontdesk bundle${RESET}"
 fi
 echo ""
+SEED_PWD="$(grep -E '^MCP_PROXY_INITIAL_ADMIN_PASSWORD=' "$SCRIPT_DIR/proxy.env" 2>/dev/null | cut -d= -f2-)"
+
 if [[ "$MODE" == "development" ]]; then
     echo "  Next steps (development):"
     echo "    1. Open ${PUBLIC_URL}/proxy/login"
     echo "       (browser will warn — TLS is signed by your local Org CA,"
     echo "        not a public CA. Accept the self-signed warning.)"
-    echo "    2. Complete the first-boot setup wizard"
-    echo "    3. Enroll agents via the Connector or paste an invite token"
+    if [[ -n "$SEED_PWD" ]]; then
+        echo "    2. Sign in as ``admin`` with this password:"
+        echo "         ${SEED_PWD}"
+        echo "       (rotate via /proxy/settings on first sign-in. The seed"
+        echo "        env is ignored on subsequent boots; the persisted hash wins.)"
+        echo "    3. Enroll agents via the Connector or paste an invite token"
+    else
+        echo "    2. Complete the first-boot setup wizard"
+        echo "    3. Enroll agents via the Connector or paste an invite token"
+    fi
 else
     echo "  Next steps (production):"
     echo "    1. Front-door TLS at your edge LB → mastio-nginx :${PROXY_PORT}"

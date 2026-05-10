@@ -137,6 +137,29 @@ async def lifespan(app: FastAPI):
     # 2. Initialize database
     await init_db(settings.database_url)
 
+    # 2a. First-boot scripted admin password seed. No-op when the var is
+    # unset OR when proxy_config.admin_password_hash already exists.
+    # Used by packaging/mastio-bundle/deploy.sh so a fresh tarball can
+    # come up fully self-serve (Frontdesk bring-up, CI, customer
+    # quickstart) without blocking on the /proxy/register browser hop.
+    # Rotation goes through the dashboard, not by editing this env.
+    if settings.initial_admin_password:
+        try:
+            from mcp_proxy.dashboard.session import seed_initial_admin_password
+            seeded = await seed_initial_admin_password(
+                settings.initial_admin_password,
+            )
+            if seeded:
+                _log.info(
+                    "First-boot admin password seeded from "
+                    "MCP_PROXY_INITIAL_ADMIN_PASSWORD; rotate via /proxy/login",
+                )
+        except Exception as exc:  # never block lifespan on the seed
+            _log.warning(
+                "First-boot admin password seed failed (operator can still "
+                "register via /proxy/register): %s", exc,
+            )
+
     # 2b. Initialize the shared Redis client (audit F-B-12).
     # Empty REDIS_URL is a supported single-instance configuration —
     # ``init_redis`` is a no-op, and callers (JTI store, rate limiter)

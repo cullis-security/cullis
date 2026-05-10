@@ -89,6 +89,26 @@ default_ca_bundle() {
     echo ""
 }
 
+# Sibling Mastio bundle exports the auto-derived org_id to
+# ./certs/org-id alongside the CA. Without picking it up, the
+# Frontdesk default ``acme`` is wrong against a standalone Mastio's
+# 16-char hex id, the SPIFFE attribution silently mismatches, and the
+# operator only finds out when audit rows show the wrong principal.
+default_org_id() {
+    local candidates=(
+        "$SCRIPT_DIR/../cullis-mastio-bundle/certs/org-id"
+        "$SCRIPT_DIR/../mastio-bundle/certs/org-id"
+    )
+    local sibling
+    for sibling in "${candidates[@]}"; do
+        if [[ -f "$sibling" ]]; then
+            tr -d '[:space:]' < "$sibling"
+            return
+        fi
+    done
+    echo ""
+}
+
 case "$MODE" in
     prod)
         [[ -n "${CULLIS_FRONTDESK_ORG_ID:-}" ]]         || die "--prod requires CULLIS_FRONTDESK_ORG_ID env var"
@@ -100,7 +120,14 @@ case "$MODE" in
         CA_BUNDLE="${CULLIS_FRONTDESK_CA_BUNDLE_HOST}"
         ;;
     defaults)
-        ORG_ID="${CULLIS_FRONTDESK_ORG_ID:-acme}"
+        # ORG_ID precedence: explicit env > sibling Mastio export
+        # (./certs/org-id, written by mastio-bundle deploy.sh) > legacy
+        # ``acme`` placeholder. The sibling lookup matches the same
+        # tarball-vs-repo dance default_ca_bundle does, so the two
+        # auto-detects move together: if the operator ran the Mastio
+        # bundle, both org_id and the CA come from there.
+        ORG_ID="${CULLIS_FRONTDESK_ORG_ID:-$(default_org_id)}"
+        ORG_ID="${ORG_ID:-acme}"
         TRUST_DOMAIN="${CULLIS_FRONTDESK_TRUST_DOMAIN:-${ORG_ID}.test}"
         CA_BUNDLE="${CULLIS_FRONTDESK_CA_BUNDLE_HOST:-$(default_ca_bundle)}"
         if [[ -z "$CA_BUNDLE" ]]; then
@@ -118,9 +145,14 @@ case "$MODE" in
         echo ""
         _default_ca="$(default_ca_bundle)"
         ca_prompt_default="${_default_ca:-./mastio-org-ca.pem}"
+        # Sibling Mastio bundle (if present) wins the org_id default
+        # over the legacy ``acme``. Operator can still override at the
+        # prompt, but the offered default is the right one.
+        _default_org_id="$(default_org_id)"
+        org_prompt_default="${_default_org_id:-acme}"
 
-        read -rp "  Org ID [acme]: " ORG_ID
-        ORG_ID="${ORG_ID:-acme}"
+        read -rp "  Org ID [${org_prompt_default}]: " ORG_ID
+        ORG_ID="${ORG_ID:-${org_prompt_default}}"
 
         read -rp "  SPIFFE trust domain [${ORG_ID}.test]: " TRUST_DOMAIN
         TRUST_DOMAIN="${TRUST_DOMAIN:-${ORG_ID}.test}"

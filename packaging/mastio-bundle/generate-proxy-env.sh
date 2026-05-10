@@ -68,8 +68,15 @@ gen_secret() { openssl rand -base64 32 | tr -d '/+=' | head -c 32; }
 
 ADMIN_SECRET="$(gen_secret)"
 SIGNING_KEY="$(gen_secret)"
+# Bcrypt seed for the very first lifespan: paired with the
+# MCP_PROXY_INITIAL_ADMIN_PASSWORD env that ``mcp_proxy/main.py`` reads
+# right after init_db. No-op on subsequent boots (the persisted hash
+# wins). Without this, a fresh tarball cannot come up self-serve;
+# Frontdesk + CI + customer quickstart all block on a /proxy/register
+# browser hop.
+INITIAL_ADMIN_PASSWORD="$(gen_secret)"
 
-ok "Generated random admin secret + signing key"
+ok "Generated random admin secret + signing key + first-boot password"
 
 case "$MODE" in
     prod)
@@ -108,11 +115,17 @@ sed -i "s|^MCP_PROXY_DASHBOARD_SIGNING_KEY=.*|MCP_PROXY_DASHBOARD_SIGNING_KEY=${
 sed -i "s|^MCP_PROXY_BROKER_URL=.*|MCP_PROXY_BROKER_URL=${BROKER}|"                  "$OUT"
 sed -i "s|^MCP_PROXY_BROKER_JWKS_URL=.*|MCP_PROXY_BROKER_JWKS_URL=${JWKS}|"          "$OUT"
 sed -i "s|^MCP_PROXY_PROXY_PUBLIC_URL=.*|MCP_PROXY_PROXY_PUBLIC_URL=${PUBLIC}|"      "$OUT"
+# proxy.env.example does not ship the seed line (we mint per-deploy);
+# append unconditionally. The Mastio lifespan ignores it once a hash
+# exists, so re-running --force does not surprise-reset the password.
+echo "MCP_PROXY_INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}" >> "$OUT"
 
 ok "Wrote ${OUT}"
 echo ""
-echo -e "  ${BOLD}MCP_PROXY_ADMIN_SECRET${RESET}      ${GRAY}${ADMIN_SECRET:0:8}...${RESET}"
-echo -e "  ${BOLD}MCP_PROXY_BROKER_URL${RESET}        ${GRAY}${BROKER}${RESET}"
-echo -e "  ${BOLD}MCP_PROXY_PROXY_PUBLIC_URL${RESET}  ${GRAY}${PUBLIC}${RESET}"
-echo -e "  ${BOLD}MCP_PROXY_ENVIRONMENT${RESET}       ${GRAY}${ENVIRONMENT}${RESET}"
+echo -e "  ${BOLD}MCP_PROXY_ADMIN_SECRET${RESET}            ${GRAY}${ADMIN_SECRET:0:8}…${RESET}"
+echo -e "  ${BOLD}MCP_PROXY_INITIAL_ADMIN_PASSWORD${RESET}  ${GRAY}${INITIAL_ADMIN_PASSWORD}${RESET}"
+echo -e "                                  ${GRAY}(login at /proxy/login as ``admin`` with this password, then rotate)${RESET}"
+echo -e "  ${BOLD}MCP_PROXY_BROKER_URL${RESET}              ${GRAY}${BROKER}${RESET}"
+echo -e "  ${BOLD}MCP_PROXY_PROXY_PUBLIC_URL${RESET}        ${GRAY}${PUBLIC}${RESET}"
+echo -e "  ${BOLD}MCP_PROXY_ENVIRONMENT${RESET}             ${GRAY}${ENVIRONMENT}${RESET}"
 echo ""

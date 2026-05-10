@@ -334,6 +334,30 @@ async def is_admin_password_set() -> bool:
     return bool(await get_config(ADMIN_PASSWORD_KEY))
 
 
+async def seed_initial_admin_password(plaintext: str) -> bool:
+    """First-boot only: hash + persist ``plaintext`` if no hash exists yet.
+
+    Returns True if a fresh hash was written, False if a password was
+    already set (so the seed is ignored, the dashboard remains the
+    rotation surface) or if the value is empty (no-op).
+
+    This is the scripted-bring-up counterpart to /proxy/register: the
+    Mastio bundle (``packaging/mastio-bundle/deploy.sh``) mints a random
+    password on first run, exports it via ``MCP_PROXY_INITIAL_ADMIN_PASSWORD``,
+    and the operator reads it back from a file on disk; subsequent
+    boots are no-ops because the persisted hash wins. Without this, a
+    fresh Mastio cannot come up self-serve (Frontdesk bundle, CI,
+    customer quickstart), every flow blocks on a browser hop into the
+    register form.
+    """
+    if not plaintext:
+        return False
+    if await is_admin_password_set():
+        return False
+    await set_admin_password(plaintext)
+    return True
+
+
 async def set_admin_password(plaintext: str) -> None:
     """Hash the password with bcrypt and persist it.
 

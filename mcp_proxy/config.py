@@ -97,6 +97,18 @@ class ProxySettings(BaseSettings):
     # same filesystem. Ignored when ``dashboard_signing_key`` is set.
     dashboard_signing_key_path: str = "certs/.mcp_proxy_dashboard_signing_key"
 
+    # Optional bcrypt seed for the very first boot. When set AND no
+    # ``proxy_config.admin_password_hash`` row exists yet, the lifespan
+    # hashes this value and persists it so the operator can reach
+    # /proxy/login without first opening /proxy/register in a browser.
+    # Subsequent boots ignore this var (the existing hash wins) so a
+    # rotation happens via the dashboard, not by editing the env file.
+    # Empty (default) preserves the historical "browser wizard" UX.
+    # Used by packaging/mastio-bundle/deploy.sh so a release tarball can
+    # come up fully self-serve in CI / scripted demos / Frontdesk
+    # bring-up where blocking on a browser is not acceptable.
+    initial_admin_password: str = ""
+
     # Break-glass re-enable for the local admin password sign-in path.
     # Normal state: operators flip the toggle in Settings → Sign-in methods,
     # which writes ``proxy_config.local_password_enabled`` in the DB. Setting
