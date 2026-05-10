@@ -110,8 +110,68 @@ def session_logout(response: Response) -> dict[str, Any]:
     return {"ok": True}
 
 
+def _whoami_from_local_cookie(request: Request) -> dict[str, Any] | None:
+    """If the request carries a valid ADR-025 local-auth cookie, return
+    the user's principal in the whoami shape. Returns ``None`` when no
+    valid local cookie is present (caller falls through to the bearer
+    path). The cookie is HMAC-signed by the Connector itself, so we can
+    trust the ``principal_name`` field without re-resolving the cert.
+    Surfaces the actual signed-in employee instead of the container's
+    own ``::frontdesk`` agent id.
+    """
+    cookie_secret = getattr(request.app.state, "local_cookie_secret", None)
+    if not cookie_secret:
+        return None
+    try:
+        from cullis_connector.identity.local_session import (
+            LOCAL_SESSION_COOKIE_NAME, parse_local_cookie,
+        )
+    except Exception:
+        return None
+    # ADR-025 cookie is ``cullis_local_session``; the legacy
+    # ``cullis_session`` is the single-mode bearer-mirror cookie.
+    raw = request.cookies.get(LOCAL_SESSION_COOKIE_NAME, "")
+    if not raw:
+        return None
+    payload = parse_local_cookie(raw, cookie_secret)
+    if payload is None:
+        return None
+    state = _state(request)
+    org_id = state.get("org_id", "") or "local"
+    # ``trust_domain`` is not on single-mode state today; derive a
+    # readable fallback if the shared wiring did not stamp it.
+    trust_domain = (
+        getattr(request.app.state, "trust_domain", None)
+        or state.get("trust_domain", "")
+        or f"{org_id}.test"
+    )
+    name = payload.principal_name or payload.user_name
+    principal_id = f"{trust_domain}/{org_id}/user/{name}"
+    return {
+        "ok": True,
+        "principal": {
+            "spiffe_id": f"spiffe://{principal_id}",
+            "principal_type": "user",
+            "name": name,
+            "org": org_id,
+            "trust_domain": trust_domain,
+            "sub": name,
+            "source": "local-cookie",
+        },
+        "principal_id": principal_id,
+        "exp": int(payload.exp),
+    }
+
+
 @router.get("/api/session/whoami", dependencies=[Depends(_enforce_loopback)])
 def session_whoami(request: Request) -> dict[str, Any]:
+    # ADR-025 local-auth path: if the request carries a valid signed
+    # ``cullis_session`` cookie (issued by /api/auth/login), surface
+    # the local user as the principal. Bearer path stays untouched for
+    # laptop / single-mode callers (Cursor / OpenWebUI on loopback).
+    user_who = _whoami_from_local_cookie(request)
+    if user_who is not None:
+        return user_who
     """Return the resolved principal in the ADR-020 shape.
 
     In single mode the answer is fixed: there is exactly one identity
