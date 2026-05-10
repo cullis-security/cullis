@@ -39,6 +39,13 @@ services:
       MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
       MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
       MCP_PROXY_DASHBOARD_SIGNING_KEY: ${MCP_PROXY_DASHBOARD_SIGNING_KEY:-}
+      # First-boot scriptable admin password seed (PR #566). Empty
+      # default preserves the historical /proxy/register browser
+      # wizard. When generate-proxy-env.sh mints a value, the lifespan
+      # hashes + persists it on the very first boot only; subsequent
+      # boots ignore the env (the persisted hash wins, rotation goes
+      # through the dashboard).
+      MCP_PROXY_INITIAL_ADMIN_PASSWORD: ${MCP_PROXY_INITIAL_ADMIN_PASSWORD:-}
       MCP_PROXY_DATABASE_URL:      sqlite+aiosqlite:////data/mcp_proxy.db
       MCP_PROXY_BROKER_URL:        ${MCP_PROXY_BROKER_URL:-}
       MCP_PROXY_BROKER_JWKS_URL:   ${MCP_PROXY_BROKER_JWKS_URL:-}
