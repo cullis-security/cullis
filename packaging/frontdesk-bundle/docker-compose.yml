@@ -76,7 +76,7 @@ services:
       - frontdesk_net
 
   connector:
-    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0-rc2}
+    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0}
     # ``dashboard`` mounts the local-auth router (ADR-025) by default; the
     # legacy fake-SSO Ambassador shared-mode is reachable by setting
     # ``AMBASSADOR_MODE=shared`` explicitly in frontdesk.env. ADR-025
