@@ -3054,13 +3054,17 @@ async def badge_users(request: Request):
 
 
 @router.get("/users", response_class=HTMLResponse)
-async def users_page(request: Request):
-    """Read-only listing of user principals registered on this Mastio.
+async def users_page(
+    request: Request,
+    new_user_name: str | None = None,
+    error: str | None = None,
+):
+    """Listing of user principals registered on this Mastio.
 
-    Backed by ``local_user_principals``, the same table the admin API
-    at ``/v1/admin/users`` writes into. Rows appear here whenever a
-    Frontdesk SSO user touches the CSR endpoint (``upsert_from_csr``)
-    or an admin pre-creates them via ``POST /v1/admin/users``.
+    Backed by ``local_user_principals``. Rows land here either via the
+    Frontdesk SSO CSR signing path (``upsert_from_csr``), via the
+    ``POST /v1/admin/users`` X-Admin-Secret API, or via the
+    ``POST /proxy/users/create`` form on this dashboard.
     """
     session = require_login(request)
     if isinstance(session, RedirectResponse):
@@ -3077,7 +3081,115 @@ async def users_page(request: Request):
         request, session,
         active="users",
         users=users,
+        new_user_name=new_user_name,
+        error=error,
     ))
+
+
+@router.post("/users/create")
+async def users_create(request: Request):
+    """Form-driven counterpart of ``POST /v1/admin/users``.
+
+    Same idempotent insert into ``local_user_principals``: re-posting an
+    existing ``user_name`` returns the existing row without overwriting
+    metadata so a real SSO touch can't be clobbered by a careless
+    re-create. The cert itself is minted on first
+    ``/v1/principals/csr`` — this row is the directory entry, not the
+    credential.
+    """
+    import re
+
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from datetime import datetime, timezone
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db, get_config
+    from mcp_proxy.config import get_settings
+
+    form = await request.form()
+    user_name = str(form.get("user_name", "")).strip()
+    display_name = str(form.get("display_name", "")).strip()
+    reach = str(form.get("reach", "intra")).strip() or "intra"
+    surface = str(form.get("surface", "")).strip() or None
+
+    if not user_name:
+        return RedirectResponse(
+            url="/proxy/users?error=user_name+is+required",
+            status_code=303,
+        )
+    if not re.fullmatch(r"[a-zA-Z0-9._\-]{1,64}", user_name):
+        return RedirectResponse(
+            url=(
+                "/proxy/users?error=user_name+must+match+[a-zA-Z0-9._-]"
+                "+and+be+at+most+64+chars"
+            ),
+            status_code=303,
+        )
+    if reach not in ("intra", "cross", "both"):
+        return RedirectResponse(
+            url="/proxy/users?error=reach+must+be+intra%2C+cross+or+both",
+            status_code=303,
+        )
+
+    org_id = await get_config("org_id") or get_settings().org_id
+    if not org_id:
+        return RedirectResponse(
+            url=(
+                "/proxy/users?error=org_id+not+set"
+                "+%E2%80%94+complete+broker+setup+first"
+            ),
+            status_code=303,
+        )
+
+    principal_id = f"{org_id}::user::{user_name}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    try:
+        async with get_db() as conn:
+            existing = (await conn.execute(
+                _sql_text(
+                    "SELECT principal_id FROM local_user_principals "
+                    "WHERE principal_id = :pid"
+                ),
+                {"pid": principal_id},
+            )).first()
+            if existing is None:
+                await conn.execute(
+                    _sql_text(
+                        """
+                        INSERT INTO local_user_principals (
+                            principal_id, user_name, display_name,
+                            reach, surface, created_at
+                        ) VALUES (
+                            :pid, :uname, :disp, :reach, :surface, :now
+                        )
+                        """
+                    ),
+                    {
+                        "pid": principal_id,
+                        "uname": user_name,
+                        "disp": display_name or None,
+                        "reach": reach,
+                        "surface": surface,
+                        "now": now,
+                    },
+                )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("users_create failed user_name=%s: %s", user_name, exc)
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"/proxy/users?error={quote(f'create failed: {exc}')}",
+            status_code=303,
+        )
+
+    return RedirectResponse(
+        url=f"/proxy/users?new_user_name={user_name}",
+        status_code=303,
+    )
 
 
 @router.get("/badge/audit")
