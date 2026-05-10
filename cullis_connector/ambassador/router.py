@@ -24,7 +24,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from cullis_connector.ambassador.auth import require_bearer, require_loopback

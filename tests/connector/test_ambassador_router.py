@@ -426,7 +426,6 @@ def _make_request(*, host: str, headers: dict | None = None, user_creds=None) ->
     middleware (which always resets ``user_credentials`` to None
     before our injection can take); the helpers are pure functions of
     request state so a hand-rolled stub is the right scope."""
-    from starlette.datastructures import Headers
     from starlette.requests import Request
 
     scope = {
