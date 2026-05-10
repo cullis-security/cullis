@@ -2220,11 +2220,17 @@ class CullisClient:
         # ``decide_route`` classifies the recipient intra vs cross
         # correctly — otherwise intra-org sends are mis-routed to the
         # broker bridge and 404 on the Court side.
+        # ADR-020 — typed principals (``user::alice`` / ``workload::x``)
+        # already carry ``::`` from the principal-type prefix; the old
+        # heuristic (``"::" not in _raw_target``) wrongly skipped the
+        # org prefix for them and made ``decide_route`` parse ``user``
+        # as the org, denying every U2U send at the reach gate. Pin to
+        # ``startswith("<org>::")`` instead.
         _resolved_org = decision.get("target_org_id")
         _raw_target = decision["target_agent_id"]
         target_agent_id = (
             f"{_resolved_org}::{_raw_target}"
-            if _resolved_org and "::" not in _raw_target
+            if _resolved_org and not _raw_target.startswith(f"{_resolved_org}::")
             else _raw_target
         )
 
@@ -2391,11 +2397,17 @@ class CullisClient:
         # ``decide_route`` classifies the recipient intra vs cross
         # correctly — otherwise intra-org sends are mis-routed to the
         # broker bridge and 404 on the Court side.
+        # ADR-020 — typed principals (``user::alice`` / ``workload::x``)
+        # already carry ``::`` from the principal-type prefix; the old
+        # heuristic (``"::" not in _raw_target``) wrongly skipped the
+        # org prefix for them and made ``decide_route`` parse ``user``
+        # as the org, denying every U2U send at the reach gate. Pin to
+        # ``startswith("<org>::")`` instead.
         _resolved_org = decision.get("target_org_id")
         _raw_target = decision["target_agent_id"]
         target_agent_id = (
             f"{_resolved_org}::{_raw_target}"
-            if _resolved_org and "::" not in _raw_target
+            if _resolved_org and not _raw_target.startswith(f"{_resolved_org}::")
             else _raw_target
         )
 
