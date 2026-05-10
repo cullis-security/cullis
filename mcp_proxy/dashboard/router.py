@@ -3226,9 +3226,19 @@ async def users_create(request: Request):
                     "user already has a password — use Reset Password "
                     "in the user detail Danger Zone to rotate it",
                 )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("users_create failed user_name=%s: %s", user_name, exc)
-        return _user_form_redirect(f"create failed: {exc}")
+    except Exception:  # noqa: BLE001
+        # Never inline the exception text into the user-facing error.
+        # SQLAlchemy DBAPIError stringifies bound parameters, which would
+        # leak the bcrypt password_hash into both the redirect URL (and
+        # therefore reverse-proxy access logs + browser history) and the
+        # rendered page. Log full traceback locally; surface a generic
+        # message to the operator.
+        _log.warning(
+            "users_create failed user_name=%s", user_name, exc_info=True,
+        )
+        return _user_form_redirect(
+            "create failed — check Mastio logs for details",
+        )
 
     return RedirectResponse(
         url=f"/proxy/users?new_user_name={user_name}",
