@@ -307,6 +307,139 @@ async def mcp_passthrough(request: Request) -> JSONResponse:
     })
 
 
+# ── /v1/inbox — intra-org user-to-user messaging ────────────────────
+#
+# ADR-008 / ADR-020: passes through to the Mastio's
+# ``/v1/egress/message/{send,inbox}`` using the calling user's
+# UserPrincipal cert (set by ``cert_middleware``). Auth gate mirrors
+# /v1/chat/completions: when ``user_credentials`` is bound, bypass
+# loopback + bearer; otherwise the route 401s. The Cullis SDK's
+# ``send_oneshot`` does the resolve + sign + envelope dance, so the
+# Connector just plumbs request → SDK call → response.
+#
+# Cross-org via broker is intentionally NOT wired here yet — the
+# shared-mode router (``ambassador/shared/router.py``) carries that
+# code path. Standalone Mastio + ADR-025 local-auth covers intra-org
+# only, which is the v0.2 dogfood scope.
+
+def _coerce_payload(value: Any) -> dict:
+    """SPA may send the message body as a string ("ciao alice") or as a
+    structured dict ({"text": "ciao alice"}). Mastio's
+    ``SendOneShotRequest.payload`` is typed as ``dict``, so coerce a
+    bare string to ``{"text": <str>}`` for the operator-friendly UX."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"text": value}
+    raise HTTPException(400, "payload must be a JSON object or string")
+
+
+@router.post("/v1/inbox/send")
+def inbox_send(request: Request, body: dict):
+    """Send a one-shot message via the Mastio's intra-org egress.
+
+    Requires the cert middleware to have resolved a user principal
+    (``request.state.user_credentials``); shared bearer + loopback
+    enforcement still apply when no per-user cert is bound, so a CLI
+    caller using the local Bearer can also send if it carries the
+    Connector-agent identity.
+    """
+    user_creds = _per_user_credentials(request)
+    if user_creds is None:
+        _enforce_loopback(request)
+        state = _get_state(request)
+        _enforce_bearer(request, state)
+        client_holder: AmbassadorClient = state["client"]
+        try:
+            client = client_holder.get()
+        except Exception as exc:
+            _log.exception("ambassador SDK login failed (inbox send)")
+            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+    else:
+        try:
+            client = _build_user_client(request, user_creds)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log.exception(
+                "user-bound CullisClient build failed (inbox send) for %s",
+                user_creds.principal_id,
+            )
+            raise HTTPException(
+                502, f"per-user Cullis cloud login failed: {exc}",
+            ) from exc
+
+    recipient_id = body.get("recipient_id")
+    if not isinstance(recipient_id, str) or not recipient_id:
+        raise HTTPException(400, "recipient_id is required (str)")
+    payload = _coerce_payload(body.get("payload", ""))
+    correlation_id = body.get("correlation_id")
+    reply_to = body.get("reply_to")
+    ttl_seconds = int(body.get("ttl_seconds", 300) or 300)
+    capabilities = body.get("capabilities") or []
+    if not isinstance(capabilities, list):
+        raise HTTPException(400, "capabilities must be a list of strings")
+
+    try:
+        result = client.send_oneshot(
+            recipient_id,
+            payload,
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+            ttl_seconds=ttl_seconds,
+            capabilities=capabilities,
+        )
+    except Exception as exc:
+        _log.exception("inbox send failed for recipient=%s", recipient_id)
+        raise HTTPException(502, f"inbox send failed: {exc}") from exc
+    return result
+
+
+@router.get("/v1/inbox")
+def inbox_list(
+    request: Request,
+    since: str | None = None,
+    limit: int = 50,
+):
+    """Poll the calling principal's intra-org one-shot inbox."""
+    user_creds = _per_user_credentials(request)
+    if user_creds is None:
+        _enforce_loopback(request)
+        state = _get_state(request)
+        _enforce_bearer(request, state)
+        client_holder: AmbassadorClient = state["client"]
+        try:
+            client = client_holder.get()
+        except Exception as exc:
+            _log.exception("ambassador SDK login failed (inbox list)")
+            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+    else:
+        try:
+            client = _build_user_client(request, user_creds)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _log.exception(
+                "user-bound CullisClient build failed (inbox list) for %s",
+                user_creds.principal_id,
+            )
+            raise HTTPException(
+                502, f"per-user Cullis cloud login failed: {exc}",
+            ) from exc
+
+    params: dict[str, Any] = {"limit": int(limit)}
+    if since is not None:
+        params["since"] = since
+    try:
+        resp = client._authed_request("GET", "/v1/egress/message/inbox", params=params)
+    except Exception as exc:
+        _log.exception("inbox list HTTP failed")
+        raise HTTPException(502, f"inbox list failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(resp.status_code, detail=resp.text[:400])
+    return resp.json()
+
+
 # ── Wiring helper ───────────────────────────────────────────────────
 
 def install_ambassador(

@@ -66,7 +66,15 @@ _log = logging.getLogger("cullis_connector.auth.cert_middleware")
 # Path prefixes guarded by this middleware — only the OpenAI-shaped
 # chat surface needs per-user cert binding. /v1/ambassador/health is a
 # liveness probe and stays exempt.
-_GUARDED_PREFIXES = ("/v1/chat/completions", "/v1/models", "/v1/mcp")
+_GUARDED_PREFIXES = (
+    "/v1/chat/completions",
+    "/v1/models",
+    "/v1/mcp",
+    # ADR-008 / ADR-020 — inbox send + list need the per-user cert so
+    # the SDK call to Mastio's ``/v1/egress/message/{send,inbox}`` is
+    # authenticated as the user principal, not the Connector-agent.
+    "/v1/inbox",
+)
 
 
 def _is_guarded(path: str) -> bool:

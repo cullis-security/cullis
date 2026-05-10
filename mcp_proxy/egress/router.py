@@ -941,30 +941,83 @@ async def resolve_recipient(
 
         target_cert_pem: str | None = None
         if transport == "mtls-only":
-            # ``internal_agents.agent_id`` is ``<org>::<name>`` in
-            # production (ADR-010 invariant) but legacy rows + some
-            # test fixtures still use the bare ``<name>`` form. Try
-            # full first, then bare — picking the first row via
-            # ``ORDER BY`` so the full-form match wins when both
-            # exist. 404 only if neither is found.
-            full_agent_id = f"{target_org}::{target_agent}"
-            async with get_db() as conn:
-                result = await conn.execute(
-                    text(
-                        "SELECT cert_pem, is_active FROM internal_agents "
-                        "WHERE agent_id IN (:full_id, :bare_id) "
-                        "ORDER BY CASE WHEN agent_id = :full_id "
-                        "THEN 0 ELSE 1 END LIMIT 1"
-                    ),
-                    {"full_id": full_agent_id, "bare_id": target_agent},
-                )
-                row = result.mappings().first()
-                if row is None or not row["is_active"]:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"intra-org target not found: {full_agent_id}",
+            # ADR-020 — typed-principal recipients (user::, workload::)
+            # live in ``local_user_principals`` / ``local_workload_principals``,
+            # NOT in ``internal_agents``. Detect the prefix and fork the
+            # lookup. The user's leaf cert may not have been minted yet
+            # (alice has a directory row but no cert until her first
+            # SSO touch via ``/v1/principals/csr``), so missing
+            # ``cert_thumbprint`` is fine — Mastio-mediated intra-org
+            # delivery does not handshake the sender against the
+            # recipient's cert; the message lands in ``local_messages``
+            # and the recipient picks it up at their next inbox poll.
+            if target_agent.startswith("user::"):
+                user_name = target_agent[len("user::"):]
+                full_principal_id = f"{target_org}::user::{user_name}"
+                async with get_db() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT cert_thumbprint FROM local_user_principals "
+                            "WHERE principal_id = :pid"
+                        ),
+                        {"pid": full_principal_id},
                     )
-                target_cert_pem = row["cert_pem"]
+                    row = result.mappings().first()
+                    if row is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"intra-org user principal not found: {full_principal_id}",
+                        )
+                # cert_pem is intentionally None for user principals:
+                # the sender encrypts under the message envelope path
+                # only when transport=='envelope' (cross-org). Intra-org
+                # mtls-only relies on Mastio as the broker; no peer TLS
+                # handshake from sender to recipient is performed.
+                target_cert_pem = None
+            elif target_agent.startswith("workload::"):
+                workload_name = target_agent[len("workload::"):]
+                full_principal_id = f"{target_org}::workload::{workload_name}"
+                async with get_db() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT principal_id FROM local_workload_principals "
+                            "WHERE principal_id = :pid"
+                        ),
+                        {"pid": full_principal_id},
+                    )
+                    row = result.mappings().first()
+                    if row is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"intra-org workload principal not found: {full_principal_id}",
+                        )
+                target_cert_pem = None
+            else:
+                # Untyped recipient — agent. Same query as before:
+                # ``internal_agents.agent_id`` is ``<org>::<name>`` in
+                # production (ADR-010 invariant) but legacy rows + some
+                # test fixtures still use the bare ``<name>`` form. Try
+                # full first, then bare — picking the first row via
+                # ``ORDER BY`` so the full-form match wins when both
+                # exist. 404 only if neither is found.
+                full_agent_id = f"{target_org}::{target_agent}"
+                async with get_db() as conn:
+                    result = await conn.execute(
+                        text(
+                            "SELECT cert_pem, is_active FROM internal_agents "
+                            "WHERE agent_id IN (:full_id, :bare_id) "
+                            "ORDER BY CASE WHEN agent_id = :full_id "
+                            "THEN 0 ELSE 1 END LIMIT 1"
+                        ),
+                        {"full_id": full_agent_id, "bare_id": target_agent},
+                    )
+                    row = result.mappings().first()
+                    if row is None or not row["is_active"]:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"intra-org target not found: {full_agent_id}",
+                        )
+                    target_cert_pem = row["cert_pem"]
 
         return ResolveResponse(
             path="intra-org",
