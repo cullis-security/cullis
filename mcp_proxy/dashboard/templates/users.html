@@ -16,18 +16,27 @@
         </div>
     </div>
 
-    <!-- Context banner — explain how rows land here, since the page
-         is read-only and operators arriving from the install path
-         expect a "Create user" button that does not exist by design. -->
+    <!-- Context banner — read-only by design.
+         Mastio is the cert-attribution registry, not the credential
+         store. Passwords + lifecycle live where the Source column
+         points (Frontdesk container admin / Connector desktop /
+         upstream IdP). Surfacing this here matters because operators
+         arriving from the install path otherwise expect a "Create
+         user" button on this page — there isn't one by design. -->
     <div class="mb-6 p-4 bg-surface-900/60 border border-gray-800/50 rounded-lg text-xs text-gray-500 leading-relaxed">
-        Rows appear here automatically the first time a user authenticates
-        through a Frontdesk container — the SSO header reaches the
-        Connector Ambassador, the Ambassador asks Mastio to mint a
-        per-user cert via <code class="text-accent-400/80">/v1/principals/csr</code>,
-        and the CSR signing path upserts the principal into this table.
-        Pre-create rows out-of-band via
+        This is the Mastio's <strong class="text-gray-300">attribution
+        registry</strong> — one row per principal that has been signed
+        a cert. Credentials live at the Source (see column): a
+        <strong class="text-gray-300">Frontdesk container</strong>
+        admin panel manages multi-user passwords, the
+        <strong class="text-gray-300">Connector desktop</strong>
+        manages single-user keys on the laptop,
+        <strong class="text-gray-300">SSO</strong> rows are governed
+        upstream at the IdP. Rows land here automatically on the first
+        cert mint via <code class="text-accent-400/80">/v1/principals/csr</code>;
+        pre-seed out-of-band with
         <code class="text-accent-400/80">POST /v1/admin/users</code>
-        (X-Admin-Secret) when you need a row before the first SSO touch.
+        (X-Admin-Secret) when needed.
     </div>
 
     <!-- Table -->
@@ -38,7 +47,8 @@
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">User</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Principal ID</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Reach</th>
-                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Surface</th>
+                    <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider"
+                        title="Where this principal's credential lives — Mastio never holds passwords">Source</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Last active</th>
                     <th class="px-5 py-3 text-left text-[10px] font-medium text-gray-600 uppercase tracking-wider">Created</th>
                 </tr>
@@ -79,11 +89,41 @@
                         </span>
                         {% endif %}
                     </td>
-                    <td class="px-5 py-4 text-xs text-gray-400 font-mono">
-                        {% if u.surface %}
-                        {{ u.surface }}
+                    <td class="px-5 py-4">
+                        {# Inferred source — derived from ``surface`` hint
+                           (set by the Connector Ambassador on first sign-in)
+                           with a fallback that distinguishes SSO-upserted
+                           rows (cert_thumbprint present, surface NULL)
+                           from admin-pre-seeded rows (no cert yet). #}
+                        {% set _surface = (u.surface or '').lower() %}
+                        {% if 'frontdesk' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-violet-500/10 text-violet-400 border border-violet-400/30"
+                              title="Credential lives in this Frontdesk container's users.db (ADR-025). Manage from the Frontdesk admin panel.">
+                            Frontdesk
+                        </span>
+                        {% elif 'connector' in _surface or 'cullis-chat' in _surface or 'cli' in _surface or 'desktop' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-info-400/10 text-info-400 border border-info-400/30"
+                              title="Credential lives on the user's laptop in the Connector users.db.">
+                            Connector
+                        </span>
+                        {% elif 'sso' in _surface or 'oidc' in _surface or 'keycloak' in _surface or 'okta' in _surface %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-400/30"
+                              title="Credential lives at the upstream IdP. Lifecycle is governed there.">
+                            SSO
+                        </span>
+                        {% elif u.cert_thumbprint %}
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-gray-500/10 text-gray-400 border border-gray-500/30"
+                              title="Cert minted but the surface hint is missing — likely an older Connector or a direct CSR caller.">
+                            Cert-direct
+                        </span>
                         {% else %}
-                        <span class="text-gray-700 italic">—</span>
+                        <span class="px-2 py-0.5 rounded text-[10px] uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-400/30"
+                              title="Pre-seeded via POST /v1/admin/users — no cert minted yet, no surface bound. Will resolve on first sign-in.">
+                            Pre-seeded
+                        </span>
+                        {% endif %}
+                        {% if u.surface %}
+                        <div class="text-[10px] text-gray-600 font-mono mt-1" title="raw surface hint">{{ u.surface }}</div>
                         {% endif %}
                     </td>
                     <td class="px-5 py-4 text-xs text-gray-500 font-mono whitespace-nowrap">
