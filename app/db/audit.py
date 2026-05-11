@@ -126,6 +126,52 @@ class AuditTsaAnchor(Base):
     )
 
 
+class MastioAuditReplica(Base):
+    """Wave B PR8 / D1 — Court-side mirror of each Mastio's local_audit
+    chain. The Mastio publisher (``mcp_proxy.federation.audit_publisher``)
+    POSTs ECDSA-signed batches to ``/v1/federation/audit/replicate``;
+    the receiver verifies the signature against
+    ``organizations.mastio_pubkey`` and persists a verbatim copy here.
+
+    Append-only via the same trigger pattern as ``audit_log`` (see
+    migration ``s9n0o1p2q3r4_replica``). UNIQUE (mastio_org_id,
+    chain_seq) makes the receiver idempotent under retry.
+
+    Cross-org dispute resolution:
+      * Court's broker-observed event lands in ``audit_log`` (chain
+        Court).
+      * Each Mastio publishes its own per-org chain into this table.
+      * ``GET /v1/admin/audit/cross-org-verify?session_id=X`` joins the
+        three sources and flags content divergence.
+    """
+    __tablename__ = "mastio_audit_replica"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mastio_org_id = Column(String(128), nullable=False, index=True)
+    chain_seq = Column(Integer, nullable=False)
+    entry_hash = Column(String(64), nullable=False)
+    previous_hash = Column(String(64), nullable=True)
+    # ISO8601 strings — keep verbatim so the canonical that the Mastio
+    # signed reproduces byte-for-byte at verify time.
+    timestamp = Column(String(64), nullable=False)
+    event_type = Column(String(128), nullable=False)
+    agent_id = Column(String(256), nullable=True)
+    session_id = Column(String(128), nullable=True, index=True)
+    details = Column(Text, nullable=True)
+    result = Column(String(32), nullable=False)
+    principal_type = Column(String(32), nullable=True)
+    hash_format = Column(String(8), nullable=True)
+    signature_b64 = Column(Text, nullable=False)
+    received_at = Column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "mastio_org_id", "chain_seq",
+            name="uq_mastio_audit_replica_org_seq",
+        ),
+    )
+
+
 def compute_entry_hash(
     entry_id: int,
     timestamp: datetime,

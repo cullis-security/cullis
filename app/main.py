@@ -416,6 +416,13 @@ app.include_router(federation_router)
 from app.federation.read import router as federation_read_router
 app.include_router(federation_read_router)
 
+# Wave B PR8 / D1 — Mastio audit replication endpoint
+# (POST /v1/federation/audit/replicate). Receives ECDSA-countersigned
+# batches of local_audit rows from each Mastio and persists them in
+# mastio_audit_replica for cross-org dispute reconciliation.
+from app.federation.audit_replicate import router as federation_audit_router
+app.include_router(federation_audit_router)
+
 # Enterprise plugin routers. Mounted after every core router so a plugin
 # can never shadow a core endpoint by registering a conflicting path;
 # FastAPI keeps registration order on routing.
