@@ -266,6 +266,9 @@ const CONV_MOCK = (() => {
       c.updated_at = now;
       return row;
     },
+    reset() {
+      rows.clear();
+    },
   };
 })();
 
@@ -404,6 +407,15 @@ const server = createServer(async (req, res) => {
   }
 
   // ─── Conversation history surface (Sprint 1 Step 6) ────────────
+  if (pathname === '/v1/conversations/_test/reset' && req.method === 'POST') {
+    // Mock-only test reset. The Playwright suite runs every spec
+    // against the same long-lived mock process, so we expose this
+    // tiny extra endpoint that wipes CONV_MOCK state between specs.
+    // It is intentionally not implemented by the real Ambassador.
+    CONV_MOCK.reset();
+    jsonResponse(res, 200, { ok: true });
+    return;
+  }
   if (pathname === '/v1/conversations') {
     if (req.method === 'GET') {
       jsonResponse(res, 200, CONV_MOCK.list());

@@ -11,6 +11,14 @@ import { expect, test } from '@playwright/test';
  */
 
 test.describe.serial('conversation history sidebar', () => {
+  test.beforeEach(async ({ request }) => {
+    // The mock Ambassador is a long-lived per-process node server; every
+    // other spec that calls /v1/chat/completions now lazy-creates a
+    // conversation row (Sprint 1 Step 6 PR-B). Wipe CONV_MOCK before
+    // each test here so the count-assertions stay deterministic.
+    await request.post('/v1/conversations/_test/reset');
+  });
+
   test('first send auto-creates a conversation + shows up in sidebar', async ({ page }) => {
     await page.goto('/');
 
