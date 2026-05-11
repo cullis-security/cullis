@@ -34,7 +34,7 @@ export function ChatWindow() {
       />
 
       <p className="chat-foot">
-        Bearer · cookie HttpOnly · CSP nonce-locked · markdown sanitised via DOMPurify
+        Bearer · cookie HttpOnly · CSP nonce-locked · markdown sanitised via rehype-sanitize
       </p>
     </div>
   );
