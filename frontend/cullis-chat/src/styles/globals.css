@@ -145,8 +145,19 @@ body {
   50%      { opacity: 0.5; box-shadow: 0 0 6px var(--pulse-color); }
 }
 
-/* Responsive — under 900px we'd collapse panes, but v0.1 only
- * supports desktop. We just narrow the audit pane, hide sidebar. */
+/* Responsive layout breakpoints.
+ *
+ * Three tiers:
+ *  - <= 1100px (small laptop, narrow window): trim sidebar + audit
+ *    widths so the chat surface still has room.
+ *  - <= 900px (tablet, portrait laptop): drop the sidebar and the
+ *    audit pane, chat takes the full width. Conversation history
+ *    stays reachable on a desktop reload (no mobile drawer in v0.2,
+ *    scope tracked as a follow-up polish PR).
+ *  - <= 640px (phone): tighten chat padding + raise touch targets +
+ *    raise textarea font-size to 16px so iOS Safari does not zoom
+ *    on focus.
+ */
 @media (max-width: 1100px) {
   .app-body { grid-template-columns: 200px minmax(0, 1fr); }
   .chat-app { grid-template-columns: minmax(0, 1fr) 280px; }
@@ -159,6 +170,52 @@ body {
   .chat-app > .audit-pane { display: none; }
 }
 
+@media (max-width: 640px) {
+  /* Compact the chat surface for portrait phones. */
+  .chat-shell { padding: 0.8rem 0.9rem 0.6rem; gap: 0.6rem; }
+  .chat-stream { padding: 0.5rem 0; }
+  .chat-stream-inner { max-width: 100%; }
+
+  /* Message bubbles read better with slightly tighter padding on
+   * narrow screens; tool-call chips wrap instead of overflowing. */
+  .msg-body-assistant { padding: 0.85rem 1rem; }
+  .msg-body-user { padding-left: 0.9rem; }
+  .msg-tools { gap: 0.3rem; }
+  .tool-chip { font-size: 0.74rem; padding: 0.35rem 0.6rem; }
+
+  /* Touch targets: WCAG 2.5.5 recommends >= 44x44 px for primary
+   * interactive controls. Send / Stop / Retry / Copy meet that on
+   * narrow screens; on desktop the originals stay tighter. */
+  .send,
+  .stop,
+  .msg-retry { min-height: 44px; padding-top: 0.65rem; padding-bottom: 0.65rem; }
+  .copy-btn,
+  .code-copy { min-width: 44px; min-height: 32px; opacity: 0.55; }
+
+  /* Prevent iOS Safari from auto-zooming on textarea focus when the
+   * computed font-size is under 16px. */
+  .chat-input textarea {
+    font-size: 16px;
+  }
+
+  /* Empty-state hero shrinks so the hint buttons stay above the
+   * fold on a 640x... iPhone-SE-shaped viewport. */
+  .chat-empty { padding-top: 0.8rem; gap: 0.7rem; }
+  .chat-empty-title { font-size: clamp(1.15rem, 5.5vw, 1.45rem); }
+  .chat-empty-sub { font-size: 0.88rem; }
+  .chat-empty-hints { gap: 0.4rem; margin-top: 1rem; }
+  .hint { font-size: 0.82rem; padding: 0.45rem 0; min-height: 44px; }
+
+  /* Footer disclaimer ("Bearer · cookie HttpOnly · …") wraps on
+   * mobile; let it. */
+  .chat-foot {
+    white-space: normal;
+    line-height: 1.5;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pulse-dot { animation: none; }
+  .markdown-body.is-pending::after { animation: none; }
+  .chat-app { transition: none; }
 }
