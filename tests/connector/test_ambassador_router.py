@@ -97,6 +97,12 @@ class FakeCullisClient:
     tools_to_return: list[dict] = []
     tool_results: dict[str, Any] = {}
 
+    # ADR-029 Phase D, programmable PDP for tool-level tests. Each entry
+    # in pdp_responses pops FIFO; pdp_raise toggles an exception path.
+    pdp_calls: list[dict] = []
+    pdp_responses: list[dict] = []
+    pdp_raise: bool = False
+
     @classmethod
     def reset(cls) -> None:
         cls.last_login = ()
@@ -106,6 +112,9 @@ class FakeCullisClient:
         cls.chat_responses = []
         cls.tools_to_return = []
         cls.tool_results = {}
+        cls.pdp_calls = []
+        cls.pdp_responses = []
+        cls.pdp_raise = False
 
     def __init__(self, *args, **kwargs) -> None:
         self._init_args = args
@@ -127,6 +136,9 @@ class FakeCullisClient:
 
     def login_from_pem(self, agent_id, org_id, cert_pem, key_pem, **kw) -> None:
         type(self).last_login = (agent_id, org_id, cert_pem[:30], key_pem[:30])
+        # ADR-029 Phase D: ambassador reads client.agent_id to populate
+        # the PDP principal field when no per-user credentials are set.
+        self.agent_id = agent_id
 
     def chat_completion(self, body: dict) -> dict:
         type(self).chat_calls.append(body)
@@ -148,6 +160,14 @@ class FakeCullisClient:
         if name in type(self).tool_results:
             return type(self).tool_results[name]
         return {"content": [{"type": "text", "text": f"tool {name} ok"}]}
+
+    def evaluate_tool_call_policy(self, **kwargs) -> dict:
+        type(self).pdp_calls.append(kwargs)
+        if type(self).pdp_raise:
+            raise RuntimeError("simulated PDP transport failure")
+        if type(self).pdp_responses:
+            return type(self).pdp_responses.pop(0)
+        return {"allowed": True, "reason": "default fake allow"}
 
 
 # ── fixtures ────────────────────────────────────────────────────────
@@ -510,3 +530,168 @@ def test_local_token_file_is_chmod_600(tmp_path: Path, client):
     if os.name == "posix":
         mode = stat.S_IMODE(token_path.stat().st_mode)
         assert mode == 0o600, f"local.token mode is {oct(mode)}, expected 0o600"
+
+
+# ── ADR-029 Phase D: per-call PDP gate inside the tool-use loop ─────
+
+
+def _gdpr_chat_responses_with_tool() -> list[dict]:
+    """Fixture: LLM emits one tool_call then a final answer."""
+    return [
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "query",
+                            "arguments": '{"sql": "SELECT 1"}',
+                        },
+                    }],
+                },
+                "finish_reason": "tool_calls",
+            }],
+        },
+        {
+            "choices": [{
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }],
+        },
+    ]
+
+
+def test_pdp_off_keeps_legacy_behaviour(client, bearer, monkeypatch):
+    """With CULLIS_CONNECTOR_TOOL_PDP_ENABLED unset (default off) the
+    loop must not call evaluate_tool_call_policy at all and the tool
+    dispatch happens unchanged."""
+    monkeypatch.delenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", raising=False)
+    FakeCullisClient.tools_to_return = [{
+        "name": "query",
+        "description": "run sql",
+        "inputSchema": {"type": "object"},
+    }]
+    FakeCullisClient.chat_responses = _gdpr_chat_responses_with_tool()
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "do the thing"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert FakeCullisClient.pdp_calls == []          # PDP NOT invoked
+    assert len(FakeCullisClient.call_tool_calls) == 1  # tool still ran
+
+
+def test_pdp_on_allow_executes_tool(client, bearer, monkeypatch):
+    """With the flag on and the PDP returning allow, the tool runs
+    and the PDP receives tool_name + model in the call kwargs."""
+    monkeypatch.setenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", "true")
+    FakeCullisClient.tools_to_return = [{
+        "name": "query",
+        "description": "run sql",
+        "inputSchema": {"type": "object"},
+    }]
+    FakeCullisClient.chat_responses = _gdpr_chat_responses_with_tool()
+    FakeCullisClient.pdp_responses = [{"allowed": True, "reason": "ok"}]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "do the thing"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert len(FakeCullisClient.pdp_calls) == 1
+    pdp = FakeCullisClient.pdp_calls[0]
+    assert pdp["tool_name"] == "query"
+    assert pdp["model_id"] == "claude-haiku-4-5"
+    assert len(FakeCullisClient.call_tool_calls) == 1
+
+
+def test_pdp_on_deny_blocks_tool(client, bearer, monkeypatch):
+    """When the PDP denies, the SDK call_mcp_tool is NOT invoked and
+    the tool message handed back to the LLM carries `policy_denied`."""
+    monkeypatch.setenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", "true")
+    FakeCullisClient.tools_to_return = [{
+        "name": "query",
+        "description": "run sql",
+        "inputSchema": {"type": "object"},
+    }]
+    final_text = "Sorry, I can't run that tool."
+    FakeCullisClient.chat_responses = [
+        _gdpr_chat_responses_with_tool()[0],
+        {
+            "choices": [{
+                "message": {"role": "assistant", "content": final_text},
+                "finish_reason": "stop",
+            }],
+        },
+    ]
+    FakeCullisClient.pdp_responses = [{
+        "allowed": False,
+        "reason": "principal 'acme::frontdesk' not in tool_rules.query.allowed_principals",
+    }]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "do the thing"}],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["choices"][0]["message"]["content"] == final_text
+    # Tool was NOT executed.
+    assert FakeCullisClient.call_tool_calls == []
+    # The second LLM turn saw a role=tool message tagged policy_denied.
+    second_call = FakeCullisClient.chat_calls[1]
+    last_message = second_call["messages"][-1]
+    assert last_message["role"] == "tool"
+    assert "policy_denied" in last_message["content"]
+
+
+def test_pdp_transport_error_fail_safe_deny(client, bearer, monkeypatch):
+    """If evaluate_tool_call_policy raises, the loop treats it as a
+    deny rather than running the tool unsupervised."""
+    monkeypatch.setenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", "true")
+    FakeCullisClient.tools_to_return = [{
+        "name": "query",
+        "description": "run sql",
+        "inputSchema": {"type": "object"},
+    }]
+    FakeCullisClient.chat_responses = [
+        _gdpr_chat_responses_with_tool()[0],
+        {
+            "choices": [{
+                "message": {"role": "assistant", "content": "blocked, retry later"},
+                "finish_reason": "stop",
+            }],
+        },
+    ]
+    FakeCullisClient.pdp_raise = True
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "do the thing"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert FakeCullisClient.call_tool_calls == []
+    second_call = FakeCullisClient.chat_calls[1]
+    last_message = second_call["messages"][-1]
+    assert last_message["role"] == "tool"
+    assert "policy_denied" in last_message["content"]
