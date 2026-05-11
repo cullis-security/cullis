@@ -372,6 +372,14 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
         advertised_models=config.ambassador.advertised_models,
         require_local_only=_require_loopback_effective,
     )
+    # Sprint 1 Step 6 PR-A, Connector-local conversation history. The
+    # router shares the ambassador's loopback + bearer gate, scopes
+    # every row by principal_id, and writes to <config_dir>/conversations.db
+    # via the SQLite module in cullis_connector.conversations.
+    from cullis_connector.ambassador.conversations_router import (
+        router as conversations_router,
+    )
+    app.include_router(conversations_router)
     log.info(
         "Ambassador mounted: agent=%s site=%s bearer=*** (saved at %s)",
         agent_id, site_url, config.config_dir / "local.token",
