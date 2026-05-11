@@ -65,7 +65,7 @@ echo "==> Building ${BIN_NAME} on ${PLATFORM}/${ARCH}"
 python -m pip install --upgrade pip pyinstaller >&2
 python -m pip install --upgrade \
     "mcp[cli]>=1.0" "httpx>=0.24.0" "cryptography>=41.0.0" "PyYAML>=6.0" \
-    "bcrypt>=4.0" \
+    "bcrypt>=4.0" "sqlalchemy[asyncio]>=2.0" "aiosqlite>=0.19" \
     "fastapi>=0.110" "uvicorn[standard]>=0.27" "jinja2>=3.1" "python-multipart>=0.0.9" >&2
 # mcp[cli] pulls in typer — required by `--collect-submodules mcp` below
 # because mcp.cli raises ImportError at module-load time when typer is
@@ -120,6 +120,13 @@ pyinstaller \
   --hidden-import "uvicorn.protocols.http.h11_impl" \
   --hidden-import "uvicorn.protocols.websockets.auto" \
   --hidden-import "uvicorn.logging" \
+  --hidden-import "sqlalchemy" \
+  --hidden-import "sqlalchemy.dialects.sqlite" \
+  --hidden-import "sqlalchemy.dialects.sqlite.aiosqlite" \
+  --hidden-import "sqlalchemy.ext.asyncio" \
+  --hidden-import "sqlalchemy.orm" \
+  --hidden-import "aiosqlite" \
+  --hidden-import "bcrypt" \
   cullis_connector/__main__.py
 
 FINAL_NAME="${BIN_NAME}-${PLATFORM}-${ARCH}"
