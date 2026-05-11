@@ -11,16 +11,34 @@ import { expect, test } from '@playwright/test';
  */
 
 test.describe.serial('conversation history sidebar', () => {
-  test.beforeEach(async ({ request }) => {
-    // The mock Ambassador is a long-lived per-process node server; every
-    // other spec that calls /v1/chat/completions now lazy-creates a
-    // conversation row (Sprint 1 Step 6 PR-B). Wipe CONV_MOCK before
-    // each test here so the count-assertions stay deterministic.
+  test.beforeEach(async ({ page, request }) => {
+    // Two pieces of state survive across specs in the same browser
+    // context unless we clear them explicitly:
+    //
+    //   1. Mock Ambassador CONV_MOCK is a per-process Map. Every other
+    //      spec that POST /v1/chat/completions now lazy-creates a row
+    //      (Step 6 PR-B), so by the time this file runs the list is
+    //      polluted with rows from chat-happy-path / cancel-retry /
+    //      copy-buttons / etc.
+    //   2. window.sessionStorage on the Playwright browser context is
+    //      shared across tests inside a file. ChatApp reads
+    //      `cullis-chat:conv-id` from it at mount and tries to restore
+    //      that conversation; with stale ids this either 404s silently
+    //      or rehydrates a row that the next test does not expect.
+    //
+    // Reset both: hit the mock-only /_test/reset endpoint, navigate
+    // once to give us a browser context, blow away sessionStorage,
+    // then reload so ChatApp starts from a clean slate.
     await request.post('/v1/conversations/_test/reset');
+    await page.goto('/');
+    await page.evaluate(() => window.sessionStorage.clear());
+    await page.reload();
+    await expect(page.locator('.chat-input textarea')).toBeEnabled({
+      timeout: 10_000,
+    });
   });
 
   test('first send auto-creates a conversation + shows up in sidebar', async ({ page }) => {
-    await page.goto('/');
 
     const input = page.locator('.chat-input textarea');
     await expect(input).toBeEnabled({ timeout: 10_000 });
