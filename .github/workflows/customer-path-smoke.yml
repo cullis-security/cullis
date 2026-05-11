@@ -1,0 +1,111 @@
+name: customer-path smoke
+
+# End-to-end gate for the topology customers actually run
+# (project_deployment_topology_vps_primary): Mastio + Frontdesk bundles,
+# Connector enrolled via the browser-style wizard, one live chat turn
+# through Anthropic. Catches the class of regression the 2026-05-11 sera
+# dogfood surfaced (Bug #5, dashboard /api/status missing X-Enrollment-Proof
+# — CI green, customer broken).
+#
+# Skipped on PRs that touch nothing in the customer path (docs-only, helm-
+# only, sandbox-only, etc.) so it does not slow down unrelated work.
+
+on:
+  push:
+    branches: [main]
+  # No `branches:` filter on pull_request — stacked PRs must trigger too.
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # Cancel superseded runs on the same branch / PR so a rebase doesn't
+  # leave an orphan job burning CI minutes.
+  group: customer-path-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  customer-path-smoke:
+    name: customer-path smoke (mastio+frontdesk+1 turn)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect customer-path changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Anything that ends up in the customer's docker images or in the
+          # wizard wiring counts. Sandbox + e2e-only paths intentionally
+          # excluded — they have their own gates.
+          filters: |
+            customer_path:
+              - 'mcp_proxy/**'
+              - 'app/**'
+              - 'cullis_connector/**'
+              - 'frontend/cullis-chat/**'
+              - 'packaging/mastio-bundle/**'
+              - 'packaging/frontdesk-bundle/**'
+              - 'Dockerfile'
+              - 'mcp_proxy/Dockerfile'
+              - 'frontend/cullis-chat/Dockerfile'
+              - 'requirements.txt'
+              - 'alembic/**'
+              - '.github/workflows/customer-path-smoke.yml'
+
+      - name: Skip (no customer-path changes)
+        if: steps.filter.outputs.customer_path != 'true'
+        run: |
+          echo "No files in customer-path code changed in this PR."
+          echo "Customer-path smoke reports success without running the full stack."
+
+      - name: Docker + tools version
+        if: steps.filter.outputs.customer_path == 'true'
+        run: |
+          docker --version
+          docker compose version
+          python3 --version
+
+      - name: Enable BuildKit cache
+        if: steps.filter.outputs.customer_path == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run customer-path smoke
+        if: steps.filter.outputs.customer_path == 'true'
+        env:
+          # `ANTHROPIC_API_KEY` is a repo secret. The smoke script asserts it
+          # is set when SKIP_CHAT_TURN is not set, so an unconfigured secret
+          # fails the job loudly with an actionable message rather than
+          # silently skipping the chat turn.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          ./packaging/smoke-customer-path.sh
+
+      - name: Collect logs on failure
+        if: failure() && steps.filter.outputs.customer_path == 'true'
+        run: |
+          echo "::group::docker ps"
+          docker ps -a || true
+          echo "::endgroup::"
+          for ctr in $(docker ps -aq 2>/dev/null); do
+            name=$(docker inspect --format '{{.Name}}' "$ctr" | sed 's|^/||')
+            echo "::group::logs $name"
+            docker logs --tail 200 "$ctr" 2>&1 || true
+            echo "::endgroup::"
+          done
+          echo "::group::mastio deploy log"
+          cat /tmp/mastio-deploy.log 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::frontdesk deploy log"
+          cat /tmp/frontdesk-deploy.log 2>/dev/null || true
+          echo "::endgroup::"
+
+      - name: Teardown (defensive)
+        if: always() && steps.filter.outputs.customer_path == 'true'
+        run: |
+          cd packaging/frontdesk-bundle && ./deploy.sh --down >/dev/null 2>&1 || true
+          cd ../mastio-bundle && ./deploy.sh --down >/dev/null 2>&1 || true
