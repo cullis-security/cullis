@@ -18,6 +18,7 @@ until the server has approved.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import html
 import logging
@@ -1196,11 +1197,25 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         return JSONResponse({"app": "cullis-connector"})
 
     @app.get("/api/status")
-    def api_status(request: Request) -> JSONResponse:
+    async def api_status(request: Request) -> JSONResponse:
         """Single-shot poll of the remote enrollment status.
 
         Returns JSON so the waiting page's HTMX can route to the next
         screen on its own.
+
+        Bug #10 fix-forward (2026-05-11 sera) — this endpoint MUST be
+        ``async def``. The two ``_ensure_inbox_poller_running`` call
+        sites (the ``has_identity`` early-return below and the
+        post-``save_identity`` lazy-spawn after a successful poll)
+        end up calling ``poller.start()`` → ``asyncio.create_task``,
+        which requires a running event loop in the current thread.
+        FastAPI runs ``def`` handlers in an anyio worker thread that
+        has NO event loop, so the create_task call raises
+        ``RuntimeError: no running event loop`` and the dashboard
+        loops on broken /api/status responses forever. Pre-fix this
+        was unreachable (Bug #5 stopped the dashboard from ever
+        flipping to ``has_identity``); after #624 unlocked that path
+        the customer-path smoke gate caught it immediately.
         """
         if has_identity(config.config_dir):
             # Lazy-spawn the inbox poller — the dashboard may have
@@ -1228,7 +1243,11 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         proof = _build_enrollment_proof(_pending.private_key, _pending.session_id)
         try:
             from cullis_connector.config import verify_arg_for
-            resp = httpx.get(
+            # ``httpx.get`` is synchronous; offload to a worker thread
+            # so the FastAPI event loop stays free for other handlers
+            # (we are now an ``async def`` after the Bug #10 fix).
+            resp = await asyncio.to_thread(
+                httpx.get,
                 poll_url,
                 headers={"X-Enrollment-Proof": proof},
                 verify=verify_arg_for(_pending.verify_tls, config.ca_chain_path),
