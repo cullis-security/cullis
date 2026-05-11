@@ -51,3 +51,55 @@ def compute_entry_hash(
     else:
         canonical = f"{base}|seq={chain_seq}|peer={peer_org_id or ''}"
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# Wave A PR5 (audit 2026-05-11 CRIT-3) — v2 hash format.
+#
+# v1 above includes ``entry_id`` (DB-assigned auto-increment) which forces
+# a back-fill UPDATE on the "append-only" table after the INSERT lands —
+# proving the schema accepts UPDATE on a row the docs claim is immutable.
+# v2 replaces the entry_id with the (org_id, chain_seq) pair which is
+# already UNIQUE per migration 0009 + already known BEFORE the INSERT
+# fires. The whole row can therefore be inserted atomically with the
+# hash already computed, and the migration 0031 trigger that forbids
+# UPDATE / DELETE on local_audit fires correctly.
+#
+# Rows on disk carry ``hash_format`` ('v1' or 'v2'); verify dispatches
+# on that column so legacy rows keep verifying with the old function.
+
+_V2_FORMAT_TAG = "v2"
+
+
+def compute_entry_hash_v2(
+    *,
+    timestamp: datetime,
+    event_type: str,
+    agent_id: str | None,
+    session_id: str | None,
+    org_id: str | None,
+    result: str,
+    details: str | None,
+    previous_hash: str | None,
+    chain_seq: int,
+    peer_org_id: str | None = None,
+) -> str:
+    """SHA-256 of the v2 canonical form (no entry_id).
+
+    Identical fields to ``compute_entry_hash`` minus ``entry_id``, plus
+    a ``v2`` discriminator at the start so a v1-vs-v2 collision is
+    cryptographically impossible (every v1 hash starts with an integer,
+    every v2 with the literal ``"v2|"``). chain_seq is required (a v2
+    row without per-org chain has no business being v2).
+    """
+    canonical = (
+        f"{_V2_FORMAT_TAG}|{timestamp.isoformat()}|{event_type}|"
+        f"{agent_id or ''}|{session_id or ''}|{org_id or ''}|"
+        f"{result}|{details or ''}|{previous_hash or 'genesis'}|"
+        f"seq={chain_seq}|peer={peer_org_id or ''}"
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# Constant exported for migration / dashboard / tests.
+HASH_FORMAT_V1 = "v1"
+HASH_FORMAT_V2 = "v2"
