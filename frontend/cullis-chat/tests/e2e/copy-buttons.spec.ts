@@ -74,6 +74,13 @@ test('code blocks get their own copy overlay after Shiki highlights', async ({ p
   await expect(page.locator('.markdown-body.is-pending')).toHaveCount(0, {
     timeout: 20_000,
   });
+  // Sprint 1 Step 6 PR-B fires `appendConversationMessage` +
+  // `renameConversation` immediately after pending=false. Both are
+  // best-effort fire-and-forget calls but they tie up the same single
+  // browser thread Shiki is racing against. Wait for the network to
+  // quiesce so the highlight pass and the React state for the copy
+  // button have settled before we click.
+  await page.waitForLoadState('networkidle');
 
   // Wait directly on the .code-copy overlay rather than on the wrap.
   // The wrap is created synchronously when marked parses the code

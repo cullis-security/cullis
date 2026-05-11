@@ -289,6 +289,15 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // Mock-only test reset, sits ABOVE the bearer gate on purpose so the
+  // Playwright beforeEach can wipe CONV_MOCK without juggling a fake
+  // token. Not implemented by the real Ambassador.
+  if (req.method === 'POST' && pathname === '/v1/conversations/_test/reset') {
+    CONV_MOCK.reset();
+    jsonResponse(res, 200, { ok: true });
+    return;
+  }
+
   // Session bootstrap is unauthenticated by design — it IS the path that
   // mints the cookie. ADR-019 Phase 8b-2b: the SPA static now calls
   // these directly (no Astro server in front).
@@ -407,15 +416,8 @@ const server = createServer(async (req, res) => {
   }
 
   // ─── Conversation history surface (Sprint 1 Step 6) ────────────
-  if (pathname === '/v1/conversations/_test/reset' && req.method === 'POST') {
-    // Mock-only test reset. The Playwright suite runs every spec
-    // against the same long-lived mock process, so we expose this
-    // tiny extra endpoint that wipes CONV_MOCK state between specs.
-    // It is intentionally not implemented by the real Ambassador.
-    CONV_MOCK.reset();
-    jsonResponse(res, 200, { ok: true });
-    return;
-  }
+  // Note: /v1/conversations/_test/reset is handled higher up, above the
+  // bearer gate, so the Playwright beforeEach can call it without auth.
   if (pathname === '/v1/conversations') {
     if (req.method === 'GET') {
       jsonResponse(res, 200, CONV_MOCK.list());
