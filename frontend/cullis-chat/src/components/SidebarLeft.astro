@@ -13,6 +13,7 @@
 // the matching surface link in the in-rail navigation.
 
 import brand from '@brand/config';
+import { ConversationsList } from './ConversationsList.tsx';
 
 interface Props {
   active?: 'chat' | 'inbox';
@@ -25,11 +26,27 @@ const inboxHref = `${base}inbox`;
 
 <aside class="sidebar-left" aria-label="Sidebar">
   <nav class="sl-nav">
-    <a class="sl-item" href={chatHref} aria-label="Start a new chat" title="New chat">
+    <a class="sl-item sl-new-chat" href={chatHref} aria-label="Start a new chat" title="New chat">
       <svg class="sl-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       <span class="sl-item-label">New chat</span>
     </a>
   </nav>
+
+  <!-- Sprint 1 Step 6 PR-B: the New chat link still reloads, but we
+       clear the persisted active conversation id first so the
+       reloaded ChatApp starts in a fresh state instead of trying
+       to rehydrate the previous conv. -->
+  <script is:inline>
+    (function () {
+      var newChat = document.querySelector('.sl-new-chat');
+      if (!newChat) return;
+      newChat.addEventListener('click', function () {
+        try {
+          window.sessionStorage.removeItem('cullis-chat:conv-id');
+        } catch (e) { /* ignore */ }
+      });
+    })();
+  </script>
 
   <nav class="sl-surfaces" aria-label="Surfaces">
     <a
@@ -50,12 +67,13 @@ const inboxHref = `${base}inbox`;
     </a>
   </nav>
 
-  <div class="sl-empty">
-    <p class="sl-empty-body">
-      Conversation history lands in <span class="ver">v0.5</span>.
-      Until then every reload starts a fresh thread.
-    </p>
-    <p class="folio">{brand.sidebarFolio} · <em>v0.1</em></p>
+  <div class="sl-history">
+    <p class="sl-history-heading">Recent</p>
+    <ConversationsList client:load />
+  </div>
+
+  <div class="sl-footer">
+    <p class="folio">{brand.sidebarFolio} · <em>v0.2</em></p>
   </div>
 </aside>
 
@@ -197,5 +215,124 @@ const inboxHref = `${base}inbox`;
     background: var(--accent-cyan-glow);
     border: 1px solid var(--accent-cyan-dim);
     border-radius: var(--radius-sm);
+  }
+
+  /* Sprint 1 Step 6 PR-B, dynamic conversation history. */
+  .sl-history {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1rem 0.6rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-height: 0;
+  }
+
+  .sl-history-heading {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin: 0 0.4rem 0.2rem;
+  }
+
+  .sl-footer {
+    padding: 0.5rem 1.25rem 1rem;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  :global(.conv-list) {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  :global(.conv-item) {
+    display: flex;
+    align-items: stretch;
+    border-radius: var(--radius-sm);
+    border-left: 2px solid transparent;
+    transition: background var(--t-fast) var(--ease-soft),
+                border-color var(--t-fast) var(--ease-soft);
+  }
+
+  :global(.conv-item:hover) {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  :global(.conv-item-active) {
+    border-left-color: var(--accent-cyan);
+    background: color-mix(in srgb, var(--accent-cyan) 5%, transparent);
+  }
+
+  :global(.conv-item-title) {
+    flex: 1;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 0.45rem 0.6rem 0.45rem 0.7rem;
+    font-family: var(--font-body);
+    font-size: 0.82rem;
+    line-height: 1.3;
+    color: var(--text-secondary);
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :global(.conv-item-title:hover) {
+    color: var(--text-primary);
+  }
+
+  :global(.conv-item-active .conv-item-title) {
+    color: var(--accent-cyan);
+  }
+
+  :global(.conv-item-delete) {
+    background: none;
+    border: none;
+    padding: 0 0.55rem;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    opacity: 0;
+    transition: opacity var(--t-fast) var(--ease-soft),
+                color var(--t-fast) var(--ease-soft);
+  }
+
+  :global(.conv-item:hover .conv-item-delete),
+  :global(.conv-item-delete:focus-visible) {
+    opacity: 1;
+  }
+
+  :global(.conv-item-delete:hover) {
+    color: var(--accent-amber);
+  }
+
+  :global(.conv-list-empty),
+  :global(.conv-list-error) {
+    padding: 0.6rem 0.7rem;
+    font-family: var(--font-body);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+  }
+
+  :global(.conv-list-empty-body),
+  :global(.conv-list-error-body) {
+    margin: 0;
+  }
+
+  :global(.conv-list-error-detail) {
+    margin: 0.25rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--accent-amber);
   }
 </style>

@@ -23,11 +23,14 @@ import { parseSSE, type SSEEvent } from './sse';
 import type {
   ChatCompletionRequest,
   ChatCompletionResponse,
+  ConversationDetail,
+  ConversationSummary,
   InboxMessage,
   InboxSendRequest,
   InboxSendResponse,
   Model,
   Principal,
+  StoredMessage,
 } from './types';
 
 /**
@@ -171,6 +174,74 @@ export async function archiveInboxMessage(
   return jsonFetch<{ archived: boolean; msg_id: string }>(
     `${INBOX_BASE}/${encodeURIComponent(msgId)}/archive`,
     { method: 'POST' },
+  );
+}
+
+// ─── Conversation history (Sprint 1 Step 6 PR-B) ─────────────────────
+
+const CONVERSATIONS_BASE = '/v1/conversations';
+
+/** GET /v1/conversations, sidebar list, principal-scoped. */
+export async function listConversations(
+  opts?: { limit?: number; offset?: number },
+): Promise<ConversationSummary[]> {
+  const qs = new URLSearchParams();
+  if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+  if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
+  const suffix = qs.toString();
+  const url = suffix ? `${CONVERSATIONS_BASE}?${suffix}` : CONVERSATIONS_BASE;
+  return jsonFetch<ConversationSummary[]>(url);
+}
+
+/** POST /v1/conversations, create empty conversation. */
+export async function createConversation(): Promise<ConversationSummary> {
+  return jsonFetch<ConversationSummary>(CONVERSATIONS_BASE, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+/** GET /v1/conversations/{id}, fetch one + its messages. */
+export async function getConversation(id: string): Promise<ConversationDetail> {
+  return jsonFetch<ConversationDetail>(
+    `${CONVERSATIONS_BASE}/${encodeURIComponent(id)}`,
+  );
+}
+
+/** PATCH /v1/conversations/{id}, rename title. */
+export async function renameConversation(
+  id: string, title: string | null,
+): Promise<ConversationSummary> {
+  return jsonFetch<ConversationSummary>(
+    `${CONVERSATIONS_BASE}/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify({ title }) },
+  );
+}
+
+/** DELETE /v1/conversations/{id}, soft delete. */
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(
+    `${CONVERSATIONS_BASE}/${encodeURIComponent(id)}`,
+    { method: 'DELETE', credentials: 'same-origin' },
+  );
+  if (!res.ok && res.status !== 204) {
+    throw new ApiError(res.status, await res.text());
+  }
+}
+
+/** POST /v1/conversations/{id}/messages, append one message. */
+export async function appendConversationMessage(
+  id: string,
+  msg: {
+    role: 'user' | 'assistant' | 'tool' | 'system';
+    content: string;
+    tool_calls?: Array<{ name: string; latency_ms?: number; status?: string }>;
+    trace_id?: string;
+  },
+): Promise<StoredMessage> {
+  return jsonFetch<StoredMessage>(
+    `${CONVERSATIONS_BASE}/${encodeURIComponent(id)}/messages`,
+    { method: 'POST', body: JSON.stringify(msg) },
   );
 }
 
