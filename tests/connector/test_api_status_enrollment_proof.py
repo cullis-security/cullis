@@ -162,3 +162,46 @@ def test_api_status_approved_path_persists_identity(
     assert body["status"] == "approved", body
     # ``_pending`` is cleared once the identity hits disk.
     assert connector_web._pending is None
+
+
+def test_api_status_is_async_def():
+    """Bug #10 regression: the ``/api/status`` endpoint MUST be
+    ``async def``, not ``def``. The handler calls
+    ``_ensure_inbox_poller_running`` which in turn does
+    ``poller.start()`` → ``asyncio.create_task(...)``. ``create_task``
+    requires a running event loop in the current thread. FastAPI runs
+    ``def`` (sync) handlers in an anyio worker thread that has NO
+    event loop, so the call raises ``RuntimeError: no running event
+    loop`` and every poll returns 500 forever once the dashboard
+    flips to ``has_identity=True``.
+
+    Pre-fix this path was unreachable because Bug #5 stopped the
+    dashboard from ever flipping to ``has_identity``. After #624
+    unlocked that path the customer-path smoke gate (PR #625) caught
+    Bug #10 immediately on the run after #628 merged, proving the
+    gate catches "fix one bug, expose another" sequences.
+
+    Sentinel check: assert the endpoint is a coroutine function so a
+    future regression (someone removes ``async`` thinking the
+    handler is simple enough to be sync) fails loud."""
+    import inspect
+    from cullis_connector.config import ConnectorConfig
+
+    cfg = ConnectorConfig(
+        site_url="https://mastio.test",
+        config_dir=__import__("pathlib").Path("/tmp"),
+        verify_tls=False,
+        request_timeout_s=2.0,
+    )
+    app = build_app(cfg)
+
+    # Locate the ``/api/status`` GET route and verify its endpoint
+    # function is a coroutine function.
+    routes = [r for r in app.routes if getattr(r, "path", "") == "/api/status"]
+    assert routes, "no /api/status route registered"
+    route = routes[0]
+    assert inspect.iscoroutinefunction(route.endpoint), (
+        f"/api/status MUST be async def — pre-fix it was sync and "
+        f"crashed on inbox poller spawn (Bug #10 regression). "
+        f"Endpoint: {route.endpoint!r}"
+    )
