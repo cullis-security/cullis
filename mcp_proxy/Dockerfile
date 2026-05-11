@@ -9,15 +9,21 @@ ARG TARGETARCH=amd64
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+COPY scripts/tailwind-sha256.txt /tmp/tailwind-sha256.txt
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64) TW_ARCH=x64 ;; \
       arm64) TW_ARCH=arm64 ;; \
       *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
+    cd /usr/local/bin; \
     curl -sSLf "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-${TW_ARCH}" \
-      -o /usr/local/bin/tailwindcss; \
-    chmod +x /usr/local/bin/tailwindcss
+      -o "tailwindcss-linux-${TW_ARCH}"; \
+    # Wave B F1 (audit 2026-05-11) — verify SHA-256 before trusting.
+    grep " tailwindcss-linux-${TW_ARCH}$" /tmp/tailwind-sha256.txt | sha256sum -c -; \
+    mv "tailwindcss-linux-${TW_ARCH}" tailwindcss; \
+    chmod +x tailwindcss; \
+    rm -f /tmp/tailwind-sha256.txt
 WORKDIR /src
 COPY tailwind.config.js ./
 COPY mcp_proxy/dashboard/static_src/ ./mcp_proxy/dashboard/static_src/

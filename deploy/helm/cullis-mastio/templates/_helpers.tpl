@@ -162,13 +162,43 @@ backwards compatibility with deployments still on the legacy env name.
 {{- else if .Values.postgres.internal -}}
 {{- printf "postgresql+asyncpg://%s:%s@%s:%d/%s"
     .Values.postgres.username
-    .Values.postgres.password
+    (include "cullis-mastio.postgresPassword" .)
     (include "cullis-mastio.postgres.fullname" .)
     (int .Values.postgres.port)
     .Values.postgres.database -}}
 {{- else -}}
 {{- printf "sqlite+aiosqlite:///%s/mcp_proxy.db" .Values.persistence.mountPath -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Wave B F3 (audit 2026-05-11) — internal-Postgres credential resolver.
+
+Pre-fix the chart shipped a deterministic literal default
+(``cullis-mastio-dev-password``) — every fresh install had the same
+world-known DB password.
+
+Post-fix the default is the explicit sentinel
+``INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password``.
+This helper passes the configured value through verbatim BUT calls
+``fail`` when production environment is targeted with the sentinel
+still in place — caught at template render time, not at "DB
+unreachable" debugging time later.
+
+An earlier draft used ``lookup`` + ``randAlphaNum`` to auto-generate
+and persist a random per-release password. That pattern broke on
+cold install: Helm renders multiple templates that each call this
+helper, and ``lookup`` returning nil on first render yields a
+different ``randAlphaNum`` per call site → StatefulSet POSTGRES_PASSWORD
+diverged from the ConfigMap DATABASE_URL. Reverted to the
+explicit-override pattern.
+*/}}
+{{- define "cullis-mastio.postgresPassword" -}}
+{{- $sentinel := "INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password" -}}
+{{- if and (eq .Values.postgres.password $sentinel) (eq (default "" .Values.proxy.environment) "production") -}}
+{{- fail "postgres.password is the INSECURE default. Set --set postgres.password=<strong-random> before installing in production (proxy.environment=production)." -}}
+{{- end -}}
+{{- .Values.postgres.password -}}
 {{- end -}}
 
 {{/*

@@ -329,7 +329,21 @@ postgres:
   storageSize: 10Gi
   storageClassName: ""
   username: cullis_mastio
-  password: cullis-mastio-dev-password
+  # Wave B F3 (audit 2026-05-11) — explicit "INSECURE" sentinel
+  # default replaces the previous deterministic ``cullis-mastio-dev-password``
+  # so the value is unmistakable in a YAML diff. The matching helper
+  # in ``_helpers.tpl`` (``cullis-mastio.postgresPassword``) refuses
+  # to render with this literal when ``proxy.environment=production``
+  # via a ``fail`` template assertion. Dev / kind installs override
+  # at install time via ``--set postgres.password=...``.
+  #
+  # Earlier draft used "lookup + randAlphaNum" to auto-mint and
+  # persist via a Secret, but Helm renders multiple templates that
+  # each read this value; ``lookup`` returning nil on cold install
+  # means the StatefulSet POSTGRES_PASSWORD ended up different from
+  # the ConfigMap DATABASE_URL — broken on first install. Reverted
+  # to the explicit-override pattern.
+  password: "INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password"
   database: cullis_mastio
   port: 5432
   resources:

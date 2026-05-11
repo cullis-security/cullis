@@ -183,10 +183,37 @@ reference the existing Secret.
 {{- define "cullis.databaseUrl" -}}
 {{- if .Values.postgres.internal -}}
 {{- $svc := include "cullis.postgres.fullname" . -}}
-{{- printf "postgresql+asyncpg://%s:%s@%s:%v/%s" .Values.postgres.username .Values.postgres.password $svc .Values.postgres.port .Values.postgres.database -}}
+{{- printf "postgresql+asyncpg://%s:%s@%s:%v/%s" .Values.postgres.username (include "cullis.postgresPassword" .) $svc .Values.postgres.port .Values.postgres.database -}}
 {{- else -}}
 {{- .Values.postgres.externalUrl -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Wave B F3 (audit 2026-05-11) — internal-Postgres credential resolver.
+
+Pre-fix the chart shipped a deterministic literal default
+(``cullis-dev-password``). Post-fix the default is the explicit
+sentinel ``INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password``;
+this helper passes the configured value through verbatim BUT calls
+``fail`` when production environment is targeted with the sentinel
+still in place — caught at template render time, not at "DB
+unreachable" debugging time later.
+
+An earlier draft used ``lookup`` + ``randAlphaNum`` to auto-generate
+and persist a random per-release password. That pattern broke on
+cold install because Helm renders multiple templates that each call
+this helper, and ``lookup`` returning nil on first render yields a
+different ``randAlphaNum`` per call site → StatefulSet
+POSTGRES_PASSWORD diverged from the ConfigMap DATABASE_URL.
+Reverted to the explicit-override pattern.
+*/}}
+{{- define "cullis.postgresPassword" -}}
+{{- $sentinel := "INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password" -}}
+{{- if and (eq .Values.postgres.password $sentinel) (eq (default "" .Values.broker.environment) "production") -}}
+{{- fail "postgres.password is the INSECURE default. Set --set postgres.password=<strong-random> before installing in production (broker.environment=production)." -}}
+{{- end -}}
+{{- .Values.postgres.password -}}
 {{- end -}}
 
 {{/*

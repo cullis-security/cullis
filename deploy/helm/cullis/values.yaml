@@ -405,7 +405,13 @@ postgres:
   storageClassName: ""
   # -- Superuser credentials for the in-cluster Postgres.
   username: cullis
-  password: cullis-dev-password
+  # Wave B F3 (audit 2026-05-11) — explicit "INSECURE" sentinel
+  # default replaces ``cullis-dev-password``. The matching helper in
+  # ``_helpers.tpl`` (``cullis.postgresPassword``) refuses to render
+  # with this literal when ``broker.environment=production`` via a
+  # ``fail`` template assertion. Dev / kind installs override at
+  # install time via ``--set postgres.password=...``.
+  password: "INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password"
   database: cullis
   # -- Port the in-cluster Postgres listens on.
   port: 5432
