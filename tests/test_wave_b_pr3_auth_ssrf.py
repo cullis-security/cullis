@@ -36,7 +36,11 @@ def test_c2_empty_allowlist_accepts_any_peer_with_warning(monkeypatch, caplog):
         get_settings(), "mastio_mtls_trusted_proxy_cidrs", "",
     )
     from app.auth.mastio_mtls import _peer_is_trusted_proxy
-    caplog.set_level(logging.WARNING)
+    # Bind caplog to the specific module logger — under some CI logging
+    # configs the root-level set_level call alone doesn't propagate
+    # records emitted by named loggers when other tests have replaced
+    # handlers earlier in the shard.
+    caplog.set_level(logging.WARNING, logger="app.auth.mastio_mtls")
     req = _stub_request(host="203.0.113.10")
     assert _peer_is_trusted_proxy(req) is True
     msgs = [r.getMessage() for r in caplog.records]
