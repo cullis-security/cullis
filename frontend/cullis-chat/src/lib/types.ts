@@ -111,5 +111,27 @@ export interface InboxSendResponse {
   quadrant: string;
 }
 
-/** Inbox UI tabs — drives client-side filtering, not a server param. */
+/** Inbox UI tabs, drives client-side filtering, not a server param. */
 export type InboxTab = 'all' | 'unread' | 'sent' | 'drafts';
+
+
+// ── Sprint 1 Step 6, conversation history (PR-A backend, PR-B SPA) ──
+
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoredMessage {
+  role: ChatRole;
+  content: string;
+  tool_calls: ToolCallEvent[] | null;
+  trace_id: string | null;
+  created_at: string;
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  messages: StoredMessage[];
+}
