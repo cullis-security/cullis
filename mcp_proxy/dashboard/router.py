@@ -3285,23 +3285,28 @@ async def users_page(request: Request):
 
 @router.post("/users/create")
 async def users_create(request: Request):
-    """Create a user on the Frontdesk Ambassador.
+    """Create a user. Two paths depending on the deployment topology:
 
-    The Mastio mints a one-time temp password, forwards it to the
-    Frontdesk together with the user metadata, surfaces it to the admin
-    on the redirect, and forgets it. We do not log the value anywhere.
+    1. **Frontdesk Ambassador configured** (``MCP_PROXY_FRONTDESK_AMBASSADOR_URL``
+       set): the Mastio mints a one-time temp password, forwards it to the
+       Frontdesk together with the user metadata, surfaces it to the admin
+       on the redirect, and forgets it. The Frontdesk's ``users.db`` holds
+       the bcrypt hash; the Mastio never logs the value anywhere.
+
+    2. **Registry-only fallback** (no Frontdesk, no SSO): writes a row in
+       ``local_user_principals`` without any credential. Used when the
+       deployment authenticates clients via ADR-027 ``culk_*`` API tokens
+       — the admin pre-creates the user principal here, then mints a
+       Bearer token from the user detail page's API Tokens tab. No
+       password, no IdP, no temp credential to distribute. Workable for
+       VPS demos where the customer points LibreChat / Cursor / Cherry
+       Studio at the Mastio with token auth.
     """
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return session
     if not await verify_csrf(request, session):
         return RedirectResponse("/proxy/users?error=csrf", status_code=303)
-
-    if _frontdesk_admin_target() is None:
-        return RedirectResponse(
-            "/proxy/users?error=Frontdesk+not+configured",
-            status_code=303,
-        )
 
     form = await request.form()
     user_name = (form.get("user_name") or "").strip()
@@ -3311,6 +3316,83 @@ async def users_create(request: Request):
             "/proxy/users?error=user_name+is+required",
             status_code=303,
         )
+
+    # Registry-only fallback path — no Frontdesk to delegate to.
+    if _frontdesk_admin_target() is None:
+        from urllib.parse import quote
+        from mcp_proxy.db import get_config, get_db, log_audit
+        from sqlalchemy import text
+        try:
+            # Prefer app.state.agent_manager.org_id (set at lifespan
+            # start, source of truth), fall back to proxy_config table
+            # for legacy deployments that pre-date the agent_manager
+            # singleton.
+            mgr = getattr(request.app.state, "agent_manager", None)
+            org_id = getattr(mgr, "org_id", None) if mgr is not None else None
+            if not org_id:
+                org_id = await get_config("org_id") or ""
+            if not org_id:
+                return RedirectResponse(
+                    "/proxy/users?error=Mastio+org_id+not+initialised",
+                    status_code=303,
+                )
+            principal_id = f"{org_id}::user::{user_name}"
+            async with get_db() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT 1 FROM local_user_principals "
+                        "WHERE principal_id = :pid"
+                    ),
+                    {"pid": principal_id},
+                )
+                if result.first() is not None:
+                    return RedirectResponse(
+                        f"/proxy/users?error=User+{user_name}+already+exists",
+                        status_code=303,
+                    )
+                await conn.execute(
+                    text(
+                        """
+                        INSERT INTO local_user_principals
+                        (principal_id, user_name, display_name, reach,
+                         surface, created_at)
+                        VALUES (:pid, :uname, :dname, 'intra', 'registry',
+                                datetime('now'))
+                        """
+                    ),
+                    {
+                        "pid": principal_id,
+                        "uname": user_name,
+                        "dname": display_name,
+                    },
+                )
+            await log_audit(
+                agent_id=(
+                    getattr(session, "principal_id", None)
+                    or getattr(session, "username", None)
+                    or "dashboard-admin"
+                ),
+                action="user.create",
+                status="success",
+                details={
+                    "event": "user.create",
+                    "source": "registry-only",
+                    "principal_id": principal_id,
+                    "user_name": user_name,
+                    "display_name": display_name,
+                },
+            )
+            return RedirectResponse(
+                f"/proxy/users/{quote(principal_id, safe='')}"
+                "?ok=Registry+row+created+-+mint+an+API+token+to+grant+access",
+                status_code=303,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("users_create registry-only failed: %s", exc)
+            return RedirectResponse(
+                "/proxy/users?error=Failed+to+create+registry+row",
+                status_code=303,
+            )
 
     temp_password = _generate_temp_password()
     status_code, body, transport_err = await _frontdesk_admin_call(
