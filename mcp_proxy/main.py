@@ -1078,6 +1078,55 @@ async def policy_tool_call(request: Request):
         context=body.get("context") if isinstance(body.get("context"), dict) else None,
     )
 
+    # ADR-029 Phase D-2, cross-org federation. If the local decision is
+    # allow and the target lives in a different org, the originator must
+    # also clear the target org's PDP. Default-deny when no federation
+    # URL is configured for the target org so an admin cannot bypass the
+    # target by omission.
+    federated_from_remote = False
+    target_field = body.get("target") if isinstance(body.get("target"), dict) else {}
+    target_org = (target_field or {}).get("org")
+    self_org = _runtime_settings.org_id
+    if (
+        decision.allowed
+        and isinstance(target_org, str)
+        and target_org
+        and self_org
+        and target_org != self_org
+    ):
+        from mcp_proxy.policy.federation import (
+            call_remote_tool_call_policy,
+            intersect_decisions,
+        )
+
+        fed_map = _runtime_settings.tool_pdp_federation_urls or {}
+        fed_url = fed_map.get(target_org)
+        if not fed_url:
+            # Conservative default. The originator allowed locally, but
+            # without a way to ask the target org we refuse the cross-org
+            # invocation. An audit row records the principal who tried.
+            decision = type(decision)(
+                allowed=False,
+                reason=(
+                    f"cross-org target '{target_org}' has no federation URL "
+                    f"configured (MCP_PROXY_TOOL_PDP_FEDERATION_URLS); "
+                    f"default-deny"
+                ),
+            )
+        else:
+            _log.info(
+                "PDP tool-call federation: target_org=%s url=%s tool=%s",
+                target_org, fed_url, invocation.get("tool_name"),
+            )
+            fed_result = await call_remote_tool_call_policy(
+                target_org=target_org,
+                federation_url=fed_url,
+                payload=body,
+                hmac_secret=_runtime_settings.pdp_webhook_hmac_secret or None,
+            )
+            federated_from_remote = fed_result.reached_remote
+            decision = intersect_decisions(decision, fed_result.decision)
+
     # Hash-chained audit row, allow and deny alike (forensics needs both).
     audit_details: dict = {
         "principal_type": principal.get("type"),
@@ -1091,6 +1140,10 @@ async def policy_tool_call(request: Request):
         audit_details["target"] = body["target"].get("id")
     if isinstance(body.get("context"), dict):
         audit_details["session_id"] = body["context"].get("session_id")
+    if federated_from_remote:
+        # Mark federated rows so audit consumers can tell when a deny
+        # came from the local Mastio vs the target org's Mastio.
+        audit_details["federated"] = True
 
     await log_audit(
         agent_id=str(principal.get("id", "?")),

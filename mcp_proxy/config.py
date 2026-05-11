@@ -190,6 +190,19 @@ class ProxySettings(BaseSettings):
     # the cross-org federation for tool-call decisions.
     tool_pdp_enabled: bool = False
 
+    # ADR-029 Phase D-2, cross-org federation map for tool-call PDP.
+    # When the Connector asks /v1/policy/tool-call with a `target.org`
+    # different from this Mastio's `org_id`, the local decision is
+    # intersected with a federated call to the target org's Mastio.
+    # The map keys are remote org_ids; values are the full URL of that
+    # org's POST /v1/policy/tool-call endpoint, e.g.
+    # ``{"competitor": "https://mastio.competitor.local/v1/policy/tool-call"}``.
+    # Default-deny when an entry is missing for the target org (better
+    # to refuse a cross-org tool until federation is wired explicitly).
+    # The shared HMAC secret (``MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET``) is
+    # reused to sign the outbound federation calls when set.
+    tool_pdp_federation_urls: dict[str, str] = {}
+
     # ADR-013 layer 2 — global Mastio rate limit. Token bucket shared
     # across every request (not per-agent), so coordinated compromise
     # across many stolen credentials cannot outrun the aggregate cap.
