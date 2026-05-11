@@ -41,7 +41,6 @@ from sqlalchemy.exc import DBAPIError
 from mcp_proxy.db import dispose_db, get_db, init_db
 from mcp_proxy.local.audit import append_local_audit, verify_local_chain
 from mcp_proxy.local.audit_chain import (
-    HASH_FORMAT_V1,
     HASH_FORMAT_V2,
     compute_entry_hash_v2,
 )
