@@ -60,7 +60,11 @@ ok "tools + env"
 step "Build local images from this commit"
 
 # Bug #1 from dogfood: the root Dockerfile is the Court, NOT the Mastio.
-# Build both with the correct paths.
+# Build all three customer-path images with their correct Dockerfiles so
+# the gate exercises the code at THIS commit, not whichever GHCR tag
+# happens to be pinned in the bundle compose files. This is what makes
+# the gate catch Bug #5-class regressions: the released Connector image
+# is always behind main by at least one release cut.
 docker build -q -t ghcr.io/cullis-security/cullis-mastio:local-smoke \
     -f mcp_proxy/Dockerfile . > /dev/null \
     || fail "Mastio image build"
@@ -70,6 +74,11 @@ docker build -q -t ghcr.io/cullis-security/cullis-chat-frontdesk:local-smoke \
     -f frontend/cullis-chat/Dockerfile frontend/cullis-chat/ > /dev/null \
     || fail "Chat frontdesk image build"
 ok "cullis-chat-frontdesk:local-smoke"
+
+docker build -q -t ghcr.io/cullis-security/cullis-connector:local-smoke \
+    -f packaging/docker/Dockerfile . > /dev/null \
+    || fail "Connector image build"
+ok "cullis-connector:local-smoke"
 
 # ── Deploy Mastio bundle ─────────────────────────────────────────────────
 
@@ -161,9 +170,11 @@ CULLIS_FRONTDESK_CA_BUNDLE_HOST="$REPO_ROOT/packaging/mastio-bundle/certs/org-ca
 
 cat >> frontdesk.env <<EOF
 
-# Smoke wiring
+# Smoke wiring — pin all three images to the local builds so the gate
+# exercises this commit's code, not the released GHCR tags.
 CULLIS_FRONTDESK_MASTIO_URL=https://host.docker.internal:9443
 CHAT_VERSION=local-smoke
+CONNECTOR_VERSION=local-smoke
 EOF
 
 ./deploy.sh > /tmp/frontdesk-deploy.log 2>&1 \
