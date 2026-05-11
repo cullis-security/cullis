@@ -171,7 +171,6 @@ async def test_scope_providers_match_anthropic_succeeds(
     """Token scoped to ['anthropic']. Request model claude-haiku-4-5 →
     parse_provider returns 'anthropic' → in list → resolver allows.
     We mock ai_gateway.dispatch so the test doesn't touch upstream."""
-    from mcp_proxy.egress import ai_gateway
 
     async def fake_dispatch(**kwargs):
         from mcp_proxy.egress.schemas import ChatCompletionResponse
