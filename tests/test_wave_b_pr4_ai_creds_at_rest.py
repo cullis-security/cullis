@@ -200,3 +200,202 @@ async def test_legacy_plaintext_row_still_readable(fresh_db):
     from mcp_proxy.db import get_ai_provider_creds
     fetched = await get_ai_provider_creds("legacyprov")
     assert fetched["creds"] == {"api_key": "sk-legacy-plain"}
+
+
+# ── Migration 0032 with rows present (Bug #8 regression) ────────────────
+
+
+def test_migration_0032_upgrades_rows_with_plaintext_payload(tmp_path):
+    """Bug #8 regression: pre-fix 0032 called the async ``encrypt_at_rest``
+    helper via ``loop.run_until_complete(...)`` inside alembic's
+    ``connection.run_sync(do_run_migrations)`` bridge. The new event loop
+    deadlocked against the outer ``asyncio.run`` driving the migration,
+    the coroutine was created but never awaited, the container exited
+    with code 3 the very first time ``ai_provider_credentials`` was
+    non-empty, and the Mastio bundle went into restart loop.
+
+    All existing 0032 tests run against a FRESH DB (no rows in
+    ``ai_provider_credentials``) so the buggy branch was never reached
+    — this is the gap the dogfood surfaced.
+
+    This test seeds two plaintext rows at revision 0031, runs alembic
+    upgrade head, and asserts both rows now carry the ``enc:v1:`` prefix.
+    A fresh master key is minted by the migration into ``proxy_config``
+    on cold-install; the test round-trips through that key to confirm
+    the ciphertext decrypts back to the original payload.
+    """
+    import asyncio
+    import sqlite3
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    from mcp_proxy.db import _alembic_config  # type: ignore[attr-defined]
+    from mcp_proxy.tools.secret_encrypt import _PREFIX as RUNTIME_PREFIX
+
+    db_file = tmp_path / "migration-0032.sqlite"
+    url = f"sqlite+aiosqlite:///{db_file}"
+    sync_url = f"sqlite:///{db_file}"
+
+    # 1. Upgrade to 0031 only (before the encryption migration).
+    cfg: AlembicConfig = _alembic_config(url)
+    command.upgrade(cfg, "0031_audit_append_only_v2")
+
+    # 2. Seed plaintext rows directly in the table.
+    seed_payloads = {
+        "anthropic": '{"api_key":"sk-ant-plaintext"}',
+        "openai":    '{"api_key":"sk-openai-plaintext"}',
+    }
+    from datetime import datetime, timezone
+    with sqlite3.connect(str(db_file)) as conn:
+        for provider, payload in seed_payloads.items():
+            conn.execute(
+                "INSERT INTO ai_provider_credentials "
+                "(provider, creds_json, enabled, updated_at, updated_by) "
+                "VALUES (?, ?, 1, ?, 'test')",
+                (provider, payload, datetime.now(timezone.utc).isoformat()),
+            )
+        conn.commit()
+
+    # 3. Apply 0032. Pre-fix this raises RuntimeWarning and the bind
+    #    transaction never persists; post-fix it walks the rows sync.
+    command.upgrade(cfg, "head")
+
+    # 4. Confirm rows are now enveloped + decryptable with the persisted
+    #    master key.
+    with sqlite3.connect(str(db_file)) as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT provider, creds_json FROM ai_provider_credentials"
+            ).fetchall(),
+        )
+        master_row = conn.execute(
+            "SELECT value FROM proxy_config WHERE key = 'secret_encryption_key_b64'",
+        ).fetchone()
+
+    assert master_row is not None, "migration must persist a fresh master key"
+    encoded_key = master_row[0]
+    import base64
+    raw_key = base64.urlsafe_b64decode(encoded_key)
+    assert len(raw_key) == 32, "master key must be 32 raw bytes"
+
+    from cryptography.fernet import Fernet
+    fernet = Fernet(base64.urlsafe_b64encode(raw_key))
+    for provider, original in seed_payloads.items():
+        stored = rows[provider]
+        assert stored.startswith(RUNTIME_PREFIX), (
+            f"row {provider} not enveloped: {stored[:32]}"
+        )
+        decrypted = fernet.decrypt(stored[len(RUNTIME_PREFIX):].encode()).decode()
+        assert decrypted == original, f"round-trip mismatch for {provider}"
+
+
+def test_migration_0032_idempotent_on_already_encrypted_rows(tmp_path):
+    """Running upgrade twice (or after a partial deploy that already
+    enveloped some rows) must not double-wrap."""
+    import sqlite3
+    import base64
+    from alembic import command
+    from cryptography.fernet import Fernet
+
+    from mcp_proxy.db import _alembic_config  # type: ignore[attr-defined]
+    from mcp_proxy.tools.secret_encrypt import _PREFIX as RUNTIME_PREFIX
+
+    db_file = tmp_path / "migration-0032-idem.sqlite"
+    url = f"sqlite+aiosqlite:///{db_file}"
+
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0031_audit_append_only_v2")
+
+    # Seed one row already enveloped with a known key + one plaintext.
+    raw_key = b"\x42" * 32
+    encoded_key = base64.urlsafe_b64encode(raw_key).decode()
+    fernet = Fernet(base64.urlsafe_b64encode(raw_key))
+    pre_encrypted = RUNTIME_PREFIX + fernet.encrypt(
+        b'{"api_key":"sk-already-wrapped"}',
+    ).decode()
+    from datetime import datetime, timezone
+    with sqlite3.connect(str(db_file)) as conn:
+        # Pin the master key in proxy_config so the migration uses it
+        # (not a random one). Both rows must round-trip with this key.
+        conn.execute(
+            "INSERT INTO proxy_config (key, value) VALUES (?, ?)",
+            ("secret_encryption_key_b64", encoded_key),
+        )
+        conn.execute(
+            "INSERT INTO ai_provider_credentials "
+            "(provider, creds_json, enabled, updated_at, updated_by) "
+            "VALUES ('prewrapped', ?, 1, ?, 'test')",
+            (pre_encrypted, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.execute(
+            "INSERT INTO ai_provider_credentials "
+            "(provider, creds_json, enabled, updated_at, updated_by) "
+            "VALUES ('plainnew', ?, 1, ?, 'test')",
+            ('{"api_key":"sk-plain"}', datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+
+    with sqlite3.connect(str(db_file)) as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT provider, creds_json FROM ai_provider_credentials"
+            ).fetchall(),
+        )
+
+    # The pre-wrapped row stays exactly as we left it (no double-wrap,
+    # no rewrap with a fresh nonce).
+    assert rows["prewrapped"] == pre_encrypted
+    # The plain row gets wrapped exactly once.
+    assert rows["plainnew"].startswith(RUNTIME_PREFIX)
+    inner = rows["plainnew"][len(RUNTIME_PREFIX):]
+    assert not inner.startswith(RUNTIME_PREFIX), "double-wrapped!"
+
+
+def test_migration_0032_downgrade_reverses_envelope(tmp_path):
+    """Downgrade unwraps enc:v1: back to plaintext for rollback paths.
+    Idempotent on rows that were already plain."""
+    import sqlite3
+    import base64
+    from alembic import command
+    from cryptography.fernet import Fernet
+
+    from mcp_proxy.db import _alembic_config  # type: ignore[attr-defined]
+    from mcp_proxy.tools.secret_encrypt import _PREFIX as RUNTIME_PREFIX
+
+    db_file = tmp_path / "migration-0032-down.sqlite"
+    url = f"sqlite+aiosqlite:///{db_file}"
+
+    cfg = _alembic_config(url)
+    command.upgrade(cfg, "0031_audit_append_only_v2")
+
+    raw_key = b"\x37" * 32
+    encoded_key = base64.urlsafe_b64encode(raw_key).decode()
+    fernet = Fernet(base64.urlsafe_b64encode(raw_key))
+    original_payload = '{"api_key":"sk-roundtrip"}'
+    wrapped = RUNTIME_PREFIX + fernet.encrypt(
+        original_payload.encode(),
+    ).decode()
+    from datetime import datetime, timezone
+    with sqlite3.connect(str(db_file)) as conn:
+        conn.execute(
+            "INSERT INTO proxy_config (key, value) VALUES (?, ?)",
+            ("secret_encryption_key_b64", encoded_key),
+        )
+        conn.execute(
+            "INSERT INTO ai_provider_credentials "
+            "(provider, creds_json, enabled, updated_at, updated_by) "
+            "VALUES ('wrapped', ?, 1, ?, 'test')",
+            (wrapped, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0031_audit_append_only_v2")
+
+    with sqlite3.connect(str(db_file)) as conn:
+        stored = conn.execute(
+            "SELECT creds_json FROM ai_provider_credentials WHERE provider = 'wrapped'",
+        ).fetchone()[0]
+    assert stored == original_payload
