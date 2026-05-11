@@ -179,21 +179,46 @@ def _cert_thumbprint_sha256(cert: x509.Certificate) -> str:
     return hashlib.sha256(der).hexdigest()
 
 
+def pubkey_thumbprint_sha256(public_key) -> str:
+    """SHA-256 hex of a public key's SubjectPublicKeyInfo (SPKI) DER.
+
+    Used for TOFU pinning of typed principals (CRIT-1 fix). The cert
+    rotates every USER_CERT_TTL but the Ambassador re-uses its keypair
+    across refreshes, so the SPKI digest is the stable identifier.
+
+    Stays compatible across RSA/EC public keys — both expose
+    ``public_bytes(SubjectPublicKeyInfo, DER)``.
+    """
+    spki_der = public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(spki_der).hexdigest()
+
+
 async def sign_user_csr(
     csr_pem: str,
     principal_id: str,
     *,
     agent_manager: "AgentManager",
     ttl: timedelta = USER_CERT_TTL,
-) -> tuple[str, str, datetime]:
+) -> tuple[str, str, str, datetime]:
     """Sign a user-principal CSR with the proxy's loaded Org CA.
 
-    Returns ``(cert_pem, cert_thumbprint_sha256, cert_not_after)``.
+    Returns ``(cert_pem, cert_thumbprint_sha256, pubkey_thumbprint_sha256,
+    cert_not_after)``.
+
+    The fourth-element ``pubkey_thumbprint_sha256`` is the stable TOFU
+    binding. The caller persists it on first signature (via
+    ``upsert_from_csr``) and re-verifies on every later request through
+    the cert-auth dependency.
 
     Raises:
         ValueError: principal_id malformed.
         CsrValidationError: CSR malformed, weak key, missing SAN,
-            wrong SPIFFE URI, signature invalid.
+            wrong SPIFFE URI, signature invalid, OR pubkey does not
+            match the previously-pinned pubkey for this principal
+            (TOFU mismatch — CRIT-1 defence).
         RuntimeError: Org CA not loaded on this proxy yet.
     """
     spiffe_expected, expected_org = parse_principal_id_to_spiffe(principal_id)
@@ -218,6 +243,32 @@ async def sign_user_csr(
             f"CSR SPIFFE id {spiffe_in_csr!r} does not match requested "
             f"principal_id {principal_id!r} (expected {spiffe_expected!r})",
         )
+
+    # CRIT-1 defence — TOFU pubkey check. Compute SPKI digest from the
+    # CSR public key, look up the principal's stored thumbprint, and
+    # refuse if they disagree. Without this, any Mastio-bound JWT can
+    # mint a 1h cert for ``<org>::user::<arbitrary-name>`` with the
+    # caller's own keypair, then present that cert on subsequent
+    # requests (the cert chains to the Org CA, the SPIFFE SAN is
+    # well-formed, and the cert-auth dep used to skip the pin step
+    # for typed principals — see ``mcp_proxy/auth/client_cert.py``).
+    csr_pubkey_thumb = pubkey_thumbprint_sha256(csr.public_key())
+    # Slash-form principal_id (``<td>/<org>/user/<name>``) is the wire
+    # form. The dashboard / DB row stores the ``::``-separated short id.
+    parts = principal_id.split("/")
+    if len(parts) == 4 and parts[2] == "user":
+        # Avoid the lazy-import dance further down by importing here.
+        from mcp_proxy.db import get_user_principal_pubkey_thumbprint
+        _exists, stored_thumb = await get_user_principal_pubkey_thumbprint(
+            f"{parts[1]}::user::{parts[3]}",
+        )
+        if stored_thumb is not None and stored_thumb != csr_pubkey_thumb:
+            raise CsrValidationError(
+                "CSR public key does not match the pubkey already bound "
+                f"to {principal_id!r} (TOFU mismatch — refuse to sign)",
+            )
+    # Workloads have no CSR mint flow today; if/when they grow one, mirror
+    # the lookup against ``local_workload_principals`` here.
 
     if not agent_manager.ca_loaded:
         raise RuntimeError(
@@ -280,7 +331,7 @@ async def sign_user_csr(
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
     thumbprint = _cert_thumbprint_sha256(cert)
-    return cert_pem, thumbprint, not_after
+    return cert_pem, thumbprint, csr_pubkey_thumb, not_after
 
 
 __all__ = [
@@ -288,5 +339,6 @@ __all__ = [
     "CsrValidationError",
     "USER_CERT_TTL",
     "parse_principal_id_to_spiffe",
+    "pubkey_thumbprint_sha256",
     "sign_user_csr",
 ]

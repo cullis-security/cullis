@@ -284,18 +284,72 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
 
     # ADR-020 — typed principals (user / workload) authenticate via the
     # cert chain (validated upstream by nginx mTLS) plus the SPIFFE SAN
-    # baked into the cert. They are NOT in ``internal_agents`` (that is
-    # the *workload* registry; user principals live in
-    # ``local_user_principals``); the rotating ~1h leaf the
-    # ``/v1/principals/csr`` provisioner mints is never written there.
-    # Looking them up + 401'ing on absence makes every Frontdesk chat
-    # request fail at the gate even though the cert chain is valid.
-    # Skip the registry lookup AND the cert-pin step here, mirroring the
-    # equivalent branch in ``challenge_response.py`` so the two paths
-    # stay symmetric. The trust gate is the chain walk + SPIFFE SAN.
+    # baked into the cert. They live in ``local_user_principals`` /
+    # ``local_workload_principals``, NOT in ``internal_agents`` (that
+    # registry is for service agents). The rotating ~1h leaf the
+    # ``/v1/principals/csr`` provisioner mints rotates the cert
+    # thumbprint, but the principal's keypair (and therefore its SPKI
+    # SHA-256 ``pubkey_thumbprint``) is stable across refreshes.
+    #
+    # CRIT-1 defence (audit T2-C1 / Track 2 CRIT-1, 2026-05-11):
+    # the previous version of this branch skipped registry lookup AND
+    # cert-pin step entirely for typed principals, on the rationale
+    # that the chain walk + SPIFFE SAN was sufficient. It was not. Any
+    # Mastio-bound JWT could POST a CSR for ``<org>::user::<arbitrary>``
+    # via ``/v1/principals/csr``, get the Org CA to sign a 1h cert
+    # bound to the attacker's keypair, then present that cert here and
+    # be accepted as that arbitrary user. We now require the principal
+    # row to exist AND the cert's SPKI SHA-256 to match the row's
+    # ``pubkey_thumbprint`` (TOFU set on first CSR signature).
     is_typed_principal = "::user::" in canonical_id or "::workload::" in canonical_id
 
     if is_typed_principal:
+        if "::user::" in canonical_id:
+            from mcp_proxy.db import get_user_principal_pubkey_thumbprint
+            exists, stored_pubkey = await get_user_principal_pubkey_thumbprint(
+                canonical_id,
+            )
+            kind = "user"
+        else:  # ::workload::
+            from mcp_proxy.db import get_workload_principal_pubkey_thumbprint
+            exists, stored_pubkey = await get_workload_principal_pubkey_thumbprint(
+                canonical_id,
+            )
+            kind = "workload"
+        if not exists:
+            _log.warning(
+                "client cert auth: typed principal not registered: %s",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"{kind} principal unknown",
+            )
+        if stored_pubkey is None:
+            # Row exists (e.g. admin pre-created via /v1/admin/users)
+            # but no CSR has been signed yet — there is no pubkey to
+            # pin against. Refuse rather than admit on the strength of
+            # the cert chain alone, otherwise CRIT-1 is back in play.
+            _log.warning(
+                "client cert auth: typed principal has no pubkey pin: %s",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"{kind} principal not yet enrolled",
+            )
+        from mcp_proxy.registry.principals_csr import pubkey_thumbprint_sha256
+        presented_pubkey = pubkey_thumbprint_sha256(cert.public_key())
+        if not hmac.compare_digest(presented_pubkey, stored_pubkey):
+            _log.warning(
+                "client cert pubkey pin mismatch for %s — presented cert "
+                "is not bound to this principal's TOFU pubkey.",
+                canonical_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="client cert pubkey not bound to principal",
+            )
         agent_data = None
     else:
         agent_data = await get_agent(canonical_id)

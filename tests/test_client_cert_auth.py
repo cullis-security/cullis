@@ -210,16 +210,88 @@ async def test_cn_fallback_when_san_missing(proxy_app, monkeypatch):
     assert resp.status_code == 200, resp.text
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CRIT-1 (audit T2-C1, 2026-05-11) — typed principal lookup + pubkey pin
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Before the CRIT-1 fix, the dep skipped registry lookup AND cert pin for
+# user/workload principals on the rationale that the chain walk + SPIFFE
+# SAN was sufficient. It was not: any Mastio-bound JWT could POST a CSR
+# for ``<org>::user::<arbitrary>``, get the Org CA to sign a 1h cert
+# bound to the attacker's keypair, then present that cert here and be
+# accepted as that arbitrary user. The dep now requires the principal row
+# to exist AND the cert's SPKI SHA-256 to match the row's
+# ``pubkey_thumbprint`` (TOFU set on first CSR signature).
+#
+# These tests pin that contract.
+
+
+async def _provision_typed_principal(
+    canonical_id: str,
+    *,
+    cert_pem: str | None = None,
+    pubkey_thumbprint: str | None = None,
+    workload: bool = False,
+) -> str | None:
+    """Insert a row in ``local_user_principals`` / ``local_workload_principals``
+    with the given pubkey thumbprint. If ``cert_pem`` is provided, derive
+    the thumbprint from the cert's SPKI. If neither is provided, leaves
+    pubkey_thumbprint NULL (legacy admin-pre-created row, before any CSR).
+
+    Returns the stored thumbprint (or None when neither input given).
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import text
+    from mcp_proxy.db import get_db
+
+    if pubkey_thumbprint is None and cert_pem is not None:
+        from cryptography import x509
+        from mcp_proxy.registry.principals_csr import pubkey_thumbprint_sha256
+        cert = x509.load_pem_x509_certificate(cert_pem.encode())
+        pubkey_thumbprint = pubkey_thumbprint_sha256(cert.public_key())
+
+    name_part = canonical_id.split("::")[-1]
+    now = datetime.now(timezone.utc).isoformat()
+    table = "local_workload_principals" if workload else "local_user_principals"
+    name_col = "workload_name" if workload else "user_name"
+
+    async with get_db() as conn:
+        if workload:
+            await conn.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    f"(principal_id, {name_col}, runtime_status, "
+                    f" pubkey_thumbprint, created_at) "
+                    f"VALUES (:pid, :name, 'unknown', :pubkey, :now)"
+                ),
+                {
+                    "pid": canonical_id, "name": name_part,
+                    "pubkey": pubkey_thumbprint, "now": now,
+                },
+            )
+        else:
+            await conn.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    f"(principal_id, {name_col}, reach, surface, "
+                    f" pubkey_thumbprint, created_at) "
+                    f"VALUES (:pid, :name, 'intra', NULL, :pubkey, :now)"
+                ),
+                {
+                    "pid": canonical_id, "name": name_part,
+                    "pubkey": pubkey_thumbprint, "now": now,
+                },
+            )
+    return pubkey_thumbprint
+
+
 @pytest.mark.asyncio
-async def test_typed_user_principal_bypasses_internal_agents_lookup(proxy_app):
-    """ADR-020 — user / workload principals are not in
-    ``internal_agents`` (the workload registry); the Frontdesk Connector
-    mints them via ``/v1/principals/csr`` and presents them on
-    ``/v1/llm`` + ``/v1/mcp``. Without the bypass introduced in this
-    PR, every chat request from a Frontdesk SPA 401'd at the gate even
-    though the cert chain was valid (``agent unknown or inactive``).
-    Exercising the dep directly with a UserPrincipal-shaped SPIFFE id."""
+async def test_typed_user_principal_pubkey_pinned_authenticates(proxy_app):
+    """Happy path — user principal exists in ``local_user_principals``
+    with pubkey_thumbprint matching the presented cert. Dep returns a
+    user-typed InternalAgent without consulting ``internal_agents``."""
     cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::mario")
+    await _provision_typed_principal("acme::user::mario", cert_pem=cert_pem)
     headers = mtls_headers(cert_pem)
 
     request = _request_with_headers(headers)
@@ -231,33 +303,123 @@ async def test_typed_user_principal_bypasses_internal_agents_lookup(proxy_app):
     from mcp_proxy.auth.client_cert import get_agent_from_client_cert
     agent = await get_agent_from_client_cert(request)
 
-    # Bypass kicked in: dep returned without consulting internal_agents.
     assert agent.agent_id == "acme::user::mario"
     assert agent.principal_type == "user"
-    # Cert pin is correctly skipped — no row to pin against.
-    assert agent.cert_pem is None
-    # Reach is intra by design (typed principals never cross-org egress
-    # as themselves; cross-org goes through the Connector agent's
-    # BrokerBridge which has its own reach gate).
+    assert agent.cert_pem is None  # typed principals don't hold a cert in IAgent
     assert agent.reach == "intra"
 
 
 @pytest.mark.asyncio
-async def test_typed_workload_principal_bypasses_internal_agents_lookup(proxy_app):
-    """Same bypass for SPIFFE workload principals — symmetric path
-    since both share the ``::workload::`` / ``::user::`` SPIFFE
-    convention and the ADR-020 typed-principal contract."""
-    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="workload::etl-job")
+async def test_typed_user_principal_unknown_rejected(proxy_app):
+    """CRIT-1 — cert chains to Org CA + SPIFFE SAN well-formed, but the
+    user principal is not registered. Pre-fix this slipped through;
+    post-fix this is 401 ``user principal unknown``."""
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::nobody")
     headers = mtls_headers(cert_pem)
 
     request = _request_with_headers(headers)
     request.client = MagicMock()
     request.client.host = "127.0.0.1"
-    request.app = MagicMock()
-    request.app.state = MagicMock()
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException) as exc_info:
+        await get_agent_from_client_cert(request)
+    assert exc_info.value.status_code == 401
+    assert "unknown" in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_typed_user_principal_pubkey_unset_rejected(proxy_app):
+    """CRIT-1 — admin pre-created the row via ``POST /v1/admin/users``
+    but no CSR has been signed yet, so ``pubkey_thumbprint`` is NULL.
+    The cert presented chains correctly but the pin column is empty —
+    refuse rather than admit on the chain alone."""
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::pending")
+    await _provision_typed_principal(
+        "acme::user::pending",
+        pubkey_thumbprint=None,  # explicit: pre-created, not yet enrolled
+    )
+    headers = mtls_headers(cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException) as exc_info:
+        await get_agent_from_client_cert(request)
+    assert exc_info.value.status_code == 401
+    assert "enrolled" in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_typed_user_principal_pubkey_mismatch_rejected(proxy_app):
+    """CRIT-1 — the headline impersonation defence. Attacker mints a
+    cert with their own keypair for ``acme::user::ceo``. The principal
+    is registered (TOFU pinned to the legitimate user's keypair). The
+    attacker's cert chains correctly, the SPIFFE SAN is well-formed,
+    but the SPKI SHA-256 does not match the stored thumbprint. 401."""
+    legit_cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::ceo")
+    await _provision_typed_principal(
+        "acme::user::ceo", cert_pem=legit_cert_pem,
+    )
+    # Attacker's cert: same identity, different keypair.
+    attacker_cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::ceo")
+    headers = mtls_headers(attacker_cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException) as exc_info:
+        await get_agent_from_client_cert(request)
+    assert exc_info.value.status_code == 401
+    assert "pubkey" in exc_info.value.detail.lower() or "bound" in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_typed_workload_principal_pubkey_pinned_authenticates(proxy_app):
+    """Happy path workload — same contract as the user case via
+    ``local_workload_principals``."""
+    cert_pem, _ = mint_agent_cert(
+        org_id="acme", agent_name="workload::etl-job",
+    )
+    await _provision_typed_principal(
+        "acme::workload::etl-job", cert_pem=cert_pem, workload=True,
+    )
+    headers = mtls_headers(cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
 
     from mcp_proxy.auth.client_cert import get_agent_from_client_cert
     agent = await get_agent_from_client_cert(request)
 
     assert agent.agent_id == "acme::workload::etl-job"
     assert agent.principal_type == "workload"
+
+
+@pytest.mark.asyncio
+async def test_typed_workload_principal_unknown_rejected(proxy_app):
+    """CRIT-1 mirror for workloads — unregistered workload principal
+    cert is rejected even though the chain validates."""
+    cert_pem, _ = mint_agent_cert(
+        org_id="acme", agent_name="workload::stranger",
+    )
+    headers = mtls_headers(cert_pem)
+
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException) as exc_info:
+        await get_agent_from_client_cert(request)
+    assert exc_info.value.status_code == 401
+    assert "unknown" in exc_info.value.detail.lower()

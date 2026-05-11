@@ -234,6 +234,7 @@ async def upsert_from_csr(
     principal_id: str,
     org_id: str,
     cert_thumbprint: str,
+    pubkey_thumbprint: Optional[str] = None,
     surface_hint: Optional[str] = None,
 ) -> None:
     """Called by the CSR sign endpoint after a successful signature.
@@ -242,8 +243,20 @@ async def upsert_from_csr(
     only). The caller hands in the canonical 4-component principal_id;
     we re-key it to the ``::`` short form used by the dashboard.
 
-    Errors are swallowed and logged: the registry table is best-effort
-    UI metadata, never a blocker for the underlying CSR signing flow.
+    ``pubkey_thumbprint`` is the SHA-256 of the principal keypair's
+    SPKI DER. It is the TOFU stable identifier (CRIT-1 fix): set on
+    INSERT and on first refresh of a legacy row that still has NULL,
+    but **never overwritten** once non-NULL. The CSR signer enforces
+    pubkey-match before reaching this function on subsequent calls,
+    so by the time we get here either the thumb agrees with the
+    stored value or we're populating it for the first time.
+
+    Errors are swallowed and logged for the dashboard surface: the
+    registry table is best-effort UI metadata, never a blocker for
+    the underlying CSR signing flow. The pubkey pin is critical
+    enough that the CSR signer-side TOFU check (in
+    ``principals_csr.sign_user_csr``) is the load-bearing defence;
+    this helper just persists the pin on the happy path.
     """
     try:
         # Convert <td>/<org>/user/<name> → <org>::user::<name>.
@@ -268,10 +281,12 @@ async def upsert_from_csr(
                         INSERT INTO local_user_principals (
                             principal_id, user_name, display_name,
                             reach, surface, cert_thumbprint,
+                            pubkey_thumbprint,
                             created_at, last_active_at
                         ) VALUES (
                             :pid, :uname, NULL,
                             'intra', :surface, :thumb,
+                            :pubkey,
                             :now, :now
                         )
                         """
@@ -279,22 +294,31 @@ async def upsert_from_csr(
                     {
                         "pid": pid, "uname": user_name,
                         "surface": surface_hint, "thumb": cert_thumbprint,
+                        "pubkey": pubkey_thumbprint,
                         "now": now,
                     },
                 )
             else:
+                # Update cert_thumbprint (rotational, every CSR refresh)
+                # and last_active. Pubkey_thumbprint is set ONLY when
+                # currently NULL (legacy backfill); never overwritten
+                # — that would defeat the TOFU contract.
                 await conn.execute(
                     text(
                         """
                         UPDATE local_user_principals
                            SET cert_thumbprint = :thumb,
                                last_active_at  = :now,
-                               surface = COALESCE(surface, :surface)
+                               surface = COALESCE(surface, :surface),
+                               pubkey_thumbprint = COALESCE(
+                                   pubkey_thumbprint, :pubkey
+                               )
                          WHERE principal_id = :pid
                         """
                     ),
                     {
                         "pid": pid, "thumb": cert_thumbprint,
+                        "pubkey": pubkey_thumbprint,
                         "surface": surface_hint, "now": now,
                     },
                 )
