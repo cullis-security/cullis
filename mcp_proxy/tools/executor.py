@@ -64,15 +64,11 @@ async def run(
             execution_time_ms=duration_ms,
         )
 
-    # 2. Capability check
+    # 2. Capability check (agent-typed principals)
     # ADR-020 — typed principals (user / workload) authorise via the
     # ``local_agent_resource_bindings`` table on the proxy, NOT via the
-    # broker-issued JWT scope. The aggregator (``_handle_tools_call``)
-    # has already verified an active binding for ``(agent_id,
-    # principal_type, resource_id)`` before reaching here, so the
-    # legacy scope-based capability gate is redundant for typed
-    # principals and would fail closed (the broker's user-token flow
-    # ships an empty scope).
+    # broker-issued JWT scope (which they ship as empty). Agent-typed
+    # callers still go through the legacy scope-based gate.
     principal_type = getattr(agent, "principal_type", "agent")
     if principal_type == "agent" and not tool_registry.has_capability(
         tool_name, agent.scope,
@@ -100,6 +96,51 @@ async def run(
             error=f"Forbidden: missing capability '{tool_def.required_capability}'",
             execution_time_ms=duration_ms,
         )
+
+    # 2b. Binding check for MCP-resource tools (CRIT-2 fix, audit T3-F1).
+    # The JSON-RPC ``tools/call`` aggregator (``mcp_aggregator._handle_tools_call``)
+    # gates ``is_mcp_resource`` tools behind ``has_active_binding(...)``
+    # before it ever calls ``executor.run``. The REST surface
+    # ``POST /v1/ingress/execute`` calls ``executor.run`` directly; pre-fix
+    # the binding check was skipped entirely for any ``principal_type !=
+    # "agent"``, so a user / workload token could call any registered
+    # MCP-resource tool by name with no per-resource grant. Mirror the
+    # aggregator's gate here so both ingress paths enforce the same
+    # contract.
+    if tool_def.is_mcp_resource:
+        from mcp_proxy.local.bindings import has_active_binding
+        if not await has_active_binding(
+            agent.agent_id, principal_type, tool_def.resource_id,
+        ):
+            duration_ms = _elapsed_ms(t0)
+            _log.warning(
+                "Principal '%s' (type=%s) has no active binding for "
+                "MCP resource '%s' (tool '%s')",
+                agent.agent_id, principal_type,
+                tool_def.resource_id, tool_name,
+            )
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="tool_execute",
+                tool_name=tool_name,
+                status="denied",
+                detail=(
+                    f"No active binding for resource "
+                    f"'{tool_def.resource_id}' (principal_type={principal_type})"
+                ),
+                request_id=request_id,
+                duration_ms=duration_ms,
+            )
+            return ToolExecuteResponse(
+                request_id=request_id,
+                tool=tool_name,
+                status="error",
+                error=(
+                    f"Forbidden: no active binding for resource "
+                    f"'{tool_def.resource_id}'"
+                ),
+                execution_time_ms=duration_ms,
+            )
 
     # 3. Fetch secrets
     try:

@@ -30,10 +30,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
 
 from mcp_proxy.auth.dependencies import get_authenticated_agent
-from mcp_proxy.db import get_db
 from mcp_proxy.local.audit import append_local_audit
 from mcp_proxy.models import TokenPayload, ToolExecuteRequest
 from mcp_proxy.tools import executor
@@ -71,47 +69,10 @@ def _rpc_result(req_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-async def _bound_resource_ids(
-    principal_id: str, principal_type: str,
-) -> set[str]:
-    """Return the set of resource_ids this principal currently has active
-    bindings for. ADR-020 — keys on ``(agent_id, principal_type)`` so
-    a user named "daniele" never inherits an agent named "daniele"'s
-    bindings (or vice versa)."""
-    async with get_db() as conn:
-        result = await conn.execute(
-            text(
-                """
-                SELECT resource_id
-                  FROM local_agent_resource_bindings
-                 WHERE agent_id = :a
-                   AND principal_type = :pt
-                   AND revoked_at IS NULL
-                """
-            ),
-            {"a": principal_id, "pt": principal_type},
-        )
-        return {row[0] for row in result.all()}
-
-
-async def _has_active_binding(
-    principal_id: str, principal_type: str, resource_id: str,
-) -> bool:
-    async with get_db() as conn:
-        row = (await conn.execute(
-            text(
-                """
-                SELECT 1 FROM local_agent_resource_bindings
-                 WHERE agent_id = :a
-                   AND principal_type = :pt
-                   AND resource_id = :r
-                   AND revoked_at IS NULL
-                 LIMIT 1
-                """
-            ),
-            {"a": principal_id, "pt": principal_type, "r": resource_id},
-        )).first()
-        return row is not None
+# Shared with mcp_proxy.tools.executor (CRIT-2 fix); both call sites
+# enforce the same binding-gate semantics.
+from mcp_proxy.local.bindings import bound_resource_ids as _bound_resource_ids
+from mcp_proxy.local.bindings import has_active_binding as _has_active_binding
 
 
 def _stringify(result: Any) -> str:
