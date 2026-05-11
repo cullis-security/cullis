@@ -29,7 +29,17 @@ test.describe.serial('conversation history sidebar', () => {
     // Reset both: hit the mock-only /_test/reset endpoint, navigate
     // once to give us a browser context, blow away sessionStorage,
     // then reload so ChatApp starts from a clean slate.
-    await request.post('/v1/conversations/_test/reset');
+    // Call the mock directly on its own port instead of via the
+    // Playwright baseURL: the Astro dev proxy at :4321 may swallow or
+    // rewrite the request body in subtle ways under CI, and we want a
+    // loud 200 (or a loud failure) so beforeEach can never leave the
+    // suite running on stale state.
+    const resetResp = await request.post(
+      'http://127.0.0.1:7777/v1/conversations/_test/reset',
+    );
+    if (resetResp.status() !== 200) {
+      throw new Error(`mock reset failed: HTTP ${resetResp.status()}`);
+    }
     await page.goto('/');
     await page.evaluate(() => window.sessionStorage.clear());
     await page.reload();
