@@ -118,9 +118,13 @@ def test_temp_password_distinct_across_calls():
 
 
 @pytest.mark.asyncio
-async def test_users_create_returns_not_configured_when_frontdesk_missing(
+async def test_users_create_registry_only_when_frontdesk_missing(
     tmp_path, monkeypatch,
 ):
+    """No Frontdesk Ambassador configured = create the registry row
+    directly in ``local_user_principals`` without minting a temp password
+    (ADR-027 path — the admin will mint a ``culk_*`` token from the
+    detail page to grant access)."""
     app = await _spin(tmp_path, monkeypatch, frontdesk=False)
     transport = ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -129,11 +133,51 @@ async def test_users_create_returns_not_configured_when_frontdesk_missing(
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/create",
-                data={"csrf_token": csrf, "user_name": "alice"},
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "display_name": "Alice Demo",
+                },
                 follow_redirects=False,
             )
-            assert r.status_code == 303
-            assert "Frontdesk+not+configured" in r.headers["location"]
+            assert r.status_code == 303, r.text
+            loc = r.headers["location"]
+            # Redirect to per-user detail page with a success banner.
+            assert "/proxy/users/td-org%3A%3Auser%3A%3Aalice" in loc, loc
+            assert "Registry+row+created" in loc, loc
+            # Crucially no temp password in the URL — registry-only mode
+            # doesn't mint one.
+            assert "new_pw" not in loc, loc
+
+            # Verify the row landed in local_user_principals.
+            from mcp_proxy.db import get_db
+            from sqlalchemy import text
+            async with get_db() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT user_name, display_name, surface "
+                        "FROM local_user_principals "
+                        "WHERE principal_id = 'td-org::user::alice'"
+                    ),
+                )
+                row = result.mappings().first()
+            assert row is not None
+            assert row["user_name"] == "alice"
+            assert row["display_name"] == "Alice Demo"
+            assert row["surface"] == "registry"
+
+            # Second submit with the same name → 303 to ?error=...exists.
+            r2 = await cli.post(
+                "/proxy/users/create",
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "display_name": "Alice Two",
+                },
+                follow_redirects=False,
+            )
+            assert r2.status_code == 303
+            assert "already+exists" in r2.headers["location"]
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
