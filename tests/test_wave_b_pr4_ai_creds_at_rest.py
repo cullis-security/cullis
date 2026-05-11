@@ -224,7 +224,6 @@ def test_migration_0032_upgrades_rows_with_plaintext_payload(tmp_path):
     on cold-install; the test round-trips through that key to confirm
     the ciphertext decrypts back to the original payload.
     """
-    import asyncio
     import sqlite3
     from alembic import command
     from alembic.config import Config as AlembicConfig
@@ -234,7 +233,6 @@ def test_migration_0032_upgrades_rows_with_plaintext_payload(tmp_path):
 
     db_file = tmp_path / "migration-0032.sqlite"
     url = f"sqlite+aiosqlite:///{db_file}"
-    sync_url = f"sqlite:///{db_file}"
 
     # 1. Upgrade to 0031 only (before the encryption migration).
     cfg: AlembicConfig = _alembic_config(url)
