@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -181,7 +180,6 @@ async def replicate_audit_batch(
     ).scalar_one_or_none()
 
     if tail_row is not None:
-        first = entries[0]
         # We allow re-submission of already-stored rows (idempotency)
         # so the publisher can retry safely. Just require that the
         # FIRST not-yet-stored row's previous_hash links to the tail's

@@ -32,7 +32,6 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import text
