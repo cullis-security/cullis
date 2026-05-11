@@ -1370,8 +1370,14 @@ async def get_ai_provider_creds(provider: str) -> dict | None:
         row = result.mappings().first()
     if row is None:
         return None
+    # Wave B B1 (audit 2026-05-11) — decrypt envelope before JSON-parse.
+    # Pre-fix the column was plaintext JSON; legacy rows still are
+    # (decrypt_at_rest passes them through). 0032 migration upgrades
+    # them to the v1 envelope.
+    from mcp_proxy.tools.secret_encrypt import decrypt_at_rest
+    raw = await decrypt_at_rest(row["creds_json"])
     try:
-        creds = json.loads(row["creds_json"]) if row["creds_json"] else {}
+        creds = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
         creds = {}
     return {
@@ -1397,10 +1403,13 @@ async def list_ai_provider_creds() -> list[dict]:
             ),
         )
         rows = result.mappings().all()
+    # Wave B B1 — decrypt every row's envelope before JSON-parse.
+    from mcp_proxy.tools.secret_encrypt import decrypt_at_rest
     out: list[dict] = []
     for row in rows:
+        raw = await decrypt_at_rest(row["creds_json"])
         try:
-            creds = json.loads(row["creds_json"]) if row["creds_json"] else {}
+            creds = json.loads(raw) if raw else {}
         except (TypeError, ValueError):
             creds = {}
         out.append({
@@ -1426,6 +1435,11 @@ async def upsert_ai_provider_creds(
     diffs stay deterministic.
     """
     payload = json.dumps(dict(creds), separators=(",", ":"), sort_keys=True)
+    # Wave B B1 (audit 2026-05-11) — wrap in the v1 Fernet envelope
+    # before persisting. Legacy plaintext rows are upgraded by the
+    # 0032 migration.
+    from mcp_proxy.tools.secret_encrypt import encrypt_at_rest
+    encrypted_payload = await encrypt_at_rest(payload)
     ts = datetime.now(timezone.utc).isoformat()
     async with get_db() as conn:
         await conn.execute(
@@ -1441,7 +1455,7 @@ async def upsert_ai_provider_creds(
             ),
             {
                 "p": provider.lower(),
-                "c": payload,
+                "c": encrypted_payload,
                 "en": bool(enabled),
                 "ts": ts,
                 "ub": updated_by,
