@@ -78,6 +78,13 @@ async def broadcast_rfq(
             initiator_agent_id=initiator.agent_id,
             target_agent_id=agent.agent_id,
             capabilities=request.capability_filter,
+            # ADR-029 Phase B: RFQ candidate eligibility is still
+            # a session-open style decision (we're filtering who is
+            # reachable, not invoking a tool yet).
+            invocation={
+                "kind": "session_open",
+                "capabilities_requested": request.capability_filter,
+            },
         )
         if decision.allowed:
             approved.append(agent)

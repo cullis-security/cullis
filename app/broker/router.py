@@ -181,6 +181,14 @@ async def _create_session_inner(body, current_agent, store, db, span):
         initiator_agent_id=current_agent.agent_id,
         target_agent_id=body.target_agent_id,
         capabilities=body.requested_capabilities,
+        # ADR-029 Phase B: surface invocation kind so the PDP can write
+        # session-open vs tool-call vs oneshot policy on the same wire.
+        # model is still None here (chosen after session opens); Phase C
+        # will populate it at tool-dispatch time.
+        invocation={
+            "kind": "session_open",
+            "capabilities_requested": body.requested_capabilities,
+        },
     )
     if not pdp_decision.allowed:
         SESSION_DENIED_COUNTER.add(1, {"reason": "pdp_denied"})

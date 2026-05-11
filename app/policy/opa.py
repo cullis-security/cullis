@@ -20,7 +20,12 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.policy.webhook import WebhookDecision
+from app.policy.webhook import (
+    WebhookDecision,
+    _parse_obligations,
+    _parse_rate_limit,
+    _parse_scope,
+)
 from app.telemetry import tracer
 from app.telemetry_metrics import PDP_WEBHOOK_LATENCY_HISTOGRAM
 
@@ -66,6 +71,13 @@ async def evaluate_session_via_opa(
     initiator_agent_id: str,
     target_agent_id: str,
     capabilities: list[str],
+    *,
+    # ADR-029 extended kwargs. Forwarded into OPA input under the same
+    # keys as the webhook payload, so Rego policies can reference
+    # `input.model.id`, `input.invocation.tool_name`, etc.
+    model: dict | None = None,
+    invocation: dict | None = None,
+    context: dict | None = None,
 ) -> WebhookDecision:
     """
     Evaluate a session request against OPA.
@@ -82,15 +94,23 @@ async def evaluate_session_via_opa(
 
     url = f"{opa_url.rstrip('/')}/v1/data/atn/session/allow"
 
-    input_doc = {
-        "input": {
-            "initiator_agent_id": initiator_agent_id,
-            "initiator_org_id": initiator_org_id,
-            "target_agent_id": target_agent_id,
-            "target_org_id": target_org_id,
-            "capabilities": capabilities,
-        }
+    input_payload: dict = {
+        "initiator_agent_id": initiator_agent_id,
+        "initiator_org_id": initiator_org_id,
+        "target_agent_id": target_agent_id,
+        "target_org_id": target_org_id,
+        "capabilities": capabilities,
     }
+    # ADR-029 extended fields. Only added when provided, so legacy Rego
+    # bundles that ignore these keys keep evaluating as before.
+    if model is not None:
+        input_payload["model"] = model
+    if invocation is not None:
+        input_payload["invocation"] = invocation
+    if context is not None:
+        input_payload["context"] = context
+
+    input_doc = {"input": input_payload}
 
     t0 = time.monotonic()
     try:
@@ -125,25 +145,43 @@ async def evaluate_session_via_opa(
         data = resp.json()
         result = data.get("result", {})
 
+        # ADR-029 extended fields, present only on dict result shape.
+        scope = None
+        rate_limit = None
+        obligations = None
+
         if isinstance(result, bool):
             allowed = result
             reason = ""
         elif isinstance(result, dict):
             allowed = bool(result.get("allow", False))
             reason = str(result.get("reason", ""))[:512]
+            scope = _parse_scope(result.get("scope"))
+            rate_limit = _parse_rate_limit(result.get("rate_limit"))
+            obligations = _parse_obligations(result.get("obligations"))
         else:
             _log.warning("OPA returned unexpected result type: %s — default-deny", type(result))
             return WebhookDecision(allowed=False, reason="OPA returned invalid result", org_id="opa")
 
         if allowed:
             _log.info("OPA allow: %s → %s", initiator_org_id, target_org_id)
-            return WebhookDecision(allowed=True, reason=reason, org_id="opa")
+            return WebhookDecision(
+                allowed=True,
+                reason=reason,
+                org_id="opa",
+                scope=scope,
+                rate_limit=rate_limit,
+                obligations=obligations,
+            )
 
         _log.info("OPA deny: %s → %s reason=%s", initiator_org_id, target_org_id, reason)
         return WebhookDecision(
             allowed=False,
             reason=reason or "Denied by OPA policy",
             org_id="opa",
+            scope=scope,
+            rate_limit=rate_limit,
+            obligations=obligations,
         )
 
     except httpx.TimeoutException:

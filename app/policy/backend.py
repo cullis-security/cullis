@@ -24,6 +24,14 @@ async def evaluate_session_policy(
     initiator_agent_id: str,
     target_agent_id: str,
     capabilities: list[str],
+    *,
+    # ADR-029 extended optional context. Callers that have the data
+    # (broker session-open today, tool-dispatch gate in Phase C) pass it
+    # through to the configured backend. Callers without the data omit
+    # the kwargs and the PDP sees the same legacy payload as before.
+    model: dict | None = None,
+    invocation: dict | None = None,
+    context: dict | None = None,
 ) -> WebhookDecision:
     """
     Evaluate a session request using the configured policy backend.
@@ -59,6 +67,9 @@ async def evaluate_session_policy(
             initiator_agent_id=initiator_agent_id,
             target_agent_id=target_agent_id,
             capabilities=capabilities,
+            model=model,
+            invocation=invocation,
+            context=context,
         )
 
     # Default: webhook backend
@@ -74,4 +85,7 @@ async def evaluate_session_policy(
         initiator_agent_id=initiator_agent_id,
         target_agent_id=target_agent_id,
         capabilities=capabilities,
+        model=model,
+        invocation=invocation,
+        context=context,
     )
