@@ -13,8 +13,9 @@ interface Props {
 /**
  * One chat turn, user or assistant.
  *
- * Assistant content is rendered through `MarkdownView` (DOMPurify +
- * marked + lazy Shiki). User content is plain text, escaped by React.
+ * Assistant content is rendered through `MarkdownView` (react-markdown
+ * + rehype-sanitize + lazy Shiki). User content is plain text, escaped
+ * by React.
  *
  * Tool calls observed during the turn are rendered as inline
  * marginalia chips above the body.

@@ -64,31 +64,10 @@ test('code blocks get their own copy overlay after Shiki highlights', async ({ p
   await input.fill('what is the gdpr training status of mario rossi?');
   await page.locator('.send').click();
 
-  // The gdpr fixture streams chunks. While `pending` is true, MarkdownView
-  // re-renders the markdown body on every chunk, which means
-  // `dangerouslySetInnerHTML` wipes and rebuilds .code-block-wrap each
-  // time. A click on the button right now would be followed by the next
-  // chunk destroying that button before the `is-copied` class can be
-  // read. Wait for the streaming caret to disappear (pending=false) so
-  // the DOM is stable before interacting.
-  await expect(page.locator('.markdown-body.is-pending')).toHaveCount(0, {
-    timeout: 20_000,
-  });
-  // Sprint 1 Step 6 PR-B fires `appendConversationMessage` +
-  // `renameConversation` immediately after pending=false. Both are
-  // best-effort fire-and-forget calls but they tie up the same single
-  // browser thread Shiki is racing against. Wait for the network to
-  // quiesce so the highlight pass and the React state for the copy
-  // button have settled before we click.
-  await page.waitForLoadState('networkidle');
-
-  // Wait directly on the .code-copy overlay rather than on the wrap.
-  // The wrap is created synchronously when marked parses the code
-  // fence; the overlay is appended by the Shiki post-render hook,
-  // which is async (lazy import + per-language load). Locating the
-  // copy button itself is the only assertion that proves the whole
-  // highlight pipeline finished and the persistence-overhead added
-  // by Step 6 PR-B did not delay it past the per-step default.
+  // Wait directly on the .code-copy overlay. After M3 the wrap and the
+  // copy button live inside the React tree, so React preserves them
+  // across streaming deltas and the asynchronous Shiki highlight does
+  // not need any external `networkidle` synchronisation.
   const codeCopy = page
     .locator('.msg-assistant .code-block-wrap .code-copy')
     .first();
