@@ -174,33 +174,31 @@ backwards compatibility with deployments still on the legacy env name.
 {{/*
 Wave B F3 (audit 2026-05-11) — internal-Postgres credential resolver.
 
-Order of precedence:
-  1. ``.Values.postgres.password`` set explicitly → use it (operator
-     pinned the value, e.g. via Vault Helm secret store).
-  2. Otherwise ``lookup`` the existing ``<release>-postgres-secret``
-     in this namespace → reuse the persisted random password
-     (preserves the credential across ``helm upgrade``).
-  3. Cold-install fallback: ``randAlphaNum 32`` mints a fresh random,
-     and the same Secret is rendered with this value so step 2 wins
-     on subsequent upgrades.
-
 Pre-fix the chart shipped a deterministic literal default
 (``cullis-mastio-dev-password``) — every fresh install had the same
-world-known DB password. The lookup pattern is the standard Helm
-recipe for "auto-generate a random and persist it".
+world-known DB password.
+
+Post-fix the default is the explicit sentinel
+``INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password``.
+This helper passes the configured value through verbatim BUT calls
+``fail`` when production environment is targeted with the sentinel
+still in place — caught at template render time, not at "DB
+unreachable" debugging time later.
+
+An earlier draft used ``lookup`` + ``randAlphaNum`` to auto-generate
+and persist a random per-release password. That pattern broke on
+cold install: Helm renders multiple templates that each call this
+helper, and ``lookup`` returning nil on first render yields a
+different ``randAlphaNum`` per call site → StatefulSet POSTGRES_PASSWORD
+diverged from the ConfigMap DATABASE_URL. Reverted to the
+explicit-override pattern.
 */}}
 {{- define "cullis-mastio.postgresPassword" -}}
-{{- if .Values.postgres.password -}}
+{{- $sentinel := "INSECURE-DEV-DEFAULT-please-override-via-set-postgres-password" -}}
+{{- if and (eq .Values.postgres.password $sentinel) (eq (default "" .Values.proxy.environment) "production") -}}
+{{- fail "postgres.password is the INSECURE default. Set --set postgres.password=<strong-random> before installing in production (proxy.environment=production)." -}}
+{{- end -}}
 {{- .Values.postgres.password -}}
-{{- else -}}
-{{- $secretName := printf "%s-postgres-secret" (include "cullis-mastio.fullname" .) -}}
-{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
-{{- if and $existing $existing.data $existing.data.password -}}
-{{- $existing.data.password | b64dec -}}
-{{- else -}}
-{{- randAlphaNum 32 -}}
-{{- end -}}
-{{- end -}}
 {{- end -}}
 
 {{/*
