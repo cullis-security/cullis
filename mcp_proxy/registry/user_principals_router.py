@@ -105,7 +105,7 @@ async def sign_csr(
         )
 
     try:
-        cert_pem, thumbprint, not_after = await sign_user_csr(
+        cert_pem, thumbprint, pubkey_thumb, not_after = await sign_user_csr(
             csr_pem=body.csr_pem,
             principal_id=body.principal_id,
             agent_manager=agent_manager,
@@ -133,14 +133,17 @@ async def sign_csr(
         "principals.csr signed principal_id=%s thumbprint=%s not_after=%s",
         body.principal_id, thumbprint, not_after.isoformat(),
     )
-    # Best-effort: surface the user in the dashboard's Users tab. Errors
-    # are swallowed inside the helper — the user-facing flow is the
-    # cert response, not the directory upsert.
+    # Surface the user in the dashboard's Users tab AND pin the TOFU
+    # pubkey thumbprint on first signature (CRIT-1 fix). Errors are
+    # swallowed inside the helper for the dashboard side, but pubkey
+    # pinning happens unconditionally — without it, the cert-auth dep
+    # has nothing to compare against on the next request.
     from mcp_proxy.admin.users import upsert_from_csr
     await upsert_from_csr(
         principal_id=body.principal_id,
         org_id=token.org,
         cert_thumbprint=thumbprint,
+        pubkey_thumbprint=pubkey_thumb,
     )
     return CsrSignResponse(
         cert_pem=cert_pem,

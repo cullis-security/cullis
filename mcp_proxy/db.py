@@ -606,6 +606,95 @@ async def count_user_principals() -> int:
         return int(row["n"]) if row else 0
 
 
+async def get_user_principal_pubkey_thumbprint(
+    principal_id: str,
+) -> tuple[bool, str | None]:
+    """TOFU pubkey lookup for a user principal.
+
+    Returns ``(exists, pubkey_thumbprint)``:
+      - ``(False, None)`` — no row in ``local_user_principals`` for this
+        principal_id. Caller (``sign_user_csr``) treats this as "first
+        touch" and the row will be created with the CSR's pubkey on the
+        downstream upsert. Caller (``client_cert.py``) treats this as
+        "principal unknown" and rejects.
+      - ``(True, None)`` — row exists, no pubkey pinned yet (legacy row
+        from before migration 0030, or admin-pre-created via
+        ``POST /v1/admin/users``). Sign signer treats this as TOFU
+        first-cert opportunity. Cert-auth dep rejects.
+      - ``(True, "<sha256_hex>")`` — pinned. Caller compares to the
+        presented pubkey and refuses on mismatch.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT pubkey_thumbprint "
+                "  FROM local_user_principals WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id},
+        )
+        row = result.mappings().first()
+        if row is None:
+            return (False, None)
+        return (True, row["pubkey_thumbprint"])
+
+
+async def get_workload_principal_pubkey_thumbprint(
+    principal_id: str,
+) -> tuple[bool, str | None]:
+    """TOFU pubkey lookup for a workload principal.
+
+    Same semantics as :func:`get_user_principal_pubkey_thumbprint` but
+    backed by ``local_workload_principals``. Workloads do not currently
+    have a CSR mint flow on ``/v1/principals/csr`` (only users do), so
+    today this returns ``(False, None)`` for any workload that hasn't
+    been pre-created via ``POST /v1/admin/workloads``. The cert-auth
+    dep uses this to reject any cert that claims a workload identity
+    the registry does not know.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT pubkey_thumbprint "
+                "  FROM local_workload_principals "
+                " WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id},
+        )
+        row = result.mappings().first()
+        if row is None:
+            return (False, None)
+        return (True, row["pubkey_thumbprint"])
+
+
+async def set_user_principal_pubkey_thumbprint_if_unset(
+    principal_id: str,
+    pubkey_thumbprint: str,
+) -> bool:
+    """Set ``pubkey_thumbprint`` on a user principal IFF currently NULL.
+
+    Used by the CSR signer for the TOFU first-cert step. Returns True
+    when the row was actually updated (NULL → value), False when the
+    row already had a pubkey pinned (caller must verify match
+    elsewhere — this helper does NOT overwrite).
+
+    Atomic single-statement UPDATE so concurrent first-mints either
+    cooperate (same pubkey, second is a no-op) or one wins (different
+    pubkeys race, the first sets the row, the second is rejected on
+    the next request via the lookup helper).
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "UPDATE local_user_principals "
+                "   SET pubkey_thumbprint = :thumb "
+                " WHERE principal_id = :pid "
+                "   AND pubkey_thumbprint IS NULL"
+            ),
+            {"pid": principal_id, "thumb": pubkey_thumbprint},
+        )
+        return result.rowcount > 0
+
+
 async def deactivate_agent(agent_id: str) -> bool:
     """Soft-delete an agent by setting ``is_active=0``.
 
