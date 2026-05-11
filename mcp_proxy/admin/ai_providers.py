@@ -366,6 +366,71 @@ async def _live_probe(provider: str, creds: dict[str, str]) -> TestResult:
     )
 
 
+# Wave B B3 (audit 2026-05-11) — endpoint allow-list for the
+# OpenAI-compatible live-probe path. Default-allowed hosts are the
+# upstream APIs themselves; any other ``api_base`` is refused unless
+# the operator explicitly opted in via env (BYO endpoint pattern,
+# e.g. Azure OpenAI / corporate proxy). The check fires BEFORE we
+# ever ship the ``Authorization: Bearer <api_key>`` header so the
+# upstream key never reaches an unallowed host.
+
+_OPENAI_COMPAT_DEFAULT_HOSTS: frozenset[str] = frozenset({
+    "api.openai.com",
+    "api.anthropic.com",
+})
+
+
+def _byo_endpoint_allowed() -> bool:
+    """True when the operator has explicitly opted into "bring-your-own"
+    api_base values (Azure OpenAI deployments, corporate proxies, etc.)."""
+    import os
+    return os.environ.get("MCP_PROXY_AI_PROBE_ALLOW_BYO_ENDPOINT", "").lower() in (
+        "1", "true", "yes",
+    )
+
+
+def _enforce_openai_compat_endpoint(api_base: str, *, allow_byo: bool) -> None:
+    """Refuse to probe with an Authorization header against an api_base
+    that is neither one of the well-known OpenAI-compatible hosts nor
+    explicitly allow-listed via env."""
+    from urllib.parse import urlparse
+    parsed = urlparse(api_base)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"api_base scheme {parsed.scheme!r} not allowed (use https)"
+        )
+    if parsed.scheme != "https":
+        # An http:// api_base would ship the API key in cleartext to
+        # the upstream — refuse outright.
+        raise ValueError(
+            "api_base must use https (live-probe ships the API key)"
+        )
+    host = (parsed.hostname or "").lower()
+    if host in _OPENAI_COMPAT_DEFAULT_HOSTS:
+        return
+    if allow_byo:
+        return
+    raise ValueError(
+        f"api_base host {host!r} is not on the live-probe allow-list. "
+        "Set MCP_PROXY_AI_PROBE_ALLOW_BYO_ENDPOINT=true to enable "
+        "bring-your-own endpoints (Azure OpenAI / corporate proxies)."
+    )
+
+
+def _enforce_self_hosted_endpoint(api_base: str) -> None:
+    """Lightweight check for the Ollama path — refuse non-http schemes
+    and unparseable URLs but allow RFC1918 since self-hosted is the
+    documented topology."""
+    from urllib.parse import urlparse
+    parsed = urlparse(api_base)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"api_base scheme {parsed.scheme!r} not allowed (use http/https)"
+        )
+    if not parsed.hostname:
+        raise ValueError("api_base has no hostname")
+
+
 async def _probe_anthropic(creds: dict[str, str]) -> TestResult:
     api_key = creds.get("api_key", "")
     headers = {
@@ -394,6 +459,19 @@ async def _probe_anthropic(creds: dict[str, str]) -> TestResult:
 async def _probe_openai(creds: dict[str, str]) -> TestResult:
     api_key = creds.get("api_key", "")
     base = creds.get("api_base") or "https://api.openai.com/v1"
+    # Wave B B3 (audit 2026-05-11) — refuse to ship an Authorization
+    # header containing the upstream API key to a host that is not on
+    # the allow-list. Pre-fix the admin could (accidentally or via
+    # admin-secret leak) set ``api_base`` to an attacker-controlled
+    # URL and the live-probe would POST the key over HTTPS. Same shape
+    # as the third-party-gateway leak class flagged in
+    # ``feedback_third_party_ai_gateway_key_leak.md``.
+    try:
+        _enforce_openai_compat_endpoint(base, allow_byo=_byo_endpoint_allowed())
+    except ValueError as exc:
+        return TestResult(
+            provider="openai", status="error", detail=str(exc),
+        )
     async with httpx.AsyncClient(timeout=5.0) as client:
         resp = await client.get(
             f"{base.rstrip('/')}/models",
@@ -439,6 +517,15 @@ async def _probe_ollama(creds: dict[str, str]) -> TestResult:
     if not api_base:
         return TestResult(
             provider="ollama", status="error", detail="api_base missing",
+        )
+    # Wave B B3 — Ollama is designed for self-hosted so RFC1918 is the
+    # legitimate case (docker network etc.). Allow private IPs but
+    # still refuse non-http schemes and validate the URL is parseable.
+    try:
+        _enforce_self_hosted_endpoint(api_base)
+    except ValueError as exc:
+        return TestResult(
+            provider="ollama", status="error", detail=str(exc),
         )
     models = await fetch_ollama_models(api_base, timeout_s=3.0)
     if not models:
