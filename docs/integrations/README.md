@@ -1,23 +1,54 @@
-# Integrations — point your OpenAI-compat client at Cullis Mastio
+# Cullis client integrations
 
-Cullis Mastio exposes an OpenAI-compatible API surface at
-`https://<mastio-host>:9443/v1/*`. Any client that speaks the
-OpenAI HTTP protocol can talk to Cullis as if it were
-`api.openai.com` or `api.anthropic.com`, and get back:
+Two tracks connect end users to the Cullis identity + audit
+infrastructure. Pick the one that matches the audience.
 
-- per-user identity attribution in the Mastio audit chain
-- centralised provider credentials (no API key stored on the client)
-- policy enforcement at the PDP layer
-- cross-org federation when paired with a Court deployment
+## Recommended: Cullis Chat (the primary UI)
+
+The first-class chat experience for office workers who need to talk
+to LLMs on company documents without leaking them to personal
+ChatGPT / Claude accounts. Cullis Chat ships as part of the
+**Frontdesk container bundle**: the admin creates user principals
+from the Mastio dashboard, distributes the initial password, the
+employee opens the chat UI in the browser and signs in.
+
+What you get out of the box:
+
+- Cookie session, no API key on the client side.
+- Per-request cert minted by the Mastio KMS (ADR-021 shared mode).
+- Hash-chained audit row per user prompt + response.
+- White-label brand split via `CULLIS_BRAND=acme` (see
+  `frontend/cullis-chat/src/branding/`).
+- Deliberately minimal feature surface: no plugin marketplace, no
+  RAG self-service, no code interpreter. The MCP layer underneath
+  handles the workloads that need richer tooling.
+
+Deploy bundle: `packaging/frontdesk-bundle/` (see its README for
+the compose recipe). SPA source: `frontend/cullis-chat/`. Container
+image: `ghcr.io/cullis-security/cullis-chat-frontdesk`.
+
+This is the right answer for the typical Cullis customer: an
+enterprise rolling out AI to 50-2000 employees who are **not**
+AI-savvy, where the security and compliance team owns the rollout.
+
+## Dev / power-user track: bring your own client (ADR-027)
+
+For developers and power users who already have a preferred client
+(Cursor, Cherry Studio, LibreChat, n8n, ...), Cullis Mastio exposes
+an OpenAI-compatible API at `https://<mastio-host>:9443/v1/*`
+authenticated with a `culk_` Bearer token. Same Cullis identity,
+same audit chain, no UI lock-in. The intended audience here is the
+5-10 developers inside the same customer org who want to keep their
+own tooling, not the bulk employee population.
 
 The contract: every request carries `Authorization: Bearer culk_<…>`
 where `culk_<…>` is a Cullis user API token (ADR-027). The token
-identifies which **user principal** is making the call; the underlying
-provider call (Anthropic / OpenAI / Gemini / Bedrock / Vertex / Ollama)
-is made by the Mastio with the org-wide credentials managed in the
-dashboard.
+identifies which **user principal** is making the call; the
+underlying provider call (Anthropic / OpenAI / Gemini / Bedrock /
+Vertex / Ollama) is made by the Mastio with the org-wide credentials
+managed in the dashboard. No provider API key on the client.
 
-## Integration guides
+### Integration guides
 
 | Client | Type | Guide |
 |---|---|---|
@@ -45,7 +76,7 @@ All three guides assume:
 3. Switch to the **API Tokens** tab.
 4. Fill in **Label** (e.g. `Cursor laptop daniele`, `LibreChat staging`),
    optionally pick scope providers and expiry, click **Mint token**.
-5. The cleartext token appears in an amber banner once. Copy it now —
+5. The cleartext token appears in an amber banner once. Copy it now,
    it is never shown again.
 
 ### Via curl (CI / Terraform)
@@ -113,10 +144,17 @@ distinguishing dashboard from REST provenance).
 
 ## See also
 
-- ADR-027 (local: `imp/adrs/adr-027-unified-user-credentials.md`) —
-  formal model and rationale.
-- ADR-025 (`imp/adrs/0025-frontdesk-dual-mode-auth.md`) — dual-mode
+- `frontend/cullis-chat/README.md`: Cullis Chat SPA reference (the
+  primary UI track).
+- `packaging/frontdesk-bundle/README.md`: Frontdesk container
+  bundle that ships Cullis Chat + Mastio + Connector together.
+- ADR-019 (`imp/adrs/adr-019-cullis-frontdesk.md`): three-channel
+  distribution model that frames why Cullis Chat is the recommended
+  UI.
+- ADR-027 (local: `imp/adrs/adr-027-unified-user-credentials.md`):
+  formal model and rationale for the `culk_` Bearer track.
+- ADR-025 (`imp/adrs/0025-frontdesk-dual-mode-auth.md`): dual-mode
   Frontdesk auth (password local + OIDC). Tokens here are the third
   credential form alongside those two.
-- ADR-020 (`imp/adrs/adr-020-user-principal-and-quadrants.md`) — user
+- ADR-020 (`imp/adrs/adr-020-user-principal-and-quadrants.md`): user
   principal first-class.
