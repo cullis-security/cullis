@@ -182,6 +182,14 @@ class ProxySettings(BaseSettings):
     # the broker via ``POLICY_WEBHOOK_HMAC_SECRET`` to enable.
     pdp_webhook_hmac_secret: str = ""
 
+    # ADR-029 Phase C, tool-level PDP gate. When true, exposes the
+    # POST /v1/policy/tool-call endpoint that the Connector ambassador
+    # calls before executing each MCP tool the model emits in a chat
+    # completion. Default false so existing deployments keep working
+    # untouched until they explicitly enable the gate. Phase D wires
+    # the cross-org federation for tool-call decisions.
+    tool_pdp_enabled: bool = False
+
     # ADR-013 layer 2 — global Mastio rate limit. Token bucket shared
     # across every request (not per-agent), so coordinated compromise
     # across many stolen credentials cannot outrun the aggregate cap.

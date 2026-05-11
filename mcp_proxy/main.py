@@ -1008,6 +1008,119 @@ async def pdp_policy(request: Request):
     return JSONResponse(resp)
 
 
+@app.post("/v1/policy/tool-call", tags=["pdp"])
+async def policy_tool_call(request: Request):
+    """ADR-029 Phase C tool-level PDP gate.
+
+    The Connector ambassador calls this endpoint right before executing
+    an MCP tool that the model emitted during a chat completion turn.
+    The endpoint reads the same ``policy_rules`` config that
+    ``/pdp/policy`` uses, looks at the new ``tool_rules`` subtree
+    introduced by ADR-029, and returns allow|deny plus optional
+    scope/rate_limit/obligations.
+
+    Feature flag: ``MCP_PROXY_TOOL_PDP_ENABLED``. Default false; when
+    false the endpoint returns 404 so a misconfigured Connector falls
+    back to its legacy tool-dispatch path with no policy gate. Once
+    operators enable the flag and write ``policy_rules.tool_rules``,
+    the endpoint flips to explicit-allow semantics: a tool that is not
+    listed in tool_rules is denied.
+
+    Every call writes a hash-chained ``policy.tool_call`` audit row,
+    allow and deny alike, so attempts to invoke unauthorised tools
+    stay traceable.
+    """
+    import hashlib
+    import hmac
+    import json as _json
+    from fastapi import HTTPException
+    from mcp_proxy.config import get_settings as _get_settings_runtime
+    from mcp_proxy.db import log_audit
+    from mcp_proxy.policy.tool_call import evaluate_tool_call_policy
+
+    # Read settings at request time, not at module import. The endpoint
+    # is feature-flagged and tests / live reconfig must be able to flip
+    # the flag without restarting the worker.
+    _runtime_settings = _get_settings_runtime()
+    if not _runtime_settings.tool_pdp_enabled:
+        # 404 keeps existing Connector versions on the legacy path
+        # without the noise of a 403 in their logs.
+        raise HTTPException(status_code=404, detail="tool-level PDP disabled")
+
+    raw_body = await request.body()
+    expected_secret = _runtime_settings.pdp_webhook_hmac_secret
+    if expected_secret:
+        provided = request.headers.get("x-atn-signature", "")
+        expected = hmac.new(
+            expected_secret.encode(), raw_body, hashlib.sha256,
+        ).hexdigest()
+        if not provided or not hmac.compare_digest(provided, expected):
+            _log.warning("/v1/policy/tool-call rejected: bad or missing X-ATN-Signature")
+            raise HTTPException(status_code=401, detail="invalid signature")
+
+    try:
+        body = _json.loads(raw_body) if raw_body else {}
+    except _json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="invalid JSON")
+
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+    principal = body.get("principal") if isinstance(body.get("principal"), dict) else {}
+    invocation = body.get("invocation") if isinstance(body.get("invocation"), dict) else {}
+
+    decision = await evaluate_tool_call_policy(
+        principal_id=str(principal.get("id", "")),
+        principal_type=str(principal.get("type", "agent")),
+        model=body.get("model") if isinstance(body.get("model"), dict) else None,
+        target=body.get("target") if isinstance(body.get("target"), dict) else None,
+        invocation=invocation or None,
+        context=body.get("context") if isinstance(body.get("context"), dict) else None,
+    )
+
+    # Hash-chained audit row, allow and deny alike (forensics needs both).
+    audit_details: dict = {
+        "principal_type": principal.get("type"),
+        "tool_name": invocation.get("tool_name"),
+        "mcp_server_id": invocation.get("mcp_server_id"),
+        "reason": decision.reason,
+    }
+    if isinstance(body.get("model"), dict):
+        audit_details["model"] = body["model"].get("id")
+    if isinstance(body.get("target"), dict):
+        audit_details["target"] = body["target"].get("id")
+    if isinstance(body.get("context"), dict):
+        audit_details["session_id"] = body["context"].get("session_id")
+
+    await log_audit(
+        agent_id=str(principal.get("id", "?")),
+        action="policy.tool_call",
+        status="allow" if decision.allowed else "deny",
+        tool_name=invocation.get("tool_name"),
+        details=audit_details,
+    )
+
+    _log.info(
+        "PDP tool-call %s: principal=%s tool=%s reason=%s",
+        "ALLOW" if decision.allowed else "DENY",
+        principal.get("id"),
+        invocation.get("tool_name"),
+        decision.reason,
+    )
+
+    resp: dict = {
+        "decision": "allow" if decision.allowed else "deny",
+        "reason": decision.reason,
+    }
+    if decision.scope:
+        resp["scope"] = decision.scope
+    if decision.rate_limit:
+        resp["rate_limit"] = decision.rate_limit
+    if decision.obligations:
+        resp["obligations"] = decision.obligations
+    return JSONResponse(resp)
+
+
 @app.get("/pdp/health", tags=["pdp"])
 async def pdp_health():
     """PDP health check."""
