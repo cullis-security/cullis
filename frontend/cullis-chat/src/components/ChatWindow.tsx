@@ -7,7 +7,7 @@ import { MessageInput } from './MessageInput';
  * shared via context, so AuditPanel can mirror selection / scroll-to.
  */
 export function ChatWindow() {
-  const { messages, status, error, send, draft, setDraft, consumeDraft, sessionReady } = useChat();
+  const { messages, status, error, send, cancel, draft, setDraft, consumeDraft, sessionReady } = useChat();
 
   return (
     <div className="chat-shell">
@@ -26,6 +26,7 @@ export function ChatWindow() {
 
       <MessageInput
         onSend={send}
+        onCancel={cancel}
         disabled={!sessionReady}
         isSending={status === 'sending'}
         draft={draft}

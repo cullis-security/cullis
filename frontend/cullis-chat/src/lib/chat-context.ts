@@ -17,6 +17,13 @@ export interface ChatContextValue {
   selectedMessageId: string | null;
   selectMessage: (id: string | null) => void;
   send: (text: string) => void;
+  /** Abort the in-flight streaming turn (if any). Partial content stays.
+   *  Idempotent: a no-op when status is 'idle'. */
+  cancel: () => void;
+  /** Re-issue the last user turn. Drops any inline error / cancelled flag
+   *  from the prior assistant message and starts a fresh streaming turn
+   *  with the same conversation history up to that point. */
+  retry: (assistantMessageId: string) => void;
   /** Bumps a draft into the input box (hint clicks). */
   draft?: string;
   consumeDraft: () => void;

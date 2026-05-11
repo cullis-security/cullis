@@ -34,6 +34,11 @@ export interface ChatMessage {
   pending?: boolean;
   /** Tool calls observed during this turn, in arrival order. */
   toolCalls?: ToolCallEvent[];
+  /** User clicked Stop while this assistant turn was streaming. */
+  cancelled?: boolean;
+  /** Non-fatal failure during streaming. Surfaced inline next to the partial
+   *  content with a Retry button. Clears on retry. */
+  error?: string;
 }
 
 export interface ToolCall {
