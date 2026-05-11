@@ -8,8 +8,22 @@ import httpx
 
 from app.policy.webhook import WebhookDecision
 
-# Patch validate_opa_url to skip DNS resolution in tests (OPA hostname is fake)
+# Patch DNS resolution in tests (OPA hostname is fake).
+# Wave B D3 (audit 2026-05-11) — the OPA adapter now uses
+# _validate_and_resolve_webhook_url (from app.policy.webhook) to
+# pre-resolve the OPA host AND _PinnedDNSBackend to dial the pinned
+# IP. Both fail without network in the test runner; the helpers below
+# stub them so the existing assertions on decision behaviour stay
+# valid without spinning up DNS.
 _noop_validate = patch("app.policy.opa.validate_opa_url", return_value=None)
+_noop_resolve = patch(
+    "app.policy.opa._validate_and_resolve_webhook_url",
+    return_value="127.0.0.1",
+)
+_noop_pinned_backend = patch(
+    "app.policy.opa._PinnedDNSBackend",
+    new=lambda *args, **kwargs: None,
+)
 
 
 def _opa_response(result_data, status_code=200):
@@ -25,7 +39,7 @@ async def test_opa_allow(client):
     """OPA returning allow=true produces an allow decision."""
     from app.policy.opa import evaluate_session_via_opa
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=_opa_response({"allow": True, "reason": "policy matched"}))):
         decision = await evaluate_session_via_opa(
             opa_url="http://opa:8181",
@@ -42,7 +56,7 @@ async def test_opa_deny(client):
     """OPA returning allow=false produces a deny decision."""
     from app.policy.opa import evaluate_session_via_opa
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=_opa_response({"allow": False, "reason": "blocked org"}))):
         decision = await evaluate_session_via_opa(
             opa_url="http://opa:8181",
@@ -59,7 +73,7 @@ async def test_opa_boolean_result(client):
     """OPA returning a bare boolean (not dict) is handled."""
     from app.policy.opa import evaluate_session_via_opa
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=_opa_response(True))):
         decision = await evaluate_session_via_opa(
             opa_url="http://opa:8181",
@@ -75,7 +89,7 @@ async def test_opa_timeout(client):
     """OPA timeout produces a deny decision (default-deny)."""
     from app.policy.opa import evaluate_session_via_opa
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", new=AsyncMock(side_effect=httpx.TimeoutException("timed out"))):
         decision = await evaluate_session_via_opa(
             opa_url="http://opa:8181",
@@ -92,7 +106,7 @@ async def test_opa_http_error(client):
     """OPA returning non-200 HTTP produces a deny decision."""
     from app.policy.opa import evaluate_session_via_opa
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", new=AsyncMock(return_value=_opa_response(None, status_code=500))):
         decision = await evaluate_session_via_opa(
             opa_url="http://opa:8181",
@@ -116,7 +130,7 @@ async def test_opa_sends_correct_input(client):
         captured["body"] = kwargs.get("json", {})
         return _opa_response({"allow": True})
 
-    with _noop_validate, \
+    with _noop_validate, _noop_resolve, _noop_pinned_backend, \
          patch.object(httpx.AsyncClient, "post", capture_post):
         await evaluate_session_via_opa(
             opa_url="http://opa:8181",

@@ -18,6 +18,7 @@ import socket
 import time
 from urllib.parse import urlparse
 
+import httpcore
 import httpx
 
 from app.policy.webhook import (
@@ -25,6 +26,8 @@ from app.policy.webhook import (
     _parse_obligations,
     _parse_rate_limit,
     _parse_scope,
+    _PinnedDNSBackend,
+    _validate_and_resolve_webhook_url,
 )
 from app.telemetry import tracer
 from app.telemetry_metrics import PDP_WEBHOOK_LATENCY_HISTOGRAM
@@ -112,24 +115,42 @@ async def evaluate_session_via_opa(
 
     input_doc = {"input": input_payload}
 
+    # Wave B D3 (audit 2026-05-11) — pre-resolve + DNS-pin the OPA host
+    # BEFORE the request fires. Pre-fix the post-request validation in
+    # this block was load-bearing in name only: by the time
+    # ``validate_opa_url`` ran again, the body had already gone over
+    # the wire to whichever IP the resolver returned. The PDP webhook
+    # path solved this with ``_PinnedDNSBackend`` (pre-validate, then
+    # use a backend that resolves the hostname to the pinned IP at
+    # the socket level while httpx still uses the hostname for SNI +
+    # certificate validation). Reuse the same pattern here.
+    parsed = urlparse(opa_url)
+    try:
+        pinned_ip = _validate_and_resolve_webhook_url(opa_url)
+    except ValueError as exc:
+        _log.error("OPA URL pre-resolve failed: %s — default-deny", exc)
+        return WebhookDecision(
+            allowed=False, reason=str(exc), org_id="opa",
+        )
+    pinned_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+
     t0 = time.monotonic()
     try:
         with tracer.start_as_current_span("pdp.opa_call") as span:
             span.set_attribute("pdp.backend", "opa")
             span.set_attribute("pdp.initiator_org", initiator_org_id)
             span.set_attribute("pdp.target_org", target_org_id)
+            span.set_attribute("pdp.opa_pinned_ip", pinned_ip)
 
-            async with httpx.AsyncClient(timeout=_OPA_TIMEOUT) as client:
+            pinned_backend = _PinnedDNSBackend(pinned_ip, pinned_port)
+            pool = httpcore.AsyncConnectionPool(network_backend=pinned_backend)
+            transport = httpx.AsyncHTTPTransport()
+            transport._pool = pool
+
+            async with httpx.AsyncClient(
+                timeout=_OPA_TIMEOUT, transport=transport,
+            ) as client:
                 resp = await client.post(url, json=input_doc)
-                # Post-request DNS rebinding check: verify resolved IP
-                if resp.stream and hasattr(resp.stream, '_connection'):
-                    pass  # httpx doesn't expose resolved IP easily
-                # Re-validate URL on each call to catch DNS rebinding
-                try:
-                    validate_opa_url(opa_url)
-                except ValueError as vexc:
-                    _log.warning("OPA DNS rebinding detected: %s", vexc)
-                    return WebhookDecision(allowed=False, reason=f"OPA DNS rebinding: {vexc}", org_id="opa")
 
             elapsed_ms = (time.monotonic() - t0) * 1000
             PDP_WEBHOOK_LATENCY_HISTOGRAM.record(elapsed_ms, {"org_id": "opa"})

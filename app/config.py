@@ -153,6 +153,17 @@ class Settings(BaseSettings):
     mtls_binding: str = "off"
     mtls_client_cert_header: str = "X-SSL-Client-Cert"
 
+    # Wave B C2 (audit 2026-05-11) — comma-separated CIDR(s) for the
+    # reverse proxies that may forward the ``X-Cullis-Mastio-Cert``
+    # header on the federation mTLS path
+    # (``app/auth/mastio_mtls._extract_peer_cert``). Empty allowlist
+    # accepts any peer for back-compat with deploys that haven't
+    # migrated their config yet, but logs a critical-style warning at
+    # every header consumption. Set to e.g. ``172.18.0.0/16`` (compose
+    # broker_net) or your nginx LoadBalancer subnet to close the
+    # header-spoof window.
+    mastio_mtls_trusted_proxy_cidrs: str = ""
+
     # KMS backend — "local" (filesystem) or "vault" (HashiCorp Vault KV v2)
     kms_backend: str = "vault"
     vault_addr: str = ""

@@ -76,6 +76,24 @@ def extract_mastio_cert(request: Request) -> x509.Certificate | None:
     # Path 2: nginx pass-through header (Phase 2 wiring).
     header_val = request.headers.get(PASS_THROUGH_HEADER)
     if header_val:
+        # Wave B C2 (audit 2026-05-11) — gate the header path on a
+        # trusted-proxy CIDR allowlist. Pre-fix any caller that could
+        # reach Court directly (sandbox, dev, misconfigured deploy
+        # publishing uvicorn 8000) could spoof this header with a
+        # cert chosen from any org's mastio_pubkey row, then the
+        # downstream pin check (SubjectPublicKeyInfo byte-equal) would
+        # accept a self-signed cert carrying that SPKI even without
+        # the real private key. Only honour the header when the TCP
+        # peer is in the configured trusted-proxy allowlist; otherwise
+        # ignore as if the header were never sent.
+        if not _peer_is_trusted_proxy(request):
+            _log.warning(
+                "mastio mTLS: %s header from non-trusted-proxy peer %s "
+                "ignored (not in MASTIO_MTLS_TRUSTED_PROXY_CIDRS)",
+                PASS_THROUGH_HEADER,
+                request.client.host if request.client else "<unknown>",
+            )
+            return None
         # nginx ssl_client_escaped_cert → URL-encoded PEM with newlines as %0A
         pem = unquote(header_val).strip()
         if pem.startswith("-----BEGIN CERTIFICATE-----"):
@@ -94,6 +112,48 @@ def extract_mastio_cert(request: Request) -> x509.Certificate | None:
             return None
 
     return None
+
+
+def _peer_is_trusted_proxy(request: Request) -> bool:
+    """Wave B C2 — True when ``request.client.host`` falls inside any
+    CIDR in ``settings.mastio_mtls_trusted_proxy_cidrs``.
+
+    Empty list (default) keeps the legacy behaviour of accepting any
+    peer for back-compat — operators who configure the header path in
+    production MUST also set the allowlist or the header is rejected.
+    Returns False on parse error (fail-closed)."""
+    import ipaddress
+    from app.config import get_settings
+    settings = get_settings()
+    cidrs = getattr(settings, "mastio_mtls_trusted_proxy_cidrs", "") or ""
+    cidrs = [c.strip() for c in cidrs.split(",") if c.strip()]
+    if not cidrs:
+        # Empty allowlist: behave as before (accept), but warn. The fix
+        # is to set the allowlist on operator side; we don't break
+        # existing deploys that haven't migrated their config yet.
+        _log.warning(
+            "mastio mTLS: %s header accepted because "
+            "MASTIO_MTLS_TRUSTED_PROXY_CIDRS is empty — set it to "
+            "your reverse-proxy CIDR(s) to close the spoofing window",
+            PASS_THROUGH_HEADER,
+        )
+        return True
+    if request.client is None:
+        return False
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+    except (ValueError, TypeError):
+        return False
+    for c in cidrs:
+        try:
+            if peer in ipaddress.ip_network(c, strict=False):
+                return True
+        except ValueError:
+            _log.warning(
+                "mastio mTLS: malformed trusted_proxy_cidrs entry %r — skipped",
+                c,
+            )
+    return False
 
 
 def verify_mastio_cert_pubkey(
