@@ -56,7 +56,15 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from cryptography.fernet import Fernet, InvalidToken
+
+# NOTE: ``cryptography`` is imported lazily inside ``_migrate_rows`` (and
+# only on the encrypt/decrypt branch, after the empty-rows early-exit) so
+# the module file parses in environments that have alembic but not the
+# full proxy runtime deps. Specifically ``demo_network/proxy-init`` is a
+# slim seed container that runs ``command.upgrade(cfg, "head")`` against
+# a fresh SQLite to pre-populate ``proxy_config``: there are zero rows in
+# ``ai_provider_credentials`` to migrate there, and we don't want to add
+# ``cryptography`` to its requirements just so this file can be parsed.
 
 
 revision: str = "0032_ai_creds_at_rest_enc"
@@ -189,6 +197,11 @@ def _migrate_rows(direction: str) -> None:
     ).fetchall()
     if not rows:
         return
+
+    # Lazy import — see module-level note. demo_network/proxy-init parses
+    # this file but never reaches this branch (its DB has no rows), so it
+    # must not need ``cryptography`` installed.
+    from cryptography.fernet import Fernet, InvalidToken
 
     key = _resolve_master_key(bind)
     fernet = Fernet(key)

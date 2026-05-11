@@ -399,3 +399,51 @@ def test_migration_0032_downgrade_reverses_envelope(tmp_path):
             "SELECT creds_json FROM ai_provider_credentials WHERE provider = 'wrapped'",
         ).fetchone()[0]
     assert stored == original_payload
+
+
+def test_migration_0032_parses_without_cryptography_at_import_time(tmp_path):
+    """``demo_network/proxy-init`` is a slim seed container without the
+    ``cryptography`` package. It still calls ``command.upgrade(cfg, "head")``
+    against a fresh DB to pre-populate ``proxy_config``. The migration file
+    therefore MUST parse and load even when ``cryptography`` is unavailable
+    — the actual Fernet import lives behind the ``if not rows: return``
+    guard and only fires when there is data to migrate.
+
+    Regression for the demo_network smoke fail observed on the first
+    Bug #8 fix attempt (PR #628): moving the import to the top of the file
+    broke ``proxy-a-init`` / ``proxy-b-init`` with
+    ``ModuleNotFoundError: No module named 'cryptography'``.
+    """
+    import sys
+    import importlib
+
+    # Drop cached module + simulate cryptography being unavailable.
+    sys.modules.pop(
+        "mcp_proxy.alembic.versions.0032_ai_creds_at_rest_encrypt", None,
+    )
+    real_crypto = sys.modules.get("cryptography")
+    real_fernet = sys.modules.get("cryptography.fernet")
+    sys.modules["cryptography"] = None  # type: ignore[assignment]
+    sys.modules["cryptography.fernet"] = None  # type: ignore[assignment]
+    try:
+        # If the migration imports cryptography at module scope, this raises
+        # ModuleNotFoundError. The fix lazy-imports inside _migrate_rows.
+        spec = importlib.util.spec_from_file_location(
+            "test_mig_0032",
+            "mcp_proxy/alembic/versions/0032_ai_creds_at_rest_encrypt.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # Sanity: upgrade()/downgrade() functions exist; we don't call
+        # them (that would need a real alembic context + DB).
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+    finally:
+        if real_crypto is not None:
+            sys.modules["cryptography"] = real_crypto
+        else:
+            sys.modules.pop("cryptography", None)
+        if real_fernet is not None:
+            sys.modules["cryptography.fernet"] = real_fernet
+        else:
+            sys.modules.pop("cryptography.fernet", None)
