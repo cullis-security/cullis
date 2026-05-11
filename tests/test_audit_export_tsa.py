@@ -172,21 +172,46 @@ async def test_cli_cross_verify_detects_content_divergence(client, tmp_path):
             # rather than chain stage). We re-canonicalize in the same
             # way the broker does.
             import hashlib
-            base = "|".join([
-                str(ln["id"]),
-                ln["timestamp"] or "",
-                ln["event_type"],
-                ln.get("agent_id") or "",
-                ln.get("session_id") or "",
-                ln.get("org_id") or "",
-                ln["result"],
-                ln.get("details") or "",
-                ln.get("previous_hash") or "genesis",
-            ])
-            if ln.get("chain_seq") is not None:
-                canon = f"{base}|seq={ln['chain_seq']}|peer={ln.get('peer_org_id') or ''}"
+            # Wave B PR5 (CRIT-3 Court) — recompute the hash with
+            # the same canonical the production code now uses. Rows
+            # written by ``log_event`` carry ``hash_format='v2'``;
+            # legacy rows (NULL/'v1') keep the entry_id-bound form.
+            fmt = (ln.get("hash_format") or "v1").lower()
+            chain_seq = ln.get("chain_seq")
+            if fmt == "v2":
+                assert chain_seq is not None, "v2 row without chain_seq"
+                canon = "|".join([
+                    "v2",
+                    ln["timestamp"] or "",
+                    ln["event_type"],
+                    ln.get("agent_id") or "",
+                    ln.get("session_id") or "",
+                    ln.get("org_id") or "",
+                    ln["result"],
+                    ln.get("details") or "",
+                    ln.get("previous_hash") or "genesis",
+                    f"seq={chain_seq}",
+                    f"peer={ln.get('peer_org_id') or ''}",
+                ])
             else:
-                canon = base
+                base = "|".join([
+                    str(ln["id"]),
+                    ln["timestamp"] or "",
+                    ln["event_type"],
+                    ln.get("agent_id") or "",
+                    ln.get("session_id") or "",
+                    ln.get("org_id") or "",
+                    ln["result"],
+                    ln.get("details") or "",
+                    ln.get("previous_hash") or "genesis",
+                ])
+                if chain_seq is not None:
+                    canon = f"{base}|seq={chain_seq}|peer={ln.get('peer_org_id') or ''}"
+                else:
+                    canon = base
+            pt = ln.get("principal_type")
+            if pt and pt != "agent":
+                canon = f"{canon}|pt={pt}"
             ln["entry_hash"] = hashlib.sha256(canon.encode()).hexdigest()
             break
 

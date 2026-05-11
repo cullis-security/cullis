@@ -91,6 +91,13 @@ class AuditLog(Base):
     principal_type = Column(
         String(16), nullable=False, server_default="agent", index=True,
     )
+    # Wave B PR5 / CRIT-3 Court-side mirror — discriminator for the
+    # canonical-form version. NULL or 'v1' = legacy entry_id-bound
+    # canonical (back-compat with rows from before the
+    # audit_log_append_only_trigger). 'v2' = new atomic-insert form
+    # that omits entry_id and starts with the literal "v2|", set by
+    # the refactored ``_append_row``.
+    hash_format = Column(String(8), nullable=True, index=False)
 
 
 class AuditTsaAnchor(Base):
@@ -172,6 +179,52 @@ def compute_entry_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Wave B PR5 (audit 2026-05-11 CRIT-3 Court-side mirror) — v2 hash
+# format omitting the auto-incremented entry_id. Same rationale as
+# the Mastio twin in mcp_proxy/local/audit_chain.py: removing
+# entry_id lets the row be inserted atomically with its final
+# entry_hash already computed, so the BEFORE UPDATE/DELETE trigger
+# installed by migration ``audit_log_append_only_trigger`` (Court
+# alembic) doesn't reject the back-fill UPDATE that pre-fix wrote
+# entry_hash after flush().
+#
+# (org_id, chain_seq) is UNIQUE since the per-org migration, so it
+# already uniquely identifies the row pre-INSERT. ``"v2|"`` prefix
+# in the canonical string makes a v1↔v2 collision cryptographically
+# impossible.
+
+HASH_FORMAT_V1 = "v1"
+HASH_FORMAT_V2 = "v2"
+
+
+def compute_entry_hash_v2(
+    *,
+    timestamp: datetime,
+    event_type: str,
+    agent_id: str | None,
+    session_id: str | None,
+    org_id: str | None,
+    result: str,
+    details: str | None,
+    previous_hash: str | None,
+    chain_seq: int,
+    peer_org_id: str | None = None,
+    principal_type: str | None = None,
+) -> str:
+    """Court-side v2 canonical form (no entry_id). Mirrors the Mastio
+    helper byte-for-byte so an export from one side replays cleanly
+    on the other."""
+    canonical = (
+        f"v2|{timestamp.isoformat()}|{event_type}|"
+        f"{agent_id or ''}|{session_id or ''}|{org_id or ''}|"
+        f"{result}|{details or ''}|{previous_hash or 'genesis'}|"
+        f"seq={chain_seq}|peer={peer_org_id or ''}"
+    )
+    if principal_type and principal_type != "agent":
+        canonical = f"{canonical}|pt={principal_type}"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 async def _last_per_org(db: AsyncSession, org_id: str) -> tuple[str | None, int]:
     """Return (last_entry_hash, last_chain_seq) for the given org.
 
@@ -227,6 +280,30 @@ async def _append_row(
     previous_hash, last_seq = await _last_per_org(db, org_id)
     new_seq = last_seq + 1
 
+    # Wave B PR5 (audit 2026-05-11) — compute the v2 hash BEFORE the
+    # INSERT. Pre-fix the row was inserted, ``flush()``'d to get the
+    # auto-assigned ``id``, then UPDATE'd to back-fill the hash. The
+    # BEFORE UPDATE/DELETE trigger installed on ``audit_log`` rejects
+    # that back-fill UPDATE as a tamper attempt (which is exactly the
+    # point — the application proving the schema accepts UPDATE on the
+    # 'append-only' table was the audit finding). v2 omits entry_id
+    # (uses (org_id, chain_seq) which is already UNIQUE + known
+    # pre-INSERT). Mastio twin: ``mcp_proxy.local.audit_chain``.
+    ts = datetime.now(timezone.utc)
+    entry_hash = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=event_type,
+        agent_id=agent_id,
+        session_id=session_id,
+        org_id=org_id,
+        result=result,
+        details=details_json,
+        previous_hash=previous_hash,
+        chain_seq=new_seq,
+        peer_org_id=peer_org_id,
+        principal_type=principal_type,
+    )
+
     entry = AuditLog(
         event_type=event_type,
         agent_id=agent_id,
@@ -239,21 +316,13 @@ async def _append_row(
         peer_org_id=peer_org_id,
         peer_row_hash=peer_row_hash,
         principal_type=principal_type,
+        timestamp=ts,
+        entry_hash=entry_hash,
+        hash_format=HASH_FORMAT_V2,
     )
     db.add(entry)
-    await db.flush()  # assigns auto-incremented id
+    await db.flush()  # assigns auto-incremented id (informational only)
 
-    ts = entry.timestamp
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    entry.entry_hash = compute_entry_hash(
-        entry.id, ts, event_type,
-        agent_id, session_id, org_id, result,
-        details_json, previous_hash,
-        chain_seq=new_seq,
-        peer_org_id=peer_org_id,
-        principal_type=principal_type,
-    )
     return entry
 
 
@@ -399,18 +468,20 @@ async def log_event_cross_org(
                     peer_row_hash=row_first.entry_hash,
                     principal_type=principal_type,
                 )
-                # Back-fill peer_row_hash on the first row now that the
-                # second row's hash exists. This closes the
-                # cross-reference ring. The entry_hash of row_first was
-                # computed with peer_row_hash=None, so we must recompute
-                # after setting the link — otherwise the stored
-                # entry_hash would mismatch on verify. To preserve
-                # immutability of entry_hash post-commit, we include
-                # peer_row_hash in the hash computation only via
-                # peer_org_id (not the hash itself); the peer_row_hash
-                # column is thus informational/reference data, not part
-                # of the signed content.
-                row_first.peer_row_hash = row_second.entry_hash
+                # Wave B PR5 / CRIT-3 (audit 2026-05-11) — pre-fix this
+                # block back-filled ``row_first.peer_row_hash`` after
+                # row_second was inserted, which produced a second
+                # UPDATE on the audit_log row. The new BEFORE
+                # UPDATE/DELETE trigger rejects that as tamper. Since
+                # ``peer_row_hash`` is informational (not in the signed
+                # canonical hash — see compute_entry_hash docstring),
+                # we ALREADY embed enough cross-reference via row_second
+                # carrying ``peer_row_hash=row_first.entry_hash`` at
+                # INSERT time. Drop the back-fill on row_first; the
+                # cross-org linkage stays one-way and verifiable through
+                # row_second alone. T3-F7 (peer_row_hash binding) is a
+                # separate MEDIUM follow-up that would re-add a forward
+                # link via a v3 hash format if needed.
                 await db.commit()
                 break
             except IntegrityError as exc:
@@ -527,14 +598,34 @@ async def verify_chain(
             ts = entry.timestamp
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            expected_hash = compute_entry_hash(
-                entry.id, ts, entry.event_type,
-                entry.agent_id, entry.session_id, entry.org_id,
-                entry.result, entry.details, entry.previous_hash,
-                chain_seq=entry.chain_seq,
-                peer_org_id=entry.peer_org_id,
-                principal_type=entry.principal_type,
-            )
+            # Wave B PR5 — dispatch on hash_format. NULL/'v1' rows
+            # use the legacy entry_id-bound canonical (preserves
+            # back-compat for rows written before this PR). 'v2' rows
+            # use the entry_id-free canonical (compute_entry_hash_v2).
+            row_format = entry.hash_format or HASH_FORMAT_V1
+            if row_format == HASH_FORMAT_V2:
+                expected_hash = compute_entry_hash_v2(
+                    timestamp=ts,
+                    event_type=entry.event_type,
+                    agent_id=entry.agent_id,
+                    session_id=entry.session_id,
+                    org_id=entry.org_id,
+                    result=entry.result,
+                    details=entry.details,
+                    previous_hash=entry.previous_hash,
+                    chain_seq=entry.chain_seq,
+                    peer_org_id=entry.peer_org_id,
+                    principal_type=entry.principal_type,
+                )
+            else:
+                expected_hash = compute_entry_hash(
+                    entry.id, ts, entry.event_type,
+                    entry.agent_id, entry.session_id, entry.org_id,
+                    entry.result, entry.details, entry.previous_hash,
+                    chain_seq=entry.chain_seq,
+                    peer_org_id=entry.peer_org_id,
+                    principal_type=entry.principal_type,
+                )
             if entry.entry_hash != expected_hash:
                 AUDIT_CHAIN_VERIFY_FAILED_COUNTER.add(
                     1, {"reason": "entry_hash_mismatch", "scope": "per_org"}

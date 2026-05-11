@@ -17,6 +17,27 @@ from collections import defaultdict
 
 
 def canonical(entry: dict, previous_hash: str | None) -> str:
+    """Canonical hash input. Dispatches on ``hash_format``:
+      - 'v2' (Wave B PR5 / CRIT-3) — atomic-insert form. Mirrors
+        ``app.db.audit.compute_entry_hash_v2`` byte-for-byte:
+        always carries seq= and peer= suffixes (v2 rows always have
+        chain_seq), optional |pt= suffix when principal_type is set
+        and not "agent".
+      - NULL or 'v1' — legacy form with entry_id, no prefix.
+    """
+    hf = entry.get("hash_format")
+    if hf == "v2":
+        canon = (
+            f"v2|{entry['timestamp'] or ''}|{entry['event_type']}|"
+            f"{entry.get('agent_id') or ''}|{entry.get('session_id') or ''}|"
+            f"{entry.get('org_id') or ''}|{entry['result']}|"
+            f"{entry.get('details') or ''}|{previous_hash or 'genesis'}|"
+            f"seq={entry.get('chain_seq')}|peer={entry.get('peer_org_id') or ''}"
+        )
+        pt = entry.get("principal_type")
+        if pt and pt != "agent":
+            canon = f"{canon}|pt={pt}"
+        return canon
     base = "|".join([
         str(entry["id"]),
         entry["timestamp"] or "",
@@ -40,7 +61,14 @@ with open("/in/audit.ndjson") as f:
         line = line.strip()
         if not line:
             continue
-        entries.append(json.loads(line))
+        obj = json.loads(line)
+        # Skip TSA anchor lines (kind="anchor"); they're append-only
+        # metadata for the offline verifier, not part of the chain
+        # itself. Default kind="entry" for back-compat with bundles
+        # that pre-date the kind tag.
+        if obj.get("kind", "entry") != "entry":
+            continue
+        entries.append(obj)
 
 # ── Legacy global chain (chain_seq is None) ───────────────────────
 prev = None

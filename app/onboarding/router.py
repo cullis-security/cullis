@@ -1117,6 +1117,11 @@ async def export_audit_logs(
                 "chain_seq": e.chain_seq,
                 "peer_org_id": e.peer_org_id,
                 "peer_row_hash": e.peer_row_hash,
+                # Wave B PR5 (CRIT-3 Court) — needed by the CLI
+                # verifier so it dispatches to the right canonical
+                # form (v1 entry_id-bound vs v2 atomic-insert).
+                "principal_type": e.principal_type,
+                "hash_format": e.hash_format,
             }) + "\n"
         for a in anchors:
             yield json_mod.dumps({
