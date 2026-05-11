@@ -185,7 +185,7 @@ services:
     # + bundled JS/CSS. /api/session/* and /v1/* proxying to the
     # Connector happens in the outer nginx layer below; this inner
     # container only serves static assets.
-    image: ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION:-0.2.0}
+    image: ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION:-0.3.0}
     expose:
       - "8080"
     depends_on:
