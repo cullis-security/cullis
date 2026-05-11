@@ -1092,6 +1092,13 @@ app.include_router(admin_enroll_router)
 from mcp_proxy.admin.ai_providers import router as admin_ai_providers_router
 app.include_router(admin_ai_providers_router)
 
+# ADR-027 Phase 1 — culk_ user API tokens for OpenAI-compat Bearer
+# auth (LibreChat / Cursor / Cherry Studio / curl). Admin mints
+# tokens via X-Admin-Secret; the auth resolver in
+# ``mcp_proxy/auth/api_token.py`` validates them on every /v1/* call.
+from mcp_proxy.admin.api_tokens import router as admin_api_tokens_router
+app.include_router(admin_api_tokens_router)
+
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
 # Must precede the reverse-proxy catch-all: /v1/federation/agents/{id}/
 # public-key would otherwise fall into the `/v1/federation/*` forward
