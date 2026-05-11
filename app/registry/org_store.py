@@ -62,6 +62,14 @@ class OrganizationRecord(Base):
     require_mastio_mtls = Column(
         Boolean, nullable=False, default=False, server_default="0",
     )
+    # ADR-029 Phase G — URL where this org's Mastio answers cross-org
+    # tool-call PDP federation (POST /v1/policy/tool-call). The originator
+    # Mastio resolves this through Court (GET /v1/federation/orgs/{id}/
+    # mastio-url) so the operator does not have to wire it manually into
+    # every peer's MCP_PROXY_TOOL_PDP_FEDERATION_URLS env JSON. Nullable —
+    # orgs that have not published a URL fall through to the env-map
+    # fallback, then default-deny.
+    mastio_url = Column(String(512), nullable=True)
 
     def verify_secret(self, plain: str) -> bool:
         return bcrypt.checkpw(plain.encode(), self.secret_hash.encode())

@@ -1078,11 +1078,13 @@ async def policy_tool_call(request: Request):
         context=body.get("context") if isinstance(body.get("context"), dict) else None,
     )
 
-    # ADR-029 Phase D-2, cross-org federation. If the local decision is
-    # allow and the target lives in a different org, the originator must
-    # also clear the target org's PDP. Default-deny when no federation
-    # URL is configured for the target org so an admin cannot bypass the
-    # target by omission.
+    # ADR-029 Phase D-2 + Phase G, cross-org federation. If the local
+    # decision is allow and the target lives in a different org, the
+    # originator must also clear the target org's PDP. The URL is
+    # resolved via :class:`FederationCatalog` (env override first, then
+    # Court registry with TTL cache, then default-deny on miss) so a
+    # new peer joining the network does not require every other Mastio
+    # to redeploy with an updated env JSON map.
     federated_from_remote = False
     target_field = body.get("target") if isinstance(body.get("target"), dict) else {}
     target_org = (target_field or {}).get("org")
@@ -1098,9 +1100,24 @@ async def policy_tool_call(request: Request):
             call_remote_tool_call_policy,
             intersect_decisions,
         )
+        from mcp_proxy.policy.federation_catalog import FederationCatalog
 
-        fed_map = _runtime_settings.tool_pdp_federation_urls or {}
-        fed_url = fed_map.get(target_org)
+        catalog: FederationCatalog | None = getattr(
+            request.app.state, "federation_catalog", None,
+        )
+        if catalog is None:
+            # Lazy build on first cross-org call. The catalog is cheap
+            # to construct (no I/O until ``resolve``) so we avoid the
+            # startup-order coupling with broker_url initialisation.
+            catalog = FederationCatalog(
+                court_base_url=getattr(
+                    request.app.state, "reverse_proxy_broker_url", None,
+                ),
+                env_map=_runtime_settings.tool_pdp_federation_urls or {},
+            )
+            request.app.state.federation_catalog = catalog
+
+        fed_url = await catalog.resolve(target_org)
         if not fed_url:
             # Conservative default. The originator allowed locally, but
             # without a way to ask the target org we refuse the cross-org
@@ -1109,8 +1126,8 @@ async def policy_tool_call(request: Request):
                 allowed=False,
                 reason=(
                     f"cross-org target '{target_org}' has no federation URL "
-                    f"configured (MCP_PROXY_TOOL_PDP_FEDERATION_URLS); "
-                    f"default-deny"
+                    f"(env override missing AND Court registry has not "
+                    f"published one for this org); default-deny"
                 ),
             )
         else:

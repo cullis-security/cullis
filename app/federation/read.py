@@ -17,6 +17,7 @@ import logging
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.jwt import get_current_agent
@@ -27,6 +28,7 @@ from app.registry.binding_store import get_approved_binding
 from app.registry.models import (
     AgentListResponse, AgentPublicKeyResponse, AgentResponse,
 )
+from app.registry.org_store import get_org_by_id
 from app.registry.store import get_agent_by_id, list_agents, search_agents
 from app.spiffe import internal_id_to_spiffe
 
@@ -197,3 +199,45 @@ async def get_federated_agent(
 
     trust_domain = get_settings().trust_domain
     return _as_agent_response(agent, trust_domain)
+
+
+class MastioUrlResponse(BaseModel):
+    """ADR-029 Phase G payload for cross-org Mastio URL discovery."""
+    org_id: str
+    mastio_url: str
+
+
+@router.get(
+    "/orgs/{org_id}/mastio-url",
+    response_model=MastioUrlResponse,
+    responses={404: {"description": "Org unknown or no URL published"}},
+)
+async def get_org_mastio_url(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """ADR-029 Phase G — discover where a peer org's Mastio answers PDP
+    federation calls (``POST /v1/policy/tool-call``).
+
+    Unauthenticated, on purpose: this URL is operational metadata that
+    every federating Mastio needs to resolve before it can authenticate
+    a call to that peer. The same shape as ``/.well-known/jwks.json`` or
+    the A2A agent cards under ``/v1/a2a/agents/.../.well-known/agent.json``
+    — public infrastructure discovery, no secret material exposed.
+
+    Only orgs with status ``active`` AND a published ``mastio_url`` are
+    visible. Unknown orgs, pending/rejected orgs, and orgs that have not
+    set the URL collapse to a single 404 so the endpoint cannot be used
+    to enumerate the registry beyond what is already public.
+    """
+    org = await get_org_by_id(db, org_id)
+    if (
+        not org
+        or org.status != "active"
+        or not org.mastio_url
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="org unknown or no mastio_url published",
+        )
+    return MastioUrlResponse(org_id=org.org_id, mastio_url=org.mastio_url)

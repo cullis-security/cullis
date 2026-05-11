@@ -16,7 +16,7 @@ from typing import Any
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_types
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -579,6 +579,64 @@ async def patch_org_require_mastio_mtls(
     return {
         "org_id": org_id,
         "require_mastio_mtls": body.require_mastio_mtls,
+    }
+
+
+class MastioUrlPatchRequest(BaseModel):
+    """ADR-029 Phase G — set or clear the URL where this org's Mastio
+    answers cross-org tool-call PDP federation requests.
+    """
+    mastio_url: str | None = Field(default=None, max_length=512)
+
+    @field_validator("mastio_url")
+    @classmethod
+    def _normalise(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("mastio_url must be an http:// or https:// URL")
+        return v.rstrip("/")
+
+
+@admin_router.patch("/orgs/{org_id}/mastio-url",
+                    dependencies=[Depends(_require_admin)])
+async def patch_org_mastio_url(
+    org_id: str,
+    body: MastioUrlPatchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """ADR-029 Phase G — publish or clear the URL where this org's
+    Mastio answers cross-org tool-call PDP federation calls
+    (``POST /v1/policy/tool-call``).
+
+    The value is exposed unauthenticated through ``GET /v1/federation/
+    orgs/{org_id}/mastio-url`` so every peer Mastio discovers it at
+    PDP-evaluation time instead of being wired manually into each
+    peer's ``MCP_PROXY_TOOL_PDP_FEDERATION_URLS`` env JSON.
+
+    Body ``{mastio_url: null}`` clears the published value → callers
+    see 404 again and the federation catalog falls back to env-map +
+    default-deny.
+    """
+    org = await get_org_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail="Organization not found",
+        )
+
+    org.mastio_url = body.mastio_url
+    await db.commit()
+    await log_event(
+        db, "admin.mastio_url_patched", "ok",
+        org_id=org_id,
+        details={"cleared": body.mastio_url is None},
+    )
+    return {
+        "org_id": org_id,
+        "mastio_url": body.mastio_url,
     }
 
 
