@@ -90,7 +90,8 @@ async def test_decrypt_at_rest_raises_on_wrong_key(monkeypatch, fresh_db):
     treating ciphertext as plaintext would be a worse failure mode."""
     blob = await encrypt_at_rest('{"api_key":"x"}')
     # Rotate the key; clear the cache.
-    import base64, secrets
+    import base64
+    import secrets
     new_key = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
     monkeypatch.setenv("MCP_PROXY_SECRET_ENCRYPTION_KEY_B64", new_key)
     _reset_master_key_for_tests()
@@ -113,7 +114,8 @@ async def test_master_key_persisted_to_proxy_config(fresh_db):
 
 
 async def test_env_override_takes_precedence(monkeypatch, fresh_db):
-    import base64, secrets
+    import base64
+    import secrets
     raw = secrets.token_bytes(32)
     encoded = base64.urlsafe_b64encode(raw).decode()
     monkeypatch.setenv("MCP_PROXY_SECRET_ENCRYPTION_KEY_B64", encoded)
