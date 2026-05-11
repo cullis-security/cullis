@@ -162,12 +162,44 @@ backwards compatibility with deployments still on the legacy env name.
 {{- else if .Values.postgres.internal -}}
 {{- printf "postgresql+asyncpg://%s:%s@%s:%d/%s"
     .Values.postgres.username
-    .Values.postgres.password
+    (include "cullis-mastio.postgresPassword" .)
     (include "cullis-mastio.postgres.fullname" .)
     (int .Values.postgres.port)
     .Values.postgres.database -}}
 {{- else -}}
 {{- printf "sqlite+aiosqlite:///%s/mcp_proxy.db" .Values.persistence.mountPath -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Wave B F3 (audit 2026-05-11) — internal-Postgres credential resolver.
+
+Order of precedence:
+  1. ``.Values.postgres.password`` set explicitly → use it (operator
+     pinned the value, e.g. via Vault Helm secret store).
+  2. Otherwise ``lookup`` the existing ``<release>-postgres-secret``
+     in this namespace → reuse the persisted random password
+     (preserves the credential across ``helm upgrade``).
+  3. Cold-install fallback: ``randAlphaNum 32`` mints a fresh random,
+     and the same Secret is rendered with this value so step 2 wins
+     on subsequent upgrades.
+
+Pre-fix the chart shipped a deterministic literal default
+(``cullis-mastio-dev-password``) — every fresh install had the same
+world-known DB password. The lookup pattern is the standard Helm
+recipe for "auto-generate a random and persist it".
+*/}}
+{{- define "cullis-mastio.postgresPassword" -}}
+{{- if .Values.postgres.password -}}
+{{- .Values.postgres.password -}}
+{{- else -}}
+{{- $secretName := printf "%s-postgres-secret" (include "cullis-mastio.fullname" .) -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+{{- if and $existing $existing.data $existing.data.password -}}
+{{- $existing.data.password | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 32 -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

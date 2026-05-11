@@ -405,7 +405,12 @@ postgres:
   storageClassName: ""
   # -- Superuser credentials for the in-cluster Postgres.
   username: cullis
-  password: cullis-dev-password
+  # Wave B F3 (audit 2026-05-11) — empty default → ``randAlphaNum 32``
+  # via the ``cullis.postgresPassword`` helper, persisted in the
+  # ``<release>-postgres-secret`` Secret across upgrades. Pre-fix this
+  # was the deterministic literal ``cullis-dev-password``, giving
+  # every fresh install the same world-known DB password.
+  password: ""
   database: cullis
   # -- Port the in-cluster Postgres listens on.
   port: 5432

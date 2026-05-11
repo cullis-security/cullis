@@ -30,7 +30,7 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.postgres.username | quote }}
             - name: POSTGRES_PASSWORD
-              value: {{ .Values.postgres.password | quote }}
+              value: {{ include "cullis.postgresPassword" . | quote }}
             - name: POSTGRES_DB
               value: {{ .Values.postgres.database | quote }}
             - name: PGDATA

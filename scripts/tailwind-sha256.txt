@@ -1,0 +1,33 @@
+# Tailwind CLI SHA-256 checksums (Wave B F1 fix).
+#
+# Audit ref: imp/audits/2026-05-11-track-4-secrets-supply-chain.md H-02.
+#
+# Pre-fix the Dockerfiles + scripts/build_frontend.sh downloaded the
+# Tailwind binary over plain ``curl -sSLf`` with no integrity check.
+# A compromised GitHub release artefact, transparent-proxy MITM, or
+# typosquat domain takeover would yield arbitrary code execution at
+# image-build time (xz-utils CVE-2024-3094 supply-chain shape).
+#
+# Format: ``<sha256 hex>  <filename>``. ``sha256sum -c`` accepts this
+# directly, so the build can do:
+#
+#   grep " tailwindcss-${variant}$" scripts/tailwind-sha256.txt \
+#       | sha256sum -c
+#
+# When bumping ``TAILWIND_VERSION``, regenerate every line:
+#
+#   for v in linux-x64 linux-arm64 macos-x64 macos-arm64; do
+#       curl -sSLf "https://github.com/tailwindlabs/tailwindcss/releases/download/${VERSION}/tailwindcss-${v}" \
+#           -o /tmp/tailwindcss-${v}
+#       sha256sum /tmp/tailwindcss-${v} | awk -v v="$v" '{printf "%s  tailwindcss-%s\n", $1, v}'
+#   done
+#
+# The pinned version lives in ``Dockerfile`` / ``mcp_proxy/Dockerfile`` /
+# ``scripts/build_frontend.sh`` (TAILWIND_VERSION) — if you change one,
+# change all three + bump this file.
+
+# Tailwind v3.4.10
+0c3e21d8479a4c53ffe1cfc7fe965f6b60d8cf597bdf34db132b8c65c6143541  tailwindcss-linux-x64
+e521cec919c926eb2ed3bcc22e0eadf98f8df5f7211ebc3f08321e6bbee9d78d  tailwindcss-linux-arm64
+914407e6c10d31f80bf004adb295cc25f09a3fefca43ab778bed5ba856cc9dd8  tailwindcss-macos-x64
+f1911f8c7cc02a5df3851e35d7e0c6d5d602bc7fb9923c8a09a02cbc63f1b9f3  tailwindcss-macos-arm64

@@ -329,7 +329,14 @@ postgres:
   storageSize: 10Gi
   storageClassName: ""
   username: cullis_mastio
-  password: cullis-mastio-dev-password
+  # Wave B F3 (audit 2026-05-11) — empty default triggers a random
+  # 32-char password generated on first install and persisted in the
+  # ``<release>-postgres-secret`` Secret across upgrades via the
+  # ``cullis-mastio.postgresPassword`` helper. Override here for an
+  # operator-managed credential (e.g. one rotated via Vault). Pre-fix
+  # this defaulted to the deterministic literal ``cullis-mastio-dev-password``,
+  # giving every fresh install the same world-known DB password.
+  password: ""
   database: cullis_mastio
   port: 5432
   resources:

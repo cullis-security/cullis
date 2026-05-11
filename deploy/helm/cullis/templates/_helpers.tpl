@@ -183,9 +183,29 @@ reference the existing Secret.
 {{- define "cullis.databaseUrl" -}}
 {{- if .Values.postgres.internal -}}
 {{- $svc := include "cullis.postgres.fullname" . -}}
-{{- printf "postgresql+asyncpg://%s:%s@%s:%v/%s" .Values.postgres.username .Values.postgres.password $svc .Values.postgres.port .Values.postgres.database -}}
+{{- printf "postgresql+asyncpg://%s:%s@%s:%v/%s" .Values.postgres.username (include "cullis.postgresPassword" .) $svc .Values.postgres.port .Values.postgres.database -}}
 {{- else -}}
 {{- .Values.postgres.externalUrl -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Wave B F3 (audit 2026-05-11) — internal-Postgres credential resolver.
+Mirrors ``cullis-mastio.postgresPassword``: explicit value wins, then
+lookup of the persisted Secret across upgrades, then random fallback
+on cold install.
+*/}}
+{{- define "cullis.postgresPassword" -}}
+{{- if .Values.postgres.password -}}
+{{- .Values.postgres.password -}}
+{{- else -}}
+{{- $secretName := printf "%s-postgres-secret" (include "cullis.fullname" .) -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+{{- if and $existing $existing.data $existing.data.password -}}
+{{- $existing.data.password | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 32 -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

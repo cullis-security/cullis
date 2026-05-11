@@ -36,8 +36,28 @@ if [[ ! -x "${BIN}" ]]; then
   mkdir -p "${BIN_DIR}"
   ASSET="$(detect_asset)"
   URL="https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/${ASSET}"
+  SHA_FILE="${ROOT_DIR}/scripts/tailwind-sha256.txt"
   echo ">>> downloading Tailwind CLI ${TAILWIND_VERSION} from ${URL}"
-  curl -sSLf "${URL}" -o "${BIN}"
+  TMP_BIN="$(mktemp)"
+  curl -sSLf "${URL}" -o "${TMP_BIN}"
+  # Wave B F1 (audit 2026-05-11) — verify against the pinned SHA-256
+  # before trusting the binary. Extract the host expected sha and
+  # compare with the downloaded blob; abort on mismatch.
+  EXPECTED_SHA="$(awk -v a="${ASSET}" '$2 == a {print $1}' "${SHA_FILE}")"
+  if [[ -z "${EXPECTED_SHA}" ]]; then
+    echo "FATAL: no SHA-256 entry for ${ASSET} in ${SHA_FILE}" >&2
+    rm -f "${TMP_BIN}"
+    exit 1
+  fi
+  ACTUAL_SHA="$(sha256sum "${TMP_BIN}" | awk '{print $1}')"
+  if [[ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]]; then
+    echo "FATAL: Tailwind binary SHA mismatch for ${ASSET}" >&2
+    echo "  expected: ${EXPECTED_SHA}" >&2
+    echo "  actual:   ${ACTUAL_SHA}" >&2
+    rm -f "${TMP_BIN}"
+    exit 1
+  fi
+  mv "${TMP_BIN}" "${BIN}"
   chmod +x "${BIN}"
 fi
 
