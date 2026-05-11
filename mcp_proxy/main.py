@@ -1371,6 +1371,10 @@ app.include_router(link_broker_admin_router)
 from mcp_proxy.dashboard.policies_local import router as local_policies_router
 app.include_router(local_policies_router)
 
+# ADR-029 Phase E, dashboard authoring for tool-level PDP rules.
+from mcp_proxy.dashboard.tool_rules import router as tool_rules_router
+app.include_router(tool_rules_router)
+
 # ADR-017 Phase 4 — dashboard CRUD for AI provider credentials (the
 # admin secret API surface lives in mcp_proxy.admin.ai_providers).
 from mcp_proxy.dashboard.ai_providers import router as ai_providers_dashboard_router
