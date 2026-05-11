@@ -90,6 +90,13 @@ sed -i "s|^MCP_PROXY_BROKER_JWKS_URL=.*|MCP_PROXY_BROKER_JWKS_URL=|" proxy.env
 sed -i "s|^MCP_PROXY_ANTHROPIC_API_KEY=.*|MCP_PROXY_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}|" proxy.env
 echo "MCP_PROXY_INITIAL_ADMIN_PASSWORD=${INIT_PW}" >> proxy.env
 echo "CULLIS_MASTIO_VERSION=local-smoke" >> proxy.env
+# Bug #9 workaround: deploy.sh:379 reads MCP_PROXY_PROXY_PUBLIC_URL via
+# `grep ... | cut ...` with `set -o pipefail`. When the var is absent
+# (the default — proxy.env.example only lists it commented), grep exits
+# 1, the pipeline fails, and the deploy script aborts AFTER writing the
+# Org CA + Org ID (so "Mastio + nginx ready" prints but the script
+# returns non-zero). Pin a value so the grep finds the line.
+echo "MCP_PROXY_PROXY_PUBLIC_URL=https://localhost:9443" >> proxy.env
 
 CULLIS_MASTIO_VERSION=local-smoke ./deploy.sh > /tmp/mastio-deploy.log 2>&1 \
     || { cat /tmp/mastio-deploy.log; fail "Mastio deploy"; }
