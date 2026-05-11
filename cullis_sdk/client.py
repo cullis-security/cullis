@@ -3277,6 +3277,117 @@ class CullisClient:
             )
         return body.get("result", {})
 
+    def evaluate_tool_call_policy(
+        self,
+        *,
+        principal_id: str,
+        principal_type: str = "user",
+        org: str | None = None,
+        model_id: str | None = None,
+        model_provider: str | None = None,
+        tool_name: str,
+        mcp_server_id: str | None = None,
+        session_id: str | None = None,
+        target_id: str | None = None,
+        target_type: str | None = None,
+        target_org: str | None = None,
+    ) -> dict:
+        """ADR-029 Phase D, ask the Mastio whether a tool call is allowed.
+
+        Wraps ``POST /v1/policy/tool-call`` on the configured Mastio.
+        Returns a dict with at least ``allowed: bool`` and ``reason: str``;
+        when the Mastio echoes them, optional ``scope`` / ``rate_limit``
+        / ``obligations`` dicts are passed through.
+
+        Behaviour on edge cases (kept boring on purpose so callers in
+        hot paths can rely on a small surface):
+
+          - HTTP 404, the Mastio has ``MCP_PROXY_TOOL_PDP_ENABLED=false``,
+            we treat the gate as disabled and return ``{"allowed": True,
+            "reason": "tool-level PDP disabled (404 from Mastio)"}``.
+            That keeps legacy Mastios working when an upgraded Connector
+            enables its side first.
+          - HTTP 401 / 403, signature or auth problem; deny, the reason
+            string carries the upstream code so audits are useful.
+          - HTTP 5xx or transport error, deny, fail-safe.
+          - HTTP 200 with malformed JSON, deny.
+        """
+        payload: dict = {
+            "principal": {
+                "id": principal_id,
+                "type": principal_type,
+            },
+            "invocation": {
+                "kind": "session_tool_call",
+                "tool_name": tool_name,
+            },
+        }
+        if org:
+            payload["principal"]["org"] = org
+        if model_id or model_provider:
+            payload["model"] = {}
+            if model_id:
+                payload["model"]["id"] = model_id
+            if model_provider:
+                payload["model"]["provider"] = model_provider
+        if mcp_server_id:
+            payload["invocation"]["mcp_server_id"] = mcp_server_id
+        if target_id or target_type or target_org:
+            payload["target"] = {}
+            if target_id:
+                payload["target"]["id"] = target_id
+            if target_type:
+                payload["target"]["type"] = target_type
+            if target_org:
+                payload["target"]["org"] = target_org
+        if session_id:
+            payload["context"] = {"session_id": session_id}
+
+        try:
+            resp = self._authed_request(
+                "POST", "/v1/policy/tool-call", json=payload,
+            )
+        except Exception as exc:  # transport-level failure
+            return {
+                "allowed": False,
+                "reason": f"PDP transport error: {exc}",
+            }
+
+        if resp.status_code == 404:
+            return {
+                "allowed": True,
+                "reason": "tool-level PDP disabled (404 from Mastio)",
+            }
+        if resp.status_code in (401, 403):
+            return {
+                "allowed": False,
+                "reason": f"PDP rejected: HTTP {resp.status_code}",
+            }
+        if resp.status_code >= 500 or resp.status_code != 200:
+            return {
+                "allowed": False,
+                "reason": f"PDP unexpected status: HTTP {resp.status_code}",
+            }
+
+        try:
+            body = resp.json()
+        except Exception:
+            return {
+                "allowed": False,
+                "reason": "PDP returned non-JSON body",
+            }
+
+        decision = str(body.get("decision", "deny")).lower()
+        out: dict = {
+            "allowed": decision == "allow",
+            "reason": str(body.get("reason", ""))[:512],
+        }
+        for k in ("scope", "rate_limit", "obligations"):
+            v = body.get(k)
+            if isinstance(v, dict):
+                out[k] = v
+        return out
+
 
 class WebSocketConnection:
     """Authenticated WebSocket connection with heartbeat + auto-reconnect (M2).

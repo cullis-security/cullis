@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -243,8 +244,36 @@ def chat_completions(req: ChatCompletionRequest, request: Request):
             _log.exception("ambassador SDK login failed")
             raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
 
+    # ADR-029 Phase D, opt-in PDP gate on each tool call inside the loop.
+    # Off by default so existing deployments keep dispatching tools
+    # without a per-call PDP roundtrip; once an operator enables the
+    # flag on both sides (Connector and Mastio) the loop refuses tools
+    # the Mastio's policy_rules.tool_rules does not authorise.
+    _pdp_enabled = (os.getenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", "false").lower()
+                    in ("1", "true", "yes", "on"))
+    _principal_id: str | None = None
+    _principal_type = "user"
+    _principal_org: str | None = None
+    if user_creds is not None:
+        _principal_id = user_creds.principal_id
+        _principal_type = getattr(user_creds, "principal_type", "user") or "user"
+        _principal_org = getattr(user_creds, "org", None)
+    elif _pdp_enabled:
+        # Agent-bound mode (no per-user credentials): fall back to the
+        # client's own agent id so the audit row still names who acted.
+        _principal_id = getattr(client, "agent_id", None)
+        _principal_type = "agent"
+
     try:
-        response, truncated = run_tool_use_loop(client, body, max_iters=8)
+        response, truncated = run_tool_use_loop(
+            client,
+            body,
+            max_iters=8,
+            pdp_enabled=_pdp_enabled,
+            principal_id=_principal_id,
+            principal_type=_principal_type,
+            principal_org=_principal_org,
+        )
     except Exception as exc:
         # Defensive: any auth-shaped error invalidates the cached
         # client so the next request re-logs in fresh. Per-user

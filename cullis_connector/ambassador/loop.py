@@ -58,6 +58,11 @@ def run_tool_use_loop(
     request_body: dict,
     *,
     max_iters: int = DEFAULT_MAX_ITERS,
+    pdp_enabled: bool = False,
+    principal_id: str | None = None,
+    principal_type: str = "user",
+    principal_org: str | None = None,
+    session_id: str | None = None,
 ) -> tuple[dict, bool]:
     """Drive an LLM tool-use loop through Cullis.
 
@@ -65,6 +70,17 @@ def run_tool_use_loop(
         client: an authenticated ``CullisClient``.
         request_body: the OpenAI ChatCompletion body the chat client sent.
         max_iters: cap on LLM ↔ tool-call round trips.
+        pdp_enabled: ADR-029 Phase D, when true call the Mastio
+            ``/v1/policy/tool-call`` endpoint before each tool dispatch.
+            On deny the tool is not executed; the loop emits a
+            ``policy_denied`` text back to the model so it can synthesise
+            an explanation for the user. Defaults to false so existing
+            Connector behaviour is unchanged.
+        principal_id / principal_type / principal_org: identity of the
+            principal driving the chat. Only consulted when
+            ``pdp_enabled`` is true.
+        session_id: chat session identifier propagated to the PDP so
+            audit rows can correlate tool calls within a turn.
 
     Returns:
         A tuple ``(final_response, truncated)``. ``final_response`` is the
@@ -132,12 +148,40 @@ def run_tool_use_loop(
             except json.JSONDecodeError:
                 _log.warning("tool_call args not valid JSON: %r", args_raw[:200])
                 args = {}
-            try:
-                result = client.call_mcp_tool(name, args)
-                text = _mcp_result_to_text(result)
-            except Exception as exc:  # broad: surface any tool error to the LLM
-                _log.exception("tool %s failed", name)
-                text = f"tool error: {exc}"
+            # ADR-029 Phase D, pre-execute PDP gate. When `pdp_enabled`
+            # is set we ask the Mastio whether this principal may invoke
+            # `name` with the current model. On deny the SDK call is
+            # skipped and the loop hands a `policy_denied` text back to
+            # the model, which then explains the refusal to the user.
+            policy_blocked: tuple[bool, str] = (False, "")
+            if pdp_enabled and principal_id:
+                try:
+                    pdp = client.evaluate_tool_call_policy(
+                        principal_id=principal_id,
+                        principal_type=principal_type,
+                        org=principal_org,
+                        model_id=body.get("model"),
+                        tool_name=name,
+                        session_id=session_id,
+                    )
+                except Exception as exc:  # never let PDP errors hang the loop
+                    _log.warning("PDP transport failure on tool %s: %s", name, exc)
+                    pdp = {"allowed": False, "reason": f"PDP transport: {exc}"}
+                if not pdp.get("allowed"):
+                    policy_blocked = (True, str(pdp.get("reason") or ""))
+                    _log.info(
+                        "tool %s denied by PDP: %s", name, policy_blocked[1],
+                    )
+
+            if policy_blocked[0]:
+                text = f"policy_denied: tool '{name}' refused by policy: {policy_blocked[1]}"
+            else:
+                try:
+                    result = client.call_mcp_tool(name, args)
+                    text = _mcp_result_to_text(result)
+                except Exception as exc:  # broad: surface any tool error to the LLM
+                    _log.exception("tool %s failed", name)
+                    text = f"tool error: {exc}"
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.get("id", f"call_{iteration}_{name}"),
