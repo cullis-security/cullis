@@ -3435,6 +3435,21 @@ async def user_detail_page(principal_id: str, request: Request):
     action_message = request.query_params.get("ok")
     error = request.query_params.get("error")
 
+    # ADR-027 — show this user's API tokens inline + render the
+    # one-time cleartext banner when ``?new_token=`` is set (the mint
+    # POST redirects back here with the freshly-minted token in the
+    # URL exactly once; if the operator reloads the page, the query
+    # param is gone and the banner does not re-render).
+    api_tokens: list[dict] = []
+    try:
+        from mcp_proxy.db import list_user_api_tokens
+        api_tokens = await list_user_api_tokens(principal_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("user_detail_page: api_tokens query failed: %s", exc)
+    new_api_token = request.query_params.get("new_token")
+    new_api_token_label = request.query_params.get("new_token_label")
+    api_token_error = request.query_params.get("token_error")
+
     return templates.TemplateResponse("user_detail.html", _ctx(
         request, session,
         active="users",
@@ -3447,6 +3462,10 @@ async def user_detail_page(principal_id: str, request: Request):
         new_user_temp_password=new_user_temp_password,
         action_message=action_message,
         error=error,
+        api_tokens=api_tokens,
+        new_api_token=new_api_token,
+        new_api_token_label=new_api_token_label,
+        api_token_error=api_token_error,
     ))
 
 

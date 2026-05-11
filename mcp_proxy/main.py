@@ -1099,6 +1099,14 @@ app.include_router(admin_ai_providers_router)
 from mcp_proxy.admin.api_tokens import router as admin_api_tokens_router
 app.include_router(admin_api_tokens_router)
 
+# ADR-027 dashboard mutations (mint / revoke) for the same tokens.
+# The GET surface is folded into ``user_detail.html`` (see
+# ``user_detail_page`` below — pulls api_tokens into the template
+# context). This router only handles the form submissions, with
+# cookie-session auth + CSRF mirroring ``users_reset_password``.
+from mcp_proxy.dashboard.api_tokens import router as dashboard_api_tokens_router
+app.include_router(dashboard_api_tokens_router)
+
 # ADR-006 Fase 1 / PR #3 — proxy-native discovery + public-key endpoints.
 # Must precede the reverse-proxy catch-all: /v1/federation/agents/{id}/
 # public-key would otherwise fall into the `/v1/federation/*` forward
