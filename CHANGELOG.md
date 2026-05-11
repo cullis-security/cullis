@@ -7,6 +7,39 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.1] — 2026-05-11
+
+Patch release. Restores the PyInstaller binary distribution path that was
+broken in v0.4.0: ADR-021's ``cullis_connector.identity`` modules import
+SQLAlchemy at module load, but ``packaging/pyinstaller/build.sh`` did not
+install SQLAlchemy in the build venv nor declare it as a hidden import, so
+the resulting executable crashed at first launch with
+``ModuleNotFoundError: No module named 'sqlalchemy'``. PyPI wheel and Docker
+image of v0.4.0 were unaffected (they install from
+``packaging/pypi/pyproject.toml``, which lists sqlalchemy) — only the
+single-binary download path was broken.
+
+### Fixed
+
+- **PyInstaller binary now bundles SQLAlchemy + aiosqlite + bcrypt**
+  ([#588]): install ``sqlalchemy[asyncio]>=2.0`` and ``aiosqlite>=0.19`` in
+  the build venv, and add them — plus ``sqlalchemy.dialects.sqlite``,
+  ``sqlalchemy.dialects.sqlite.aiosqlite``, ``sqlalchemy.ext.asyncio``,
+  ``sqlalchemy.orm`` — to ``--hidden-import``. SQLAlchemy resolves
+  dialects by name at first ``create_async_engine`` call, so static
+  analysis cannot see them even when the package is installed.
+
+### Not in this release
+
+- The two fixes for the Frontdesk bundle dev shell (PR #586
+  ``deploy.sh`` default version and PR #587 nginx ``Host`` header
+  preserving the client port) ship as
+  ``frontdesk-bundle-v0.2.1`` rather than a Connector point release —
+  they live in ``packaging/frontdesk-bundle/`` and do not touch the
+  Connector binary.
+
+[#588]: https://github.com/cullis-security/cullis/pull/588
+
 ## [v0.4.0] — 2026-05-11
 
 Stable cut of the v0.4.0 line. Folds five Connector + Ambassador bug
