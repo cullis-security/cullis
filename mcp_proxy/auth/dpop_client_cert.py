@@ -72,6 +72,11 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     """Egress agent auth: client cert + optional DPoP proof.
 
     Order:
+      0. ADR-027 ``culk_*`` user API token short-circuit. Token is
+         hash-verified against ``user_api_tokens``; if present, the
+         resolved user principal is returned without going through
+         cert + DPoP. The Bearer token IS the proof of identity for
+         OpenAI-compat clients (LibreChat, Cursor, Cherry Studio, ...).
       1. ADR-012 LOCAL_TOKEN short-circuit (cross-org Bearer JWT).
       2. ``get_agent_from_client_cert`` — identity from TLS-layer cert,
          pinned against ``internal_agents.cert_pem``, rate-limited.
@@ -83,6 +88,12 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     ``off`` mode is a thin pass-through that returns the cert-auth'd
     agent — useful during the PR-B → PR-C → flip window.
     """
+    # Step 0 — ADR-027 culk_ token. Returns None on miss so step 1+ run.
+    from mcp_proxy.auth.api_token import _maybe_api_token_principal
+    api_token_principal = await _maybe_api_token_principal(request)
+    if api_token_principal is not None:
+        return api_token_principal
+
     from mcp_proxy.auth.local_agent_dep import _maybe_local_internal_agent
     local_agent = await _maybe_local_internal_agent(request)
     if local_agent is not None:
