@@ -81,9 +81,15 @@ async def test_verify_local_chain_intact(fresh_db):
 async def test_verify_local_chain_detects_tampering(fresh_db):
     await append_local_audit(event_type="session_opened", org_id="acme")
     await append_local_audit(event_type="message_sent", org_id="acme")
-    # Tamper: rewrite details on the second row so the stored entry_hash
-    # no longer matches the canonical recomputation.
+    # Tamper: simulate an attacker with raw DB write that bypasses the
+    # CRIT-3 trigger (e.g. owns the DB host, dropped the trigger).
+    # We drop the SQLite triggers locally then mutate; on Postgres the
+    # equivalent owner-level DROP is the threat model. After the
+    # mutation, ``verify_local_chain`` must detect the entry_hash
+    # mismatch — the chain is the second layer of defence behind the
+    # trigger.
     async with get_db() as conn:
+        await conn.execute(text("DROP TRIGGER IF EXISTS local_audit_no_update"))
         await conn.execute(
             text("UPDATE local_audit SET details = :d WHERE chain_seq = 2"),
             {"d": '{"forged":true}'},

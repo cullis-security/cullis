@@ -62,6 +62,34 @@ async def app_with_real_dep(tmp_path, monkeypatch):
     get_settings.cache_clear()
     await init_db(url)
 
+    # CRIT-3 PR rebase note: PR #614 (this branch) merged main which
+    # now contains the C3 fix from PR #605 — mint_user_api_token
+    # refuses unknown principal_ids. Seed the orga::user::* names
+    # used by the tests in this file so the existing mints succeed.
+    # When PR #605 lands the shared helper in tests/_token_test_helpers.py
+    # supersedes this inline seed; until then keep the rows local.
+    from datetime import datetime, timezone
+    from sqlalchemy import text as _sql_text
+    from mcp_proxy.db import get_db as _get_db
+    _now = datetime.now(timezone.utc).isoformat()
+    async with _get_db() as _conn:
+        for _name in (
+            "alice", "bob", "carol", "dave", "eve", "erin",
+            "frank", "ferris", "grace", "heidi", "ivan",
+        ):
+            await _conn.execute(
+                _sql_text(
+                    "INSERT INTO local_user_principals "
+                    "(principal_id, user_name, reach, surface, created_at) "
+                    "VALUES (:pid, :name, 'intra', NULL, :now)"
+                ),
+                {
+                    "pid": f"orga::user::{_name}",
+                    "name": _name,
+                    "now": _now,
+                },
+            )
+
     async def fake_list_available_models(enabled):
         return [
             {"id": "claude-haiku-4-5", "object": "model", "owned_by": "anthropic"},

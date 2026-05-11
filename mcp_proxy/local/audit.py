@@ -31,7 +31,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from mcp_proxy.db import get_db
-from mcp_proxy.local.audit_chain import SYSTEM_ORG, compute_entry_hash
+from mcp_proxy.local.audit_chain import (
+    HASH_FORMAT_V1,
+    HASH_FORMAT_V2,
+    SYSTEM_ORG,
+    compute_entry_hash,
+    compute_entry_hash_v2,
+)
 
 _log = logging.getLogger("mcp_proxy.local.audit")
 
@@ -106,20 +112,43 @@ async def append_local_audit(
                     last_seq = head[1] if head else 0
                     new_seq = last_seq + 1
 
-                    # 2. Insert with placeholder entry_hash; database auto-assigns id.
                     now = datetime.now(timezone.utc)
                     ts_iso = _iso(now)
+
+                    # CRIT-3 (audit 2026-05-11) — compute the hash
+                    # BEFORE the insert (v2 form, no entry_id) so the
+                    # row lands atomically with its final entry_hash.
+                    # Migration 0031 then installs a BEFORE
+                    # UPDATE/DELETE trigger on local_audit; no
+                    # application back-fill UPDATE remains. The
+                    # (org_id, chain_seq) pair already uniquely
+                    # identifies the row (UNIQUE since 0009), so the
+                    # auto-assigned PK is no longer load-bearing for
+                    # the chain integrity proof.
+                    entry_hash = compute_entry_hash_v2(
+                        timestamp=now,
+                        event_type=event_type,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        org_id=chain_org,
+                        result=result,
+                        details=details_json,
+                        previous_hash=previous_hash,
+                        chain_seq=new_seq,
+                        peer_org_id=None,
+                    )
+
                     insert_result = await conn.execute(
                         text(
                             """
                             INSERT INTO local_audit (
                                 timestamp, event_type, agent_id, session_id, org_id,
                                 details, result, previous_hash, chain_seq,
-                                peer_org_id, peer_row_hash, entry_hash
+                                peer_org_id, peer_row_hash, entry_hash, hash_format
                             ) VALUES (
                                 :timestamp, :event_type, :agent_id, :session_id, :org_id,
                                 :details, :result, :previous_hash, :chain_seq,
-                                NULL, NULL, :placeholder
+                                NULL, NULL, :entry_hash, :hash_format
                             )
                             """
                         ),
@@ -133,14 +162,13 @@ async def append_local_audit(
                             "result": result,
                             "previous_hash": previous_hash,
                             "chain_seq": new_seq,
-                            "placeholder": "",
+                            "entry_hash": entry_hash,
+                            "hash_format": HASH_FORMAT_V2,
                         },
                     )
-                    # SQLite drivers expose ``lastrowid`` on the CursorResult; asyncpg
-                    # *does not* have that attribute at all (raises AttributeError,
-                    # not returns None), so the ``is None`` check below never fires
-                    # on Postgres. ``getattr(..., None)`` normalises both dialects to
-                    # the same "unknown → query back" fallback path.
+                    # ``id`` is informational; some callers (tests,
+                    # structured logs) want the auto-assigned PK.
+                    # Same dialect-aware lookup as before.
                     row_id = getattr(insert_result, "lastrowid", None)
                     if row_id is None:
                         id_row = (await conn.execute(
@@ -151,27 +179,6 @@ async def append_local_audit(
                             {"org_id": chain_org, "chain_seq": new_seq},
                         )).first()
                         row_id = id_row[0]
-
-                    # 3. Compute the hash now that we know the row id.
-                    entry_hash = compute_entry_hash(
-                        entry_id=row_id,
-                        timestamp=now,
-                        event_type=event_type,
-                        agent_id=agent_id,
-                        session_id=session_id,
-                        org_id=chain_org,
-                        result=result,
-                        details=details_json,
-                        previous_hash=previous_hash,
-                        chain_seq=new_seq,
-                        peer_org_id=None,
-                    )
-
-                    # 4. Back-fill the hash. The row is immutable from here on.
-                    await conn.execute(
-                        text("UPDATE local_audit SET entry_hash = :h WHERE id = :id"),
-                        {"h": entry_hash, "id": row_id},
-                    )
                 # ``get_db()`` committed on clean exit. Return the summary.
                 return {
                     "id": row_id,
@@ -208,7 +215,7 @@ async def verify_local_chain(org_id: str) -> tuple[bool, str | None]:
                 """
                 SELECT id, timestamp, event_type, agent_id, session_id,
                        org_id, details, result, previous_hash, chain_seq,
-                       peer_org_id, entry_hash
+                       peer_org_id, entry_hash, hash_format
                   FROM local_audit
                  WHERE org_id = :org_id AND chain_seq IS NOT NULL
                  ORDER BY chain_seq ASC
@@ -227,22 +234,43 @@ async def verify_local_chain(org_id: str) -> tuple[bool, str | None]:
                     f"row chain_seq={row['chain_seq']} previous_hash mismatch: "
                     f"expected {expected_prev!r}, got {row['previous_hash']!r}"
                 )
-            expected = compute_entry_hash(
-                entry_id=row["id"],
-                timestamp=ts,
-                event_type=row["event_type"],
-                agent_id=row["agent_id"],
-                session_id=row["session_id"],
-                org_id=row["org_id"],
-                result=row["result"],
-                details=row["details"],
-                previous_hash=row["previous_hash"],
-                chain_seq=row["chain_seq"],
-                peer_org_id=row["peer_org_id"],
-            )
+            # CRIT-3 — dispatch on the row's stored hash_format. Pre-fix
+            # rows are NULL/'v1' and re-verify with the legacy entry_id
+            # form. New rows are 'v2' and verify with the entry_id-free
+            # form. The discriminator at the start of the v2 canonical
+            # string makes a v1↔v2 collision cryptographically impossible.
+            row_format = row["hash_format"] or HASH_FORMAT_V1
+            if row_format == HASH_FORMAT_V2:
+                expected = compute_entry_hash_v2(
+                    timestamp=ts,
+                    event_type=row["event_type"],
+                    agent_id=row["agent_id"],
+                    session_id=row["session_id"],
+                    org_id=row["org_id"],
+                    result=row["result"],
+                    details=row["details"],
+                    previous_hash=row["previous_hash"],
+                    chain_seq=row["chain_seq"],
+                    peer_org_id=row["peer_org_id"],
+                )
+            else:
+                expected = compute_entry_hash(
+                    entry_id=row["id"],
+                    timestamp=ts,
+                    event_type=row["event_type"],
+                    agent_id=row["agent_id"],
+                    session_id=row["session_id"],
+                    org_id=row["org_id"],
+                    result=row["result"],
+                    details=row["details"],
+                    previous_hash=row["previous_hash"],
+                    chain_seq=row["chain_seq"],
+                    peer_org_id=row["peer_org_id"],
+                )
             if expected != row["entry_hash"]:
                 return False, (
                     f"row id={row['id']} chain_seq={row['chain_seq']} "
+                    f"hash_format={row_format} "
                     f"entry_hash mismatch: expected {expected}, got "
                     f"{row['entry_hash']}"
                 )
