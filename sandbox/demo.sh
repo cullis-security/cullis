@@ -54,10 +54,11 @@ _print_dashboards() {
 
 _print_scenarios() {
     _header "Try it — send messages between agents"
-    echo -e "  ${GREEN}./demo.sh oneshot-a-to-b${RESET}   cross-org: orga::agent-a → orgb::agent-b (via Court)"
-    echo -e "  ${GREEN}./demo.sh oneshot-b-to-a${RESET}   cross-org: orgb::agent-b → orga::agent-a (via Court)"
-    echo -e "  ${GREEN}./demo.sh mcp-catalog${RESET}      intra-org MCP: orga::agent-a → get_catalog"
-    echo -e "  ${GREEN}./demo.sh mcp-inventory${RESET}    intra-org MCP: orgb::agent-b → check_inventory"
+    echo -e "  ${GREEN}./demo.sh oneshot-a-to-b${RESET}    cross-org: orga::agent-a → orgb::agent-b (via Court)"
+    echo -e "  ${GREEN}./demo.sh oneshot-b-to-a${RESET}    cross-org: orgb::agent-b → orga::agent-a (via Court)"
+    echo -e "  ${GREEN}./demo.sh mcp-catalog${RESET}       intra-org MCP: orga::agent-a → get_catalog"
+    echo -e "  ${GREEN}./demo.sh mcp-inventory${RESET}     intra-org MCP: orgb::agent-b → check_inventory"
+    echo -e "  ${GREEN}./demo.sh policy-granular${RESET}   ADR-029 tool-level PDP + cross-org federation"
 }
 
 _print_teardown() {
@@ -176,10 +177,11 @@ Inspection:
   bootstrap-logs  Replay the verbose Phase 1-7 bootstrap output.
 
 Scenarios (require 'full' mode — orga workloads must be running):
-  oneshot-a-to-b  Cross-org one-shot from orga::agent-a to orgb::agent-b.
-  oneshot-b-to-a  Cross-org one-shot from orgb::agent-b to orga::agent-a.
-  mcp-catalog     Intra-org MCP call: orga::agent-a → mcp-catalog (get_catalog).
-  mcp-inventory   Intra-org MCP call: orgb::agent-b → mcp-inventory (check_inventory).
+  oneshot-a-to-b   Cross-org one-shot from orga::agent-a to orgb::agent-b.
+  oneshot-b-to-a   Cross-org one-shot from orgb::agent-b to orga::agent-a.
+  mcp-catalog      Intra-org MCP call: orga::agent-a → mcp-catalog (get_catalog).
+  mcp-inventory    Intra-org MCP call: orgb::agent-b → mcp-inventory (check_inventory).
+  policy-granular  ADR-029 tool-level PDP gate + cross-org federation walkthrough.
 
 Guided onboarding (for 'up' mode — walks you through completing orga):
   guide           Open the step-by-step Markdown walkthrough.
