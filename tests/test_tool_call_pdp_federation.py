@@ -51,6 +51,42 @@ async def proxy_app(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest_asyncio.fixture
+async def proxy_app_phaseg(tmp_path, monkeypatch):
+    """Same as ``proxy_app`` but with an empty env map and a Court
+    base URL set on ``app.state.reverse_proxy_broker_url``. Exercises
+    ADR-029 Phase G — the catalog must resolve the peer URL through
+    Court rather than the env override.
+    """
+    db_file = tmp_path / "tool_pdp_fed_phaseg.sqlite"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
+    monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
+    monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
+    monkeypatch.setenv("MCP_PROXY_TOOL_PDP_ENABLED", "true")
+    monkeypatch.setenv("MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET", "")
+    monkeypatch.setenv("MCP_PROXY_TOOL_PDP_FEDERATION_URLS", "{}")
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+    from mcp_proxy.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with app.router.lifespan_context(app):
+            # Override whatever the lifespan set (which is ``None`` for
+            # an unconfigured broker) with the fake Court base URL the
+            # tests want to hit.
+            app.state.reverse_proxy_broker_url = "https://court.test.local"
+            # Drop any cached catalog so the next PDP call picks up the
+            # fresh broker_url + empty env map.
+            if hasattr(app.state, "federation_catalog"):
+                delattr(app.state, "federation_catalog")
+            yield app, client
+    get_settings.cache_clear()
+
+
 def _payload_cross_org(
     *,
     principal_id: str = "acme::user::mario@acme.local",
@@ -372,3 +408,97 @@ def test_intersect_decisions_obligations_restrictive_wins():
     assert out.obligations is not None
     assert out.obligations["trace_visibility"] == "redacted"
     assert out.obligations["require_user_confirmation"] is True
+
+
+# ── ADR-029 Phase G, Court catalog ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_phaseg_court_catalog_publishes_url(proxy_app_phaseg, monkeypatch):
+    """No env entry for target org; Court returns the URL; the
+    federation peer allows. End-to-end: PDP final allow comes from the
+    catalog-resolved URL."""
+    captured: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/v1/federation/orgs/competitor/mastio-url"):
+            return httpx.Response(200, json={
+                "org_id": "competitor",
+                "mastio_url": "https://mastio.competitor.dynamic/v1/policy/tool-call",
+            })
+        if "mastio.competitor.dynamic" in url:
+            captured["peer_url"] = url
+            captured["peer_body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "decision": "allow",
+                "reason": "competitor approves",
+            })
+        return httpx.Response(500, content=b"unexpected")
+
+    transport = httpx.MockTransport(_handler)
+
+    class _Client(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("mcp_proxy.policy.federation.httpx.AsyncClient", _Client)
+    monkeypatch.setattr(
+        "mcp_proxy.policy.federation_catalog.httpx.AsyncClient", _Client,
+    )
+
+    _, client = proxy_app_phaseg
+    await _set_tool_rules({
+        "competitor.catalog.search": {
+            "allowed_principals": ["acme::user::mario@acme.local"],
+        }
+    })
+
+    resp = await client.post("/v1/policy/tool-call", json=_payload_cross_org())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["decision"] == "allow", body
+    # The catalog-resolved peer received the call.
+    assert "mastio.competitor.dynamic" in captured["peer_url"]
+    assert captured["peer_body"]["target"]["org"] == "competitor"
+
+
+@pytest.mark.asyncio
+async def test_phaseg_court_404_default_deny(proxy_app_phaseg, monkeypatch):
+    """No env entry and Court has not published a URL for the target →
+    default-deny. The federation peer is never reached."""
+    peer_hit = {"n": 0}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/v1/federation/orgs/competitor/mastio-url"):
+            return httpx.Response(404, json={"detail": "no mastio_url"})
+        peer_hit["n"] += 1
+        return httpx.Response(200, json={"decision": "allow"})
+
+    transport = httpx.MockTransport(_handler)
+
+    class _Client(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("mcp_proxy.policy.federation.httpx.AsyncClient", _Client)
+    monkeypatch.setattr(
+        "mcp_proxy.policy.federation_catalog.httpx.AsyncClient", _Client,
+    )
+
+    _, client = proxy_app_phaseg
+    await _set_tool_rules({
+        "competitor.catalog.search": {
+            "allowed_principals": ["acme::user::mario@acme.local"],
+        }
+    })
+
+    resp = await client.post("/v1/policy/tool-call", json=_payload_cross_org())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["decision"] == "deny", body
+    assert "no federation URL" in body["reason"]
+    assert peer_hit["n"] == 0

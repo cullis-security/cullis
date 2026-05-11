@@ -44,6 +44,9 @@ class OrgResponse(BaseModel):
     display_name: str
     status: str
     registered_at: datetime
+    # ADR-029 Phase G — URL where this org's Mastio answers cross-org
+    # tool-call PDP federation. None until the operator publishes it.
+    mastio_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -65,6 +68,7 @@ async def register_organization(
         display_name=org.display_name,
         status=org.status,
         registered_at=org.registered_at,
+        mastio_url=org.mastio_url,
     )
 
 
@@ -79,6 +83,7 @@ async def list_organizations(db: AsyncSession = Depends(get_db)):
             display_name=o.display_name,
             status=o.status,
             registered_at=o.registered_at,
+            mastio_url=o.mastio_url,
         )
         for o in orgs
     ]
@@ -111,6 +116,7 @@ async def get_own_organization(
         display_name=org.display_name,
         status=org.status,
         registered_at=org.registered_at,
+        mastio_url=org.mastio_url,
     )
 
 
@@ -126,6 +132,7 @@ async def get_organization(org_id: str, db: AsyncSession = Depends(get_db)):
         display_name=org.display_name,
         status=org.status,
         registered_at=org.registered_at,
+        mastio_url=org.mastio_url,
     )
 
 
