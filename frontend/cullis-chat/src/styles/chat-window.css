@@ -904,3 +904,93 @@
   font-size: 0.66rem;
   letter-spacing: 0.16em;
 }
+
+/* Copy controls
+ *
+ * One overlay per assistant or user turn (`.copy-btn` placed inside `.msg`)
+ * plus one overlay per Shiki code block (`.code-copy` inside
+ * `.code-block-wrap`). Visible on hover for pointer devices, always
+ * visible on touch devices since hover is not reliable there. */
+
+.msg {
+  position: relative;
+}
+
+.copy-btn,
+.code-copy {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem 0.6rem;
+  font-family: var(--font-brand);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-soft),
+              color var(--t-fast) var(--ease-soft),
+              border-color var(--t-fast) var(--ease-soft),
+              background var(--t-fast) var(--ease-soft);
+}
+
+.copy-btn {
+  top: 0;
+  right: 0;
+  /* Float just above the body so it does not clip the cyan accent
+   * border-left on the assistant block. */
+  z-index: 1;
+}
+
+.code-copy {
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+}
+
+.msg:hover .copy-btn,
+.copy-btn:focus-visible,
+.code-block-wrap:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+
+.copy-btn:hover,
+.code-copy:hover {
+  color: var(--accent-cyan);
+  border-color: var(--accent-cyan-dim);
+}
+
+.copy-btn.is-copied,
+.code-copy.is-copied {
+  opacity: 1;
+  color: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  background: var(--accent-cyan-glow);
+}
+
+/* Touch devices: keep the overlay visible at half opacity so the
+ * affordance is discoverable without a hover state. */
+@media (hover: none) {
+  .copy-btn,
+  .code-copy {
+    opacity: 0.5;
+  }
+  .copy-btn:active,
+  .code-copy:active {
+    opacity: 1;
+  }
+}
+
+/* Wrap that anchors the per-code-block copy button. Built up by
+ * `highlightCodeBlocks()` in lib/markdown.ts after Shiki replaces
+ * the raw `<pre>`. */
+.code-block-wrap {
+  position: relative;
+}
