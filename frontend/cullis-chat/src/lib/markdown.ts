@@ -17,6 +17,7 @@
 
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import { copyToClipboard } from './clipboard';
 
 const SAFE_TAGS = [
   'a',
@@ -156,15 +157,60 @@ export async function highlightCodeBlocks(root: HTMLElement): Promise<void> {
     const finalLang = supported ? lang : 'text';
     const html = hi.codeToHtml(text, { lang: finalLang, theme: SHIKI_THEME });
     // Replace the <pre> with Shiki's <pre>. We mark the new code as done.
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = html;
-    const newPre = wrapper.firstElementChild as HTMLElement | null;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    const newPre = tmp.firstElementChild as HTMLElement | null;
     if (!newPre) continue;
     const innerCode = newPre.querySelector('code');
     if (innerCode) innerCode.setAttribute('data-shiki', 'done');
     newPre.classList.add('shiki-block');
-    pre.replaceWith(newPre);
+    // Wrap in a `.code-block-wrap` and attach an overlay copy button.
+    // If the original <pre> was already inside such a wrap (unlikely
+    // here because we re-render the markdown into a fresh container,
+    // but safe to handle for re-runs), we replace the inner <pre> only.
+    const existingWrap = pre.parentElement?.classList.contains('code-block-wrap')
+      ? (pre.parentElement as HTMLElement)
+      : null;
+    if (existingWrap) {
+      pre.replaceWith(newPre);
+      // Refresh the button's closure-captured text by re-attaching.
+      const oldBtn = existingWrap.querySelector('.code-copy');
+      oldBtn?.remove();
+      existingWrap.appendChild(buildCodeCopyButton(text));
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'code-block-wrap';
+      wrap.appendChild(buildCodeCopyButton(text));
+      pre.replaceWith(wrap);
+      wrap.appendChild(newPre);
+    }
   }
+}
+
+function buildCodeCopyButton(text: string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'code-copy';
+  btn.setAttribute('aria-label', 'Copy code');
+  const labelEl = document.createElement('span');
+  labelEl.className = 'copy-btn-label';
+  labelEl.setAttribute('aria-hidden', 'true');
+  labelEl.textContent = 'copy';
+  btn.appendChild(labelEl);
+  btn.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    const ok = await copyToClipboard(text);
+    if (!ok) return;
+    btn.classList.add('is-copied');
+    labelEl.textContent = 'copied';
+    btn.setAttribute('aria-label', 'Copied to clipboard');
+    window.setTimeout(() => {
+      btn.classList.remove('is-copied');
+      labelEl.textContent = 'copy';
+      btn.setAttribute('aria-label', 'Copy code');
+    }, 1200);
+  });
+  return btn;
 }
 
 async function safeLoad(hi: { loadLanguage: (l: string) => Promise<unknown> }, lang: string): Promise<boolean> {

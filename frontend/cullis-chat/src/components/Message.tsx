@@ -1,6 +1,7 @@
 import { MarkdownView } from './MarkdownView';
 import { ToolCallIndicator } from './ToolCallIndicator';
 import { useChat } from '../lib/chat-context';
+import { CopyButton } from './CopyButton';
 import type { ChatMessage } from '../lib/types';
 
 interface Props {
@@ -10,10 +11,10 @@ interface Props {
 }
 
 /**
- * One chat turn — user or assistant.
+ * One chat turn, user or assistant.
  *
  * Assistant content is rendered through `MarkdownView` (DOMPurify +
- * marked + lazy Shiki). User content is plain text — escaped by React.
+ * marked + lazy Shiki). User content is plain text, escaped by React.
  *
  * Tool calls observed during the turn are rendered as inline
  * marginalia chips above the body.
@@ -99,6 +100,13 @@ export function Message({ message, selected, onClick }: Props) {
             retry
           </button>
         </footer>
+      ) : null}
+
+      {message.content.length > 0 ? (
+        <CopyButton
+          text={message.content}
+          label={isUser ? 'message' : 'response'}
+        />
       ) : null}
     </article>
   );
