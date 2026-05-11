@@ -508,6 +508,20 @@ async def lifespan(app: FastAPI):
         app.state.federation_stats_task = stats_task
         _log.info("federation stats publisher started (org=%s)", org_id)
 
+        # Wave B PR8 / D1 — Mastio audit replication. Pushes
+        # local_audit rows to the Court (mastio_audit_replica) so
+        # cross-org disputes have a Mastio-attested source of truth
+        # alongside the Court's broker-observed audit_log.
+        from mcp_proxy.federation.audit_publisher import run_audit_publisher
+        audit_stop = asyncio.Event()
+        audit_task = asyncio.create_task(
+            run_audit_publisher(app.state, stop_event=audit_stop),
+            name="federation_audit_publisher",
+        )
+        app.state.federation_audit_stop = audit_stop
+        app.state.federation_audit_task = audit_task
+        _log.info("federation audit publisher started (org=%s)", org_id)
+
     # ADR-013 layer 6 — DB latency tracker + circuit breaker state.
     # Started after init_db (need the engine) and after the federation
     # task, so the probe's first ``SELECT 1`` runs against a fully
@@ -731,6 +745,23 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation publisher teardown loop mismatch (xdist): %s", exc)
+
+    # Wave B PR8 / D1 — audit replication publisher teardown.
+    audit_stop = getattr(app.state, "federation_audit_stop", None)
+    audit_task = getattr(app.state, "federation_audit_task", None)
+    if audit_stop is not None:
+        audit_stop.set()
+    if audit_task is not None:
+        try:
+            await asyncio.wait_for(audit_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            audit_task.cancel()
+            try:
+                await audit_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug("audit publisher teardown loop mismatch (xdist): %s", exc)
 
     ws_manager = getattr(app.state, "local_ws_manager", None)
     if ws_manager is not None:
