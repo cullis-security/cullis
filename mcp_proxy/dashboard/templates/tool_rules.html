@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Tool Rules{% endblock %}
+{% block header_title %}Tool-level Policy Rules{% endblock %}
+{% block content %}
+<div class="max-w-5xl">
+
+    <!-- Tabs (mirror /proxy/policies) -->
+    <div class="flex items-center gap-0 mb-6 border-b border-gray-800/60">
+        <a href="/proxy/policies"
+           class="px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors">
+            Built-in Rules
+        </a>
+        <a href="/proxy/policies"
+           class="px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-transparent text-gray-500 hover:text-gray-300 transition-colors">
+            External PDP
+        </a>
+        <a href="/proxy/policies/tool-rules"
+           class="px-4 py-2.5 text-xs font-medium uppercase tracking-wider border-b-2 border-accent-400 text-accent-400 transition-colors">
+            Tool Rules
+        </a>
+    </div>
+
+    <!-- Intro -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 mb-6 card-glow backdrop-blur-sm">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-1">ADR-029 tool-level PDP</h3>
+        <p class="text-xs text-gray-500 leading-relaxed">
+            Each rule below scopes a single tool name. The
+            <code class="text-accent-400">POST /v1/policy/tool-call</code> endpoint checks the
+            requesting <strong>principal</strong>, the <strong>model</strong> that asked for the
+            tool, and the <strong>MCP server</strong> the tool lives on against the lists below
+            before allowing the dispatch. Empty list means "no restriction on this axis".
+            A principal in <em>denied_principals</em> beats the allow list. When
+            <code class="text-accent-400">tool_rules</code> is non-empty the gate becomes
+            <strong>explicit-allow</strong>: tools that are not listed are denied.
+        </p>
+        <p class="text-[11px] text-gray-600 mt-3">
+            Requires <code class="text-accent-400">MCP_PROXY_TOOL_PDP_ENABLED=true</code> on the
+            Mastio and <code class="text-accent-400">CULLIS_CONNECTOR_TOOL_PDP_ENABLED=true</code>
+            on the Connector. Both default to false.
+        </p>
+    </div>
+
+    <!-- Existing rules table -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 mb-6 card-glow backdrop-blur-sm">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">Current Rules</h3>
+        {% if rules %}
+        <table class="w-full text-xs">
+            <thead class="text-[10px] uppercase tracking-wider text-gray-500 border-b border-gray-800/60">
+                <tr>
+                    <th class="text-left py-2 px-2 font-medium">Tool</th>
+                    <th class="text-left py-2 px-2 font-medium">Allowed principals</th>
+                    <th class="text-left py-2 px-2 font-medium">Denied principals</th>
+                    <th class="text-left py-2 px-2 font-medium">Allowed models</th>
+                    <th class="text-left py-2 px-2 font-medium">Allowed servers</th>
+                    <th class="text-right py-2 px-2 font-medium">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="text-gray-300 font-mono">
+                {% for r in rules %}
+                <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
+                    <td class="py-2 px-2 align-top text-accent-400">{{ r.tool_name }}</td>
+                    <td class="py-2 px-2 align-top text-[11px]">
+                        {% if r.allowed_principals %}
+                        <ul class="space-y-0.5">{% for p in r.allowed_principals %}<li>{{ p }}</li>{% endfor %}</ul>
+                        {% else %}<span class="text-gray-600">any</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-2 align-top text-[11px]">
+                        {% if r.denied_principals %}
+                        <ul class="space-y-0.5">{% for p in r.denied_principals %}<li>{{ p }}</li>{% endfor %}</ul>
+                        {% else %}<span class="text-gray-600">none</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-2 align-top text-[11px]">
+                        {% if r.allowed_models %}
+                        <ul class="space-y-0.5">{% for m in r.allowed_models %}<li>{{ m }}</li>{% endfor %}</ul>
+                        {% else %}<span class="text-gray-600">any</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-2 align-top text-[11px]">
+                        {% if r.allowed_mcp_servers %}
+                        <ul class="space-y-0.5">{% for s in r.allowed_mcp_servers %}<li>{{ s }}</li>{% endfor %}</ul>
+                        {% else %}<span class="text-gray-600">any</span>{% endif %}
+                    </td>
+                    <td class="py-2 px-2 align-top text-right">
+                        <form method="post" action="/proxy/policies/tool-rules/{{ r.tool_name }}/delete" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit"
+                                    onclick="return confirm('Remove tool rule for {{ r.tool_name }}?');"
+                                    class="text-[10px] uppercase tracking-wider text-red-400 hover:text-red-300 transition-colors">
+                                Delete
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-xs text-gray-500 italic">
+            No tool rules configured. With an empty list the tool-call gate runs in
+            legacy default-allow mode (every call is allowed). Add the first rule below
+            to switch to explicit-allow.
+        </p>
+        {% endif %}
+    </div>
+
+    <!-- Add / edit form -->
+    <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+        <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-1">Add or update a rule</h3>
+        <p class="text-xs text-gray-500 mb-5">
+            Saving with an existing tool name overwrites that rule. Lists accept comma or
+            newline separation; each token is trimmed.
+        </p>
+
+        <form method="post" action="/proxy/policies/tool-rules/save" class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+            <div>
+                <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Tool name</label>
+                <input type="text" name="tool_name" required
+                       placeholder="acme.catalog.search"
+                       class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Allowed principals</label>
+                    <textarea name="allowed_principals" rows="3"
+                              placeholder="acme::user::mario@acme.local, acme::user::anna@acme.local"
+                              class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 placeholder-gray-700 font-mono"></textarea>
+                    <p class="text-[10px] text-gray-600 mt-1">Empty = any principal allowed.</p>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Denied principals</label>
+                    <textarea name="denied_principals" rows="3"
+                              placeholder="acme::user::contractor@acme.local"
+                              class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 placeholder-gray-700 font-mono"></textarea>
+                    <p class="text-[10px] text-gray-600 mt-1">Wins over Allowed principals.</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Allowed models</label>
+                    <textarea name="allowed_models" rows="3"
+                              placeholder="claude-haiku-4-5, qwen-72b-chat"
+                              class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 placeholder-gray-700 font-mono"></textarea>
+                    <p class="text-[10px] text-gray-600 mt-1">Empty = any model.</p>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Allowed MCP servers</label>
+                    <textarea name="allowed_mcp_servers" rows="3"
+                              placeholder="acme-catalog-prod"
+                              class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 placeholder-gray-700 font-mono"></textarea>
+                    <p class="text-[10px] text-gray-600 mt-1">Empty = any MCP server.</p>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-end pt-2">
+                <button type="submit"
+                        class="px-5 py-2 text-xs font-semibold rounded transition-all"
+                        style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.05em; text-transform: uppercase;"
+                        onmouseover="this.style.background='#fff'"
+                        onmouseout="this.style.background='#00e5c7'">
+                    Save Rule
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
