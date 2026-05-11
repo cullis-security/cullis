@@ -74,6 +74,10 @@
                 class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
             Activity
         </button>
+        <button type="button" onclick="switchTab('api-tokens')" id="tab-api-tokens"
+                class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
+            API Tokens
+        </button>
         {% if frontdesk_enabled %}
         <button type="button" onclick="switchTab('danger')" id="tab-danger"
                 class="main-tab-btn px-4 py-2.5 text-sm font-medium border-b-2 transition-colors border-transparent text-gray-500 hover:text-gray-300">
@@ -216,8 +220,147 @@
         </div>
     </div>
 
+    <!-- TAB 3: API Tokens (ADR-027) -->
+    <div id="panel-api-tokens" class="main-tab-panel hidden">
+
+        {% if new_api_token %}
+        <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
+            <p class="text-sm font-semibold text-amber-400 mb-2">
+                API token created · save it now
+            </p>
+            <p class="text-xs text-amber-500/80 mb-3">
+                Label: <span class="font-mono text-gray-300">{{ new_api_token_label }}</span>.
+                Hand this to <span class="font-mono text-gray-300">{{ user.user_name }}</span> out-of-band.
+                Paste into LibreChat / Cursor / Cherry Studio under the OpenAI-compat
+                provider config. This value will not be shown again — if lost,
+                revoke + mint a fresh one.
+            </p>
+            <div class="bg-surface-950 border border-amber-700/30 rounded p-3 flex items-center justify-between gap-3">
+                <code class="text-sm text-amber-300 font-mono break-all select-all">{{ new_api_token }}</code>
+                <button type="button"
+                        data-copy="{{ new_api_token|e }}"
+                        class="text-[10px] text-gray-400 hover:text-white uppercase tracking-wider border border-gray-700 rounded px-2 py-1">
+                    copy
+                </button>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if api_token_error %}
+        <div class="mb-6 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">
+            {{ api_token_error }}
+        </div>
+        {% endif %}
+
+        <!-- Create form -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm mb-6">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-3">Create new token</h3>
+            <p class="text-xs text-gray-500 mb-4">
+                Mints a Bearer credential bound to this user principal. The token is shown
+                once on creation. Audit chain attributes every request made with it to
+                <span class="font-mono text-gray-400">{{ user.principal_id }}</span>.
+            </p>
+            <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/api-tokens/create" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div>
+                    <label class="block text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                        Label <span class="text-red-400">*</span>
+                    </label>
+                    <input type="text" name="label" required maxlength="128"
+                           placeholder="e.g. Cursor laptop · LibreChat staging · n8n pipeline"
+                           class="w-full bg-surface-950 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-[#00e5c7]">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                        Expires (optional)
+                    </label>
+                    <input type="date" name="expires_at"
+                           class="bg-surface-950 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 font-mono focus:outline-none focus:border-[#00e5c7]">
+                    <p class="text-[10px] text-gray-600 mt-1">Empty = never expire. Rotate via Revoke + Create.</p>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                        Scope · providers (optional)
+                    </label>
+                    <div class="flex flex-wrap gap-3 text-xs text-gray-300">
+                        {% for p in ["anthropic", "openai", "gemini", "bedrock", "vertex", "ollama"] %}
+                        <label class="inline-flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" name="scope_providers" value="{{ p }}"
+                                   class="accent-[#00e5c7]">
+                            <span class="font-mono">{{ p }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                    <p class="text-[10px] text-gray-600 mt-1">No selection = all configured providers. Hint for the policy layer, not yet enforced as ACL.</p>
+                </div>
+
+                <button type="submit"
+                        class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-[#00e5c7]/10 border border-[#00e5c7]/30 text-[#00e5c7] rounded hover:bg-[#00e5c7]/20 transition-colors">
+                    Mint token
+                </button>
+            </form>
+        </div>
+
+        <!-- Token list -->
+        <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
+            <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-4">
+                Active tokens
+                <span class="text-[10px] text-gray-600 ml-2">({{ api_tokens|length }})</span>
+            </h3>
+            {% if api_tokens %}
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="border-b border-gray-800 text-[10px] uppercase tracking-wider text-gray-600">
+                        <th class="text-left pb-2">Label</th>
+                        <th class="text-left pb-2">Last4</th>
+                        <th class="text-left pb-2">Scope</th>
+                        <th class="text-left pb-2">Created</th>
+                        <th class="text-left pb-2">Last used</th>
+                        <th class="text-left pb-2">Expires</th>
+                        <th class="text-right pb-2"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in api_tokens %}
+                    <tr class="border-b border-gray-900 last:border-0">
+                        <td class="py-3 text-gray-300">{{ t.label }}</td>
+                        <td class="py-3 text-gray-500 font-mono">…{{ t.token_last4 }}</td>
+                        <td class="py-3 text-gray-500 font-mono">
+                            {% if t.scope_providers %}{{ t.scope_providers|join(', ') }}{% else %}all{% endif %}
+                        </td>
+                        <td class="py-3 text-gray-500 font-mono">{{ t.created_at[:19] if t.created_at else '—' }}</td>
+                        <td class="py-3 text-gray-500 font-mono">
+                            {% if t.last_used_at %}{{ t.last_used_at[:19] }}{% else %}<span class="italic">never</span>{% endif %}
+                        </td>
+                        <td class="py-3 text-gray-500 font-mono">
+                            {% if t.expires_at %}{{ t.expires_at[:10] }}{% else %}<span class="italic">never</span>{% endif %}
+                        </td>
+                        <td class="py-3 text-right">
+                            <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/api-tokens/{{ t.id }}/revoke"
+                                  onsubmit="return confirm('Revoke this token? Any client using it will start getting 401.')">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit"
+                                        class="text-[10px] uppercase tracking-wider text-red-400 hover:text-red-300 border border-red-900/40 rounded px-2 py-1 hover:bg-red-900/20 transition-colors">
+                                    Revoke
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-xs text-gray-600 italic">No active tokens. Mint one above to let an OpenAI-compat client (LibreChat / Cursor / Cherry Studio) authenticate as this user against <span class="font-mono text-gray-400">/v1/*</span>.</p>
+            {% endif %}
+        </div>
+
+    </div>
+
     {% if frontdesk_enabled %}
-    <!-- TAB 3: Danger Zone -->
+    <!-- TAB 4: Danger Zone -->
     <div id="panel-danger" class="main-tab-panel hidden">
         <div class="bg-red-900/5 border border-red-900/20 rounded-lg p-6 space-y-6">
             <div>
