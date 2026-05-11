@@ -186,49 +186,18 @@ def decrypt_from_agent(
     return data["payload"], data["inner_signature"]
 
 
-def verify_inner_signature(
-    sender_cert_pem: str,
-    inner_signature_b64: str,
-    session_id: str,
-    sender_agent_id: str,
-    nonce: str,
-    timestamp: int,
-    payload: dict,
-    client_seq: int | None = None,
-) -> bool:
-    """
-    Verify the inner (plaintext) signature after E2E decryption.
-
-    This provides non-repudiation: the recipient can prove the sender
-    signed the plaintext, not just the ciphertext. Returns True if valid,
-    raises ValueError if invalid.
-    """
-    from cryptography import x509 as crypto_x509
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric import padding as asym_pad
-
-    cert = crypto_x509.load_pem_x509_certificate(sender_cert_pem.encode())
-    pub_key = cert.public_key()
-    sig = _b64url_decode(inner_signature_b64)
-
-    # Canonical format must match sign_message() in message_signer.py
-    payload_str = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    if client_seq is not None:
-        canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{client_seq}|{payload_str}".encode("utf-8")
-    else:
-        canonical = f"{session_id}|{sender_agent_id}|{nonce}|{timestamp}|{payload_str}".encode("utf-8")
-
-    try:
-        if isinstance(pub_key, rsa.RSAPublicKey):
-            pss_padding = asym_pad.PSS(
-                mgf=asym_pad.MGF1(hashes.SHA256()),
-                salt_length=asym_pad.PSS.MAX_LENGTH,
-            )
-            pub_key.verify(sig, canonical, pss_padding, hashes.SHA256())
-        elif isinstance(pub_key, ec.EllipticCurvePublicKey):
-            pub_key.verify(sig, canonical, ec.ECDSA(hashes.SHA256()))
-        else:
-            raise ValueError(f"Unsupported key type: {type(pub_key).__name__}")
-        return True
-    except InvalidSignature:
-        raise ValueError("Inner signature verification failed — message may have been tampered with")
+# Wave B E1 (audit 2026-05-11) — ``verify_inner_signature`` removed.
+#
+# The broker copy of ``verify_inner_signature`` was a footgun: pre-fix
+# it accepted any cert whose keypair matched the signature, with no
+# binding of the cert to the claimed ``sender_agent_id``. The SDK
+# twin (``cullis_sdk.crypto.e2e.verify_inner_signature``) was hardened
+# by the H7 audit to delegate to ``verify_cert_for_sender`` (proper
+# SAN/CN binding + trust anchors); the broker copy never received the
+# fix, so importing it would re-introduce the impersonation gap.
+#
+# Audit verified no production caller existed (only tests/cert_factory
+# imports the encrypt half here, and the verify path is referenced
+# exclusively from ``cullis_sdk.crypto.e2e`` in
+# ``tests/test_oneshot_cross_envelope.py``). Deleting the dead branch
+# closes the footgun for future maintainers.
