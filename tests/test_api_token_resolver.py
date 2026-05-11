@@ -45,6 +45,17 @@ async def app_with_real_dep(tmp_path, monkeypatch):
     get_settings.cache_clear()
     await init_db(url)
 
+    # Wave A C3 (audit 2026-05-11) — mint_user_api_token now requires
+    # the principal_id to exist in ``local_user_principals``. Seed the
+    # principals used by tests in this file (orga::user::<name>@orga.test).
+    from tests._token_test_helpers import seed_test_principal
+    for _name in (
+        "alice@orga.test", "bob@orga.test", "carol@orga.test",
+        "dave@orga.test", "erin@orga.test", "frank@orga.test",
+        "grace@orga.test", "heidi@orga.test",
+    ):
+        await seed_test_principal(f"orga::user::{_name}")
+
     # Avoid touching upstream catalogue endpoints — return a static list
     # the assertions can verify.
     async def fake_list_available_models(enabled):

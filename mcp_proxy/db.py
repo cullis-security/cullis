@@ -1553,6 +1553,47 @@ async def mint_user_api_token(
     if not created_by:
         raise ValueError("created_by is required")
 
+    # Audit Wave A C3 (2026-05-11) — pre-fix the mint accepted ANY
+    # ``principal_id``, including foreign-org or non-existent values.
+    # Combined with CRIT-1 that let an attacker mint synthetic
+    # identities and drive both the cert + culk_ surfaces as the same
+    # phantom user. Validate now: principal_id must exist in
+    # ``local_user_principals`` AND its inferred ``::user::`` shape
+    # must point at this Mastio's own org. We deliberately accept
+    # rows regardless of ``surface`` / ``reach`` — those are display
+    # metadata, not authority.
+    from mcp_proxy.config import get_settings
+    settings = get_settings()
+    own_org = (settings.org_id or "").strip()
+    if "::user::" not in principal_id:
+        # culk_ tokens are user-only by ADR-027 Phase 1; refuse
+        # workload / agent / unknown shapes here so the audit trail
+        # cannot point at a phantom typed identity.
+        raise ValueError(
+            f"principal_id must be a user principal "
+            f"(``<org>::user::<name>``); got {principal_id!r}",
+        )
+    if own_org and not principal_id.startswith(f"{own_org}::"):
+        raise ValueError(
+            f"principal_id {principal_id!r} is not in this Mastio's "
+            f"org ({own_org!r}); cannot mint cross-org culk_ tokens",
+        )
+    async with get_db() as _check_conn:
+        existing = (await _check_conn.execute(
+            text(
+                "SELECT 1 FROM local_user_principals "
+                " WHERE principal_id = :pid LIMIT 1"
+            ),
+            {"pid": principal_id},
+        )).first()
+    if existing is None:
+        raise ValueError(
+            f"principal_id {principal_id!r} is not registered in "
+            "local_user_principals; pre-create the user via "
+            "POST /v1/admin/users or via Frontdesk SSO before minting "
+            "tokens for it",
+        )
+
     plaintext = _new_api_token_plaintext()
     token_hash = _hash_api_token(plaintext)
     last4 = plaintext[-4:]

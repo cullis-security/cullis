@@ -271,6 +271,25 @@ def validate_config(settings: "Settings") -> None:
             )
             raise SystemExit(1)
 
+        # Audit Wave A D2 (2026-05-11) — POLICY_ENFORCEMENT=false in
+        # production silently disables every PDP check. The runtime
+        # toggle (``set_policy_enforcement(False)``) is already blocked
+        # in production at the function boundary, but a boot-time env
+        # var ``POLICY_ENFORCEMENT=false`` (e.g. .env / Helm value /
+        # ConfigMap accident) would boot, log nothing critical, and
+        # allow every cross-org session. Mirror the
+        # POLICY_DEFAULT_DECISION gate above so the misconfig surfaces
+        # at startup, not silently in production traffic.
+        if not settings.policy_enforcement:
+            _startup_logger.critical(
+                "POLICY_ENFORCEMENT=false is not permitted in production "
+                "— this disables every PDP check globally and lets "
+                "every cross-org session through with no policy gate. "
+                "Set POLICY_ENFORCEMENT=true (the default) and rely "
+                "on per-org PDP webhooks for the actual decision.",
+            )
+            raise SystemExit(1)
+
         if not settings.database_url or settings.database_url.startswith("sqlite"):
             _startup_logger.critical(
                 "DATABASE_URL is not set or points to SQLite ('%s'). "
