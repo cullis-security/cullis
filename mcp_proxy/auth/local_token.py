@@ -234,10 +234,39 @@ async def issue_local_token(body: TokenRequest, request: Request) -> TokenRespon
         raise _unauthorized("sub does not match client cert")
 
     ttl = _resolve_ttl(request)
-    token = issuer.issue(agent_id=agent_id, ttl_seconds=ttl)
+
+    # Wave B C1 (audit 2026-05-11) — bind the issued LOCAL_TOKEN to the
+    # DPoP key the SDK presented at mint time. The SDK already sends a
+    # ``DPoP`` proof header on every ``POST /v1/auth/token`` (matches the
+    # Court's flow), so we just verify it here, extract the jkt, and
+    # stamp it into the token's ``cnf.jkt`` claim. Replay of a leaked
+    # LOCAL_TOKEN without the bound private key is then rejected by the
+    # ingress dep (``_maybe_local_token``).
+    extra_claims: dict[str, Any] | None = None
+    cnf_jkt = await _maybe_extract_dpop_jkt_at_mint(request)
+    if cnf_jkt is not None:
+        extra_claims = {"cnf": {"jkt": cnf_jkt}}
+    else:
+        from mcp_proxy.config import get_settings as _gs
+        if _gs().local_token_require_dpop:
+            _log.warning(
+                "local /auth/token rejected sub=%s: DPoP proof missing or "
+                "invalid and local_token_require_dpop=true", agent_id,
+            )
+            raise _unauthorized("DPoP proof required for LOCAL_TOKEN binding")
+        _log.warning(
+            "local /auth/token sub=%s: no DPoP binding (legacy Bearer "
+            "fallback). Set MCP_PROXY_LOCAL_TOKEN_REQUIRE_DPOP=true once "
+            "the SDK has rolled out to enforce.", agent_id,
+        )
+
+    token = issuer.issue(
+        agent_id=agent_id, ttl_seconds=ttl, extra_claims=extra_claims,
+    )
     _log.info(
-        "local /auth/token issued sub=%s iss=%s kid=%s ttl=%ds",
+        "local /auth/token issued sub=%s iss=%s kid=%s ttl=%ds dpop=%s",
         agent_id, issuer.issuer, token.kid, ttl,
+        "bound" if cnf_jkt else "unbound",
     )
     return TokenResponse(
         access_token=token.token,
@@ -246,6 +275,41 @@ async def issue_local_token(body: TokenRequest, request: Request) -> TokenRespon
         scope=LOCAL_SCOPE,
         issued_by=issuer.issuer,
     )
+
+
+async def _maybe_extract_dpop_jkt_at_mint(request: Request) -> str | None:
+    """Verify the inbound DPoP proof against ``POST /v1/auth/token`` and
+    return its jkt. Returns ``None`` when no proof header is present or
+    the verification fails (the caller decides between fallback and 401
+    based on the ``local_token_require_dpop`` flag).
+
+    The proof must:
+      * cover ``htm=POST`` and ``htu=<request URL>``
+      * carry a fresh ``jti`` (one-time replay window enforced by the
+        shared JTI store)
+      * be signed by an asymmetric key (RFC 9449 §4.3)
+
+    No ``ath`` is required because the access token doesn't exist yet.
+    Server nonce is not required for the mint hop (the SDK only learns
+    the nonce after the first 401 response, which would brick mint).
+    """
+    proof = request.headers.get("DPoP")
+    if not proof:
+        return None
+    from mcp_proxy.auth.dpop import verify_dpop_proof
+    htu = str(request.url).split("?", 1)[0]
+    try:
+        return await verify_dpop_proof(
+            proof, request.method, htu,
+            access_token=None, require_nonce=False,
+        )
+    except HTTPException as exc:
+        _log.warning(
+            "local /auth/token: inbound DPoP proof invalid (%s) — "
+            "falling back to unbound mint",
+            getattr(exc, "detail", str(exc)),
+        )
+        return None
 
 
 def _resolve_ttl(request: Request) -> int:

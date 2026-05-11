@@ -346,6 +346,23 @@ class ProxySettings(BaseSettings):
     # PROXY_LOCAL_AUTH.
     local_auth_enabled: bool = False
 
+    # Wave B C1 (audit 2026-05-11) — bind LOCAL_TOKEN to a DPoP key.
+    # When the SDK calls ``POST /v1/auth/token`` with a ``DPoP`` proof
+    # header the Mastio extracts the proof's jkt and stamps it into the
+    # token's ``cnf.jkt`` claim. Subsequent requests carrying the
+    # LOCAL_TOKEN must present a fresh DPoP proof signed by the same
+    # key — replay of an exfiltrated token alone is rejected.
+    #
+    # ``local_token_require_dpop`` controls strict mode:
+    #   * False (default): tokens minted without ``cnf.jkt`` (legacy)
+    #     still validate as plain Bearer with a WARN log. New tokens
+    #     get the binding; old ones expire within ``local_auth_token_
+    #     ttl_seconds`` (15 min default) and fall out naturally.
+    #   * True: any LOCAL_TOKEN without ``cnf.jkt`` is rejected at
+    #     mint AND at validation. Use after the SDK has rolled out and
+    #     the existing token TTL has fully expired.
+    local_token_require_dpop: bool = False
+
     # ADR-017 native AI gateway on Mastio. When the Mastio runs litellm
     # in-process (default: ``litellm_embedded``), every chat completion
     # is dispatched without a Court round trip. Set ``backend=portkey``
