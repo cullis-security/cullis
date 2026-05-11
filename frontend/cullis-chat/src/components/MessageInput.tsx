@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 
 interface Props {
   onSend: (text: string) => void;
+  /** Called when the user clicks the Stop button while a turn is streaming. */
+  onCancel?: () => void;
   disabled?: boolean;
   isSending?: boolean;
   /** When set, replaces the textarea content (used by hint buttons). */
@@ -9,7 +11,7 @@ interface Props {
   onDraftConsumed?: () => void;
 }
 
-export function MessageInput({ onSend, disabled, isSending, draft, onDraftConsumed }: Props) {
+export function MessageInput({ onSend, onCancel, disabled, isSending, draft, onDraftConsumed }: Props) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -62,9 +64,20 @@ export function MessageInput({ onSend, disabled, isSending, draft, onDraftConsum
         disabled={disabled}
         aria-label="Message"
       />
-      <button type="submit" className="send" disabled={submitDisabled}>
-        <span className="send-label">{isSending ? 'sending' : 'send'}</span>
-      </button>
+      {isSending ? (
+        <button
+          type="button"
+          className="stop"
+          onClick={() => onCancel?.()}
+          aria-label="Stop streaming"
+        >
+          <span className="stop-label">stop</span>
+        </button>
+      ) : (
+        <button type="submit" className="send" disabled={submitDisabled}>
+          <span className="send-label">send</span>
+        </button>
+      )}
     </form>
   );
 }

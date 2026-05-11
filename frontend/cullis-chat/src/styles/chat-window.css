@@ -177,6 +177,77 @@
   padding-bottom: 0.1rem;
 }
 
+/* Footer slot under an assistant message body. Hosts inline state
+ * surfaces (stopped, stream interrupted) plus the retry affordance. */
+.msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+}
+
+.msg-footer-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.msg-footer-label strong {
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-right: 0.35rem;
+}
+
+.msg-cancelled {
+  background: rgba(110, 113, 128, 0.10);
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 0.66rem;
+}
+
+.msg-error {
+  background: rgba(240, 165, 0, 0.06);
+  border: 1px solid rgba(240, 165, 0, 0.35);
+  color: var(--accent-amber);
+}
+
+.msg-retry {
+  flex-shrink: 0;
+  font-family: var(--font-brand);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.8rem;
+  background: transparent;
+  color: var(--accent-cyan);
+  border: 1px solid var(--accent-cyan-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease-soft),
+              color var(--t-fast) var(--ease-soft),
+              border-color var(--t-fast) var(--ease-soft);
+}
+
+.msg-retry:hover {
+  background: var(--accent-cyan);
+  color: var(--bg-void);
+  border-color: var(--accent-cyan);
+}
+
+.msg-retry:active {
+  transform: translateY(1px);
+}
+
 .tool-chip {
   display: inline-flex;
   align-items: center;
@@ -782,6 +853,46 @@
   color: var(--text-tertiary);
   border-color: var(--border-medium);
   box-shadow: none;
+}
+
+/* STOP: shown in place of send while a turn is streaming. Same footprint
+ * as .send so the input row layout does not shift on transition. Amber tone
+ * to read as 'interrupt', not 'destructive'. */
+.stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 96px;
+  padding: 0.6rem 1.25rem;
+  font-family: var(--font-brand);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: var(--bg-elevated);
+  color: var(--accent-amber);
+  border: 1px solid rgba(240, 165, 0, 0.45);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-button);
+  cursor: pointer;
+  transition: transform var(--t-fast) var(--ease-soft),
+              box-shadow var(--t-fast) var(--ease-soft),
+              background var(--t-fast) var(--ease-soft),
+              border-color var(--t-fast) var(--ease-soft),
+              color var(--t-fast) var(--ease-soft);
+}
+
+.stop:hover {
+  background: var(--accent-amber);
+  color: var(--bg-void);
+  border-color: var(--accent-amber);
+  box-shadow: var(--shadow-button-primary);
+  transform: translateY(-1px);
+}
+
+.stop:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-button-pressed);
 }
 
 
