@@ -1217,10 +1217,20 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         poll_url = (
             f"{_pending.site_url}/v1/enrollment/{_pending.session_id}/status"
         )
+        # M-onb-1 audit fix — Mastio withholds ``cert_pem`` / ``agent_id`` /
+        # ``capabilities`` unless the poll carries a proof-of-possession over
+        # the enrollment keypair. The CLI path (``cullis_connector.enrollment``)
+        # already sends this header; before this fix the dashboard ``/api/status``
+        # path did not, so dashboard-driven enrollment got stuck in
+        # ``"Approved enrollment is missing cert_pem"`` forever once the
+        # admin approved the ticket. Same proof construction as the CLI.
+        from cullis_connector.enrollment import _build_enrollment_proof
+        proof = _build_enrollment_proof(_pending.private_key, _pending.session_id)
         try:
             from cullis_connector.config import verify_arg_for
             resp = httpx.get(
                 poll_url,
+                headers={"X-Enrollment-Proof": proof},
                 verify=verify_arg_for(_pending.verify_tls, config.ca_chain_path),
                 timeout=config.request_timeout_s,
             )
