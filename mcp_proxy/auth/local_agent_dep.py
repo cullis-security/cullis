@@ -47,6 +47,89 @@ def _extract_bearer_or_dpop_token(request: Request) -> str | None:
     return None
 
 
+async def _enforce_local_token_dpop_binding(
+    request: Request,
+    payload,
+    token: str,
+) -> None:
+    """Wave B C1 — close the LOCAL_TOKEN replay window.
+
+    When the token carries ``cnf.jkt`` (post-fix mint), require a fresh
+    DPoP proof from the inbound request:
+      * proof must cover ``request.method`` + the request URL (htu)
+      * proof's jwk thumbprint must match the token's ``cnf.jkt``
+      * proof's ``ath`` must hash this LOCAL_TOKEN
+      * jti is consumed once (replay protection via the shared store)
+
+    When the token has NO ``cnf.jkt`` (legacy, minted before this fix):
+      * if ``local_token_require_dpop=true`` → 401
+      * else log WARN and accept (back-compat for in-flight tokens
+        within the existing TTL window)
+
+    Raises HTTPException(401) on any mismatch. Returns None on success
+    so callers stay terse.
+    """
+    cnf = payload.extra.get("cnf") if isinstance(payload.extra, dict) else None
+    expected_jkt = (cnf or {}).get("jkt") if isinstance(cnf, dict) else None
+
+    if expected_jkt is None:
+        if get_settings().local_token_require_dpop:
+            _log.warning(
+                "LOCAL_TOKEN sub=%s rejected: no cnf.jkt and "
+                "local_token_require_dpop=true",
+                payload.agent_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="LOCAL_TOKEN missing cnf.jkt — re-login required",
+                headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
+            )
+        _log.warning(
+            "LOCAL_TOKEN sub=%s accepted without DPoP binding (legacy "
+            "token; flip MCP_PROXY_LOCAL_TOKEN_REQUIRE_DPOP=true once "
+            "all clients have re-logged in)",
+            payload.agent_id,
+        )
+        return
+
+    proof = request.headers.get("DPoP")
+    if not proof:
+        _log.info(
+            "LOCAL_TOKEN sub=%s rejected: cnf.jkt present but no DPoP "
+            "proof header on request",
+            payload.agent_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="LOCAL_TOKEN is DPoP-bound but no DPoP proof presented",
+            headers={"WWW-Authenticate": 'DPoP realm="mcp-proxy"'},
+        )
+
+    from mcp_proxy.auth.dpop import verify_dpop_proof
+    htu = str(request.url).split("?", 1)[0]
+    try:
+        proof_jkt = await verify_dpop_proof(
+            proof, request.method, htu,
+            access_token=token, require_nonce=False,
+        )
+    except HTTPException:
+        # verify_dpop_proof already raises 401 with a meaningful detail
+        # (which is intentionally generic in upstream telemetry); just
+        # propagate.
+        raise
+    if proof_jkt != expected_jkt:
+        _log.info(
+            "LOCAL_TOKEN sub=%s rejected: DPoP proof jkt %s does not "
+            "match cnf.jkt %s",
+            payload.agent_id, proof_jkt, expected_jkt,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="DPoP proof key does not match LOCAL_TOKEN cnf.jkt",
+            headers={"WWW-Authenticate": 'DPoP realm="mcp-proxy"'},
+        )
+
+
 async def _is_known_local_kid(token: str, keystore) -> bool:
     """Pre-check: the token's ``kid`` matches a keystore row that is
     still valid for verification (active OR within the grace window).
@@ -117,6 +200,11 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
             detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
+
+    # Wave B C1 (audit 2026-05-11) — enforce DPoP binding when the
+    # token carries cnf.jkt. Legacy tokens (no cnf.jkt) fall back per
+    # the local_token_require_dpop flag.
+    await _enforce_local_token_dpop_binding(request, payload, token)
 
     # ADR-020 — typed principals (user / workload) skip the
     # internal_agents lookup. Mirrors the analogous branch in
@@ -211,6 +299,11 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
             detail="local token rejected",
             headers={"WWW-Authenticate": 'Bearer realm="mcp-proxy"'},
         ) from exc
+
+    # Wave B C1 (audit 2026-05-11) — same DPoP binding enforcement on
+    # the egress dep so /v1/egress/* doesn't accept replay of an
+    # exfiltrated LOCAL_TOKEN. Mirrors _maybe_local_token above.
+    await _enforce_local_token_dpop_binding(request, payload, token)
 
     # ADR-020 — typed principals (user / workload) authenticate via the
     # token's ``::user::`` / ``::workload::`` SPIFFE id, validated above
