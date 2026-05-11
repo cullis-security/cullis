@@ -41,6 +41,7 @@ from mcp_proxy.egress.ai_gateway import (
 from mcp_proxy.egress.provider_catalog import (
     PROVIDERS,
     list_available_models,
+    parse_provider_from_model,
 )
 from mcp_proxy.egress.schemas import ChatCompletionRequest
 from mcp_proxy.models import InternalAgent
@@ -63,6 +64,46 @@ async def chat_completions(
 ):
     settings = get_settings()
     trace_id = f"trace_{uuid.uuid4().hex[:16]}"
+
+    # Wave A PR3 (audit 2026-05-11 Tema A) — enforce ``scope_providers``
+    # on culk_-authed callers. Pre-fix this field was stored at mint
+    # time and never read; a token "anthropic only" worked on every
+    # provider configured on this Mastio. Now: when the caller's
+    # InternalAgent envelope carries a non-empty ``scope_providers``,
+    # the resolved provider for the request model MUST be in the list,
+    # else 403. Cert+DPoP / LOCAL_TOKEN auth leaves
+    # ``agent.scope_providers`` as ``None`` so this gate is a no-op
+    # for them.
+    if agent.scope_providers:
+        try:
+            req_provider = parse_provider_from_model(req.model)
+        except Exception:  # noqa: BLE001 — parse failure → deny
+            req_provider = None
+        if req_provider is None or req_provider not in agent.scope_providers:
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="egress_llm_chat",
+                status="denied",
+                details={
+                    "event": "llm.chat_completion",
+                    "principal_id": agent.agent_id,
+                    "principal_type": agent.principal_type,
+                    "model": req.model,
+                    "trace_id": trace_id,
+                    "reason": "token_scope_provider_mismatch",
+                    "requested_provider": req_provider,
+                    "scope_providers": agent.scope_providers,
+                },
+            )
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "reason": "token_scope_provider_mismatch",
+                    "trace_id": trace_id,
+                    "requested_provider": req_provider,
+                    "allowed_providers": agent.scope_providers,
+                },
+            )
 
     if settings.llm_tokens_per_minute > 0:
         token_limiter = get_token_sum_limiter()

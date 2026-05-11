@@ -76,6 +76,17 @@ class InternalAgent(BaseModel):
     # key on this so a user named "daniele" never collides with an
     # agent named "daniele".
     principal_type: str = "agent"
+    # Wave A PR3 (audit 2026-05-11 Tema A) — culk_ token scope.
+    # ``None`` = caller did not auth via a culk_ token (cert / DPoP
+    # path); these scope fields don't apply. Empty list ``[]`` from a
+    # culk_ token = "no providers explicitly listed", interpreted as
+    # "no AI provider gate". A non-empty list of provider names (e.g.
+    # ``["anthropic"]``) restricts /v1/chat/completions to those
+    # providers. ``scope_paths`` defaults to ``["/v1/*"]`` at mint
+    # time so the OpenAI-compat surface is the only allowed reach
+    # unless the operator widens it explicitly.
+    scope_providers: list[str] | None = None
+    scope_paths: list[str] | None = None
 
 
 class AuditEntry(BaseModel):

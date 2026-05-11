@@ -43,9 +43,10 @@ Audit:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 
 from mcp_proxy.db import (
     touch_user_api_token,
@@ -54,6 +55,29 @@ from mcp_proxy.db import (
 from mcp_proxy.models import InternalAgent
 
 _log = logging.getLogger("mcp_proxy.auth.api_token")
+
+
+def _path_matches_globs(request_path: str, patterns: list[str]) -> bool:
+    """True if ``request_path`` matches any glob in ``patterns``.
+
+    Glob semantics: ``*`` matches any character including ``/`` (so
+    ``/v1/*`` matches the entire ``/v1/...`` subtree). This is the
+    permissive shape operators expect when they mint a token "for the
+    OpenAI-compat surface" — a stricter ``no-slash`` glob would force
+    them to enumerate every nested route.
+
+    Empty ``patterns`` is treated as "unscoped" (caller should have
+    short-circuited that case before calling this helper).
+    """
+    if not patterns:
+        return True
+    for pattern in patterns:
+        # Translate glob → regex: escape every literal char, then
+        # replace the escaped ``\*`` with ``.*``. Anchor full match.
+        regex = "^" + re.escape(pattern).replace(r"\*", ".*") + "$"
+        if re.fullmatch(regex, request_path):
+            return True
+    return False
 
 # Header name + scheme — case-insensitive parse below. ``culk_`` is the
 # stable prefix documented in ADR-027 §wire format.
@@ -157,6 +181,29 @@ async def _maybe_api_token_principal(request: Request) -> InternalAgent | None:
         # that happens to share the Bearer scheme.
         return None
 
+    # Wave A PR3 (audit 2026-05-11 Tema A) — enforce ``scope_paths``
+    # at the resolver. Pre-fix the field was stored at mint time and
+    # never read; a token "scoped" to ``/v1/chat/completions`` worked
+    # on every endpoint guarded by ``get_agent_from_dpop_client_cert``,
+    # i.e. the entire egress + A2A surface. Now: if the token has
+    # non-empty ``scope_paths``, the request path MUST match at least
+    # one glob, else 403. Default mint sets ``["/v1/*"]`` so any
+    # non-OpenAI-compat call from a culk_-only client is refused.
+    scope_paths = row.get("scope_paths") or []
+    if scope_paths and not _path_matches_globs(request.url.path, scope_paths):
+        _log.warning(
+            "culk_ token denied: path %r not in scope_paths %r "
+            "(token id=%s, principal=%s)",
+            request.url.path, scope_paths,
+            row.get("id"), row.get("principal_id"),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "API token scope_paths does not allow this request path"
+            ),
+        )
+
     # Best-effort last_used touch. Never raises (see helper docstring).
     await touch_user_api_token(row["id"], client_ip=_client_ip(request))
 
@@ -175,4 +222,9 @@ async def _maybe_api_token_principal(request: Request) -> InternalAgent | None:
         # without forcing scope here; egress paths don't enforce reach.
         reach="both",
         principal_type=_principal_type_for(principal_id),
+        # Pass scope down to the AI gateway dispatcher (PR3) so it can
+        # enforce scope_providers on /v1/chat/completions. Other auth
+        # paths (cert+DPoP, LOCAL_TOKEN) leave these as None.
+        scope_providers=row.get("scope_providers") or [],
+        scope_paths=scope_paths,
     )
