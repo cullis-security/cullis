@@ -146,6 +146,53 @@ def generate_org_ca(org_id: str) -> tuple[str, str]:
     return cert_pem, key_pem
 
 
+# Wave B G1 (audit 2026-05-11) — SSRF guard for the dashboard's three
+# outbound-fetch test endpoints (test-connection / test-webhook /
+# vault/test). Refuses loopback / RFC1918 / link-local / reserved IPs
+# unless ``allow_private=True`` (the Vault case in docker-compose).
+# Resolves the hostname so a public DNS that points at 127.0.0.1
+# can't bypass the check via a CNAME.
+def _enforce_safe_outbound_url(url: str, *, allow_private: bool = False) -> None:
+    """Raise ValueError when ``url`` resolves to a forbidden target.
+
+    The check parses the URL, resolves the hostname, and inspects every
+    returned IP. ``allow_private=True`` skips the RFC1918/loopback ban
+    for legitimate same-network targets (Vault, dev fixtures); the
+    hostname-resolution + scheme check still fires."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"Only http(s) URLs are allowed (got scheme {parsed.scheme!r})"
+        )
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL has no hostname")
+    if not allow_private and hostname in (
+        "localhost", "127.0.0.1", "::1", "0.0.0.0",
+    ):
+        raise ValueError(f"URL points to loopback address: {hostname}")
+    try:
+        addrs = socket.getaddrinfo(
+            hostname, parsed.port or (443 if parsed.scheme == "https" else 80),
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve hostname: {hostname}") from exc
+    for _family, _type, _proto, _canonname, sockaddr in addrs:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if not allow_private and (
+            ip.is_private or ip.is_loopback
+            or ip.is_link_local or ip.is_reserved
+        ):
+            raise ValueError(
+                f"URL resolves to private/reserved IP: {ip}"
+            )
+
+
 async def _test_vault_connectivity(vault_addr: str, vault_token: str) -> tuple[bool, str]:
     """Test Vault connectivity. Returns (success, message)."""
     import httpx
@@ -1126,9 +1173,22 @@ async def _setup_submit_standalone(
 @router.post("/setup/test-connection")
 async def setup_test_connection(request: Request):
     """HTMX endpoint: test broker connectivity."""
+    import html as _html
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return HTMLResponse('<span class="text-red-400">Not authenticated</span>')
+
+    # Wave B G1 (audit 2026-05-11) — verify CSRF on this state-affecting
+    # outbound-fetch endpoint, refuse RFC1918 / loopback / link-local
+    # targets, and HTML-escape any exception text we render. Pre-fix
+    # the handler did none of the three: any cross-site page that the
+    # admin visited could trigger arbitrary outbound HTTP from the
+    # Mastio host; ``Connection failed: {exc}`` echoed httpx error
+    # text containing the URL into innerHTML which reflected XSS.
+    if not await verify_csrf(request, session):
+        return HTMLResponse(
+            '<span class="text-red-400">CSRF check failed</span>'
+        )
 
     form = await request.form()
     broker_url = str(form.get("broker_url", "")).strip()
@@ -1136,6 +1196,13 @@ async def setup_test_connection(request: Request):
     if not broker_url:
         return HTMLResponse(
             '<span class="text-red-400">Enter a broker URL first</span>'
+        )
+
+    try:
+        _enforce_safe_outbound_url(broker_url)
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<span class="text-red-400">{_html.escape(str(exc))}</span>'
         )
 
     try:
@@ -1153,7 +1220,8 @@ async def setup_test_connection(request: Request):
             )
     except Exception as exc:
         return HTMLResponse(
-            f'<span class="text-red-400">Connection failed: {exc}</span>'
+            f'<span class="text-red-400">Connection failed: '
+            f'{_html.escape(str(exc))}</span>'
         )
 
 
@@ -1781,15 +1849,27 @@ async def policies_save(request: Request):
 @router.post("/policies/test-webhook")
 async def policies_test_webhook(request: Request):
     """HTMX endpoint: test PDP webhook connectivity."""
+    import html as _html
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return HTMLResponse('<span class="text-red-400">Not authenticated</span>')
+
+    # Wave B G1 — verify CSRF + SSRF allow-list + escape exception text
+    if not await verify_csrf(request, session):
+        return HTMLResponse('<span class="text-red-400">CSRF check failed</span>')
 
     form = await request.form()
     webhook_url = str(form.get("pdp_url", "")).strip()
 
     if not webhook_url:
         return HTMLResponse('<span class="text-red-400">Enter a webhook URL first</span>')
+
+    try:
+        _enforce_safe_outbound_url(webhook_url)
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<span class="text-red-400">{_html.escape(str(exc))}</span>'
+        )
 
     try:
         import httpx
@@ -1812,7 +1892,8 @@ async def policies_test_webhook(request: Request):
             )
     except Exception as exc:
         return HTMLResponse(
-            f'<span class="text-red-400">Connection failed: {exc}</span>'
+            f'<span class="text-red-400">Connection failed: '
+            f'{_html.escape(str(exc))}</span>'
         )
 
 
@@ -2726,9 +2807,17 @@ async def vault_save(request: Request):
 @router.post("/vault/test")
 async def vault_test(request: Request):
     """HTMX endpoint: test Vault connectivity."""
+    import html as _html
     session = require_login(request)
     if isinstance(session, RedirectResponse):
         return HTMLResponse('<span class="text-red-400">Not authenticated</span>')
+
+    # Wave B G1 — verify CSRF + SSRF allow-list (Vault behind a docker
+    # network is the legitimate case; ``allow_private=True`` honours
+    # the same flag that PDP webhooks use, so docker-compose vault://
+    # addresses keep working).
+    if not await verify_csrf(request, session):
+        return HTMLResponse('<span class="text-red-400">CSRF check failed</span>')
 
     form = await request.form()
     vault_addr = str(form.get("vault_addr", "")).strip()
@@ -2736,6 +2825,13 @@ async def vault_test(request: Request):
 
     if not vault_addr:
         return HTMLResponse('<span class="text-red-400">Enter a Vault address first</span>')
+
+    try:
+        _enforce_safe_outbound_url(vault_addr, allow_private=True)
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<span class="text-red-400">{_html.escape(str(exc))}</span>'
+        )
 
     if not vault_token:
         # Try stored token
@@ -2752,7 +2848,7 @@ async def vault_test(request: Request):
             '<span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"></span>'
             'Vault connected and unsealed</span>'
         )
-    return HTMLResponse(f'<span class="text-red-400">{msg}</span>')
+    return HTMLResponse(f'<span class="text-red-400">{_html.escape(msg)}</span>')
 
 
 @router.post("/vault/migrate-keys")
@@ -3457,13 +3553,18 @@ async def users_create(request: Request):
 
     # Redirect to the per-user detail page rather than the list — the
     # banner with the one-time temp password lands where the admin is
-    # most likely to dwell (and where they can click Reset Password
-    # again if they lose the value). On the list page the banner is
-    # easy to miss and gone the moment the admin clicks anywhere else.
+    # most likely to dwell. Wave B G2 (audit 2026-05-11): the cleartext
+    # password used to ride in ``?new_pw=`` and landed in nginx logs +
+    # browser history + Referer headers. Now the redirect carries an
+    # opaque single-consume ticket; the detail page resolves it
+    # server-side and renders the password without ever putting it on
+    # the wire as a URL parameter.
     from urllib.parse import quote
+    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
     target_pid = f"{org_id}::user::{user_name}" if org_id else f"::user::{user_name}"
+    ticket = mint_password_ticket(temp_password)
     return RedirectResponse(
-        f"/proxy/users/{quote(target_pid, safe='')}?new_pw={quote(temp_password)}",
+        f"/proxy/users/{quote(target_pid, safe='')}?new_pw_ticket={quote(ticket)}",
         status_code=303,
     )
 
@@ -3512,8 +3613,32 @@ async def user_detail_page(principal_id: str, request: Request):
     except Exception:
         org_id, trust_domain = "", "cullis.local"
 
-    reset_temp_password = request.query_params.get("reset_pw")
-    new_user_temp_password = request.query_params.get("new_pw")
+    # Wave B G2 (audit 2026-05-11) — resolve the single-consume tickets
+    # carried in the redirect URL. Tickets pop on read; a refresh of
+    # this page does not re-render the cleartext. Pre-fix the
+    # cleartext rode in ``?new_pw=`` / ``?reset_pw=`` and landed in
+    # nginx logs / browser history / Referer headers.
+    from mcp_proxy.dashboard._pwd_tickets import consume_password_ticket
+    reset_temp_password = consume_password_ticket(
+        request.query_params.get("reset_pw_ticket")
+    )
+    new_user_temp_password = consume_password_ticket(
+        request.query_params.get("new_pw_ticket")
+    )
+    # Back-compat: if a stale page has the old URL shape, still render
+    # the cleartext but log a warning so operators notice.
+    if reset_temp_password is None and request.query_params.get("reset_pw"):
+        _log.warning(
+            "user_detail_page: legacy reset_pw URL parameter received "
+            "(post-G2 the create-user/reset-pwd handlers should redirect "
+            "with reset_pw_ticket instead)",
+        )
+        reset_temp_password = request.query_params.get("reset_pw")
+    if new_user_temp_password is None and request.query_params.get("new_pw"):
+        _log.warning(
+            "user_detail_page: legacy new_pw URL parameter received",
+        )
+        new_user_temp_password = request.query_params.get("new_pw")
     action_message = request.query_params.get("ok")
     error = request.query_params.get("error")
 
@@ -3600,9 +3725,12 @@ async def users_reset_password(principal_id: str, request: Request):
             status_code=303,
         )
 
+    # Wave B G2 — single-consume ticket instead of cleartext in URL.
     from urllib.parse import quote
+    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
+    ticket = mint_password_ticket(new_pw)
     return RedirectResponse(
-        f"/proxy/users/{quote(principal_id)}?reset_pw={quote(new_pw)}",
+        f"/proxy/users/{quote(principal_id)}?reset_pw_ticket={quote(ticket)}",
         status_code=303,
     )
 

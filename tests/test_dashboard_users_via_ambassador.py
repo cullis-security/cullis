@@ -210,7 +210,14 @@ async def test_users_create_forwards_to_ambassador_and_redirects_to_detail(
             assert r.status_code == 303, r.text
             loc = r.headers["location"]
             assert "/proxy/users/" in loc
-            assert "new_pw=" in loc, "temp password must be in redirect query"
+            # Wave B G2 (audit 2026-05-11) — redirect now carries an
+            # opaque single-consume ticket instead of the cleartext
+            # password. The detail page resolves the ticket to the
+            # cleartext server-side; pre-fix the cleartext was in the
+            # URL and landed in nginx logs / browser history / Referer.
+            assert "new_pw_ticket=" in loc, (
+                "temp password ticket must be in redirect query"
+            )
     # Forwarded call shape
     assert len(calls) == 1
     c = calls[0]
@@ -295,7 +302,8 @@ async def test_users_reset_password_forwards_and_surfaces_new_temp(
             )
             assert r.status_code == 303, r.text
             loc = r.headers["location"]
-            assert "reset_pw=" in loc
+            # Wave B G2 — opaque ticket replaces cleartext password.
+            assert "reset_pw_ticket=" in loc
     assert len(calls) == 1
     c = calls[0]
     assert c["method"] == "POST"
@@ -458,7 +466,10 @@ async def test_plaintext_temp_password_never_logged(tmp_path, monkeypatch):
             # with error), but for the leak check we just want to verify
             # that whatever 16-char strings might exist NEVER end up in
             # _log calls. So we synthesise a probe password too.
-            assert "new_pw=" in loc or "Frontdesk+rejected" in loc, loc
+            # Wave B G2 — opaque ticket replaces cleartext password.
+            assert (
+                "new_pw_ticket=" in loc or "Frontdesk+rejected" in loc
+            ), loc
 
     # No log entry may carry a 16-char unambiguous string that matches
     # the alphabet — that would be a leak. Heuristic: scan every arg
