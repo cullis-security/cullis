@@ -307,7 +307,9 @@ async def test_user_detail_shows_one_time_banner_when_new_token_query_present(pr
     # Just render the page with the query param; we don't need to
     # actually mint here — the template branch is gated on the param.
     from urllib.parse import quote
-    csrf = await _csrf(proxy_logged_in, pid)  # also seeds the row
+    # Seeds the local_user_principals row (return value intentionally
+    # discarded — we don't POST anything in this test, just GET).
+    await _csrf(proxy_logged_in, pid)
     fake_token = "culk_" + "x" * 52
     page = await proxy_logged_in.get(
         f"/proxy/users/{quote(pid, safe='')}?new_token={quote(fake_token)}&new_token_label=demo",
