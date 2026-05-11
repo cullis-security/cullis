@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import update
 
-from app.db.audit import AuditLog, log_event, verify_chain, compute_entry_hash
+from app.db.audit import AuditLog, log_event, verify_chain
 from tests.conftest import TestSessionLocal
 
 pytestmark = pytest.mark.asyncio

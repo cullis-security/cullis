@@ -375,8 +375,16 @@ async def test_audit_dual_write_on_forward(client: AsyncClient):
     peer_map = {r.org_id: r.peer_org_id for r in rows}
     assert peer_map["acme10"] == "globex10"
     assert peer_map["globex10"] == "acme10"
-    for row in rows:
-        assert row.peer_row_hash is not None
+    # Wave B PR5 (CRIT-3) — atomic-insert audit chain dropped the
+    # post-insert back-fill of row_first.peer_row_hash (would trip the
+    # new append-only trigger). Cross-row linkage is now asymmetric:
+    # row_second carries peer_row_hash=row_first.entry_hash at INSERT
+    # time, row_first stays NULL. Cross-reconciliation still works via
+    # the single forward link.
+    peer_hashes = [r.peer_row_hash for r in rows]
+    assert sum(1 for h in peer_hashes if h) == 1, (
+        f"exactly one cross-row should carry peer_row_hash, got {peer_hashes}"
+    )
 
 
 async def test_sweeper_expires_ttl_rows(client: AsyncClient, monkeypatch):
