@@ -18,13 +18,16 @@ Design choices:
     their existing tables aren't recreated.
 """
 import asyncio
+import base64
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
 
+import bcrypt
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from sqlalchemy import inspect, text
@@ -1378,5 +1381,317 @@ async def set_ai_provider_enabled(provider: str, enabled: bool) -> bool:
                 "WHERE provider = :p"
             ),
             {"p": provider.lower(), "en": bool(enabled), "ts": ts},
+        )
+    return (result.rowcount or 0) > 0
+
+
+# ── User API tokens (ADR-027) ──────────────────────────────────────────────
+
+# Plaintext token wire format: ``culk_`` + 52 chars (256-bit body, base32 lower,
+# strip padding). Total length 57 chars. Stable prefix lets downstream tooling
+# (audit greps, log scrubbers, secret scanners) recognise the token class.
+_API_TOKEN_PREFIX = "culk_"
+_API_TOKEN_BODY_BYTES = 32
+_API_TOKEN_BODY_LEN = 52  # base32(32B) without padding
+_API_TOKEN_FULL_LEN = len(_API_TOKEN_PREFIX) + _API_TOKEN_BODY_LEN
+
+# bcrypt cost. 12 ≈ 200ms on commodity hardware; balances offline-crack
+# resistance and per-request auth latency. Matches dashboard password hash.
+_API_TOKEN_BCRYPT_COST = 12
+
+
+def _new_api_token_plaintext() -> str:
+    """Return a fresh ``culk_<52 base32 chars>`` token string."""
+    raw = secrets.token_bytes(_API_TOKEN_BODY_BYTES)
+    body = base64.b32encode(raw).decode("ascii").rstrip("=").lower()
+    # base32(32 bytes) = 52 chars without padding — never 51 or 53. Assert
+    # tightens any silent change in the stdlib.
+    assert len(body) == _API_TOKEN_BODY_LEN, f"unexpected body length: {len(body)}"
+    return f"{_API_TOKEN_PREFIX}{body}"
+
+
+def _hash_api_token(plaintext: str) -> str:
+    """Return the bcrypt hash of ``plaintext`` as an ASCII string."""
+    return bcrypt.hashpw(
+        plaintext.encode("utf-8"),
+        bcrypt.gensalt(rounds=_API_TOKEN_BCRYPT_COST),
+    ).decode("ascii")
+
+
+def _check_api_token(plaintext: str, hashed: str) -> bool:
+    """Constant-time bcrypt compare."""
+    try:
+        return bcrypt.checkpw(plaintext.encode("utf-8"), hashed.encode("ascii"))
+    except (ValueError, TypeError):
+        # Malformed hash row in DB — refuse, do not raise to caller.
+        return False
+
+
+def _new_token_id() -> str:
+    """Return a 22-char URL-safe unique id for a token row."""
+    return secrets.token_urlsafe(16)
+
+
+async def mint_user_api_token(
+    *,
+    principal_id: str,
+    label: str,
+    created_by: str,
+    scope_providers: list[str] | None = None,
+    scope_paths: list[str] | None = None,
+    expires_at: str | None = None,
+) -> dict:
+    """Mint a new API token for a user principal.
+
+    Returns a dict with the cleartext token in the ``token`` field — this
+    is the ONLY time the cleartext is visible to the caller. Subsequent
+    reads (``get_user_api_token``, ``list_user_api_tokens``) return only
+    metadata + ``token_last4``.
+
+    Arguments:
+        principal_id: ``local_user_principals.principal_id`` (user::name)
+        label: operator-visible name, e.g. ``"Cursor laptop daniele"``
+        created_by: principal_id of the admin or self-mint user
+        scope_providers: empty list = no restriction; ``["anthropic"]`` =
+            only that provider. Stored verbatim, not enforced here.
+        scope_paths: defaults to ``["/v1/*"]``. Stored verbatim.
+        expires_at: ISO-8601 UTC, or ``None`` for no expiry.
+    """
+    if not principal_id:
+        raise ValueError("principal_id is required")
+    if not label or not label.strip():
+        raise ValueError("label is required")
+    if not created_by:
+        raise ValueError("created_by is required")
+
+    plaintext = _new_api_token_plaintext()
+    token_hash = _hash_api_token(plaintext)
+    last4 = plaintext[-4:]
+    token_id = _new_token_id()
+    ts = datetime.now(timezone.utc).isoformat()
+    providers_json = json.dumps(
+        sorted(scope_providers or []), separators=(",", ":"),
+    )
+    paths_json = json.dumps(
+        scope_paths if scope_paths is not None else ["/v1/*"],
+        separators=(",", ":"),
+    )
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """INSERT INTO user_api_tokens (
+                       id, principal_id, label,
+                       token_hash, token_last4,
+                       scope_providers_json, scope_paths_json,
+                       created_at, created_by, expires_at
+                   ) VALUES (
+                       :id, :pid, :label,
+                       :hash, :last4,
+                       :prov, :paths,
+                       :ts, :cb, :exp
+                   )"""
+            ),
+            {
+                "id": token_id,
+                "pid": principal_id,
+                "label": label.strip(),
+                "hash": token_hash,
+                "last4": last4,
+                "prov": providers_json,
+                "paths": paths_json,
+                "ts": ts,
+                "cb": created_by,
+                "exp": expires_at,
+            },
+        )
+    return {
+        "id": token_id,
+        "principal_id": principal_id,
+        "label": label.strip(),
+        "token": plaintext,           # only here, never returned again
+        "token_last4": last4,
+        "scope_providers": sorted(scope_providers or []),
+        "scope_paths": scope_paths if scope_paths is not None else ["/v1/*"],
+        "created_at": ts,
+        "created_by": created_by,
+        "expires_at": expires_at,
+        "last_used_at": None,
+        "last_used_ip": None,
+        "revoked_at": None,
+        "revoked_by": None,
+    }
+
+
+def _row_to_token_dict(row: Mapping[str, Any], include_hash: bool = False) -> dict:
+    """Project a DB row into the public dict shape used by the API."""
+    try:
+        providers = json.loads(row["scope_providers_json"] or "[]")
+    except (TypeError, ValueError):
+        providers = []
+    try:
+        paths = json.loads(row["scope_paths_json"] or '["/v1/*"]')
+    except (TypeError, ValueError):
+        paths = ["/v1/*"]
+    out = {
+        "id":               row["id"],
+        "principal_id":     row["principal_id"],
+        "label":            row["label"],
+        "token_last4":      row["token_last4"],
+        "scope_providers":  providers,
+        "scope_paths":      paths,
+        "created_at":       row["created_at"],
+        "created_by":       row["created_by"],
+        "last_used_at":     row["last_used_at"],
+        "last_used_ip":     row["last_used_ip"],
+        "expires_at":       row["expires_at"],
+        "revoked_at":       row["revoked_at"],
+        "revoked_by":       row["revoked_by"],
+    }
+    if include_hash:
+        out["token_hash"] = row["token_hash"]
+    return out
+
+
+async def get_user_api_token(token_id: str) -> dict | None:
+    """Fetch a token row by id, including revoked/expired rows."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT id, principal_id, label, token_hash, token_last4, "
+                "scope_providers_json, scope_paths_json, created_at, created_by, "
+                "last_used_at, last_used_ip, expires_at, revoked_at, revoked_by "
+                "FROM user_api_tokens WHERE id = :id"
+            ),
+            {"id": token_id},
+        )
+        row = result.mappings().first()
+    if row is None:
+        return None
+    return _row_to_token_dict(row)
+
+
+async def list_user_api_tokens(
+    principal_id: str | None = None,
+    *,
+    include_revoked: bool = False,
+) -> list[dict]:
+    """List token rows ordered by created_at desc.
+
+    With ``principal_id=None`` returns all tokens across all users — used
+    by the admin Cross-org view. With a specific ``principal_id`` returns
+    only that user's tokens.
+
+    By default skips revoked rows; pass ``include_revoked=True`` for audit
+    use cases (dashboard "show history").
+    """
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if principal_id is not None:
+        clauses.append("principal_id = :pid")
+        params["pid"] = principal_id
+    if not include_revoked:
+        clauses.append("revoked_at IS NULL")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = (
+        "SELECT id, principal_id, label, token_hash, token_last4, "
+        "scope_providers_json, scope_paths_json, created_at, created_by, "
+        "last_used_at, last_used_ip, expires_at, revoked_at, revoked_by "
+        "FROM user_api_tokens" + where + " ORDER BY created_at DESC"
+    )
+    async with get_db() as conn:
+        result = await conn.execute(text(sql), params)
+        rows = result.mappings().all()
+    return [_row_to_token_dict(r) for r in rows]
+
+
+async def _find_active_token_candidates_by_last4(last4: str) -> list[dict]:
+    """Return active (not revoked, not expired) tokens whose ``token_last4``
+    matches. Includes ``token_hash`` for bcrypt verification in the resolver.
+
+    The list is typically 0-2 entries on a healthy deployment because
+    last4 has ~65k buckets. The resolver bcrypt-checks each candidate.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "SELECT id, principal_id, label, token_hash, token_last4, "
+                "scope_providers_json, scope_paths_json, created_at, created_by, "
+                "last_used_at, last_used_ip, expires_at, revoked_at, revoked_by "
+                "FROM user_api_tokens "
+                "WHERE token_last4 = :last4 "
+                "  AND revoked_at IS NULL "
+                "  AND (expires_at IS NULL OR expires_at > :now)"
+            ),
+            {"last4": last4, "now": now_iso},
+        )
+        rows = result.mappings().all()
+    return [_row_to_token_dict(r, include_hash=True) for r in rows]
+
+
+async def verify_user_api_token(plaintext: str) -> dict | None:
+    """Resolve a plaintext API token to its row.
+
+    Returns the public token dict (no hash) on success, or ``None`` if no
+    active row matches. Constant-ish time even for unknown tokens:
+    bcrypt is run on every candidate; if zero candidates match the last4
+    prefix the function returns quickly, but that timing leak is bounded
+    by the size of the keyspace (~65k buckets) and is acceptable for the
+    threat model (ADR-027 §threat model).
+    """
+    if not plaintext or not plaintext.startswith(_API_TOKEN_PREFIX):
+        return None
+    if len(plaintext) != _API_TOKEN_FULL_LEN:
+        return None
+    last4 = plaintext[-4:]
+    candidates = await _find_active_token_candidates_by_last4(last4)
+    for cand in candidates:
+        if _check_api_token(plaintext, cand["token_hash"]):
+            # Drop the hash before handing back to caller — never let it
+            # leave this function. Defence-in-depth against accidental
+            # logging of the row.
+            cand.pop("token_hash", None)
+            return cand
+    return None
+
+
+async def touch_user_api_token(token_id: str, *, client_ip: str | None) -> None:
+    """Update ``last_used_at`` (and optionally ``last_used_ip``) on auth hit.
+
+    Best-effort: failures are logged but not raised. The auth path must
+    not break because of a stat-tracking UPDATE.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE user_api_tokens "
+                    "SET last_used_at = :ts, last_used_ip = :ip "
+                    "WHERE id = :id"
+                ),
+                {"id": token_id, "ts": ts, "ip": client_ip},
+            )
+    except Exception:  # noqa: BLE001
+        _log = logging.getLogger("mcp_proxy.db.api_tokens")
+        _log.warning("failed to touch user_api_token %s", token_id, exc_info=True)
+
+
+async def revoke_user_api_token(token_id: str, *, revoked_by: str) -> bool:
+    """Mark a token as revoked.
+
+    Returns True if the row was updated (was active), False if no-op
+    (already revoked or unknown id). Revocation is final — to "unrevoke"
+    the admin must mint a new token.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "UPDATE user_api_tokens "
+                "SET revoked_at = :ts, revoked_by = :by "
+                "WHERE id = :id AND revoked_at IS NULL"
+            ),
+            {"id": token_id, "ts": ts, "by": revoked_by},
         )
     return (result.rowcount or 0) > 0
