@@ -328,6 +328,11 @@ services:
       # which masks any client-cert presentation regression.
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
       MCP_PROXY_NGINX_SAN: "mastio-nginx-a,proxy-a,localhost"
+      # ADR-029 Phase F, tool-level PDP gate active in the sandbox so
+      # the policy-granular demo can exercise allow / deny per tool
+      # and the cross-org federation against proxy-b.
+      MCP_PROXY_TOOL_PDP_ENABLED: "true"
+      MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orgb": "http://proxy-b:9100/v1/policy/tool-call"}'
     volumes:
       - proxy-a-data:/data
       - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
@@ -626,6 +631,11 @@ services:
       # ``mastio-nginx-b`` (the hostname agents resolve to).
       MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
       MCP_PROXY_NGINX_SAN: "mastio-nginx-b,proxy-b,localhost"
+      # ADR-029 Phase F, tool-level PDP gate active in the sandbox so
+      # the policy-granular demo can exercise allow / deny per tool
+      # and the cross-org federation against proxy-a.
+      MCP_PROXY_TOOL_PDP_ENABLED: "true"
+      MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orga": "http://proxy-a:9100/v1/policy/tool-call"}'
     volumes:
       - proxy-b-data:/data
       - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
