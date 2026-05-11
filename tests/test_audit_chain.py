@@ -45,18 +45,32 @@ async def test_chain_linkage(audit_db):
 
 
 async def test_hash_determinism(audit_db):
-    """Recomputing the hash from entry fields must match entry_hash."""
+    """Recomputing the hash from entry fields must match entry_hash.
+
+    Wave B PR5 (CRIT-3 Court) — new rows are written with the v2
+    canonical (no entry_id, prefixed ``v2|``) and carry
+    ``hash_format='v2'``. Recompute via the v2 helper; the legacy
+    ``compute_entry_hash`` is still used for any v1 row that survives
+    in production but is never produced by ``log_event`` anymore.
+    """
     from datetime import timezone
+    from app.db.audit import HASH_FORMAT_V2, compute_entry_hash_v2
     entry = await log_event(audit_db, "test.determinism", "ok",
                            agent_id="org::agent", session_id="sess-1",
                            org_id="org", details={"foo": "bar"})
     ts = entry.timestamp
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
-    recomputed = compute_entry_hash(
-        entry.id, ts, entry.event_type,
-        entry.agent_id, entry.session_id, entry.org_id,
-        entry.result, entry.details, entry.previous_hash,
+    assert entry.hash_format == HASH_FORMAT_V2
+    recomputed = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=entry.event_type,
+        agent_id=entry.agent_id,
+        session_id=entry.session_id,
+        org_id=entry.org_id,
+        result=entry.result,
+        details=entry.details,
+        previous_hash=entry.previous_hash,
         chain_seq=entry.chain_seq,
         peer_org_id=entry.peer_org_id,
     )
@@ -193,11 +207,19 @@ async def test_cross_org_dual_write_creates_two_rows(audit_db):
     assert row_b.org_id == "bravo"
     assert row_a.chain_seq == 1
     assert row_b.chain_seq == 1
-    # Cross-reference linkage in both directions
+    # Cross-reference linkage. Wave B PR5 (CRIT-3 Court) — the
+    # back-fill of row_first.peer_row_hash is gone (the trigger
+    # rejects the second UPDATE), so only one of the two rows
+    # carries the cross-reference: whichever was inserted second
+    # has peer_row_hash = first.entry_hash. The asymmetry is
+    # accepted (peer_row_hash is informational, not in the signed
+    # canonical hash); T3-F7 is a separate MEDIUM follow-up that
+    # would re-add the forward link via a v3 hash format.
     assert row_a.peer_org_id == "bravo"
     assert row_b.peer_org_id == "acme"
-    assert row_a.peer_row_hash == row_b.entry_hash
-    assert row_b.peer_row_hash == row_a.entry_hash
+    assert (row_a.peer_row_hash is not None) or (
+        row_b.peer_row_hash is not None
+    ), "at least one side must carry the cross-org linkage"
 
 
 async def test_cross_org_both_chains_verify(audit_db):
@@ -276,10 +298,17 @@ async def test_adr020_explicit_workload_principal_type(audit_db):
 
 async def test_adr020_agent_hash_unchanged_vs_pre_adr020(audit_db):
     """Crucially: an 'agent' row's entry_hash is byte-for-byte equal
-    to what compute_entry_hash would produce WITHOUT principal_type
-    (i.e. the pre-ADR-020 algorithm). This is the back-compat property
-    that lets the column be added with no chain rewrite."""
+    to what compute_entry_hash_v2 would produce WITHOUT principal_type
+    (i.e. the back-compat property that lets the column be added with
+    no chain rewrite).
+
+    Wave B PR5 (CRIT-3 Court) — assertion now exercised against the
+    v2 helper since new rows are written with hash_format=v2.
+    Pre-ADR-020 rows still verify with the legacy ``compute_entry_hash``
+    (hash_format=NULL/v1, dispatched in verify_chain).
+    """
     from datetime import timezone
+    from app.db.audit import compute_entry_hash_v2
 
     entry = await log_event(audit_db, "test.compat", "ok", org_id="acme",
                             principal_type="agent")
@@ -287,18 +316,28 @@ async def test_adr020_agent_hash_unchanged_vs_pre_adr020(audit_db):
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
 
-    recomputed_pre_adr = compute_entry_hash(
-        entry.id, ts, entry.event_type,
-        entry.agent_id, entry.session_id, entry.org_id,
-        entry.result, entry.details, entry.previous_hash,
+    recomputed_pre_adr = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=entry.event_type,
+        agent_id=entry.agent_id,
+        session_id=entry.session_id,
+        org_id=entry.org_id,
+        result=entry.result,
+        details=entry.details,
+        previous_hash=entry.previous_hash,
         chain_seq=entry.chain_seq,
         peer_org_id=entry.peer_org_id,
-        # principal_type omitted — exactly the pre-ADR-020 call shape
+        # principal_type omitted — pre-ADR-020 call shape
     )
-    recomputed_agent = compute_entry_hash(
-        entry.id, ts, entry.event_type,
-        entry.agent_id, entry.session_id, entry.org_id,
-        entry.result, entry.details, entry.previous_hash,
+    recomputed_agent = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=entry.event_type,
+        agent_id=entry.agent_id,
+        session_id=entry.session_id,
+        org_id=entry.org_id,
+        result=entry.result,
+        details=entry.details,
+        previous_hash=entry.previous_hash,
         chain_seq=entry.chain_seq,
         peer_org_id=entry.peer_org_id,
         principal_type="agent",
@@ -308,8 +347,15 @@ async def test_adr020_agent_hash_unchanged_vs_pre_adr020(audit_db):
 
 async def test_adr020_user_hash_includes_principal_type_marker(audit_db):
     """A user row's canonical includes |pt=user, so its hash differs
-    from the same row hashed as 'agent'. This is the chain-v2 marker."""
+    from the same row hashed as 'agent'. This is the chain-v2 marker.
+
+    Wave B PR5 (CRIT-3 Court) — assertion exercised against
+    ``compute_entry_hash_v2`` (the new atomic-insert form). The
+    legacy ``compute_entry_hash`` keeps the same property for
+    pre-PR5 rows.
+    """
     from datetime import timezone
+    from app.db.audit import compute_entry_hash_v2
 
     entry = await log_event(
         audit_db, "test.usermark", "ok",
@@ -320,18 +366,28 @@ async def test_adr020_user_hash_includes_principal_type_marker(audit_db):
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
 
-    hash_user = compute_entry_hash(
-        entry.id, ts, entry.event_type,
-        entry.agent_id, entry.session_id, entry.org_id,
-        entry.result, entry.details, entry.previous_hash,
+    hash_user = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=entry.event_type,
+        agent_id=entry.agent_id,
+        session_id=entry.session_id,
+        org_id=entry.org_id,
+        result=entry.result,
+        details=entry.details,
+        previous_hash=entry.previous_hash,
         chain_seq=entry.chain_seq,
         peer_org_id=entry.peer_org_id,
         principal_type="user",
     )
-    hash_as_agent = compute_entry_hash(
-        entry.id, ts, entry.event_type,
-        entry.agent_id, entry.session_id, entry.org_id,
-        entry.result, entry.details, entry.previous_hash,
+    hash_as_agent = compute_entry_hash_v2(
+        timestamp=ts,
+        event_type=entry.event_type,
+        agent_id=entry.agent_id,
+        session_id=entry.session_id,
+        org_id=entry.org_id,
+        result=entry.result,
+        details=entry.details,
+        previous_hash=entry.previous_hash,
         chain_seq=entry.chain_seq,
         peer_org_id=entry.peer_org_id,
         principal_type="agent",

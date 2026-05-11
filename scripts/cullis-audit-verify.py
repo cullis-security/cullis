@@ -48,21 +48,61 @@ _RFC3161_MAGIC = b"T1"
 
 
 def canonical(entry: dict[str, Any], previous_hash: str | None) -> str:
-    base = "|".join([
-        str(entry["id"]),
-        entry["timestamp"] or "",
-        entry["event_type"],
-        entry.get("agent_id") or "",
-        entry.get("session_id") or "",
-        entry.get("org_id") or "",
-        entry["result"],
-        entry.get("details") or "",
-        previous_hash or "genesis",
-    ])
+    """Reconstruct the canonical string used to compute ``entry_hash``.
+
+    Wave B PR5 (audit 2026-05-11 CRIT-3 Court) — dispatches on
+    ``hash_format``:
+      - NULL or 'v1' → legacy entry_id-bound canonical (unchanged)
+      - 'v2' → entry_id-free canonical, prefixed with literal ``v2|``;
+        chain_seq required (atomic-insert form, no back-fill UPDATE)
+
+    Both forms also append ``|pt=<x>`` when a non-default
+    ``principal_type`` is present (ADR-020 marker).
+    """
+    fmt = (entry.get("hash_format") or "v1").lower()
     chain_seq = entry.get("chain_seq")
-    if chain_seq is None:
-        return base
-    return f"{base}|seq={chain_seq}|peer={entry.get('peer_org_id') or ''}"
+
+    if fmt == "v2":
+        if chain_seq is None:
+            # v2 always uses chain_seq; refuse a malformed bundle
+            # explicitly so the verifier doesn't silently agree.
+            return "INVALID-V2-WITHOUT-CHAIN-SEQ"
+        canonical_str = "|".join([
+            "v2",
+            entry["timestamp"] or "",
+            entry["event_type"],
+            entry.get("agent_id") or "",
+            entry.get("session_id") or "",
+            entry.get("org_id") or "",
+            entry["result"],
+            entry.get("details") or "",
+            previous_hash or "genesis",
+            f"seq={chain_seq}",
+            f"peer={entry.get('peer_org_id') or ''}",
+        ])
+    else:
+        base = "|".join([
+            str(entry["id"]),
+            entry["timestamp"] or "",
+            entry["event_type"],
+            entry.get("agent_id") or "",
+            entry.get("session_id") or "",
+            entry.get("org_id") or "",
+            entry["result"],
+            entry.get("details") or "",
+            previous_hash or "genesis",
+        ])
+        if chain_seq is None:
+            canonical_str = base
+        else:
+            canonical_str = (
+                f"{base}|seq={chain_seq}|peer={entry.get('peer_org_id') or ''}"
+            )
+
+    pt = entry.get("principal_type")
+    if pt and pt != "agent":
+        canonical_str = f"{canonical_str}|pt={pt}"
+    return canonical_str
 
 
 def verify_token_against_digest(token_bytes: bytes, digest_hex: str) -> tuple[bool, str]:
