@@ -193,6 +193,85 @@ const INBOX_MOCK = (() => {
   };
 })();
 
+// ─── Conversation history mock (Sprint 1 Step 6 PR-A backend) ────────
+// In-memory map keyed by conversation id. Each conversation carries a
+// title, timestamps, a soft-deleted flag, and a messages array. The
+// Playwright SPA exercises every CRUD path; nothing here is persisted
+// across mock restarts which matches the test expectations.
+const CONV_MOCK = (() => {
+  const nowIso = () => new Date().toISOString();
+  const rows = new Map();
+  function _summary(c) {
+    return {
+      id: c.id,
+      title: c.title,
+      created_at: c.created_at,
+      updated_at: c.updated_at,
+    };
+  }
+  return {
+    list() {
+      return Array.from(rows.values())
+        .filter((c) => !c.deleted_at)
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+        .map(_summary);
+    },
+    create() {
+      const id = 'c_' + Math.random().toString(36).slice(2, 12);
+      const now = nowIso();
+      const conv = {
+        id,
+        title: null,
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+        messages: [],
+      };
+      rows.set(id, conv);
+      return _summary(conv);
+    },
+    get(id) {
+      const c = rows.get(id);
+      if (!c || c.deleted_at) return null;
+      return {
+        ..._summary(c),
+        messages: c.messages.map((m) => ({ ...m })),
+      };
+    },
+    rename(id, title) {
+      const c = rows.get(id);
+      if (!c || c.deleted_at) return null;
+      c.title = title ?? null;
+      c.updated_at = nowIso();
+      return _summary(c);
+    },
+    delete(id) {
+      const c = rows.get(id);
+      if (!c || c.deleted_at) return false;
+      c.deleted_at = nowIso();
+      return true;
+    },
+    append(id, msg) {
+      const c = rows.get(id);
+      if (!c || c.deleted_at) return null;
+      const now = nowIso();
+      const row = {
+        role: msg.role,
+        content: msg.content || '',
+        tool_calls: msg.tool_calls ?? null,
+        trace_id: msg.trace_id ?? null,
+        created_at: now,
+      };
+      c.messages.push(row);
+      c.updated_at = now;
+      return row;
+    },
+    reset() {
+      rows.clear();
+    },
+  };
+})();
+
 const server = createServer(async (req, res) => {
   // Loopback-only — same posture as the real Ambassador.
   if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -207,6 +286,15 @@ const server = createServer(async (req, res) => {
   // Health is unauthenticated (matches the real Ambassador convention).
   if (req.method === 'GET' && pathname === '/v1/ambassador/health') {
     jsonResponse(res, 200, { ok: true, mock: true });
+    return;
+  }
+
+  // Mock-only test reset, sits ABOVE the bearer gate on purpose so the
+  // Playwright beforeEach can wipe CONV_MOCK without juggling a fake
+  // token. Not implemented by the real Ambassador.
+  if (req.method === 'POST' && pathname === '/v1/conversations/_test/reset') {
+    CONV_MOCK.reset();
+    jsonResponse(res, 200, { ok: true });
     return;
   }
 
@@ -324,6 +412,65 @@ const server = createServer(async (req, res) => {
         jsonResponse(res, 200, { archived, msg_id: msgId });
       }
       return;
+    }
+  }
+
+  // ─── Conversation history surface (Sprint 1 Step 6) ────────────
+  // Note: /v1/conversations/_test/reset is handled higher up, above the
+  // bearer gate, so the Playwright beforeEach can call it without auth.
+  if (pathname === '/v1/conversations') {
+    if (req.method === 'GET') {
+      jsonResponse(res, 200, CONV_MOCK.list());
+      return;
+    }
+    if (req.method === 'POST') {
+      jsonResponse(res, 201, CONV_MOCK.create());
+      return;
+    }
+  }
+  {
+    const m = pathname.match(/^\/v1\/conversations\/([^/]+)(?:\/(messages))?$/);
+    if (m) {
+      const convId = m[1];
+      const sub = m[2];
+      if (!sub && req.method === 'GET') {
+        const detail = CONV_MOCK.get(convId);
+        if (detail) jsonResponse(res, 200, detail);
+        else jsonResponse(res, 404, { error: { code: 'not_found' } });
+        return;
+      }
+      if (!sub && req.method === 'PATCH') {
+        let body;
+        try { body = await readJson(req); } catch {
+          jsonResponse(res, 400, { error: { code: 'bad_json' } });
+          return;
+        }
+        const summary = CONV_MOCK.rename(convId, body?.title ?? null);
+        if (summary) jsonResponse(res, 200, summary);
+        else jsonResponse(res, 404, { error: { code: 'not_found' } });
+        return;
+      }
+      if (!sub && req.method === 'DELETE') {
+        const ok = CONV_MOCK.delete(convId);
+        if (ok) {
+          res.writeHead(204);
+          res.end();
+        } else {
+          jsonResponse(res, 404, { error: { code: 'not_found' } });
+        }
+        return;
+      }
+      if (sub === 'messages' && req.method === 'POST') {
+        let body;
+        try { body = await readJson(req); } catch {
+          jsonResponse(res, 400, { error: { code: 'bad_json' } });
+          return;
+        }
+        const stored = CONV_MOCK.append(convId, body);
+        if (stored) jsonResponse(res, 201, stored);
+        else jsonResponse(res, 404, { error: { code: 'not_found' } });
+        return;
+      }
     }
   }
 

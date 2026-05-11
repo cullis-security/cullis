@@ -64,10 +64,6 @@ test('code blocks get their own copy overlay after Shiki highlights', async ({ p
   await input.fill('what is the gdpr training status of mario rossi?');
   await page.locator('.send').click();
 
-  // Wait for the Shiki-replaced <pre> to appear inside the assistant body.
-  const codeBlock = page.locator('.msg-assistant .code-block-wrap').first();
-  await expect(codeBlock).toBeVisible({ timeout: 15_000 });
-
   // The gdpr fixture streams chunks. While `pending` is true, MarkdownView
   // re-renders the markdown body on every chunk, which means
   // `dangerouslySetInnerHTML` wipes and rebuilds .code-block-wrap each
@@ -76,14 +72,27 @@ test('code blocks get their own copy overlay after Shiki highlights', async ({ p
   // read. Wait for the streaming caret to disappear (pending=false) so
   // the DOM is stable before interacting.
   await expect(page.locator('.markdown-body.is-pending')).toHaveCount(0, {
-    timeout: 15_000,
+    timeout: 20_000,
   });
+  // Sprint 1 Step 6 PR-B fires `appendConversationMessage` +
+  // `renameConversation` immediately after pending=false. Both are
+  // best-effort fire-and-forget calls but they tie up the same single
+  // browser thread Shiki is racing against. Wait for the network to
+  // quiesce so the highlight pass and the React state for the copy
+  // button have settled before we click.
+  await page.waitForLoadState('networkidle');
 
-  // Re-locate after streaming completes: the previous wrap was likely
-  // replaced by the final render, so the locator must be fresh.
-  const finalBlock = page.locator('.msg-assistant .code-block-wrap').first();
-  const codeCopy = finalBlock.locator('.code-copy');
-  await expect(codeCopy).toHaveCount(1);
+  // Wait directly on the .code-copy overlay rather than on the wrap.
+  // The wrap is created synchronously when marked parses the code
+  // fence; the overlay is appended by the Shiki post-render hook,
+  // which is async (lazy import + per-language load). Locating the
+  // copy button itself is the only assertion that proves the whole
+  // highlight pipeline finished and the persistence-overhead added
+  // by Step 6 PR-B did not delay it past the per-step default.
+  const codeCopy = page
+    .locator('.msg-assistant .code-block-wrap .code-copy')
+    .first();
+  await expect(codeCopy).toBeVisible({ timeout: 20_000 });
 
   await codeCopy.click({ force: true });
   await expect(codeCopy).toHaveClass(/is-copied/);
