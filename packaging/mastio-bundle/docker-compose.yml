@@ -67,12 +67,16 @@ services:
       MCP_PROXY_PROXY_PUBLIC_URL:  ${MCP_PROXY_PROXY_PUBLIC_URL:-https://host.docker.internal:9443}
       MCP_PROXY_ALLOWED_ORIGINS:   ${MCP_PROXY_ALLOWED_ORIGINS:-}
       MCP_PROXY_NGINX_CERT_DIR:    ${MCP_PROXY_NGINX_CERT_DIR:-/var/lib/mastio/nginx-certs}
-      # SAN covers the three host-side names the cert can validate at:
+      # SAN covers the names the cert can validate at:
       # ``localhost`` (host browser default), ``mastio.local`` (legacy
-      # alias), ``host.docker.internal`` (sibling container scenario,
-      # PR #520+ default). Any custom public URL is added in front of
-      # this list by ./deploy.sh during proxy.env generation.
-      MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost,host.docker.internal}
+      # alias), ``host.docker.internal`` (sibling bundle scenario via
+      # host-gateway), ``mastio-nginx`` + ``mcp-proxy`` (third-party
+      # container in shared docker network — LibreChat / Cherry / n8n
+      # / AnythingLLM joining ``cullis-mastio_proxy_net`` and speaking
+      # HTTPS to those container names). Any custom public URL is
+      # added in front of this list by ./deploy.sh during proxy.env
+      # generation.
+      MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost,host.docker.internal,mastio-nginx,mcp-proxy}
       SSL_CERT_FILE:               ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       REQUESTS_CA_BUNDLE:          ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}

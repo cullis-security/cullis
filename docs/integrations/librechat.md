@@ -63,7 +63,10 @@ If you prefer the dashboard, see the
 ### 2. Add the Cullis endpoint to `librechat.yaml`
 
 In your LibreChat config (`librechat.yaml`), add a custom OpenAI
-endpoint pointing at the Mastio:
+endpoint pointing at the Mastio. The right `baseURL` depends on your
+topology:
+
+**A. Production / VPS** — Mastio behind a real CA at a public hostname:
 
 ```yaml
 version: 1.2.1
@@ -85,11 +88,59 @@ endpoints:
         fetch: true
       titleConvo: true
       titleModel: "claude-haiku-4-5"
-      # The Mastio's TLS leaf is signed by the org's Org CA. In dev
-      # / self-signed deploys, either mount the Org CA bundle into
-      # the LibreChat container, or set the following for the
-      # development bundle:
-      # tls: { rejectUnauthorized: false }   # NEVER in production
+```
+
+**B. Dev / same docker host** — LibreChat joins
+``cullis-mastio_proxy_net`` so it can resolve the Mastio via docker
+DNS:
+
+```yaml
+version: 1.2.1
+cache: true
+
+endpoints:
+  custom:
+    - name: "Cullis"
+      apiKey: "${OPENAI_API_KEY}"
+      # Same-host docker compose: speak HTTPS to the nginx sidecar by
+      # its container name. Requires the cert to have ``mastio-nginx``
+      # in its SAN list — the bundle ships this by default (proxy.env
+      # ``MCP_PROXY_NGINX_SAN``). If you're on an older bundle that
+      # doesn't include it, either regenerate proxy.env with the new
+      # default or fall back to plain HTTP on the in-network mcp-proxy
+      # port: ``baseURL: "http://mcp-proxy:9100/v1"``. HTTP plain is
+      # acceptable here because the bridge network is the trust
+      # boundary; never expose port 9100 outside the host.
+      baseURL: "https://mastio-nginx:9443/v1"
+      models:
+        default: ["claude-haiku-4-5"]
+        fetch: true
+      titleConvo: false
+      # Mount the org CA into the LibreChat container so Node trusts
+      # the self-signed leaf:
+      #   volumes:
+      #     - ./cullis-mastio-bundle/certs/org-ca.pem:/app/certs/org-ca.pem:ro
+      #   environment:
+      #     - NODE_EXTRA_CA_CERTS=/app/certs/org-ca.pem
+```
+
+To put LibreChat on the same network as the Mastio bundle, in your
+LibreChat `docker-compose.yml`:
+
+```yaml
+services:
+  api:
+    # ... existing config ...
+    networks:
+      - librechat
+      - mastio
+
+networks:
+  librechat:
+    driver: bridge
+  mastio:
+    external: true
+    name: cullis-mastio_proxy_net
 ```
 
 Restart LibreChat. If you use the docker-compose bundle, that is
@@ -138,9 +189,32 @@ The token is wrong, revoked, or expired. Check:
 
 Mastio is reachable on the address but TLS verification fails. In
 production, mount your org's CA bundle into the LibreChat container
-and set `NODE_EXTRA_CA_CERTS` to it. In dev, the bundle's self-signed
-cert needs explicit trust — see the commented `tls.rejectUnauthorized`
-line above. Do not ship `rejectUnauthorized: false` to production.
+and set `NODE_EXTRA_CA_CERTS=/path/to/org-ca.pem`. In dev, the
+bundle's self-signed cert needs explicit trust — see the
+``volumes`` + ``NODE_EXTRA_CA_CERTS`` snippet in section 2B.
+
+### `Host: mastio-nginx is not in the cert's altnames`
+
+You're hitting `https://mastio-nginx:9443/v1` from a LibreChat
+container on the bundle's docker network, but the Mastio's TLS leaf
+was minted before ``mastio-nginx`` was added to ``MCP_PROXY_NGINX_SAN``
+(default added in the 2026-05-11 bundle update).
+
+Two fixes:
+
+1. **Regenerate the cert with the updated SAN**:
+   ```bash
+   cd cullis-mastio-bundle/
+   # Edit proxy.env to add mastio-nginx,mcp-proxy to MCP_PROXY_NGINX_SAN
+   # then restart — the Mastio regenerates the cert on next boot.
+   ./deploy.sh --down && ./deploy.sh
+   ```
+
+2. **Switch the LibreChat baseURL to plain HTTP on the in-network
+   mcp-proxy port**: ``baseURL: "http://mcp-proxy:9100/v1"``. This
+   bypasses TLS entirely, which is acceptable because the docker
+   bridge network is itself the trust boundary. Never expose port
+   9100 outside the host.
 
 ### Wrong model list
 
