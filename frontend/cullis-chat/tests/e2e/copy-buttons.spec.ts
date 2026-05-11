@@ -68,8 +68,21 @@ test('code blocks get their own copy overlay after Shiki highlights', async ({ p
   const codeBlock = page.locator('.msg-assistant .code-block-wrap').first();
   await expect(codeBlock).toBeVisible({ timeout: 15_000 });
 
-  // Exactly one copy overlay per code block.
-  const codeCopy = codeBlock.locator('.code-copy');
+  // The gdpr fixture streams chunks. While `pending` is true, MarkdownView
+  // re-renders the markdown body on every chunk, which means
+  // `dangerouslySetInnerHTML` wipes and rebuilds .code-block-wrap each
+  // time. A click on the button right now would be followed by the next
+  // chunk destroying that button before the `is-copied` class can be
+  // read. Wait for the streaming caret to disappear (pending=false) so
+  // the DOM is stable before interacting.
+  await expect(page.locator('.markdown-body.is-pending')).toHaveCount(0, {
+    timeout: 15_000,
+  });
+
+  // Re-locate after streaming completes: the previous wrap was likely
+  // replaced by the final render, so the locator must be fresh.
+  const finalBlock = page.locator('.msg-assistant .code-block-wrap').first();
+  const codeCopy = finalBlock.locator('.code-copy');
   await expect(codeCopy).toHaveCount(1);
 
   await codeCopy.click({ force: true });
