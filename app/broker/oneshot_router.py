@@ -308,6 +308,17 @@ async def forward_oneshot(
         initiator_agent_id=current_agent.agent_id,
         target_agent_id=recipient.agent_id,
         capabilities=effective_caps,
+        # ADR-029 Phase B: this path is a oneshot dispatch, not a session
+        # open. Surface the distinction so the PDP can write per-kind
+        # policy ("Mario may oneshot acme but not open sessions") even
+        # before tool-level gating lands in Phase C.
+        invocation={
+            "kind": "oneshot",
+            "capabilities_requested": effective_caps,
+        },
+        context={
+            "request_idempotency_key": body.correlation_id,
+        },
     )
     if not pdp_decision.allowed:
         await log_event(

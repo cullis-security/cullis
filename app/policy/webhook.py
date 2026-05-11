@@ -1,5 +1,5 @@
 """
-PDP Webhook caller — federated policy decision for session requests.
+PDP Webhook caller, federated policy decision for session requests.
 
 Each organization registers a webhook URL at onboarding time.
 When Agent A (org A) requests a session with Agent B (org B), the broker
@@ -8,22 +8,50 @@ calls BOTH webhooks and proceeds only if both return {"decision": "allow"}.
 Default-deny: if an org has no webhook configured, the decision is DENY.
 Timeout: 5 seconds per webhook call (synchronous, sequential).
 
-Webhook contract:
+Webhook contract (ADR-029 extended, backward compatible):
   Request:  POST {webhook_url}
             Content-Type: application/json
-            X-ATN-Signature: HMAC-SHA256 of the body (future — not yet enforced)
+            X-ATN-Signature: HMAC-SHA256 of the body
             Body: {
+              # Legacy session-open payload (always present)
               "initiator_agent_id": str,
               "initiator_org_id":   str,
               "target_agent_id":    str,
               "target_org_id":      str,
               "capabilities":       list[str],
-              "session_context":    str   # "initiator" | "target"
+              "session_context":    str,   # "initiator" | "target"
+
+              # ADR-029 extended payload (present when the broker has the data)
+              "model":      dict | None,   # {id, provider, via_gateway}
+              "invocation": dict | None,   # {kind, tool_name?, mcp_server_id?, capabilities_requested}
+              "context":    dict | None    # {trace_id?, parent_session_id?, request_idempotency_key?}
             }
 
   Response: 200 OK  { "decision": "allow" }
             200 OK  { "decision": "deny", "reason": "..." }
-            any non-200 or timeout → treated as DENY
+            200 OK  ADR-029 extended:
+              {
+                "decision": "allow",
+                "reason": "...",
+                "scope": {
+                  "tools_allowed": [...],
+                  "tools_denied":  [...],
+                  "max_session_duration_s": int
+                },
+                "rate_limit": {
+                  "per_minute": int,
+                  "per_day":    int
+                },
+                "obligations": {
+                  "require_user_confirmation": bool,
+                  "trace_visibility":          "full" | "redacted" | "off"
+                }
+              }
+            any non-200 or timeout means DENY.
+
+A PDP that returns the legacy shape continues to work: scope, rate_limit,
+and obligations stay None on the decision and the broker treats that as
+no extra constraints (Phase B backward compatibility).
 """
 import hashlib
 import hmac
@@ -152,10 +180,99 @@ class _PinnedDNSBackend(httpcore.AsyncNetworkBackend):
 
 
 @dataclass
+class DecisionScope:
+    """ADR-029 extended scope returned by a tool-aware PDP.
+
+    A PDP can constrain which tools the session is allowed to invoke and
+    how long the session may stay open. None values mean unset / inherit.
+    """
+    tools_allowed: list[str] | None = None
+    tools_denied: list[str] | None = None
+    max_session_duration_s: int | None = None
+
+
+@dataclass
+class DecisionRateLimit:
+    """ADR-029 extended rate-limit hints returned by the PDP. Enforced at
+    the gate, not by the PDP itself. None values mean no limit."""
+    per_minute: int | None = None
+    per_day: int | None = None
+
+
+@dataclass
+class DecisionObligations:
+    """ADR-029 obligations the PDP attaches to the allow. Defaults are
+    safe-permissive (no confirmation required, redacted trace visibility).
+    """
+    require_user_confirmation: bool = False
+    trace_visibility: str = "redacted"  # full | redacted | off
+
+
+@dataclass
 class WebhookDecision:
     allowed: bool
     reason: str
     org_id: str
+    # ADR-029 extended fields. All optional, all None on legacy responses.
+    # The broker treats None as "no constraint" so existing PDP webhooks
+    # continue to work unchanged.
+    scope: DecisionScope | None = None
+    rate_limit: DecisionRateLimit | None = None
+    obligations: DecisionObligations | None = None
+
+
+def _parse_scope(raw: object) -> DecisionScope | None:
+    """Lift a PDP response 'scope' dict into a DecisionScope dataclass.
+
+    Returns None when the field is absent or malformed; callers treat
+    that as 'no scope restriction'.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return DecisionScope(
+        tools_allowed=_string_list(raw.get("tools_allowed")),
+        tools_denied=_string_list(raw.get("tools_denied")),
+        max_session_duration_s=_int_or_none(raw.get("max_session_duration_s")),
+    )
+
+
+def _parse_rate_limit(raw: object) -> DecisionRateLimit | None:
+    if not isinstance(raw, dict):
+        return None
+    return DecisionRateLimit(
+        per_minute=_int_or_none(raw.get("per_minute")),
+        per_day=_int_or_none(raw.get("per_day")),
+    )
+
+
+def _parse_obligations(raw: object) -> DecisionObligations | None:
+    if not isinstance(raw, dict):
+        return None
+    visibility = raw.get("trace_visibility", "redacted")
+    if visibility not in ("full", "redacted", "off"):
+        visibility = "redacted"
+    return DecisionObligations(
+        require_user_confirmation=bool(raw.get("require_user_confirmation", False)),
+        trace_visibility=visibility,
+    )
+
+
+def _string_list(raw: object) -> list[str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    return [str(x) for x in raw if isinstance(x, (str, int))]
+
+
+def _int_or_none(raw: object) -> int | None:
+    if raw is None:
+        return None
+    try:
+        v = int(raw)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 async def call_pdp_webhook(
@@ -167,6 +284,13 @@ async def call_pdp_webhook(
     target_org_id: str,
     capabilities: list[str],
     session_context: str,  # "initiator" | "target"
+    *,
+    # ADR-029 extended payload. Each kwarg is optional and only added to
+    # the wire payload when non-None, so existing PDP webhooks that
+    # ignore unknown fields keep working.
+    model: dict | None = None,
+    invocation: dict | None = None,
+    context: dict | None = None,
 ) -> WebhookDecision:
     """
     Call the PDP webhook for one organization and return its decision.
@@ -221,7 +345,7 @@ async def call_pdp_webhook(
             org_id=org_id,
         )
 
-    payload = {
+    payload: dict = {
         "initiator_agent_id": initiator_agent_id,
         "initiator_org_id":   initiator_org_id,
         "target_agent_id":    target_agent_id,
@@ -229,6 +353,14 @@ async def call_pdp_webhook(
         "capabilities":       capabilities,
         "session_context":    session_context,
     }
+    # ADR-029 extended fields. Only present when the caller provides them
+    # so legacy PDP webhooks see the exact same payload they always saw.
+    if model is not None:
+        payload["model"] = model
+    if invocation is not None:
+        payload["invocation"] = invocation
+    if context is not None:
+        payload["context"] = context
 
     # Audit 2026-04-30 lane 3 H3 — sign the body with the shared
     # secret so the receiving PDP can verify the call originated
@@ -310,9 +442,23 @@ async def call_pdp_webhook(
             decision = "deny"
         reason = str(data.get("reason", ""))[:512]  # limit reason length
 
+        # ADR-029 extended response: scope / rate_limit / obligations are
+        # all optional. _parse_* returns None on missing or malformed
+        # fields, which the broker treats as "no constraint".
+        scope = _parse_scope(data.get("scope"))
+        rate_limit = _parse_rate_limit(data.get("rate_limit"))
+        obligations = _parse_obligations(data.get("obligations"))
+
         if decision == "allow":
             _log.info("PDP webhook allow: org=%s context=%s", org_id, session_context)
-            return WebhookDecision(allowed=True, reason=reason, org_id=org_id)
+            return WebhookDecision(
+                allowed=True,
+                reason=reason,
+                org_id=org_id,
+                scope=scope,
+                rate_limit=rate_limit,
+                obligations=obligations,
+            )
 
         _log.info(
             "PDP webhook deny: org=%s context=%s reason=%s",
@@ -322,6 +468,9 @@ async def call_pdp_webhook(
             allowed=False,
             reason=reason or f"Denied by org '{org_id}' PDP",
             org_id=org_id,
+            scope=scope,
+            rate_limit=rate_limit,
+            obligations=obligations,
         )
 
     except httpx.TimeoutException:
@@ -340,6 +489,106 @@ async def call_pdp_webhook(
         )
 
 
+def _intersect_scopes(
+    initiator: DecisionScope | None,
+    target: DecisionScope | None,
+) -> DecisionScope | None:
+    """ADR-029 §Decision: source ∩ target. Never union, never expand.
+
+    A None on either side means "no restriction from that side", so the
+    intersection is the other side's restriction. Both None means no
+    scope constraint at all (legacy behaviour).
+    """
+    if initiator is None and target is None:
+        return None
+    if initiator is None:
+        return target
+    if target is None:
+        return initiator
+
+    # Intersection rules:
+    #   tools_allowed: intersection (only what both allow)
+    #   tools_denied:  union        (anyone says deny → deny)
+    #   max_session_duration_s: min (tighter wins)
+    a_allowed = set(initiator.tools_allowed) if initiator.tools_allowed is not None else None
+    b_allowed = set(target.tools_allowed) if target.tools_allowed is not None else None
+    if a_allowed is None and b_allowed is None:
+        allowed: list[str] | None = None
+    elif a_allowed is None:
+        allowed = sorted(b_allowed) if b_allowed is not None else None
+    elif b_allowed is None:
+        allowed = sorted(a_allowed)
+    else:
+        allowed = sorted(a_allowed & b_allowed)
+
+    denied_set: set[str] = set()
+    if initiator.tools_denied:
+        denied_set.update(initiator.tools_denied)
+    if target.tools_denied:
+        denied_set.update(target.tools_denied)
+    denied = sorted(denied_set) if denied_set else None
+
+    durations = [
+        d for d in (initiator.max_session_duration_s, target.max_session_duration_s)
+        if d is not None
+    ]
+    duration = min(durations) if durations else None
+
+    return DecisionScope(
+        tools_allowed=allowed,
+        tools_denied=denied,
+        max_session_duration_s=duration,
+    )
+
+
+def _intersect_rate_limits(
+    initiator: DecisionRateLimit | None,
+    target: DecisionRateLimit | None,
+) -> DecisionRateLimit | None:
+    """Tighter rate limit wins (min of per_minute, min of per_day)."""
+    if initiator is None and target is None:
+        return None
+    if initiator is None:
+        return target
+    if target is None:
+        return initiator
+
+    def _min_or_none(a: int | None, b: int | None) -> int | None:
+        vals = [v for v in (a, b) if v is not None]
+        return min(vals) if vals else None
+
+    return DecisionRateLimit(
+        per_minute=_min_or_none(initiator.per_minute, target.per_minute),
+        per_day=_min_or_none(initiator.per_day, target.per_day),
+    )
+
+
+def _intersect_obligations(
+    initiator: DecisionObligations | None,
+    target: DecisionObligations | None,
+) -> DecisionObligations | None:
+    """Conservative merge: any side that demands user confirmation wins;
+    visibility downgrades to the more restrictive of the two."""
+    if initiator is None and target is None:
+        return None
+    if initiator is None:
+        return target
+    if target is None:
+        return initiator
+    rank = {"full": 2, "redacted": 1, "off": 0}
+    visibility = (
+        initiator.trace_visibility
+        if rank[initiator.trace_visibility] <= rank[target.trace_visibility]
+        else target.trace_visibility
+    )
+    return DecisionObligations(
+        require_user_confirmation=(
+            initiator.require_user_confirmation or target.require_user_confirmation
+        ),
+        trace_visibility=visibility,
+    )
+
+
 async def evaluate_session_via_webhooks(
     initiator_org_id: str,
     initiator_webhook_url: str | None,
@@ -348,10 +597,19 @@ async def evaluate_session_via_webhooks(
     initiator_agent_id: str,
     target_agent_id: str,
     capabilities: list[str],
+    *,
+    # ADR-029 extended kwargs. Passed through to both webhooks so each
+    # side has the same context to decide on.
+    model: dict | None = None,
+    invocation: dict | None = None,
+    context: dict | None = None,
 ) -> WebhookDecision:
     """
     Call both orgs' PDP webhooks. Returns DENY if either denies.
     Both calls are made even if the first denies (for audit completeness).
+
+    On dual allow, the returned WebhookDecision carries the intersection
+    of scope, rate_limit, and obligations (ADR-029 §Decision).
     """
     initiator_decision = await call_pdp_webhook(
         org_id=initiator_org_id,
@@ -362,6 +620,9 @@ async def evaluate_session_via_webhooks(
         target_org_id=target_org_id,
         capabilities=capabilities,
         session_context="initiator",
+        model=model,
+        invocation=invocation,
+        context=context,
     )
 
     target_decision = await call_pdp_webhook(
@@ -373,6 +634,9 @@ async def evaluate_session_via_webhooks(
         target_org_id=target_org_id,
         capabilities=capabilities,
         session_context="target",
+        model=model,
+        invocation=invocation,
+        context=context,
     )
 
     # Track dual-org policy mismatch (one allowed, other denied)
@@ -386,4 +650,17 @@ async def evaluate_session_via_webhooks(
         return initiator_decision
     if not target_decision.allowed:
         return target_decision
-    return WebhookDecision(allowed=True, reason="both PDPs allowed", org_id="broker")
+
+    # Both allow: intersect the constraints (ADR-029).
+    return WebhookDecision(
+        allowed=True,
+        reason="both PDPs allowed",
+        org_id="broker",
+        scope=_intersect_scopes(initiator_decision.scope, target_decision.scope),
+        rate_limit=_intersect_rate_limits(
+            initiator_decision.rate_limit, target_decision.rate_limit,
+        ),
+        obligations=_intersect_obligations(
+            initiator_decision.obligations, target_decision.obligations,
+        ),
+    )
