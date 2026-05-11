@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -41,6 +42,46 @@ _log = logging.getLogger("agent_trust.egress")
 
 
 CULLIS_FORWARD_HEADERS = "X-Cullis-Agent,X-Cullis-Org,X-Cullis-Trace"
+
+
+# Audit Wave A B2 (2026-05-11) — provider error bodies routinely echo
+# back the rejected API key prefix (e.g. ``Incorrect API key provided:
+# sk-ant-abc...``). Without scrubbing, those keys land in the immutable
+# hash-chained Mastio audit log via ``upstream_detail``. Same class of
+# leak as the third-party-gateway pattern flagged in
+# ``feedback_third_party_ai_gateway_key_leak.md``. Patterns cover the
+# common provider key shapes; the substitution preserves the field
+# enough for ops debugging (provider, error class) without keeping
+# the live secret.
+_SECRET_SCRUB_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Anthropic console keys (``sk-ant-api03-...``) and project keys
+    # (``sk-ant-...``). Match the prefix + non-whitespace tail.
+    re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
+    # OpenAI legacy + project keys.
+    re.compile(r"sk-(?:proj-)?[A-Za-z0-9_\-]{16,}"),
+    # Google AI Studio (Gemini) API keys.
+    re.compile(r"AIza[0-9A-Za-z_\-]{35}"),
+    # AWS Access Key IDs (Bedrock callers paste these into provider
+    # creds when misconfiguring the secret as the access key).
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    # Bearer / Authorization headers leaked verbatim into bodies.
+    re.compile(r"(?i)Bearer\s+[A-Za-z0-9._\-]{12,}"),
+    # Cullis user API tokens.
+    re.compile(r"culk_[A-Za-z0-9_\-]{16,}"),
+)
+
+
+def scrub_secrets(text: str | None) -> str | None:
+    """Replace API key shapes with ``[REDACTED]`` before persisting text
+    that may contain provider error echoes. Idempotent on already-scrubbed
+    or secret-free input. Returns the input unchanged when None / empty
+    so callers don't need to re-check."""
+    if not text:
+        return text
+    out = text
+    for pat in _SECRET_SCRUB_PATTERNS:
+        out = pat.sub("[REDACTED]", out)
+    return out
 
 
 @dataclass
@@ -230,8 +271,11 @@ async def _call_portkey(
 
     if resp.status_code // 100 != 2:
         # Surface the upstream body in the audit detail (capped) so
-        # operators can debug without re-running the call.
-        detail = resp.text[:512] if resp.text else None
+        # operators can debug without re-running the call. Scrub
+        # provider key shapes (B2) so a 401 echo like "Incorrect API
+        # key provided: sk-ant-..." doesn't immortalise the rejected
+        # key in the hash-chained audit log.
+        detail = scrub_secrets(resp.text[:512]) if resp.text else None
         raise GatewayError(
             502,
             f"upstream_status_{resp.status_code}",
@@ -309,7 +353,10 @@ _LITELLM_ERROR_MAP: dict[str, tuple[int, str]] = {
 def _map_litellm_exception(exc: Exception) -> GatewayError:
     cls = type(exc).__name__
     status, reason = _LITELLM_ERROR_MAP.get(cls, (502, "provider_unknown_error"))
-    detail = (str(exc) or cls)[:512]
+    # B2 — LiteLLM stringifies provider 4xx/5xx into ``str(exc)`` and
+    # those bodies frequently echo the rejected API key prefix. Scrub
+    # before the detail flows into ``upstream_detail`` on the audit row.
+    detail = scrub_secrets((str(exc) or cls)[:512])
     return GatewayError(status, reason, detail=detail)
 
 

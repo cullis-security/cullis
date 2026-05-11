@@ -46,6 +46,12 @@ async def fresh_db(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     await init_db(url)
+    # Wave A C3 (audit 2026-05-11) — mint_user_api_token now requires
+    # the principal_id to exist in ``local_user_principals``. Seed the
+    # standard set so existing test mints (``acme::user::alice``..mia)
+    # work without each test pre-creating the row.
+    from tests._token_test_helpers import seed_default_test_principals
+    await seed_default_test_principals()
     try:
         yield url
     finally:

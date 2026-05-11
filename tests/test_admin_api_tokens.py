@@ -36,6 +36,26 @@ async def _spin_proxy(tmp_path, monkeypatch, org_id: str):
     return app
 
 
+async def _seed_common_users(org_id: str | None = None) -> None:
+    """Wave A C3 (audit 2026-05-11) — mint_user_api_token now requires
+    the principal_id row to exist. Seed the common test names against
+    the current org (from ``get_settings().org_id`` when not passed)
+    so existing mint POSTs continue to work without each test
+    pre-creating the row via /v1/admin/users. Call inside the
+    ``async with app.router.lifespan_context(app):`` block (after
+    init_db has fired) and before the first mint."""
+    if org_id is None:
+        from mcp_proxy.config import get_settings
+        org_id = get_settings().org_id
+    from tests._token_test_helpers import seed_test_principal
+    for name in (
+        "alice", "bob", "carol", "dave", "eve", "erin",
+        "frank", "ferris", "grace", "heidi", "ivan",
+        "jane", "ken", "leo", "mia",
+    ):
+        await seed_test_principal(f"{org_id}::user::{name}")
+
+
 async def _headers():
     from mcp_proxy.config import get_settings
     return {"X-Admin-Secret": get_settings().admin_secret}
@@ -74,6 +94,7 @@ async def test_mint_returns_cleartext_token_once(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r = await cli.post(
                 "/v1/admin/api-tokens",
@@ -106,6 +127,7 @@ async def test_mint_with_scope_and_expiry(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r = await cli.post(
                 "/v1/admin/api-tokens",
@@ -128,6 +150,7 @@ async def test_mint_rejects_empty_label(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r = await cli.post(
                 "/v1/admin/api-tokens",
@@ -149,6 +172,7 @@ async def test_list_filters_by_principal(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             await cli.post(
                 "/v1/admin/api-tokens",
@@ -179,6 +203,7 @@ async def test_list_excludes_revoked_by_default(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r1 = await cli.post(
                 "/v1/admin/api-tokens",
@@ -216,6 +241,7 @@ async def test_revoke_204_and_idempotent(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r = await cli.post(
                 "/v1/admin/api-tokens",
@@ -237,6 +263,7 @@ async def test_revoke_unknown_returns_404(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             d = await cli.delete("/v1/admin/api-tokens/nonexistent-id", headers=h)
             assert d.status_code == 404
@@ -250,6 +277,7 @@ async def test_mint_writes_audit_row(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             await cli.post(
                 "/v1/admin/api-tokens",
@@ -304,6 +332,7 @@ async def test_mint_via_rest_then_auth_v1_models(tmp_path, monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with app.router.lifespan_context(app):
+            await _seed_common_users()
             h = await _headers()
             r = await cli.post(
                 "/v1/admin/api-tokens",
