@@ -94,6 +94,22 @@ services:
       # leave /proxy/users in read-only mode.
       MCP_PROXY_FRONTDESK_AMBASSADOR_URL: ${MCP_PROXY_FRONTDESK_AMBASSADOR_URL:-}
       MCP_PROXY_FRONTDESK_ADMIN_SECRET:   ${MCP_PROXY_FRONTDESK_ADMIN_SECRET:-}
+      # ADR-029 Phase C — tool-call PDP gate. When true, the Mastio's
+      # ``run_tool_use_loop`` calls /v1/policy/tool-call for every tool
+      # the model wants to invoke and refuses the tools the org's
+      # ``policy_rules.tool_rules`` does not authorise for the caller.
+      # The HMAC secret is the optional shared secret between the
+      # Mastio and an external PDP webhook; leave empty to skip HMAC
+      # signing (mTLS authenticates the SDK already).
+      MCP_PROXY_TOOL_PDP_ENABLED:        ${MCP_PROXY_TOOL_PDP_ENABLED:-}
+      MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET: ${MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET:-}
+      # ADR-025 Phase 1 — local password sign-in toggle. Leave unset
+      # (the default) on bundles that always pair with an OIDC IdP;
+      # flip to ``true`` for the single-Mastio operator demo where
+      # /proxy/login serves a username+password form. ``FORCE`` is a
+      # break-glass for emergency access when SSO is down.
+      MCP_PROXY_LOCAL_AUTH_ENABLED:      ${MCP_PROXY_LOCAL_AUTH_ENABLED:-}
+      MCP_PROXY_FORCE_LOCAL_PASSWORD:    ${MCP_PROXY_FORCE_LOCAL_PASSWORD:-}
       # AI gateway request timeout. The 30 s default is fine for
       # claude-haiku-4-5 (~3 s) but local Ollama models with chain-of-
       # thought (qwen3.5, deepseek-r1) routinely take 20-40 s.
