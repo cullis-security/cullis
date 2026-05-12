@@ -4225,6 +4225,93 @@ async def settings_local_password(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Admin password rotation (issue #653)
+#
+# The Mastio admin password used to be rotate-only via ``python -m
+# mcp_proxy.cli reset-password`` over docker exec, which every first-time
+# operator hit as "I logged in with MCP_PROXY_INITIAL_ADMIN_PASSWORD and
+# now there's no way to change it from the dashboard". This handler
+# exposes the same helper (``set_admin_password``) via a small form on
+# the Settings page.
+#
+# Auth: requires an existing dashboard session (the helper assumes the
+# caller already authenticated). The CSRF token gates POSTs from the
+# same browser session. Current-password re-check ensures a stolen
+# cookie alone is not enough to rotate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/settings/admin-password/change")
+async def settings_admin_password_change(request: Request):
+    """Rotate the dashboard admin password from the Settings page."""
+    from mcp_proxy.db import log_audit
+
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    form = await request.form()
+    current = str(form.get("current_password", ""))
+    new = str(form.get("new_password", ""))
+    confirm = str(form.get("new_password_confirm", ""))
+
+    if not current or not new or not confirm:
+        return RedirectResponse(
+            "/proxy/settings?error=All+three+password+fields+are+required",
+            status_code=303,
+        )
+
+    if new != confirm:
+        return RedirectResponse(
+            "/proxy/settings?error=New+passwords+do+not+match",
+            status_code=303,
+        )
+
+    # Generic 401 on bad current password — don't leak whether the value
+    # was wrong vs the session was somehow detached from the persisted
+    # admin row. Same pattern as the /proxy/login error handler.
+    if not await verify_admin_password(current):
+        _log.warning(
+            "admin password change rejected: wrong current password "
+            "(actor=%s)", getattr(session, "username", "?"),
+        )
+        return RedirectResponse(
+            "/proxy/settings?error=Current+password+is+wrong",
+            status_code=303,
+        )
+
+    try:
+        await set_admin_password(new)
+    except ValueError as exc:
+        # set_admin_password enforces MIN_PASSWORD_LENGTH and possibly
+        # other complexity rules; surface the constraint to the operator.
+        from urllib.parse import quote
+        return RedirectResponse(
+            f"/proxy/settings?error={quote(str(exc))}",
+            status_code=303,
+        )
+
+    actor = (
+        getattr(session, "principal_id", None)
+        or getattr(session, "username", None)
+        or "admin"
+    )
+    await log_audit(
+        agent_id=actor,
+        action="admin_password_rotated",
+        status="success",
+        detail=f"source=dashboard actor={actor}",
+    )
+    return RedirectResponse(
+        "/proxy/settings?ok=Admin+password+rotated."
+        "+Re-login+required+on+next+session.",
+        status_code=303,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OIDC login (Sign-in with SSO)
 # ─────────────────────────────────────────────────────────────────────────────
 
