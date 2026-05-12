@@ -259,7 +259,14 @@ services:
     volumes:
       - ./nginx-tls/00-maps.conf:/etc/nginx/conf.d/00-maps.conf:ro
       - ./nginx-tls/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./tls:/etc/nginx/certs:ro
+      # Mount ONLY the leaf cert + key — never the CA private key
+      # (./tls/frontdesk-ca.key). nginx needs only the server material
+      # at runtime; the CA key is needed by mint-tls-cert.sh on the
+      # host filesystem and would be defense-in-depth-exposed if
+      # nginx is ever compromised. Two explicit binds instead of one
+      # broad ``./tls:/etc/nginx/certs:ro`` directory mount.
+      - ./tls/frontdesk-server.crt:/etc/nginx/certs/frontdesk-server.crt:ro
+      - ./tls/frontdesk-server.key:/etc/nginx/certs/frontdesk-server.key:ro
     depends_on:
       - nginx
     networks:
