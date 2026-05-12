@@ -669,11 +669,22 @@ MASTIO_BRIDGE_EOF
 
         # Force-recreate the Mastio mcp-proxy so the new env is loaded.
         # ``docker compose restart`` does NOT re-read env from the file.
+        # ``--wait`` blocks until the new container's healthcheck passes
+        # (default healthcheck: ``urllib.request.urlopen
+        # http://localhost:9100/health``). Without it, the
+        # ``up -d --force-recreate`` returns the moment the container
+        # is *spawned*, while uvicorn is still binding the listening
+        # socket. The very next call into mastio-nginx (e.g. the
+        # Connector's discovery probe) then 502s with
+        # ``Connection refused`` on the mcp-proxy:9100 upstream
+        # because the listener was not yet up when nginx tried to
+        # connect. Customer-path smoke surfaced this with the TLS
+        # sidecar timing shift (PR #663).
         if [[ -n "$MASTIO_PROXY_CONTAINER" ]]; then
             (
                 cd "$SIBLING_MASTIO_BUNDLE"
                 COMPOSE_PROJECT_NAME=cullis-mastio \
-                    $COMPOSE --env-file proxy.env up -d --force-recreate mcp-proxy \
+                    $COMPOSE --env-file proxy.env up -d --wait --force-recreate mcp-proxy \
                     >/dev/null 2>&1 \
                     || warn "Could not force-recreate Mastio mcp-proxy — bridge env will activate on next Mastio restart"
             )
