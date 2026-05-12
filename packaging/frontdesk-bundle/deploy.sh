@@ -685,6 +685,21 @@ MASTIO_BRIDGE_EOF
                     docker network connect "$NETWORK_NAME" "$MASTIO_PROXY_CONTAINER_NEW" 2>/dev/null || true
                 fi
             fi
+
+            # Force-recreating mcp-proxy gives it a new IP. mastio-nginx
+            # cached the OLD IP at its own startup (``proxy_pass
+            # http://mcp-proxy:9100`` without a per-request resolver
+            # directive bakes the lookup into the upstream config). Every
+            # subsequent ``http://mastio-nginx:9443/v1/...`` call then
+            # 502s with ``connect() failed (111: Connection refused) ...
+            # upstream: <old-ip>:9100`` — visibly killing the Frontdesk
+            # Connector's discovery probe + every downstream chat call.
+            # Restart mastio-nginx so it re-resolves the upstream on the
+            # next request.
+            if [[ -n "$MASTIO_NGINX_CONTAINER" ]]; then
+                docker restart "$MASTIO_NGINX_CONTAINER" >/dev/null 2>&1 \
+                    || warn "Could not restart $MASTIO_NGINX_CONTAINER — mcp-proxy DNS may be stale, ``docker restart $MASTIO_NGINX_CONTAINER`` manually if discover probe 502s"
+            fi
         fi
 
         ok "Mastio dashboard ↔ Frontdesk admin bridge wired (Create / Reset / Delete user from $SIBLING_MASTIO_BUNDLE / )"
