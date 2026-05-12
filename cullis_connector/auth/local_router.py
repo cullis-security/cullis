@@ -177,6 +177,26 @@ class ReprovisionResponse(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
+def _sanitize_header_value(value: str, *, max_len: int = 256) -> str:
+    """Strip CR/LF/control bytes + truncate so the value is a legal HTTP header.
+
+    RFC 7230 §3.2.6 forbids CR/LF inside a header value; uvicorn rejects
+    such a value with ``RuntimeError: Invalid HTTP header value``. The
+    deferred-provisioning detail we echo back to the SPA comes from
+    ``str(exc)`` on an underlying httpx error, and httpx multi-line
+    error formatting (e.g. ``"... 400 Bad Request ...\\nFor more
+    information check: https://..."``) leaks the LF straight through.
+    """
+    sanitized = "".join(
+        " " if (ord(c) < 0x20 or ord(c) == 0x7F) else c
+        for c in value
+    )
+    # Latin-1 is uvicorn's wire encoding for headers. Replace any
+    # non-latin1 codepoint with '?' rather than blowing up.
+    sanitized = sanitized.encode("latin-1", errors="replace").decode("latin-1")
+    return sanitized[:max_len].strip()
+
+
 def _is_secure_cookie() -> bool:
     """Return True unless we're explicitly in dev mode.
 
@@ -482,10 +502,8 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
         # that strips JSON fields it does not recognise.
         response.headers["X-Cullis-Provisioning-Failed"] = "true"
         if provisioning_detail:
-            # Truncate to keep the header well under 2KB; the full
-            # detail is in the audit log + Mastio side.
             response.headers["X-Cullis-Provisioning-Detail"] = (
-                provisioning_detail[:256]
+                _sanitize_header_value(provisioning_detail)
             )
     _set_cookie(response, cookie_value)
     _record_login_attempt(ip, body.user_name, success=True)
@@ -600,7 +618,7 @@ async def change_password(
         response.headers["X-Cullis-Provisioning-Failed"] = "true"
         if provisioning_detail:
             response.headers["X-Cullis-Provisioning-Detail"] = (
-                provisioning_detail[:256]
+                _sanitize_header_value(provisioning_detail)
             )
     _set_cookie(response, cookie_value)
     _log.info(
@@ -662,7 +680,7 @@ async def reprovision(request: Request) -> JSONResponse:
     )
     headers: dict[str, str] = {"X-Cullis-Provisioning-Failed": "true"}
     if detail:
-        headers["X-Cullis-Provisioning-Detail"] = detail[:256]
+        headers["X-Cullis-Provisioning-Detail"] = _sanitize_header_value(detail)
     return JSONResponse(
         body.model_dump(),
         status_code=502,
