@@ -95,6 +95,10 @@ build/
 # Frontdesk Connector identity material (per-deployment, never committed)
 packaging/frontdesk-bundle/connector_data/
 packaging/frontdesk-bundle/frontdesk.env
+# #655 / ADR-024 — self-signed TLS material minted at deploy time by
+# mint-tls-cert.sh. Contains the local CA private key, never commit.
+# Operators rotate by deleting this dir and re-running ./deploy.sh.
+packaging/frontdesk-bundle/tls/
 
 # Local NixOS test artifacts (rooted to repo root only)
 /.nixos-test-history
