@@ -177,7 +177,18 @@ esac
 # MCP_PROXY_ADMIN_SECRET, which is a different secret on a different
 # component (the Mastio dashboard) and cannot authenticate the Connector
 # admin API. See bug 1 in the v0.2.0 dogfood notes.
-ADMIN_SECRET="${CULLIS_CONNECTOR_ADMIN_SECRET:-$(openssl rand -hex 24)}"
+# gen_secret — prefer openssl, fall back to /dev/urandom + coreutils on
+# hosts that ship without openssl (minimal NixOS, Alpine, distroless,
+# trimmed WSL2 Ubuntu). Issue #638. Output: 48 lowercase hex chars,
+# matching the openssl rand -hex 24 shape.
+gen_admin_secret() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 24
+    else
+        head -c 24 /dev/urandom | od -An -vtx1 | tr -d ' \n'
+    fi
+}
+ADMIN_SECRET="${CULLIS_CONNECTOR_ADMIN_SECRET:-$(gen_admin_secret)}"
 
 cp "$SCRIPT_DIR/frontdesk.env.example" "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_ORG_ID=.*|CULLIS_FRONTDESK_ORG_ID=${ORG_ID}|"               "$OUT"
