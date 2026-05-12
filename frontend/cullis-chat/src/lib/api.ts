@@ -83,10 +83,50 @@ export async function whoami(): Promise<{ ok: boolean; principal: Principal }> {
   return jsonFetch<{ ok: boolean; principal: Principal }>('/api/session/whoami');
 }
 
-/** GET /v1/models — direct to Ambassador via session cookie auth. */
-export async function listModels(): Promise<Model[]> {
-  const res = await jsonFetch<{ object: string; data: Model[] }>('/v1/models');
-  return res.data;
+/** Source of the model list the Ambassador returned.
+ *
+ * `live` — the Mastio answered and the list reflects the org's
+ * configured AI providers (Anthropic catalog + dynamic Ollama tags +
+ * future Vertex/Bedrock/etc).
+ *
+ * `fallback` — the Mastio call failed (network, mTLS, no cert, etc.)
+ * and the dropdown is showing the hardcoded `advertised_models`
+ * compiled-in defaults. The SPA renders a warning so the user
+ * understands why "the model I configured isn't here".
+ */
+export type ModelsSource = 'live' | 'fallback';
+
+export interface ModelsResult {
+  data: Model[];
+  source: ModelsSource;
+  error?: string;
+}
+
+/** GET /v1/models — direct to Ambassador via session cookie auth.
+ *
+ * The Ambassador embeds a `cullis_meta.source` discriminator in the
+ * response (additive to the OpenAI envelope, ignored by upstream
+ * clients). When the live Mastio fetch fails the ambassador returns
+ * the hardcoded `advertised_models` with `source: "fallback"`; the
+ * SPA surfaces that to the user instead of silently lying.
+ */
+export async function listModels(): Promise<ModelsResult> {
+  const res = await jsonFetch<{
+    object: string;
+    data: Model[];
+    cullis_meta?: { source?: string; error?: string };
+  }>('/v1/models');
+  const rawSource = res.cullis_meta?.source;
+  const source: ModelsSource = rawSource === 'live' ? 'live' : 'fallback';
+  // Legacy ambassador builds (pre-#657) don't ship cullis_meta — treat
+  // the missing field as `live` to avoid spurious warnings on a stack
+  // that simply hasn't been upgraded yet.
+  const inferred: ModelsSource = rawSource === undefined ? 'live' : source;
+  return {
+    data: res.data,
+    source: inferred,
+    error: res.cullis_meta?.error,
+  };
 }
 
 /** POST /v1/chat/completions (non-streaming). Used as a fallback. */

@@ -318,3 +318,22 @@ def test_init_then_models_via_cookie_jar(client):
     # TestClient sticky cookies — no manual cookie= needed.
     resp = client.get("/v1/models")
     assert resp.status_code == 200
+
+
+def test_models_envelope_carries_cullis_meta_source(client, bearer):
+    """The SPA reads ``cullis_meta.source`` to surface a warning when
+    the dropdown is showing compiled-in defaults instead of the live
+    Mastio catalog. The Ambassador must populate the field on every
+    response so the SPA can rely on it.
+    """
+    resp = client.get(
+        "/v1/models",
+        cookies={LOCAL_SESSION_COOKIE: bearer},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["object"] == "list"
+    assert "cullis_meta" in body
+    # The test client wires no Mastio holder, so we always serve the
+    # fallback envelope here.
+    assert body["cullis_meta"]["source"] in {"live", "fallback"}

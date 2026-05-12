@@ -166,6 +166,28 @@ const auditToggleEnabled = import.meta.env.PUBLIC_DEV_AUDIT_PANEL === '1';
     opacity: 0.65;
   }
 
+  /* The 'fallback' chip surfaces that the Ambassador's live `/v1/models`
+     fetch failed and the dropdown is showing the compiled-in defaults.
+     Hover/title reveals the underlying error. Amber, not red — the chat
+     still works against the fallback list, the user just can't see the
+     models they configured. */
+  :global(.model-picker[data-source='fallback']) {
+    border-color: rgba(245, 158, 11, 0.45);
+  }
+
+  :global(.model-picker__fallback) {
+    font-family: var(--font-body);
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgb(245, 158, 11);
+    background: rgba(245, 158, 11, 0.12);
+    padding: 0.15rem 0.5rem;
+    border-radius: var(--radius-sm);
+    margin-left: 0.2rem;
+    cursor: help;
+  }
+
   /* Native <option> rendering ignores the parent <select> background
      in Chromium/WebKit, leaving the dropdown panel white-on-white on
      dark themes. Force the option styling explicitly. Firefox honours

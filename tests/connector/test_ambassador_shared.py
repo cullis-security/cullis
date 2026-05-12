@@ -605,7 +605,18 @@ def test_v1_models_after_init():
         )
         r = cli.get("/v1/models")
         assert r.status_code == 200
-        assert r.json()["data"][0]["id"] == "claude-haiku-4-5"
+        body = r.json()
+        assert body["data"][0]["id"] == "claude-haiku-4-5"
+        # The stub builds an SDK client that can't actually reach a
+        # Mastio at testserver:443 — so `_build_user_client` either
+        # raises or returns an empty list, and the ambassador serves
+        # the compiled-in defaults. The SPA reads `cullis_meta.source`
+        # to surface that to the user.
+        assert "cullis_meta" in body
+        assert body["cullis_meta"]["source"] == "fallback"
+        # Best-effort error message accompanies the fallback so the SPA
+        # tooltip can hint at the underlying failure.
+        assert "error" in body["cullis_meta"]
 
 
 def test_install_twice_raises():
