@@ -7,6 +7,39 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.3] — 2026-05-12
+
+Customer-path bug fix for Linux native deployments (issue #634).
+Closes the ADR-025 `/api/auth/login` regression that crashed uvicorn
+mid-response with `RuntimeError: Invalid HTTP header value` when CSR
+provisioning failed.
+
+### Fixed
+
+- **`/api/auth/login` no longer crashes when CSR is unreachable**
+  ([#635]): `_bind_login_cert` collapses CSR failures into
+  `("deferred", str(MastioCsrError(...)))`. httpx multi-line error
+  messages leak LF straight into the `X-Cullis-Provisioning-Detail`
+  response header, which uvicorn rejects. The fix introduces a new
+  `_sanitize_header_value` helper (strips CR/LF/control bytes, forces
+  latin-1, truncates to 256 chars) applied at all three call sites:
+  `/api/auth/login`, `/api/auth/change-password`, and
+  `/api/auth/reprovision`. Regression test covers the helper directly
+  + the deferred-with-multiline-detail path end-to-end. Bug surfaced
+  in the 2026-05-12 VPS demo dogfood on NixOS, where
+  `host.docker.internal` did not resolve from inside the Connector
+  container and every CSR call deferred with a multi-line httpx error.
+
+### Not in this release
+
+- The complementary deploy-side fix that makes
+  `host.docker.internal` resolve from the Connector container on
+  Linux native ships as `frontdesk-bundle-v0.2.3` rather than a
+  Connector release — it lives in
+  `packaging/frontdesk-bundle/deploy.sh`.
+
+[#635]: https://github.com/cullis-security/cullis/pull/635
+
 ## [v0.4.2] — 2026-05-12
 
 Bug-fix release that ships two crash-class fixes uncovered during the
