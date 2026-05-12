@@ -195,13 +195,20 @@ step "Enrollment wizard — discover, submit, approve, poll"
 
 # 1. Discover should find the Mastio. Allow some time for the connector
 #    to probe; retry a few times.
+#
+# After issue #634 the Frontdesk deploy.sh attaches the sibling Mastio
+# nginx to frontdesk_net as ``host.docker.internal`` + ``mastio-nginx``
+# alias. The discover probe then reaches the same Mastio at both
+# ``host.docker.internal:9443`` and the docker0 gateway IP
+# ``172.17.0.1:9443`` and lists it twice. Check for at least one row,
+# not for the literal "Found one Mastio" wording.
 DISCOVER_HTML=""
 for i in $(seq 1 10); do
     DISCOVER_HTML="$(curl -sf http://localhost:8080/api/setup/discover/results 2>&1 || true)"
-    echo "$DISCOVER_HTML" | grep -q "Found one Mastio" && break
+    echo "$DISCOVER_HTML" | grep -q 'class="found-mastio-url"' && break
     sleep 2
 done
-echo "$DISCOVER_HTML" | grep -q "Found one Mastio" \
+echo "$DISCOVER_HTML" | grep -q 'class="found-mastio-url"' \
     || { echo "$DISCOVER_HTML"; fail "Discover did not find Mastio"; }
 
 BASE_URL=$(echo "$DISCOVER_HTML" | grep -oE 'name="base_url" value="[^"]+"' | head -1 | sed 's/.*value="\([^"]*\)".*/\1/')
