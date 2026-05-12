@@ -83,6 +83,20 @@ Options:
                               frontdesk.env must exist with real values
   --down                      Stop and remove containers
   --pull                      Force-pull the images before starting
+  --tls                       Force the built-in TLS sidecar ON
+                              (default; mints a self-signed cert in
+                              ./tls/, terminates HTTPS on :8443)
+  --no-tls                    Skip the built-in TLS sidecar — use when
+                              you have an external TLS terminator
+                              (Caddy / oauth2-proxy / Traefik / corporate
+                              ingress) fronting the bundle
+  --tls-san <list>            Comma-separated extra SAN entries baked
+                              into the self-signed cert (DNS names + IP
+                              literals). Example:
+                              --tls-san "frontdesk.acme.com,1.2.3.4"
+                              Default SANs cover localhost +
+                              host.docker.internal + frontdesk.local +
+                              127.0.0.1 + ::1
   --requester-email <addr>    Email the Mastio admin sees in the pending
                               enrollment row. Default: frontdesk@<trust-domain>
   --requester-name <name>     Display name in the pending row.
@@ -119,6 +133,14 @@ CLI_REQUESTER_NAME=""
 CLI_SITE_URL=""
 SKIP_ENROLL=0
 NO_WIZARD=0
+# #655 / ADR-024 — built-in TLS sidecar. Defaults to ON (env value
+# resolves to "enabled" when nothing is set), customer-real out-of-
+# box HTTPS on :8443 with a self-signed cert. --no-tls / --tls flags
+# below let the operator override either way without editing
+# frontdesk.env. --tls-san appends extra SAN entries baked into the
+# minted cert (DNS names + IP literals, comma-separated).
+CLI_TLS_MODE=""
+CLI_TLS_SAN=""
 
 while [[ $# -gt 0 ]]; do
     arg="$1"
@@ -128,6 +150,13 @@ while [[ $# -gt 0 ]]; do
         --prod)             MODE="production"; shift ;;
         --skip-enroll)      SKIP_ENROLL=1; shift ;;
         --no-wizard)        NO_WIZARD=1; shift ;;
+        --no-tls)           CLI_TLS_MODE="disabled"; shift ;;
+        --tls)              CLI_TLS_MODE="enabled"; shift ;;
+        --tls-san)
+            shift
+            [[ $# -gt 0 && "$1" != --* ]] || die "--tls-san requires a comma-separated list"
+            CLI_TLS_SAN="$1"; shift ;;
+        --tls-san=*)        CLI_TLS_SAN="${arg#--tls-san=}"; shift ;;
         --requester-email)
             shift
             [[ $# -gt 0 && "$1" != --* ]] || die "--requester-email requires a value"
@@ -150,8 +179,12 @@ done
 
 if [[ "$ACTION" == "down" ]]; then
     step "Stopping Cullis Frontdesk"
-    $COMPOSE --env-file frontdesk.env down 2>/dev/null \
-        || $COMPOSE down
+    # ``--profile tls`` here so that ``docker compose down`` also tears
+    # down the frontdesk-nginx sidecar service. Without the flag,
+    # compose skips profile-gated services and leaves a dangling
+    # container bound to ${TLS_PORT} that blocks the next deploy.
+    $COMPOSE --env-file frontdesk.env --profile tls down 2>/dev/null \
+        || $COMPOSE --profile tls down
     ok "Frontdesk stopped"
     exit 0
 fi
@@ -205,6 +238,19 @@ CHAT_VERSION="$(_load_env CHAT_VERSION)";             CHAT_VERSION="${CHAT_VERSI
 CONNECTOR_PROFILE="$(_load_env CONNECTOR_PROFILE)";   CONNECTOR_PROFILE="${CONNECTOR_PROFILE:-frontdesk}"
 DATA_DIR="$(_load_env CONNECTOR_DATA_DIR)";           DATA_DIR="${DATA_DIR:-./connector_data}"
 HTTP_PORT="$(_load_env FRONTDESK_HTTP_PORT)";         HTTP_PORT="${HTTP_PORT:-8080}"
+# #655 / ADR-024 — TLS sidecar config. CLI flag overrides env value
+# overrides the built-in default ("enabled"). The summary below honours
+# this same precedence to decide which URL block to print.
+TLS_MODE_RAW="${CLI_TLS_MODE:-$(_load_env FRONTDESK_TLS)}"
+TLS_MODE="${TLS_MODE_RAW:-enabled}"
+TLS_PORT="$(_load_env FRONTDESK_TLS_PORT)";           TLS_PORT="${TLS_PORT:-8443}"
+TLS_BIND="$(_load_env FRONTDESK_TLS_BIND)";           TLS_BIND="${TLS_BIND:-0.0.0.0}"
+TLS_SAN="${CLI_TLS_SAN:-$(_load_env FRONTDESK_TLS_SAN)}"
+# Export FRONTDESK_TLS_* so docker compose substitution picks them up
+# (compose reads from the process env *and* --env-file; we resolved
+# the precedence above and re-export the winners).
+export FRONTDESK_TLS_PORT="$TLS_PORT"
+export FRONTDESK_TLS_BIND="$TLS_BIND"
 ENV_SITE_URL="$(_load_env CULLIS_SITE_URL)"
 
 if [[ "$MODE" == "production" ]]; then
@@ -471,19 +517,56 @@ except Exception as e:
     fi
 fi
 
+# ── TLS sidecar cert mint (#655 / ADR-024) ──────────────────────────────────
+#
+# When the operator hasn't opted out via FRONTDESK_TLS=disabled / --no-tls,
+# mint a self-signed cert under ./tls/ so the frontdesk-nginx sidecar can
+# terminate HTTPS on ${TLS_PORT}. The mint script runs openssl in a
+# transient nginx:1.27-alpine container, so the host needs no openssl
+# install (matching the bundle's openssl-optional posture from issue
+# #638). Idempotent: if the cert exists and covers the requested SAN
+# list, no regeneration. --tls-san appends extra SAN entries; the
+# default list covers localhost + host.docker.internal + frontdesk.local
+# + IP loopback, sufficient for same-host evaluation.
+COMPOSE_PROFILE_FLAGS=()
+if [[ "$TLS_MODE" == "enabled" ]]; then
+    step "Provisioning TLS sidecar cert (./tls/)"
+    MINT_ARGS=()
+    if [[ -n "$TLS_SAN" ]]; then
+        MINT_ARGS+=(--san "$TLS_SAN")
+    fi
+    if [[ -x "$SCRIPT_DIR/mint-tls-cert.sh" ]]; then
+        "$SCRIPT_DIR/mint-tls-cert.sh" "${MINT_ARGS[@]}" \
+            || die "TLS cert mint failed — re-run with FRONTDESK_TLS=disabled to fall back to plain HTTP"
+    else
+        die "mint-tls-cert.sh missing or not executable at $SCRIPT_DIR/mint-tls-cert.sh"
+    fi
+    # ``--profile tls`` activates the frontdesk-nginx sidecar service in
+    # docker-compose.yml. Without this flag, ``docker compose up -d``
+    # skips any service tagged with ``profiles: [tls]`` and the bundle
+    # comes up plain-HTTP only — the customer surface on :8443 stays
+    # dark. Mirrored in the FORCE_PULL pull step + the up step below.
+    COMPOSE_PROFILE_FLAGS+=(--profile tls)
+else
+    echo -e "  ${GRAY}TLS sidecar disabled (FRONTDESK_TLS=${TLS_MODE}) — plain-HTTP :${HTTP_PORT} loopback only${RESET}"
+fi
+
 # ── Pull + Start ────────────────────────────────────────────────────────────
 step "Deploying Cullis Frontdesk (${MODE})"
 echo -e "  Connector image: ${GRAY}ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION}${RESET}"
 echo -e "  Chat image:      ${GRAY}ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION}${RESET}"
+if [[ "$TLS_MODE" == "enabled" ]]; then
+    echo -e "  TLS sidecar:     ${GRAY}nginx:1.27-alpine on ${TLS_BIND}:${TLS_PORT} (self-signed)${RESET}"
+fi
 
 if [[ $FORCE_PULL -eq 1 ]]; then
-    echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env pull${RESET}"
-    $COMPOSE --env-file frontdesk.env pull
+    echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env ${COMPOSE_PROFILE_FLAGS[*]} pull${RESET}"
+    $COMPOSE --env-file frontdesk.env "${COMPOSE_PROFILE_FLAGS[@]}" pull
     ok "Images pulled"
 fi
 
-echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env up -d${RESET}"
-$COMPOSE --env-file frontdesk.env up -d
+echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env ${COMPOSE_PROFILE_FLAGS[*]} up -d${RESET}"
+$COMPOSE --env-file frontdesk.env "${COMPOSE_PROFILE_FLAGS[@]}" up -d
 ok "Containers started"
 
 # ── Attach sibling Mastio nginx to frontdesk_net ────────────────────────────
@@ -632,7 +715,15 @@ SITE_URL_DISPLAY="${CLI_SITE_URL:-${ENV_SITE_URL:-(see frontdesk.env CULLIS_SITE
 echo ""
 echo -e "${GREEN}${BOLD}Cullis Frontdesk deployed (${MODE}).${RESET}"
 echo ""
-echo -e "  ${BOLD}SPA URL${RESET}          ${GRAY}http://localhost:${HTTP_PORT}${RESET}"
+if [[ "$TLS_MODE" == "enabled" ]]; then
+    # HTTPS surface is the customer-public one. Plain :8080 stays
+    # loopback so siblings on the docker bridge keep working.
+    echo -e "  ${BOLD}HTTPS URL${RESET}        ${GRAY}https://localhost:${TLS_PORT}${RESET}"
+    echo -e "  ${BOLD}HTTP fallback${RESET}    ${GRAY}http://localhost:${HTTP_PORT} (loopback-only)${RESET}"
+    echo -e "  ${BOLD}TLS trust${RESET}        ${GRAY}./tls/frontdesk-ca.crt (import into browser to silence warning)${RESET}"
+else
+    echo -e "  ${BOLD}SPA URL${RESET}          ${GRAY}http://localhost:${HTTP_PORT}${RESET}"
+fi
 echo -e "  ${BOLD}Mastio target${RESET}    ${GRAY}${SITE_URL_DISPLAY}${RESET}"
 echo -e "  ${BOLD}Org${RESET}              ${GRAY}${ORG_ID} (${TRUST_DOMAIN})${RESET}"
 echo -e "  ${BOLD}Profile${RESET}          ${GRAY}${CONNECTOR_PROFILE} (data: ${DATA_DIR})${RESET}"

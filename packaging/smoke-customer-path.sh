@@ -189,6 +189,35 @@ curl -sf http://localhost:8080/ -o /dev/null \
     || fail "Frontdesk SPA /"
 ok "Frontdesk SPA up on :8080"
 
+# ── TLS sidecar (#655 / ADR-024) ─────────────────────────────────────────
+#
+# deploy.sh runs with TLS enabled by default. Verify the self-signed cert
+# was minted under ./tls/ and that the HTTPS surface returns the SPA on
+# :8443. ``-k`` (no cert verification) is correct here — the cert is
+# self-signed by a local CA the smoke does not import into the system
+# trust store. The TLS handshake itself + the cert path + the proxy
+# header pass-through to the inner SPA are what the gate validates.
+test -s ./tls/frontdesk-server.crt \
+    || fail "TLS cert was not minted at ./tls/frontdesk-server.crt"
+test -s ./tls/frontdesk-ca.crt \
+    || fail "TLS CA cert was not minted at ./tls/frontdesk-ca.crt"
+ok "TLS cert + CA present under ./tls/"
+
+for i in $(seq 1 20); do
+    curl -skf https://localhost:8443/tls-health -o /dev/null && break
+    sleep 1
+done
+curl -skf https://localhost:8443/tls-health -o /dev/null \
+    || fail "Frontdesk TLS sidecar /tls-health not reachable on :8443"
+ok "TLS sidecar healthy on :8443"
+
+# Hit the SPA root through the TLS sidecar to confirm the reverse-proxy
+# to the inner nginx works end-to-end. nginx would return 200 with the
+# SPA HTML; we just check the status code.
+curl -skf https://localhost:8443/ -o /dev/null \
+    || fail "Frontdesk SPA / not reachable through TLS sidecar"
+ok "Frontdesk SPA reachable on https://localhost:8443/"
+
 # ── Enrollment wizard, end-to-end ────────────────────────────────────────
 
 step "Enrollment wizard — discover, submit, approve, poll"

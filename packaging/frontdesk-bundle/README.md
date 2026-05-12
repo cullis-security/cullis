@@ -83,6 +83,40 @@ To opt out — useful in CI / scripted deploys where prompting a human is wrong 
 
 The bundle exposes nginx on the host port from `FRONTDESK_HTTP_PORT` (default `8080`).
 
+### HTTPS out-of-the-box (#655 / ADR-024)
+
+By default the bundle ships a **TLS sidecar** (`frontdesk-nginx`) that terminates HTTPS on `:8443` with a self-signed cert minted at deploy time. A fresh `./deploy.sh` on a clean VPS produces a publicly-reachable `https://<host>:8443/` surface, no manual Caddy / oauth2-proxy / Traefik install required for first-customer demos.
+
+```bash
+./deploy.sh                                    # mints cert + binds :8443 by default
+./deploy.sh --tls-san "frontdesk.acme.com"     # bake your public hostname into the cert
+open https://localhost:8443/login              # browser warns once, accept the self-signed cert
+                                               # (or import ./tls/frontdesk-ca.crt as a trust anchor)
+```
+
+The cert defaults cover `localhost`, `host.docker.internal`, `frontdesk.local`, `cullis-frontdesk-nginx`, `127.0.0.1`, `::1`. Add your VPS hostname / public IP via `FRONTDESK_TLS_SAN=…` in `frontdesk.env` (comma-separated) or `--tls-san "…"` on the CLI BEFORE the first deploy. Adding a SAN after the cert is already minted requires `rm -rf ./tls && ./deploy.sh` (or set the env / flag and re-run — `mint-tls-cert.sh` detects SAN drift and regenerates).
+
+Operators with an **external TLS terminator** (corporate ingress, Caddy + Let's Encrypt, Cloudflare Tunnel, Traefik, oauth2-proxy) flip the sidecar off:
+
+```bash
+./deploy.sh --no-tls
+# or persist in frontdesk.env:
+echo 'FRONTDESK_TLS=disabled' >> frontdesk.env
+```
+
+In `--no-tls` mode the legacy plain-HTTP `:8080` surface stays bound to `127.0.0.1` only. Point your external TLS terminator at `127.0.0.1:8080` and let it terminate HTTPS on `:443`. Example Caddyfile:
+
+```Caddyfile
+frontdesk.acme.com {
+    reverse_proxy http://127.0.0.1:8080
+    header X-Forwarded-Proto https
+}
+```
+
+The `X-Forwarded-Proto: https` header is what tells the Connector to flag ADR-025 session cookies `Secure=true` — without it the browser drops the cookie on every request after the first login.
+
+The cert + CA private key live under `./tls/` (gitignored). Rotate by `rm -rf ./tls && ./deploy.sh`; rotation forces every browser to re-accept the cert exception once.
+
 ### Image versions
 
 The compose file pins sensible defaults via env vars:

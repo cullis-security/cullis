@@ -208,11 +208,15 @@ services:
       # leaks the SPA session cookie on any non-loopback path. Localhost
       # is a W3C "secure context" (SPA crypto + Secure cookies + Service
       # Workers all work as if on HTTPS), so dogfood and single-user
-      # evaluations on the same host are safe. To expose on the LAN or
-      # the public internet, override FRONTDESK_HTTP_BIND to ``0.0.0.0``
-      # AND put a TLS terminator (oauth2-proxy / Caddy / Traefik / nginx)
-      # in front. Doing one without the other is incoherent with the
-      # zero-trust threat model — see README "Threat model & exposure".
+      # evaluations on the same host are safe. The HTTPS path is
+      # served by the ``frontdesk-nginx`` sidecar below on
+      # ``${FRONTDESK_TLS_PORT}`` (default 8443, profile ``tls``,
+      # enabled by ``./deploy.sh`` by default) — that's the
+      # customer-public surface. The ``:80 / :8080`` inner path
+      # stays loopback-bound for siblings on the same docker bridge
+      # and for operators who prefer an external TLS terminator
+      # (oauth2-proxy, Caddy, Traefik, corporate ingress) and flip
+      # the sidecar off with ``./deploy.sh --no-tls``.
       - "${FRONTDESK_HTTP_BIND:-127.0.0.1}:${FRONTDESK_HTTP_PORT:-8080}:80"
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
@@ -221,6 +225,64 @@ services:
     networks:
       - frontdesk_net
     restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────
+  # Frontdesk TLS sidecar (#655 / ADR-024). Terminates HTTPS on
+  # ${FRONTDESK_TLS_PORT} (default 8443) with a self-signed cert
+  # minted at deploy time by ./mint-tls-cert.sh (runs openssl inside
+  # a transient nginx:1.27-alpine container so the host needs no
+  # openssl install). Reverse-proxies to the inner ``nginx`` service
+  # on port 80, so the SPA + Connector routing rules stay in one
+  # place. Activated via compose profile ``tls`` — ``deploy.sh``
+  # passes ``--profile tls`` by default (FRONTDESK_TLS=enabled);
+  # operators who put an external TLS terminator in front of the
+  # bundle run ``./deploy.sh --no-tls`` to omit the sidecar.
+  #
+  # The cert covers default SANs (localhost, host.docker.internal,
+  # frontdesk.local, cullis-frontdesk-nginx, 127.0.0.1, ::1) plus
+  # any operator-supplied entries via ``FRONTDESK_TLS_SAN`` (comma
+  # list). A custom public hostname goes there before the first
+  # deploy so the browser cert validates without re-mint.
+  # ─────────────────────────────────────────────────────────────────
+  frontdesk-nginx:
+    image: nginx:1.27-alpine
+    profiles:
+      - tls
+    ports:
+      # Public surface. Default ``0.0.0.0`` so the bundle is reachable
+      # from any host on the LAN / VPS network. Cookie-leak risk is
+      # gone here (TLS); the ``Secure`` flag travels via the
+      # X-Forwarded-Proto header the sidecar sets to ``https``, so
+      # the Connector flags every ADR-025 session cookie
+      # ``Secure`` and the browser refuses to send it back over HTTP.
+      - "${FRONTDESK_TLS_BIND:-0.0.0.0}:${FRONTDESK_TLS_PORT:-8443}:8443"
+    volumes:
+      - ./nginx-tls/00-maps.conf:/etc/nginx/conf.d/00-maps.conf:ro
+      - ./nginx-tls/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # Mount ONLY the leaf cert + key — never the CA private key
+      # (./tls/frontdesk-ca.key). nginx needs only the server material
+      # at runtime; the CA key is needed by mint-tls-cert.sh on the
+      # host filesystem and would be defense-in-depth-exposed if
+      # nginx is ever compromised. Two explicit binds instead of one
+      # broad ``./tls:/etc/nginx/certs:ro`` directory mount.
+      - ./tls/frontdesk-server.crt:/etc/nginx/certs/frontdesk-server.crt:ro
+      - ./tls/frontdesk-server.key:/etc/nginx/certs/frontdesk-server.key:ro
+    depends_on:
+      - nginx
+    networks:
+      - frontdesk_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/frontdesk-server.crt &&
+          test -s /etc/nginx/certs/frontdesk-server.key &&
+          wget -q --no-check-certificate -O /dev/null https://localhost:8443/tls-health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   # Persistent Connector identity. Survives `docker compose down`. Wipe
