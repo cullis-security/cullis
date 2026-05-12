@@ -140,6 +140,13 @@ services:
       # Where Mastio's CSR endpoint lives. Falls back to site_url when empty.
       CULLIS_FRONTDESK_MASTIO_URL: ${CULLIS_FRONTDESK_MASTIO_URL:-}
       CULLIS_SITE_URL: ${CULLIS_SITE_URL:-}
+      # ADR-029 — tool-call PDP gate. Pairs with
+      # ``MCP_PROXY_TOOL_PDP_ENABLED`` on the Mastio: both must be
+      # ``true`` for the model loop to refuse tools the org's
+      # ``policy_rules.tool_rules`` does not authorise for the caller.
+      # Off by default so existing customer deployments keep their
+      # chat working until they opt in.
+      CULLIS_CONNECTOR_TOOL_PDP_ENABLED: ${CULLIS_CONNECTOR_TOOL_PDP_ENABLED:-}
       # Trust anchor for the Mastio TLS handshake. Production uses the
       # corporate PKI; the sandbox/ ships a self-signed Org-CA so we
       # mount it as a CA bundle here. Honoured by Python's ssl module
