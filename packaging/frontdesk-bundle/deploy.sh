@@ -359,13 +359,49 @@ else
     # behaviour the compose-managed Connector container will see.
     ENROLL_NET="${COMPOSE_PROJECT_NAME}_frontdesk_net"
     if ! docker network inspect "$ENROLL_NET" >/dev/null 2>&1; then
-        docker network create "$ENROLL_NET" >/dev/null \
+        # The labels below match what docker compose itself writes when it
+        # creates the network during ``up -d``. Without them, compose
+        # later refuses to adopt the pre-created network with
+        # ``network <name> was found but has incorrect label
+        # com.docker.compose.network`` and skips bringing up the stack.
+        # Issue #634 follow-up.
+        docker network create \
+            --label "com.docker.compose.network=frontdesk_net" \
+            --label "com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+            "$ENROLL_NET" >/dev/null \
             || die "Could not create docker network ${ENROLL_NET} for the enroll one-shot"
     fi
 
+    # Attach sibling Mastio nginx to ENROLL_NET so the enroll one-shot can
+    # actually resolve ``host.docker.internal``. Without this, the enroll
+    # container lands on the user-defined bridge with
+    # ``--add-host host.docker.internal:host-gateway``, which on Linux
+    # native points at the docker0 gateway IP that iptables FORWARD blocks
+    # across custom bridges. Symptom: 10s timeout on the CSR call. Issue
+    # #634 (the same fix is re-applied below after compose up for the
+    # long-running Connector — both call sites needed it).
+    MASTIO_NGINX_PREENROLL="$(docker ps --filter 'label=com.docker.compose.service=mastio-nginx' --format '{{.Names}}' | head -1)"
+    if [[ -n "$MASTIO_NGINX_PREENROLL" ]]; then
+        if ! docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$MASTIO_NGINX_PREENROLL" 2>/dev/null \
+                | tr ' ' '\n' | grep -qx "$ENROLL_NET"; then
+            docker network connect \
+                --alias host.docker.internal \
+                --alias mastio-nginx \
+                "$ENROLL_NET" "$MASTIO_NGINX_PREENROLL" 2>/dev/null \
+                || warn "Could not attach ${MASTIO_NGINX_PREENROLL} to ${ENROLL_NET} — enrollment may timeout"
+        fi
+    fi
+
+    # No --add-host host.docker.internal:host-gateway: it would write a
+    # static /etc/hosts entry that overrides the docker DNS alias we just
+    # added by attaching the sibling Mastio nginx to ENROLL_NET. The
+    # alias path is the only one that actually routes on Linux native
+    # (the host-gateway IP is unreachable across custom bridges). Issue
+    # #634. When no sibling Mastio is on this host the operator must
+    # point ``--site`` at a publicly resolvable hostname; ``--add-host``
+    # would not help in that case either.
     docker run --rm $DOCKER_TTY_FLAGS \
         --network "$ENROLL_NET" \
-        --add-host "host.docker.internal:host-gateway" \
         -v "${DATA_DIR_ABS}:/home/cullis/.cullis" \
         -v "${CA_BUNDLE_ABS}:/etc/cullis/ca-bundle.pem:ro" \
         -e SSL_CERT_FILE=/etc/cullis/ca-bundle.pem \
@@ -383,6 +419,56 @@ else
         die "Enrollment finished without writing metadata to $ENROLLMENT_METADATA — check container logs above"
     fi
     ok "Connector enrolled: ${CONNECTOR_PROFILE}"
+
+    # Sync ORG_ID + TRUST_DOMAIN to the agent identity the Mastio just
+    # minted. Enrollment writes ``agent_id`` as ``<org_id>::<agent>`` to
+    # the metadata. When the bundle was set up against a different
+    # Mastio (or a stale Mastio that has since been wiped + redeployed),
+    # the frontdesk.env values default to the previous org_id and the
+    # Connector tries to provision user certs for the WRONG org —
+    # Mastio refuses with 403 "cannot sign a CSR for a principal in a
+    # different org" and login_via_proxy_with_local_key flows return
+    # provisioning=deferred to the SPA. Auto-correct that here so the
+    # operator does not have to chase the mismatch by hand. Issue #634
+    # follow-up.
+    ENROLLED_AGENT_ID=$(python3 -c "
+import json, sys
+try:
+    with open('${ENROLLMENT_METADATA}') as f:
+        d = json.load(f)
+    print(d.get('agent_id', ''))
+except Exception as e:
+    print('', file=sys.stderr)
+" 2>/dev/null)
+    if [[ -n "$ENROLLED_AGENT_ID" && "$ENROLLED_AGENT_ID" == *"::"* ]]; then
+        ENROLLED_ORG_ID="${ENROLLED_AGENT_ID%%::*}"
+        # Only rewrite when the org actually differs — keep the file
+        # idempotent on re-runs against the same Mastio. The trust
+        # domain default is ``<org_id>.test`` to match the dev pattern
+        # generate-frontdesk-env.sh uses; production deploys should
+        # have already set CULLIS_FRONTDESK_TRUST_DOMAIN explicitly.
+        CURRENT_ORG_IN_ENV=$(grep -E '^CULLIS_FRONTDESK_ORG_ID=' frontdesk.env | cut -d= -f2- || echo "")
+        if [[ "$CURRENT_ORG_IN_ENV" != "$ENROLLED_ORG_ID" ]]; then
+            warn "frontdesk.env CULLIS_FRONTDESK_ORG_ID was '${CURRENT_ORG_IN_ENV:-<empty>}', updating to '${ENROLLED_ORG_ID}' to match the Mastio just enrolled against"
+            # In-place rewrite. The sed boundary uses a pipe delimiter
+            # so org_id values with slashes (none today, but defensive)
+            # do not break the substitution.
+            if grep -q '^CULLIS_FRONTDESK_ORG_ID=' frontdesk.env; then
+                sed -i "s|^CULLIS_FRONTDESK_ORG_ID=.*|CULLIS_FRONTDESK_ORG_ID=${ENROLLED_ORG_ID}|" frontdesk.env
+            else
+                echo "CULLIS_FRONTDESK_ORG_ID=${ENROLLED_ORG_ID}" >> frontdesk.env
+            fi
+            if grep -q '^CULLIS_FRONTDESK_TRUST_DOMAIN=' frontdesk.env; then
+                sed -i "s|^CULLIS_FRONTDESK_TRUST_DOMAIN=.*|CULLIS_FRONTDESK_TRUST_DOMAIN=${ENROLLED_ORG_ID}.test|" frontdesk.env
+            else
+                echo "CULLIS_FRONTDESK_TRUST_DOMAIN=${ENROLLED_ORG_ID}.test" >> frontdesk.env
+            fi
+            # Refresh in-process for the summary below.
+            ORG_ID="$ENROLLED_ORG_ID"
+            TRUST_DOMAIN="${ENROLLED_ORG_ID}.test"
+            ok "frontdesk.env synced to agent_id ${ENROLLED_AGENT_ID}"
+        fi
+    fi
 fi
 
 # ── Pull + Start ────────────────────────────────────────────────────────────
