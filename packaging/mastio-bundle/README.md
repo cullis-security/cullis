@@ -3,6 +3,12 @@
 Self-contained Mastio deploy. Pulls the published image from GHCR, no
 source tree required.
 
+## Prerequisites
+
+- **Docker** Engine 20.10+ with **docker compose v2** (`docker compose version`).
+- **bash** 4+, **curl**, **tar**, **gzip** — almost always already on the host.
+- **openssl** is optional. When present `deploy.sh` uses `openssl rand` for the admin secrets; when absent it falls back to `/dev/urandom + base64`, so minimal NixOS / Alpine / distroless hosts work out of the box.
+
 ## Quickstart (2 commands, you already have this tarball)
 
 ```bash

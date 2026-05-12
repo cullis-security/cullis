@@ -56,7 +56,6 @@ if [[ -f "$OUT" && "$FORCE" -eq 0 ]]; then
     [[ "$reply" =~ ^[Yy] ]] || { ok "Keeping existing proxy.env"; exit 0; }
 fi
 
-command -v openssl >/dev/null || die "openssl is required"
 [[ -f "$PROJECT_DIR/proxy.env.example" ]] || die "proxy.env.example not found"
 
 if [[ "$MODE" == "prod" ]]; then
@@ -64,7 +63,21 @@ if [[ "$MODE" == "prod" ]]; then
     [[ -n "${PROXY_PUBLIC_URL:-}" ]] || die "--prod requires PROXY_PUBLIC_URL env var"
 fi
 
-gen_secret() { openssl rand -base64 32 | tr -d '/+=' | head -c 32; }
+# Prefer openssl when available (well-tested, fast); fall back to
+# /dev/urandom + coreutils on hosts that ship without openssl —
+# minimal NixOS, Alpine, distroless, WSL2 trimmed Ubuntu, etc. Issue
+# #638: a customer on a Linux host without openssl pre-installed
+# previously hit ``openssl is required`` on the very first deploy.
+gen_secret() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 32 | tr -d '/+=' | head -c 32
+    else
+        # 64 random bytes → base64 → strip non-alphanum → take 32 chars.
+        # /dev/urandom + base64 + tr are coreutils, present on every
+        # Linux a docker host can boot on.
+        head -c 64 /dev/urandom | base64 | tr -d '/+=\n' | head -c 32
+    fi
+}
 
 ADMIN_SECRET="$(gen_secret)"
 SIGNING_KEY="$(gen_secret)"
