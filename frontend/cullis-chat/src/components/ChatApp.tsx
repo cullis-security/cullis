@@ -9,6 +9,7 @@ import {
   renameConversation,
 } from '../lib/api';
 import { ensureSession } from '../lib/session-singleton';
+import { whoamiAuto } from '../lib/auth';
 import { readSelectedModel } from './ModelPicker';
 import type { ChatMessage, ConversationDetail, StoredMessage } from '../lib/types';
 import { ChatWindow } from './ChatWindow';
@@ -174,6 +175,12 @@ function reasonOf(err: unknown): string {
 export default function ChatApp() {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const [sessionReady, setSessionReady] = useState(false);
+  // Sender label for the chat bubble on the user side. Pre-fix this was
+  // hardcoded "mario" in Message.tsx and every customer saw "mario" as
+  // their own name no matter who logged in. We read it from whoami once
+  // at mount; the Message component falls back to "you" while this is
+  // still null (whoami in flight or unavailable).
+  const [userName, setUserName] = useState<string | null>(null);
   // One in-flight stream per chat instance. Stop button aborts via this.
   const abortRef = useRef<AbortController | null>(null);
   // Sprint 1 Step 6 PR-B, active conversation tied to /v1/conversations.
@@ -193,6 +200,28 @@ export default function ChatApp() {
       .catch((err) => {
         if (cancelled) return;
         dispatch({ type: 'error', message: `session_init: ${reasonOf(err)}` });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load the principal display name from whoami so Message.tsx can label
+  // the user bubble with the real signed-in user (was hardcoded "mario"
+  // pre-fix). Single best-effort fetch at mount; silent on failure (the
+  // chat bubble falls back to "you").
+  useEffect(() => {
+    let cancelled = false;
+    whoamiAuto()
+      .then((result) => {
+        if (cancelled) return;
+        const principal = result?.principal;
+        if (principal?.name) setUserName(principal.name);
+      })
+      .catch(() => {
+        // Intentionally ignored. The Message component renders "you"
+        // when userName is null, which is correct for the case where
+        // whoami fails or hasn't returned yet.
       });
     return () => {
       cancelled = true;
@@ -467,8 +496,9 @@ export default function ChatApp() {
       setDraft: (text) => dispatch({ type: 'set_draft', text }),
       consumeDraft: () => dispatch({ type: 'clear_draft' }),
       sessionReady,
+      userName,
     }),
-    [state, send, cancel, retry, sessionReady],
+    [state, send, cancel, retry, sessionReady, userName],
   );
 
   // Initial collapse state from localStorage. The TopBar toggle script

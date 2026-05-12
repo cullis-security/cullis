@@ -21,7 +21,7 @@ interface Props {
  * marginalia chips above the body.
  */
 export function Message({ message, selected, onClick }: Props) {
-  const { retry } = useChat();
+  const { retry, userName } = useChat();
   const isUser = message.role === 'user';
   const ts = new Date(message.createdAt);
   const tsLabel = ts.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -39,7 +39,7 @@ export function Message({ message, selected, onClick }: Props) {
     >
       <header className="msg-meta">
         <span className={`msg-role ${isUser ? 'msg-role-user' : ''}`}>
-          {isUser ? 'mario' : 'cullis'}
+          {isUser ? (userName ?? 'you') : 'cullis'}
         </span>
         <span className="msg-folio">
           <em>{tsLabel}</em>

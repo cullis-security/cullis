@@ -29,6 +29,11 @@ export interface ChatContextValue {
   consumeDraft: () => void;
   setDraft: (text: string) => void;
   sessionReady: boolean;
+  /** Display name of the signed-in principal. Used by Message.tsx for the
+   *  sender label on user turns. Null while whoami is in flight; the
+   *  Message component falls back to "you" in that case. Pre-fix this was
+   *  hardcoded to "mario" which leaked into every customer's chat. */
+  userName: string | null;
 }
 
 export const ChatContext = createContext<ChatContextValue | null>(null);
