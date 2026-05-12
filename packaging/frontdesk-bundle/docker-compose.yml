@@ -76,7 +76,7 @@ services:
       - frontdesk_net
 
   connector:
-    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.0}
+    image: ghcr.io/cullis-security/cullis-connector:${CONNECTOR_VERSION:-0.4.2}
     # ``dashboard`` mounts the local-auth router (ADR-025) by default; the
     # legacy fake-SSO Ambassador shared-mode is reachable by setting
     # ``AMBASSADOR_MODE=shared`` explicitly in frontdesk.env. ADR-025
@@ -185,7 +185,7 @@ services:
     # + bundled JS/CSS. /api/session/* and /v1/* proxying to the
     # Connector happens in the outer nginx layer below; this inner
     # container only serves static assets.
-    image: ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION:-0.3.0}
+    image: ghcr.io/cullis-security/cullis-chat-frontdesk:${CHAT_VERSION:-0.4.0}
     expose:
       - "8080"
     depends_on:
