@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import importlib
 
-import pytest
-
 
 def _reload_settings(monkeypatch, **env):
     """Force a fresh ProxySettings() against the requested env."""
