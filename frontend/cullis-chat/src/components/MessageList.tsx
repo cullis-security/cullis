@@ -10,7 +10,7 @@ interface Props {
 }
 
 const HINTS = [
-  'what is the gdpr training status of mario rossi?',
+  'show my latest audit log entries.',
   'list active sessions across the org.',
   'summarise the open compliance findings.',
 ];
