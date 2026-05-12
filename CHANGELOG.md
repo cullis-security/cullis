@@ -7,6 +7,42 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.2] — 2026-05-12
+
+Bug-fix release that ships two crash-class fixes uncovered during the
+2026-05-11 VPS demo dogfood, plus the ADR-029 tool-call PDP gate on the
+Connector and the conversation-history REST surface the SPA needs.
+
+### Fixed
+
+- **Bug #10 — `/api/status` MUST be async def** ([#631]): the Connector
+  dashboard inbox poller spawned a background task at import time
+  against a sync `def` handler. On any worker that re-imported the
+  module (autoreload, multi-worker uvicorn) the spawn raised
+  `RuntimeError: no running event loop`. Customer-path smoke caught it
+  before the merge, but the class of regression was real.
+- **Bug #5 — `X-Enrollment-Proof` on dashboard `/api/status` poll**
+  ([#624]): the dashboard health poll talks to the Mastio with the
+  enrollment token but did not attach the DPoP-bound enrollment proof.
+  Mastio rejected with 401 once Wave B PR7 ([#627]) tightened
+  `LOCAL_TOKEN` DPoP binding.
+
+### Added
+
+- **Conversation history REST + SQLite store** ([#610]): Sprint 1
+  Step 6 PR-A. The Connector now persists chat conversations locally
+  and exposes them via REST so the Cullis Chat SPA can render a
+  sidebar history. Per-user attribution is preserved (ADR-021 KMS path).
+- **ADR-029 Phase D-1 — Connector PDP gate per tool call** ([#602]):
+  the Connector now enforces the tool-level PDP decision returned by
+  the Mastio when an MCP client invokes a tool. Closes the last
+  cross-org enforcement gap in the ADR-029 tool-call DAG.
+
+[#631]: https://github.com/cullis-security/cullis/pull/631
+[#624]: https://github.com/cullis-security/cullis/pull/624
+[#610]: https://github.com/cullis-security/cullis/pull/610
+[#602]: https://github.com/cullis-security/cullis/pull/602
+
 ## [v0.4.1] — 2026-05-11
 
 Patch release. Restores the PyInstaller binary distribution path that was
