@@ -155,6 +155,62 @@
             </code>
         </div>
         {% endif %}
+
+        {% if local_password_enabled %}
+        <!-- Admin password rotation (issue #653) -->
+        <div class="mt-8 pt-6 border-t border-gray-800/60">
+            <h2 class="text-sm font-semibold mb-2 text-gray-300" style="font-family: 'Chakra Petch', sans-serif; letter-spacing: 0.05em;">
+                Change admin password
+            </h2>
+            <p class="text-xs text-gray-500 mb-4">
+                Replaces the bcrypt hash stored on this Mastio. Requires the current password
+                so a stolen session cookie alone cannot rotate it. The CLI fallback
+                <code class="text-[10px] text-accent-400" style="font-family: 'JetBrains Mono', monospace;">python -m mcp_proxy.cli reset-password</code>
+                stays available for break-glass.
+            </p>
+
+            <form method="post" action="/proxy/settings/admin-password/change" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+                <div>
+                    <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                        Current password
+                    </label>
+                    <input type="password" name="current_password" required autocomplete="current-password"
+                           class="w-full px-3 py-2 bg-surface-900 border border-gray-700 rounded text-white text-sm"
+                           style="font-family: 'JetBrains Mono', monospace;">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                        New password
+                    </label>
+                    <input type="password" name="new_password" required autocomplete="new-password" minlength="12"
+                           class="w-full px-3 py-2 bg-surface-900 border border-gray-700 rounded text-white text-sm"
+                           style="font-family: 'JetBrains Mono', monospace;">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-medium text-gray-500 mb-1.5 uppercase tracking-[0.15em]">
+                        Confirm new password
+                    </label>
+                    <input type="password" name="new_password_confirm" required autocomplete="new-password" minlength="12"
+                           class="w-full px-3 py-2 bg-surface-900 border border-gray-700 rounded text-white text-sm"
+                           style="font-family: 'JetBrains Mono', monospace;">
+                </div>
+
+                <div class="pt-2">
+                    <button type="submit"
+                            class="px-5 py-2.5 text-xs font-semibold rounded transition-all"
+                            style="font-family: 'Chakra Petch', sans-serif; background: #00e5c7; color: #0a0f1a; letter-spacing: 0.1em; text-transform: uppercase;"
+                            onmouseover="this.style.background='#fff'"
+                            onmouseout="this.style.background='#00e5c7'">
+                        Change Password
+                    </button>
+                </div>
+            </form>
+        </div>
+        {% endif %}
     </div>
 
 </div>
