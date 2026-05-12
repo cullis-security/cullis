@@ -7,6 +7,46 @@ The connector follows its own release cadence, independent from the
 broker and proxy components of the Cullis monorepo. Connector releases
 are tagged `connector-vX.Y.Z`.
 
+## [v0.4.4] — 2026-05-12
+
+Bug-fix release. Two ambassador-side fixes from the 2026-05-12 VPS
+demo dogfood that the operator hit while configuring an Ollama
+provider through the Mastio dashboard.
+
+### Fixed
+
+- **User keypair now persists across Connector restarts so the
+  Mastio's TOFU pubkey pin survives a process restart, cookie TTL
+  expiry, or admin-driven password reset** ([#656]): ADR-021 v0.1
+  cached the per-user EC keypair in an in-memory dict with a 1 h TTL.
+  Each cache miss minted a fresh keypair and re-issued a CSR; the
+  Mastio's `principals_csr.py` pinned the public key on first sight
+  and refused subsequent CSRs that presented a different one. End
+  result: any user who survived a restart got a permanent `403 TOFU
+  pubkey mismatch` until an admin manually unpinned them. New
+  `UserKeyStore` writes PEMs to
+  `~/.cullis/<profile>/user_keys/<sha256(principal_id)>.pem` with a
+  tmp + chmod 600 + os.replace atomic write (matches the pattern in
+  `cullis_connector/identity/store.py`), shared by both the
+  loopback `UserProvisioner` and the shared-mode Ambassador.
+- **`/v1/models` now surfaces a fallback indicator instead of
+  silently lying when the live Mastio fetch fails** ([#657]): the
+  Ambassador's `client.list_models()` call against the Mastio
+  failed silently and returned the compiled-in `advertised_models`
+  list with no signal to the SPA. Dogfood users who saved an Ollama
+  provider but had a broken cert path saw three Anthropic models in
+  the dropdown with no hint that the list was not authoritative.
+  The `/v1/models` envelope now carries an additive
+  `cullis_meta.source` ∈ {`live`, `fallback`} field (OpenAI clients
+  ignore unknown top-level fields, so Cursor / LibreChat / raw curl
+  keep working unchanged). The Cullis Chat SPA renders an amber
+  `offline` chip next to the dropdown when the source is
+  `fallback`, with the underlying error string in the `title`
+  tooltip.
+
+[#656]: https://github.com/cullis-security/cullis/pull/656
+[#657]: https://github.com/cullis-security/cullis/pull/657
+
 ## [v0.4.3] — 2026-05-12
 
 Customer-path bug fix for Linux native deployments (issue #634).
