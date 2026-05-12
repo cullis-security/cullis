@@ -315,6 +315,98 @@ async def test_provisioner_cache_hit_skips_mastio():
 
 
 @pytest.mark.asyncio
+async def test_provisioner_with_keystore_reuses_keypair_across_cache_miss(
+    tmp_path,
+):
+    """Regression for the TOFU pin mismatch (issue #655-adjacent).
+
+    Without the keystore, every cache miss minted a fresh keypair which
+    Mastio's CRIT-1 TOFU pin then rejected with ``CSR validation
+    failed``. With the keystore wired in, two cache misses for the same
+    principal must produce CSRs signed with the SAME pubkey so Mastio's
+    pin keeps matching.
+    """
+    from cryptography import x509
+
+    from cullis_connector.ambassador.shared.keystore import UserKeyStore
+
+    cache = UserCredentialCache()
+    mastio = _StubMastio()
+    keystore = UserKeyStore(tmp_path)
+    p = UserProvisioner(mastio=mastio, cache=cache, keystore=keystore)
+
+    await p.get_or_provision(
+        principal_id="acme.test/acme/user/mario",
+        sso_subject="mario@acme.it",
+    )
+    # Force a cache miss the way a container restart / TTL expiry would.
+    await cache.invalidate("acme.test/acme/user/mario")
+    await p.get_or_provision(
+        principal_id="acme.test/acme/user/mario",
+        sso_subject="mario@acme.it",
+    )
+
+    # Two CSRs reached Mastio.
+    assert len(mastio.calls) == 2
+    csr_a = x509.load_pem_x509_csr(mastio.calls[0][1].encode())
+    csr_b = x509.load_pem_x509_csr(mastio.calls[1][1].encode())
+    # Pubkey identical → Mastio TOFU pin would still match.
+    from cryptography.hazmat.primitives import serialization
+
+    spki_a = csr_a.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    spki_b = csr_b.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    assert spki_a == spki_b
+
+
+@pytest.mark.asyncio
+async def test_provisioner_without_keystore_mints_fresh_keypair_per_miss(
+    tmp_path,
+):
+    """Legacy v0.1 behaviour: no keystore → every miss = fresh keypair.
+
+    Documents the regression we are fixing: this assertion describes
+    the broken state. Pinned here so a future "always require keystore"
+    refactor doesn't silently change the contract for callers that pass
+    ``keystore=None``.
+    """
+    from cryptography import x509
+
+    cache = UserCredentialCache()
+    mastio = _StubMastio()
+    p = UserProvisioner(mastio=mastio, cache=cache)  # keystore=None
+
+    await p.get_or_provision(
+        principal_id="acme.test/acme/user/mario",
+        sso_subject="mario@acme.it",
+    )
+    await cache.invalidate("acme.test/acme/user/mario")
+    await p.get_or_provision(
+        principal_id="acme.test/acme/user/mario",
+        sso_subject="mario@acme.it",
+    )
+
+    csr_a = x509.load_pem_x509_csr(mastio.calls[0][1].encode())
+    csr_b = x509.load_pem_x509_csr(mastio.calls[1][1].encode())
+    from cryptography.hazmat.primitives import serialization
+
+    spki_a = csr_a.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    spki_b = csr_b.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    assert spki_a != spki_b
+
+
+@pytest.mark.asyncio
 async def test_provisioner_propagates_mastio_failure():
     cache = UserCredentialCache()
     mastio = _StubMastio(fail_with=MastioCsrError("Mastio said no"))

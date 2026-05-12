@@ -45,6 +45,7 @@ from cullis_connector.ambassador.shared.credentials import (
     UserCredentialCache,
     UserCredentials,
 )
+from cullis_connector.ambassador.shared.keystore import UserKeyStore
 from cullis_connector.ambassador.shared.provisioning import (
     MastioCsrError,
     MastioCsrTransport,
@@ -203,11 +204,15 @@ class LocalUserProvisioner:
         mastio: MastioCsrTransport,
         cache: UserCredentialCache,
         env: Optional[dict[str, str]] = None,
+        keystore: Optional[UserKeyStore] = None,
     ) -> None:
         self._mastio = mastio
         self._cache = cache
         self._env = env
-        self._provisioner = UserProvisioner(mastio=mastio, cache=cache)
+        self._keystore = keystore
+        self._provisioner = UserProvisioner(
+            mastio=mastio, cache=cache, keystore=keystore,
+        )
 
     @property
     def cache(self) -> UserCredentialCache:

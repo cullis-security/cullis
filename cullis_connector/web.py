@@ -422,6 +422,9 @@ def _maybe_install_local_user_provisioner(
         from cullis_connector.ambassador.shared.credentials import (
             UserCredentialCache,
         )
+        from cullis_connector.ambassador.shared.keystore import (
+            UserKeyStore, keystore_dir_for,
+        )
         from cullis_connector.ambassador.shared.provisioning import (
             SdkMastioCsrTransport,
         )
@@ -462,10 +465,14 @@ def _maybe_install_local_user_provisioner(
         verify_tls=config.verify_arg,
     )
     cache = UserCredentialCache()
-    provisioner = LocalUserProvisioner(mastio=transport, cache=cache)
+    keystore = UserKeyStore(keystore_dir_for(config.config_dir))
+    provisioner = LocalUserProvisioner(
+        mastio=transport, cache=cache, keystore=keystore,
+    )
 
     app.state.local_csr_transport = transport
     app.state.local_user_cache = cache
+    app.state.local_keystore = keystore
     app.state.local_provisioner = provisioner
 
     # Cert middleware reads the same config_dir as the login router so
@@ -509,6 +516,9 @@ def _maybe_install_shared_ambassador(
     try:
         from cullis_connector.ambassador.shared.credentials import (
             UserCredentialCache,
+        )
+        from cullis_connector.ambassador.shared.keystore import (
+            UserKeyStore, keystore_dir_for,
         )
         from cullis_connector.ambassador.shared.provisioning import (
             SdkMastioCsrTransport, UserProvisioner,
@@ -572,7 +582,11 @@ def _maybe_install_shared_ambassador(
     app.state.shared_ambassador_csr_transport = transport  # keep alive
 
     cache = UserCredentialCache()
-    provisioner = UserProvisioner(mastio=transport, cache=cache)
+    keystore = UserKeyStore(keystore_dir_for(config.config_dir))
+    provisioner = UserProvisioner(
+        mastio=transport, cache=cache, keystore=keystore,
+    )
+    app.state.shared_ambassador_keystore = keystore  # keep alive
 
     # ADR-020 Phase 4 — broker URL for the user-inbox passthrough
     # (issue #488). Read from env so the deployment can route the
