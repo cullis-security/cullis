@@ -266,7 +266,10 @@ async def session_whoami(
 # stable per-org until an admin edits AI Providers, so a 30s TTL keeps
 # the SPA dropdown snappy even with 50 concurrent users.
 _SHARED_MODELS_CACHE_TTL_S = 30.0
-_shared_models_cache: dict[str, tuple[float, list[dict]]] = {}
+# Cached tuple is (cached_at, data, source) where source ∈ {"live",
+# "fallback"} so the SPA can render a warning when it is looking at
+# hardcoded defaults instead of the Mastio's real provider catalog.
+_shared_models_cache: dict[str, tuple[float, list[dict], str]] = {}
 
 
 def _shared_fallback_models(state: SharedAmbassadorState) -> list[dict]:
@@ -275,6 +278,21 @@ def _shared_fallback_models(state: SharedAmbassadorState) -> list[dict]:
         {"id": m, "object": "model", "owned_by": "cullis", "created": 0}
         for m in advertised
     ]
+
+
+def _shared_models_response(
+    data: list[dict], source: str, *, error: str | None = None,
+) -> dict:
+    """Same envelope as the standard ambassador: OpenAI-compatible top
+    level plus a ``cullis_meta.source`` field the SPA reads to decide
+    whether to surface "Model list unavailable" to the user.
+    """
+    body: dict = {"object": "list", "data": data}
+    meta: dict = {"source": source}
+    if source == "fallback" and error:
+        meta["error"] = error
+    body["cullis_meta"] = meta
+    return body
 
 
 @router.get("/v1/models")
@@ -287,13 +305,20 @@ async def list_models(
     cached = _shared_models_cache.get(cred.principal_id)
     now = time.monotonic()
     if cached is not None and (now - cached[0]) < _SHARED_MODELS_CACHE_TTL_S:
-        return {"object": "list", "data": cached[1]}
+        return _shared_models_response(cached[1], cached[2])
 
     data = _shared_fallback_models(state)
+    source = "fallback"
+    error_reason: str | None = None
     try:
         client = _build_user_client(state, cred)
         try:
-            data = client.list_models() or data
+            live = client.list_models()
+            if live:
+                data = live
+                source = "live"
+            else:
+                error_reason = "Mastio returned empty model list"
         finally:
             close = getattr(client, "close", None)
             if callable(close):
@@ -302,13 +327,14 @@ async def list_models(
                 except Exception:
                     pass
     except Exception as exc:
+        error_reason = str(exc) or exc.__class__.__name__
         _log.debug(
             "shared ambassador /v1/models fetch failed for %s: %s",
             cred.principal_id, exc,
         )
 
-    _shared_models_cache[cred.principal_id] = (now, data)
-    return {"object": "list", "data": data}
+    _shared_models_cache[cred.principal_id] = (now, data, source)
+    return _shared_models_response(data, source, error=error_reason)
 
 
 # ── /v1/chat/completions ─────────────────────────────────────────

@@ -151,7 +151,10 @@ def _get_state(request: Request) -> dict:
 # stable per-deployment until an admin edits AI Providers, so a 30s
 # TTL keeps the chat sidebar snappy without hammering the egress.
 _MODELS_CACHE_TTL_S = 30.0
-_models_cache: dict[str, tuple[float, list[dict]]] = {}
+# Cached tuple is (cached_at, data, source) where source ∈ {"live",
+# "fallback"} so the SPA can surface "Model list unavailable, showing
+# cached defaults" instead of silently showing the wrong dropdown.
+_models_cache: dict[str, tuple[float, list[dict], str]] = {}
 
 
 def _fallback_models(state: dict) -> list[dict]:
@@ -172,22 +175,50 @@ def list_models(request: Request) -> dict:
     cached = _models_cache.get(cache_key)
     now = time.monotonic()
     if cached is not None and (now - cached[0]) < _MODELS_CACHE_TTL_S:
-        return {"object": "list", "data": cached[1]}
+        return _models_response(cached[1], cached[2])
 
     holder = state.get("client")
     data = _fallback_models(state)
+    source = "fallback"
+    error_reason: str | None = None
     if holder is not None:
         try:
             client = holder.get()
-            data = client.list_models() or data
+            live = client.list_models()
+            if live:
+                data = live
+                source = "live"
+            else:
+                error_reason = "Mastio returned empty model list"
         except Exception as exc:
+            error_reason = str(exc) or exc.__class__.__name__
             _log.debug(
                 "Mastio /v1/models fetch failed, using advertised fallback: %s",
                 exc,
             )
+    else:
+        error_reason = "Ambassador has no Mastio client wired"
 
-    _models_cache[cache_key] = (now, data)
-    return {"object": "list", "data": data}
+    _models_cache[cache_key] = (now, data, source)
+    return _models_response(data, source, error=error_reason)
+
+
+def _models_response(
+    data: list[dict], source: str, *, error: str | None = None,
+) -> dict:
+    """OpenAI-compatible body plus an additive ``cullis_meta`` block.
+
+    OpenAI clients ignore unknown top-level fields, so this stays a
+    drop-in for `api.openai.com/v1/models`. The Cullis SPA reads
+    ``cullis_meta.source`` to render a banner when the live fetch
+    failed and the dropdown is showing the hardcoded fallback list.
+    """
+    body: dict = {"object": "list", "data": data}
+    meta: dict = {"source": source}
+    if source == "fallback" and error:
+        meta["error"] = error
+    body["cullis_meta"] = meta
+    return body
 
 
 # ── /v1/chat/completions ────────────────────────────────────────────

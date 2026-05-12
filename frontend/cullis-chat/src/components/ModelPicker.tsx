@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listModels } from '../lib/api';
+import { listModels, type ModelsSource } from '../lib/api';
 import { ensureSession } from '../lib/session-singleton';
 
 const STORAGE_KEY = 'cullis-chat:model';
@@ -21,20 +21,27 @@ export function readSelectedModel(): string {
 /**
  * Live model picker. Fetches `/v1/models` on mount; defaults to
  * the cached preference + the hard-coded fallback while loading.
+ *
+ * When the Ambassador couldn't reach Mastio it returns `source:
+ * "fallback"` plus the compiled-in `advertised_models`. We surface
+ * a warning so the user understands why "the model I configured
+ * isn't in the dropdown".
  */
 export default function ModelPicker() {
   const [models, setModels] = useState<string[]>([readSelectedModel(), FALLBACK_MODEL]);
   const [selected, setSelected] = useState<string>(readSelectedModel);
   const [loaded, setLoaded] = useState(false);
+  const [source, setSource] = useState<ModelsSource>('live');
+  const [fetchError, setFetchError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         await ensureSession();
-        const list = await listModels();
+        const res = await listModels();
         if (cancelled) return;
-        const ids = Array.from(new Set(list.map((m) => m.id)));
+        const ids = Array.from(new Set(res.data.map((m) => m.id)));
         if (ids.length > 0) setModels(ids);
         if (!ids.includes(selected) && ids.length > 0) {
           // Cached preference no longer offered — reset to first.
@@ -45,9 +52,16 @@ export default function ModelPicker() {
             /* ignore */
           }
         }
+        setSource(res.source);
+        setFetchError(res.error);
         setLoaded(true);
-      } catch {
-        // keep fallback list
+      } catch (err) {
+        // Network-level failure (e.g. the ambassador itself is down).
+        // The dropdown keeps its local fallback, but we still tell the
+        // user the list is not authoritative.
+        if (cancelled) return;
+        setSource('fallback');
+        setFetchError(err instanceof Error ? err.message : 'fetch failed');
         setLoaded(true);
       }
     })();
@@ -68,8 +82,14 @@ export default function ModelPicker() {
     document.dispatchEvent(new CustomEvent('cullis:model-changed', { detail: id }));
   }
 
+  const isFallback = loaded && source === 'fallback';
+
   return (
-    <label className="model-picker" data-loaded={loaded ? 'true' : 'false'}>
+    <label
+      className="model-picker"
+      data-loaded={loaded ? 'true' : 'false'}
+      data-source={source}
+    >
       <span className="folio">model</span>
       <select
         value={selected}
@@ -80,6 +100,20 @@ export default function ModelPicker() {
           <option key={id} value={id}>{id}</option>
         ))}
       </select>
+      {isFallback && (
+        <span
+          className="model-picker__fallback"
+          role="status"
+          aria-live="polite"
+          title={
+            fetchError
+              ? `Live model list unavailable: ${fetchError}. Showing cached defaults.`
+              : 'Live model list unavailable. Showing cached defaults.'
+          }
+        >
+          offline
+        </span>
+      )}
     </label>
   );
 }
