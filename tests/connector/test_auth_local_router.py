@@ -408,3 +408,77 @@ def test_auth_local_router_not_mounted_when_oidc(connector_config, monkeypatch):
     assert r.status_code == 404
     r2 = tc.get("/api/auth/runtime-info")
     assert r2.status_code == 404
+
+
+# ── Issue #634 — deferred provisioning header sanitization ───────────────
+
+
+def test_sanitize_header_value_strips_lf_cr_and_truncates():
+    from cullis_connector.auth.local_router import _sanitize_header_value
+
+    assert _sanitize_header_value("one line") == "one line"
+    # LF / CR / tab / vertical-tab / null — every control byte goes
+    assert _sanitize_header_value("a\nb\rc\td\ve") == "a b c d e"
+    # Multi-line httpx-style error message (the real-world case from
+    # issue #634)
+    httpx_style = (
+        "transport failure calling Mastio /v1/principals/csr: "
+        "Client error '400 Bad Request' for url 'https://x/y'\n"
+        "For more information check: https://developer.mozilla.org/..."
+    )
+    out = _sanitize_header_value(httpx_style)
+    assert "\n" not in out and "\r" not in out
+    # Truncation honoured
+    long_value = "a" * 1000
+    assert len(_sanitize_header_value(long_value, max_len=256)) == 256
+    # Non-latin1 codepoints get replaced (uvicorn header writer is
+    # strict latin-1)
+    assert "?" in _sanitize_header_value("emoji 😀 here")
+
+
+def test_login_deferred_provisioning_header_does_not_crash_uvicorn(
+    client, monkeypatch,
+):
+    """Regression for issue #634.
+
+    When ``_bind_login_cert`` returns a ``deferred`` status with a
+    detail message that contains LF (real httpx errors look like
+    ``"... 400 Bad Request ...\\nFor more information check: ..."``),
+    the old code stuffed the raw multi-line string into
+    ``X-Cullis-Provisioning-Detail`` and uvicorn's header writer
+    aborted the response with
+    ``RuntimeError: Invalid HTTP header value``.
+
+    After the fix the detail flows through ``_sanitize_header_value``
+    and the response is well-formed.
+    """
+    from cullis_connector.auth import local_router as _lr
+
+    multiline_detail = (
+        "transport failure calling Mastio /v1/principals/csr: "
+        "Client error '400 Bad Request' for url 'https://x/y'\n"
+        "For more information check: https://developer.mozilla.org/Web/HTTP/Status/400"
+    )
+
+    async def fake_bind(request, payload):  # noqa: ARG001
+        return "deferred", multiline_detail
+
+    monkeypatch.setattr(_lr, "_bind_login_cert", fake_bind)
+
+    _create_user(
+        client, user_name="bob", password="longpassword", must_change=False,
+    )
+    r = client.post(
+        "/api/auth/login",
+        json={"user_name": "bob", "password": "longpassword"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["provisioning"] == "deferred"
+    assert r.headers.get("X-Cullis-Provisioning-Failed") == "true"
+    raw_detail = r.headers.get("X-Cullis-Provisioning-Detail", "")
+    assert raw_detail, "detail header should be present when detail provided"
+    # Critical invariant: NO control bytes in the wire-form header value
+    assert "\n" not in raw_detail
+    assert "\r" not in raw_detail
+    # Truncation honoured to keep header well under 2 KB
+    assert len(raw_detail) <= 256

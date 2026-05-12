@@ -195,13 +195,20 @@ step "Enrollment wizard — discover, submit, approve, poll"
 
 # 1. Discover should find the Mastio. Allow some time for the connector
 #    to probe; retry a few times.
+#
+# After issue #634 the Frontdesk deploy.sh attaches the sibling Mastio
+# nginx to frontdesk_net as ``host.docker.internal`` + ``mastio-nginx``
+# alias. The discover probe then reaches the same Mastio at both
+# ``host.docker.internal:9443`` and the docker0 gateway IP
+# ``172.17.0.1:9443`` and lists it twice. Check for at least one row,
+# not for the literal "Found one Mastio" wording.
 DISCOVER_HTML=""
 for i in $(seq 1 10); do
     DISCOVER_HTML="$(curl -sf http://localhost:8080/api/setup/discover/results 2>&1 || true)"
-    echo "$DISCOVER_HTML" | grep -q "Found one Mastio" && break
+    echo "$DISCOVER_HTML" | grep -q 'class="found-mastio-url"' && break
     sleep 2
 done
-echo "$DISCOVER_HTML" | grep -q "Found one Mastio" \
+echo "$DISCOVER_HTML" | grep -q 'class="found-mastio-url"' \
     || { echo "$DISCOVER_HTML"; fail "Discover did not find Mastio"; }
 
 BASE_URL=$(echo "$DISCOVER_HTML" | grep -oE 'name="base_url" value="[^"]+"' | head -1 | sed 's/.*value="\([^"]*\)".*/\1/')
@@ -265,6 +272,83 @@ for i in $(seq 1 15); do
 done
 [[ $APPROVED == 1 ]] || fail "Enrollment did not reach approved in 30s"
 ok "Connector identity on disk, /api/status=approved"
+
+# ── ADR-025 path guards (issue #634) ─────────────────────────────────────
+#
+# The legacy session/init path below uses the X-Forwarded-User flow that
+# bypasses CSR provisioning entirely. The ADR-025 local-auth path that
+# real customers use does NOT. Two bugs from the 2026-05-12 dogfood
+# (issue #634) shipped green through the old smoke because both bugs
+# only manifest on the ADR-025 path:
+#
+#   Bug A — Frontdesk deploy.sh did not attach sibling Mastio nginx to
+#           frontdesk_net, so host.docker.internal did not resolve from
+#           inside the Connector container on Linux native. CSR fails
+#           with "Name or service not known".
+#   Bug B — When CSR fails, the deferred-provisioning detail (a multi-
+#           line httpx error message) was placed verbatim in the
+#           X-Cullis-Provisioning-Detail response header. uvicorn
+#           rejects LF in header values, the response crashed mid-send,
+#           nginx returned 502.
+
+step "ADR-025 path guards — DNS + login round-trip"
+
+# Bug A guard: DNS resolution from inside the Connector container.
+CONNECTOR_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=connector' --filter 'label=com.docker.compose.project=cullis-frontdesk' --format '{{.Names}}' | head -1)"
+[[ -n "$CONNECTOR_CONTAINER" ]] \
+    || fail "Connector container not found by compose labels"
+docker exec "$CONNECTOR_CONTAINER" getent hosts host.docker.internal >/dev/null 2>&1 \
+    || fail "Bug A regression: host.docker.internal does not resolve inside $CONNECTOR_CONTAINER (deploy.sh did not attach sibling Mastio nginx to frontdesk_net)"
+ok "host.docker.internal resolves inside Connector"
+
+# Bug B guard: an /api/auth/login round-trip on the ADR-025 path must
+# return a well-formed response even when CSR provisioning fails (the
+# whole point of "deferred" semantics). Pre-fix, the response crashed
+# uvicorn mid-send.
+ADMIN_SECRET=$(grep '^CULLIS_CONNECTOR_ADMIN_SECRET=' "$REPO_ROOT/packaging/frontdesk-bundle/frontdesk.env" | cut -d= -f2)
+[[ -n "$ADMIN_SECRET" ]] || fail "could not read CULLIS_CONNECTOR_ADMIN_SECRET from frontdesk.env"
+
+curl -sf -X POST http://localhost:8080/admin/users \
+    -H "X-Admin-Secret: $ADMIN_SECRET" \
+    -H "Content-Type: application/json" \
+    -d '{"user_name":"smoke-adr025","password":"smoke-password-long","must_change_password":false}' \
+    -o /tmp/smoke-create-user.json \
+    || fail "admin create user (ADR-025 smoke)"
+
+LOGIN_HTTP=$(curl -s -o /tmp/smoke-login.json -D /tmp/smoke-login.headers \
+    -w "%{http_code}" \
+    -X POST http://localhost:8080/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"user_name":"smoke-adr025","password":"smoke-password-long"}')
+[[ "$LOGIN_HTTP" == "200" ]] \
+    || { echo "headers:"; cat /tmp/smoke-login.headers; echo "body:"; cat /tmp/smoke-login.json; fail "Bug B regression: /api/auth/login returned $LOGIN_HTTP (expected 200)"; }
+
+# Defense in depth — every response header value must be a single line.
+if grep -lE $'[\r\n]' /tmp/smoke-login.headers >/dev/null 2>&1; then
+    # grep -lE on the file matches if a line CONTAINS CR/LF mid-value.
+    # The header file itself uses CRLF terminators per HTTP, so this
+    # check fires only when a header value embeds an extra CR/LF.
+    : # placeholder, real check below
+fi
+# Stricter check: parse each header value, ensure none contains an
+# embedded \n after stripping the standard CRLF terminator.
+python3 - <<'PY' || fail "Bug B regression: response header carries embedded CR/LF"
+import sys
+with open("/tmp/smoke-login.headers", "rb") as f:
+    raw = f.read()
+# Split on CRLF, then look for any "header: value" line whose value
+# (after the colon) contains a bare \n or \r — would mean two distinct
+# headers got concatenated, which is exactly what the original Bug B
+# would have leaked.
+for line in raw.split(b"\r\n"):
+    if b":" not in line:
+        continue
+    name, _, value = line.partition(b":")
+    if b"\n" in value or b"\r" in value:
+        print(f"header {name!r} carries embedded CR/LF: {value!r}", file=sys.stderr)
+        sys.exit(1)
+PY
+ok "/api/auth/login returns 200 and headers are LF-free"
 
 # ── 1 chat turn against Claude (live) ────────────────────────────────────
 

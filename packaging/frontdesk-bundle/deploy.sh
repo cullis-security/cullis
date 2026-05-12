@@ -400,6 +400,44 @@ echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env up -d${RESET}"
 $COMPOSE --env-file frontdesk.env up -d
 ok "Containers started"
 
+# ── Attach sibling Mastio nginx to frontdesk_net ────────────────────────────
+#
+# Linux native (no Docker Desktop) doesn't resolve ``host.docker.internal``
+# inside containers and ``extra_hosts: host-gateway`` lands on the docker0
+# bridge IP which iptables FORWARD blocks across custom bridges. The
+# Connector here speaks to the Mastio at ``CULLIS_SITE_URL`` (defaulting to
+# ``https://host.docker.internal:9443``), so without an alias inside the
+# bridge the CSR provisioning call dies with ``[Errno -2] Name or service
+# not known``. Issue #634.
+#
+# Fix: if a sibling Mastio nginx container is running on this host, attach
+# it to our bridge as ``host.docker.internal`` + ``mastio-nginx``. Docker
+# DNS then resolves both names to the Mastio's address inside *this*
+# bridge, no extra_hosts / iptables magic required. Idempotent: skipped
+# when already attached. Silent when no sibling Mastio is found (remote
+# Mastio scenario: operator points ``CULLIS_SITE_URL`` at a real
+# hostname).
+NETWORK_NAME="${COMPOSE_PROJECT_NAME}_frontdesk_net"
+MASTIO_NGINX_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=mastio-nginx' --format '{{.Names}}' | head -1)"
+if [[ -n "$MASTIO_NGINX_CONTAINER" ]]; then
+    if docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$MASTIO_NGINX_CONTAINER" 2>/dev/null \
+            | tr ' ' '\n' | grep -qx "$NETWORK_NAME"; then
+        echo -e "  ${GRAY}Mastio nginx already attached to ${NETWORK_NAME}${RESET}"
+    else
+        if docker network connect \
+                --alias host.docker.internal \
+                --alias mastio-nginx \
+                "$NETWORK_NAME" "$MASTIO_NGINX_CONTAINER" 2>/dev/null; then
+            ok "Attached ${MASTIO_NGINX_CONTAINER} to ${NETWORK_NAME} (aliases: host.docker.internal, mastio-nginx)"
+        else
+            warn "Could not attach ${MASTIO_NGINX_CONTAINER} to ${NETWORK_NAME} — CSR may fail. Run manually:"
+            warn "  docker network connect ${NETWORK_NAME} ${MASTIO_NGINX_CONTAINER} --alias host.docker.internal --alias mastio-nginx"
+        fi
+    fi
+else
+    echo -e "  ${GRAY}No sibling Mastio nginx running locally — assuming remote Mastio at CULLIS_SITE_URL${RESET}"
+fi
+
 # ── Wait for health ─────────────────────────────────────────────────────────
 step "Waiting for services"
 
