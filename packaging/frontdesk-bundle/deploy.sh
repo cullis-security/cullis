@@ -524,6 +524,90 @@ else
     echo -e "  ${GRAY}No sibling Mastio nginx running locally — assuming remote Mastio at CULLIS_SITE_URL${RESET}"
 fi
 
+# ── Wire Mastio dashboard → Frontdesk admin API ─────────────────────────────
+#
+# The Mastio dashboard's "Create user" / "Reset password" / "Delete user"
+# flows already know how to delegate to the Frontdesk admin API
+# (mcp_proxy/dashboard/router.py: _frontdesk_admin_target). They just need
+# two env vars in the Mastio's proxy.env to find us:
+#
+#   MCP_PROXY_FRONTDESK_AMBASSADOR_URL=http://connector:7777
+#   MCP_PROXY_FRONTDESK_ADMIN_SECRET=<our CULLIS_CONNECTOR_ADMIN_SECRET>
+#
+# Plus the Mastio's ``mcp-proxy`` container needs to be on our
+# ``frontdesk_net`` so docker DNS resolves ``connector`` to our Connector.
+# Pre-fix, the Mastio dashboard fell back to **registry-only** user create
+# (writes the principal row, no password propagated, web login broken)
+# and the danger-zone Delete silently no-op'd. Issue #644.
+SIBLING_MASTIO_BUNDLE=""
+for cand in "$SCRIPT_DIR/../cullis-mastio-bundle" "$SCRIPT_DIR/../mastio-bundle"; do
+    if [[ -f "$cand/proxy.env" ]]; then
+        SIBLING_MASTIO_BUNDLE="$(cd "$cand" && pwd)"
+        break
+    fi
+done
+
+if [[ -n "$SIBLING_MASTIO_BUNDLE" && -n "$MASTIO_NGINX_CONTAINER" ]]; then
+    ADMIN_SECRET="$(_load_env CULLIS_CONNECTOR_ADMIN_SECRET)"
+    if [[ -z "$ADMIN_SECRET" ]]; then
+        warn "Could not read CULLIS_CONNECTOR_ADMIN_SECRET from frontdesk.env — skipping Mastio dashboard wiring"
+    else
+        MASTIO_PROXY_ENV="$SIBLING_MASTIO_BUNDLE/proxy.env"
+        # Locate the Mastio mcp-proxy container by compose-service label so
+        # we don't depend on a specific container name.
+        MASTIO_PROXY_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=mcp-proxy' --format '{{.Names}}' | head -1)"
+
+        # Attach mcp-proxy to our network so it can resolve ``connector``.
+        if [[ -n "$MASTIO_PROXY_CONTAINER" ]]; then
+            if docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$MASTIO_PROXY_CONTAINER" 2>/dev/null \
+                    | tr ' ' '\n' | grep -qx "$NETWORK_NAME"; then
+                : # already attached, no-op
+            else
+                docker network connect "$NETWORK_NAME" "$MASTIO_PROXY_CONTAINER" 2>/dev/null \
+                    || warn "Could not attach ${MASTIO_PROXY_CONTAINER} to ${NETWORK_NAME}"
+            fi
+        fi
+
+        # Append / update the two env vars in the sibling proxy.env.
+        # Idempotent: strip any existing lines first, then append.
+        TMP_ENV="$(mktemp)"
+        grep -v -E '^MCP_PROXY_FRONTDESK_(AMBASSADOR_URL|ADMIN_SECRET)=' "$MASTIO_PROXY_ENV" > "$TMP_ENV"
+        cat >> "$TMP_ENV" <<MASTIO_BRIDGE_EOF
+
+# Wired automatically by Frontdesk deploy.sh (issue #644) — lets the
+# Mastio dashboard's Create User / Reset / Delete flows propagate to
+# the sibling Frontdesk container's users.db. Remove these two lines
+# (or unset MCP_PROXY_FRONTDESK_AMBASSADOR_URL alone) to fall back to
+# registry-only user create.
+MCP_PROXY_FRONTDESK_AMBASSADOR_URL=http://connector:7777
+MCP_PROXY_FRONTDESK_ADMIN_SECRET=${ADMIN_SECRET}
+MASTIO_BRIDGE_EOF
+        mv "$TMP_ENV" "$MASTIO_PROXY_ENV"
+
+        # Force-recreate the Mastio mcp-proxy so the new env is loaded.
+        # ``docker compose restart`` does NOT re-read env from the file.
+        if [[ -n "$MASTIO_PROXY_CONTAINER" ]]; then
+            (
+                cd "$SIBLING_MASTIO_BUNDLE"
+                COMPOSE_PROJECT_NAME=cullis-mastio \
+                    $COMPOSE --env-file proxy.env up -d --force-recreate mcp-proxy \
+                    >/dev/null 2>&1 \
+                    || warn "Could not force-recreate Mastio mcp-proxy — bridge env will activate on next Mastio restart"
+            )
+            # The recreate detaches the container from custom networks; re-attach.
+            MASTIO_PROXY_CONTAINER_NEW="$(docker ps --filter 'label=com.docker.compose.service=mcp-proxy' --format '{{.Names}}' | head -1)"
+            if [[ -n "$MASTIO_PROXY_CONTAINER_NEW" ]]; then
+                if ! docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$MASTIO_PROXY_CONTAINER_NEW" 2>/dev/null \
+                        | tr ' ' '\n' | grep -qx "$NETWORK_NAME"; then
+                    docker network connect "$NETWORK_NAME" "$MASTIO_PROXY_CONTAINER_NEW" 2>/dev/null || true
+                fi
+            fi
+        fi
+
+        ok "Mastio dashboard ↔ Frontdesk admin bridge wired (Create / Reset / Delete user from $SIBLING_MASTIO_BUNDLE / )"
+    fi
+fi
+
 # ── Wait for health ─────────────────────────────────────────────────────────
 step "Waiting for services"
 
