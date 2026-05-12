@@ -65,10 +65,52 @@ jobs:
           cp packaging/frontdesk-bundle/README.md                   "${STAGING}/"
           cp packaging/frontdesk-bundle/deploy.sh                   "${STAGING}/"
           cp packaging/frontdesk-bundle/generate-frontdesk-env.sh   "${STAGING}/"
+          # #655 / ADR-024 — TLS sidecar cert mint + nginx config.
+          # mint-tls-cert.sh runs at deploy time to generate the self-
+          # signed cert under ./tls/; nginx-tls/ holds the TLS
+          # terminator config the frontdesk-nginx sidecar mounts. Both
+          # are referenced by docker-compose.yml + deploy.sh — missing
+          # either breaks the customer install with
+          # ``mint-tls-cert.sh: No such file or directory``. Pin
+          # explicitly here so a future ``rm`` of a file under those
+          # subdirs surfaces in the bundle build, not at deploy time
+          # on the customer host. v0.2.7 shipped with these files
+          # missing because the cp list was not updated; the
+          # post-stage check below now catches that class of
+          # regression.
+          cp packaging/frontdesk-bundle/mint-tls-cert.sh            "${STAGING}/"
           cp -r packaging/frontdesk-bundle/nginx                    "${STAGING}/"
+          cp -r packaging/frontdesk-bundle/nginx-tls                "${STAGING}/"
 
-          chmod +x "${STAGING}/deploy.sh" "${STAGING}/generate-frontdesk-env.sh"
-          ls -lah "${STAGING}/"
+          chmod +x "${STAGING}/deploy.sh" \
+                   "${STAGING}/generate-frontdesk-env.sh" \
+                   "${STAGING}/mint-tls-cert.sh"
+
+          # Post-stage sanity check: every file that deploy.sh and
+          # docker-compose.yml reference must exist in the staged
+          # bundle. Catches "I forgot to add new file X to the cp
+          # list" regressions at release time instead of on customer
+          # downloads. The list mirrors what deploy.sh and the compose
+          # bind-mount in production.
+          MISSING=0
+          for f in \
+              "docker-compose.yml" \
+              "deploy.sh" \
+              "generate-frontdesk-env.sh" \
+              "mint-tls-cert.sh" \
+              "frontdesk.env.example" \
+              "README.md" \
+              "nginx/default.conf" \
+              "nginx-tls/default.conf" \
+              "nginx-tls/00-maps.conf"; do
+              if [ ! -f "${STAGING}/${f}" ]; then
+                  echo "::error::staged bundle missing required file: ${f}"
+                  MISSING=1
+              fi
+          done
+          if [ "$MISSING" = "1" ]; then exit 1; fi
+
+          ls -lahR "${STAGING}/"
 
       - name: Package tar.gz + zip
         env:
