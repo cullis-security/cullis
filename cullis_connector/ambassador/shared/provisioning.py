@@ -4,7 +4,8 @@ Orchestrates the steps that turn a fresh SSO subject into a usable
 credential the Ambassador can sign DPoP+x509 proofs with:
 
     1. Cache hit? → return cached ``UserCredentials``.
-    2. Generate an ECC P-256 keypair in process memory.
+    2. Resolve the keypair: read the persisted PEM from the
+       :class:`UserKeyStore` if present, else generate fresh + persist.
     3. Build a CSR around the public key, with a SPIFFE SAN matching
        the principal_id (``spiffe://<td>/<org>/user/<name>``).
     4. POST the CSR to Mastio's ``/v1/principals/csr`` endpoint
@@ -12,12 +13,15 @@ credential the Ambassador can sign DPoP+x509 proofs with:
     5. Populate the in-process ``UserCredentialCache`` so subsequent
        Ambassador requests skip the whole roundtrip.
 
-v0.1 simplification: the keypair lives in process memory for the
-TTL of the cache entry (1h, matches the cert lifetime). v0.2 will
-plug the embedded KMS (PR1) and refactor ``CullisClient`` to take
-a signer callable so the private key never leaves the KMS. The
-cross-package boundary stays clean: this module talks to Mastio
-via HTTPS only.
+The keystore decouples key persistence from the cred cache so Mastio's
+CRIT-1 TOFU pin keeps matching across container restarts, TTL expiry,
+and admin password reset (every cache miss otherwise minted a fresh
+keypair that the pin rejected with ``CSR validation failed``).
+
+When the provisioner is constructed without a keystore (legacy tests,
+embedded usage with no on-disk identity dir), it falls back to the
+original in-memory keypair generation. v0.2 will move signing to a
+KMS adapter behind the same Protocol surface.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 import httpx
 from cryptography import x509
@@ -38,6 +42,7 @@ from cullis_connector.ambassador.shared.credentials import (
     UserCredentialCache,
     UserCredentials,
 )
+from cullis_connector.ambassador.shared.keystore import UserKeyStore
 
 _log = logging.getLogger("cullis_connector.ambassador.shared.provisioning")
 
@@ -283,16 +288,24 @@ def _build_csr_pem(
 
 
 class UserProvisioner:
-    """Compose keypair + Mastio CSR + cache to obtain user credentials."""
+    """Compose keypair + Mastio CSR + cache to obtain user credentials.
+
+    The optional ``keystore`` persists per-principal keypairs on disk
+    so Mastio's CRIT-1 TOFU pin keeps matching across restarts. When
+    omitted, falls back to the legacy v0.1 fresh-keypair-per-miss
+    behaviour (used by unit tests that have no on-disk identity dir).
+    """
 
     def __init__(
         self,
         *,
         mastio: MastioCsrTransport,
         cache: UserCredentialCache,
+        keystore: Optional[UserKeyStore] = None,
     ) -> None:
         self._mastio = mastio
         self._cache = cache
+        self._keystore = keystore
 
     async def get_or_provision(
         self,
@@ -314,12 +327,33 @@ class UserProvisioner:
         await self._cache.put(cred)
         return cred
 
+    async def _resolve_keypair(
+        self, principal_id: str,
+    ) -> tuple[str, ec.EllipticCurvePrivateKey]:
+        """Return (key_pem, priv) for the principal.
+
+        Reads from the keystore when configured so the keypair stays
+        stable across cache misses; otherwise generates fresh.
+        """
+        if self._keystore is None:
+            return _generate_keypair_pem()
+        key_pem = await self._keystore.get_or_create(principal_id)
+        priv = serialization.load_pem_private_key(
+            key_pem.encode("utf-8"), password=None,
+        )
+        if not isinstance(priv, ec.EllipticCurvePrivateKey):
+            raise MastioCsrError(
+                "persisted user key is not an EC private key — refusing "
+                "to sign a CSR with it (delete the file and retry)",
+            )
+        return key_pem, priv
+
     async def _provision(
         self, *, principal_id: str, sso_subject: str,
     ) -> UserCredentials:
         spiffe_uri = f"spiffe://{principal_id}"
 
-        key_pem, priv = _generate_keypair_pem()
+        key_pem, priv = await self._resolve_keypair(principal_id)
         csr_pem = _build_csr_pem(
             priv, principal_id=principal_id, spiffe_uri=spiffe_uri,
         )
@@ -335,8 +369,10 @@ class UserProvisioner:
             cert_not_after=not_after,
         )
         _log.info(
-            "ambassador provisioned principal=%s sso=%s not_after=%s",
+            "ambassador provisioned principal=%s sso=%s not_after=%s "
+            "key_persisted=%s",
             principal_id, sso_subject, not_after.isoformat(),
+            self._keystore is not None,
         )
         return cred
 
