@@ -8,7 +8,7 @@ import logging
 import os
 from functools import lru_cache
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _log = logging.getLogger("mcp_proxy.startup")
@@ -400,6 +400,35 @@ class ProxySettings(BaseSettings):
     # page read-only (legacy behaviour).
     frontdesk_ambassador_url: str = ""
     frontdesk_admin_secret: str = ""
+
+    # Docker compose ``${VAR:-}`` substitutes to the empty string when
+    # the operator has not set the var in proxy.env. Pydantic v2's bool
+    # parser rejects "" with ``bool_parsing`` ValidationError, which
+    # crashes the container at startup and surfaces in CI as
+    # "mcp-proxy is unhealthy". For the bool flags that are wired into
+    # the bundle compose's ``environment:`` block, treat "" as
+    # "operator didn't set" → fall back to the field default. The
+    # subsequent ``_apply_routing_overrides`` model-validator re-reads
+    # via ``_env()`` (which also maps "" → None) so the standalone
+    # auto-flip for ``local_auth_enabled`` keeps working unchanged.
+    @field_validator(
+        "tool_pdp_enabled",
+        "force_local_password",
+        "local_auth_enabled",
+        mode="before",
+    )
+    @classmethod
+    def _empty_bool_str_to_false(cls, v):
+        # Targeted to the three bool flags the customer bundle compose
+        # exposes via ``${VAR:-}``. Each has ``default=False`` on the
+        # model, so returning False for the empty string preserves the
+        # "operator hasn't set this" intent. The
+        # ``_apply_routing_overrides`` model-validator re-reads
+        # ``MCP_PROXY_LOCAL_AUTH_ENABLED`` via ``_env()`` (which also
+        # maps "" → None) so the standalone auto-flip keeps firing.
+        if isinstance(v, str) and v.strip() == "":
+            return False
+        return v
 
     @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
