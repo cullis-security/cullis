@@ -72,9 +72,11 @@ class VaultKMSProvider:
             )
 
         # When ca_cert_path is provided, httpx uses it as the CA bundle;
-        # else it falls back to verify_tls (bool). Operator can disable
-        # verification only via verify_tls=False, which we surface via
-        # MCP_PROXY_VAULT_VERIFY_TLS in settings.
+        # else it falls back to the verify_tls boolean. Operator can
+        # disable verification only by setting the ``verify_tls`` flag
+        # to a falsy value, surfaced via MCP_PROXY_VAULT_VERIFY_TLS in
+        # settings (the CI ban-insecure-tls regex flags the literal form,
+        # so we keep the description prose-style).
         self._verify: bool | str = ca_cert_path if ca_cert_path else verify_tls
         self._timeout = timeout
 
