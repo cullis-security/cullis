@@ -190,8 +190,22 @@ async def _handle_tools_call(
     )
 
     if resp.status == "success":
+        payload = resp.result
+        # Pass-through when the upstream already returned an MCP-shaped
+        # envelope ({"content": [...], "isError": bool}). The MCP resource
+        # forwarder returns the upstream RPC ``result`` verbatim — wrapping
+        # it again here produced a content[0].text that was a stringified
+        # MCP envelope, which callers then had to peel manually. Builtin
+        # tool handlers return arbitrary Python objects, so the fall-through
+        # path still wraps them as before.
+        if (
+            isinstance(payload, dict)
+            and isinstance(payload.get("content"), list)
+            and "isError" in payload
+        ):
+            return _rpc_result(req_id, payload)
         return _rpc_result(req_id, {
-            "content": [{"type": "text", "text": _stringify(resp.result)}],
+            "content": [{"type": "text", "text": _stringify(payload)}],
             "isError": False,
         })
     # executor.run always returns status="error" on failure; map to a
