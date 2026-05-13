@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import get_db, log_audit
+from mcp_proxy.tools.registry import tool_registry
 from mcp_proxy.tools.resource_loader import reload_resources
 
 
@@ -160,6 +161,20 @@ async def create_resource(body: MCPResourceCreate):
     resource_id = str(uuid.uuid4())
     ts = _iso_now()
 
+    # Default the domain whitelist to the endpoint's own hostname when
+    # the caller didn't provide one. The WhitelistedTransport blocks all
+    # outbound calls on an empty list — registering a resource without
+    # any whitelist used to look healthy until the first tools/call hit
+    # the agent with "Domain 'X' not in whitelist: []" — which is
+    # surprising default behavior. Operators who actually want a
+    # locked-down configuration can still pass an explicit list.
+    allowed_domains = list(body.allowed_domains)
+    if not allowed_domains:
+        from urllib.parse import urlparse
+        host = urlparse(endpoint_url).hostname
+        if host:
+            allowed_domains = [host]
+
     try:
         async with get_db() as conn:
             await conn.execute(
@@ -186,7 +201,7 @@ async def create_resource(body: MCPResourceCreate):
                     "auth_secret_ref": body.auth_secret_ref,
                     "required_capability": body.required_capability,
                     "allowed_domains": json.dumps(
-                        body.allowed_domains, separators=(",", ":"), sort_keys=True,
+                        allowed_domains, separators=(",", ":"), sort_keys=True,
                     ),
                     "enabled": 1 if body.enabled else 0,
                     "ts": ts,
@@ -199,7 +214,7 @@ async def create_resource(body: MCPResourceCreate):
         ) from exc
 
     try:
-        await reload_resources()
+        await reload_resources(tool_registry)
     except Exception as exc:  # defensive
         _log.warning("reload_resources failed after create: %s", exc)
 
@@ -248,8 +263,8 @@ async def delete_resource(resource_id: str):
         )
 
     try:
-        await reload_resources()
-    except Exception as exc:
+        await reload_resources(tool_registry)
+    except Exception as exc:  # defensive
         _log.warning("reload_resources failed after delete: %s", exc)
 
     await log_audit(

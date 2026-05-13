@@ -511,6 +511,96 @@ async def test_tools_call_forwards_to_mock_mcp_server(
 
 
 @pytest.mark.asyncio
+async def test_tools_call_passes_through_full_mcp_envelope(
+    proxy_db, clean_registry, app_client, monkeypatch,
+):
+    """Regression test for the double-wrap bug.
+
+    Upstream MCP servers that return a full envelope
+    ({"content": [...], "isError": false}) used to be re-wrapped by the
+    aggregator: the caller would see ``content[0].text`` carrying a
+    stringified envelope instead of the raw tool payload, forcing every
+    SDK to peel two layers. The aggregator now detects the envelope shape
+    and passes it through verbatim.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        # Full, well-formed MCP envelope from upstream.
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {
+                "content": [{"type": "text", "text": "raw-payload"}],
+                "isError": False,
+            },
+        })
+
+    _patch_whitelist_transport(monkeypatch, handler)
+
+    await _seed_resource(
+        resource_id="res-pt", name="passthrough-svc",
+        endpoint_url="http://passthrough-svc:8080/",
+        allowed_domains='["passthrough-svc:8080"]',
+    )
+    await _seed_binding(agent_id="acme::buyer", resource_id="res-pt")
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    resp = client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 21, "method": "tools/call",
+        "params": {"name": "passthrough-svc", "arguments": {}},
+    })
+    body = resp.json()
+    assert body["result"]["isError"] is False
+    text_out = body["result"]["content"][0]["text"]
+    # Must be the raw payload, not a stringified envelope.
+    assert text_out == "raw-payload", (
+        f"double-wrap regression: got {text_out!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tools_call_wraps_non_envelope_upstream(
+    proxy_db, clean_registry, app_client, monkeypatch,
+):
+    """Upstream returning a non-MCP-shaped result still gets wrapped.
+
+    Builtin tools and older / partial MCP servers may return arbitrary
+    objects in the JSON-RPC result. The aggregator still serialises
+    those into a content[0].text payload so the response shape is
+    consistent for callers.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": body["id"],
+            "result": {"ok": True, "answer": 42},  # no content/isError
+        })
+
+    _patch_whitelist_transport(monkeypatch, handler)
+
+    await _seed_resource(
+        resource_id="res-nb-shape", name="nonenvelope-svc",
+        endpoint_url="http://nonenvelope-svc:8080/",
+        allowed_domains='["nonenvelope-svc:8080"]',
+    )
+    await _seed_binding(agent_id="acme::buyer", resource_id="res-nb-shape")
+    await load_resources_into_registry(clean_registry)
+
+    client, _ = app_client
+    resp = client.post("/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 22, "method": "tools/call",
+        "params": {"name": "nonenvelope-svc", "arguments": {}},
+    })
+    body = resp.json()
+    assert body["result"]["isError"] is False
+    text_out = body["result"]["content"][0]["text"]
+    # Stringified object, NOT a passthrough.
+    parsed = json.loads(text_out)
+    assert parsed == {"ok": True, "answer": 42}
+
+
+@pytest.mark.asyncio
 async def test_tools_call_injects_bearer_auth_header(
     proxy_db, clean_registry, app_client, monkeypatch,
 ):

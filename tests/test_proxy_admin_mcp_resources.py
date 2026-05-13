@@ -75,6 +75,93 @@ async def test_create_list_delete_resource(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
 
+async def test_create_auto_whitelists_endpoint_hostname(tmp_path, monkeypatch):
+    """When the caller omits allowed_domains, the endpoint's own hostname
+    is added automatically. Without this default the WhitelistedTransport
+    refuses every outbound call (audit footgun: register a resource, no
+    error, first tools/call fails with 'Domain X not in whitelist: []')."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "mcp-wl-default")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _admin_headers()
+
+            r = await cli.post(
+                "/v1/admin/mcp-resources",
+                headers=h,
+                json={
+                    "name": "get_policy",
+                    "endpoint_url": "http://mcp-insurance:9301/",
+                    "description": "no whitelist supplied",
+                    "org_id": "mcp-wl-default",
+                    "enabled": True,
+                },
+            )
+            assert r.status_code == 201, r.text
+            resource_id = r.json()["resource_id"]
+
+            # Inspect the DB row directly — the response shape doesn't
+            # echo allowed_domains. Walk the loader's storage to confirm
+            # the default hostname landed in the whitelist column.
+            from mcp_proxy.db import get_db
+            from sqlalchemy import text as _text
+            async with get_db() as conn:
+                row = (await conn.execute(
+                    _text(
+                        "SELECT allowed_domains "
+                        "FROM local_mcp_resources WHERE resource_id = :rid"
+                    ),
+                    {"rid": resource_id},
+                )).first()
+            import json as _json
+            stored = _json.loads(row[0])
+            assert stored == ["mcp-insurance"], (
+                f"expected ['mcp-insurance'], got {stored}"
+            )
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_create_preserves_explicit_allowed_domains(tmp_path, monkeypatch):
+    """An explicit allowed_domains list is preserved verbatim."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "mcp-wl-explicit")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _admin_headers()
+            r = await cli.post(
+                "/v1/admin/mcp-resources",
+                headers=h,
+                json={
+                    "name": "with_wl",
+                    "endpoint_url": "http://primary:9301/",
+                    "allowed_domains": ["primary", "fallback.example.com"],
+                    "org_id": "mcp-wl-explicit",
+                    "enabled": True,
+                },
+            )
+            assert r.status_code == 201, r.text
+            resource_id = r.json()["resource_id"]
+
+            from mcp_proxy.db import get_db
+            from sqlalchemy import text as _text
+            async with get_db() as conn:
+                row = (await conn.execute(
+                    _text(
+                        "SELECT allowed_domains "
+                        "FROM local_mcp_resources WHERE resource_id = :rid"
+                    ),
+                    {"rid": resource_id},
+                )).first()
+            import json as _json
+            stored = _json.loads(row[0])
+            assert set(stored) == {"primary", "fallback.example.com"}
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
 async def test_create_rejects_invalid(tmp_path, monkeypatch):
     app = await _spin_proxy(tmp_path, monkeypatch, "mcp-invalid")
     transport = ASGITransport(app=app)
