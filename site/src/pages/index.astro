@@ -2,36 +2,37 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="Cullis — A federated trust fabric for AI agents">
+<Layout title="Cullis — AI agent identity and audit">
 
-  <!-- HERO -->
+  <!-- 01 HERO -->
   <section class="hero">
     <div class="container wide">
       <div class="hero-eyebrow-row reveal">
         <div class="eyebrow">
           <span class="pulse-dot"></span>
-          Agent Trust Fabric · pre-1.0
+          AI agent governance · pre-1.0
         </div>
       </div>
 
       <div class="hero-top">
         <div class="hero-text">
           <h1 class="hero-title reveal" data-delay="1">
-            Two layers for<br />
-            <em>AI agent trust.</em>
+            Identity and audit.<br />
+            <em>Built for the compliance wave.</em>
           </h1>
         </div>
         <div class="hero-aside">
           <p class="hero-lead reveal" data-delay="2">
-            Cullis is not a single product, it is two layers
-            designed to be adopted separately. <strong>Mastio</strong>
-            is the control point each organization installs for its
-            own AI agents (identity, policy, audit, MCP and LLM
-            gateway). <strong>Court</strong> federates Mastios across
-            organizations by routing sealed envelopes it cannot open.
+            Cullis Mastio gives every AI agent in your organization a
+            cryptographic identity, enforces policy before each call,
+            and writes a tamper-evident audit chain. Designed for
+            <strong>EU AI Act</strong> high-risk systems,
+            <strong>Colorado AI Act</strong>, <strong>NIST AI RMF</strong>,
+            and <strong>ISO 42001</strong>. Self-hosted, open source,
+            drop-in for Claude, GPT, Mistral, and any MCP-compatible tool.
           </p>
           <div class="hero-actions reveal" data-delay="3">
-            <a href="/architecture" class="btn btn-primary">Read the architecture</a>
+            <a href="mailto:hello@cullis.io?subject=Cullis%20walk-through" class="btn btn-primary">Schedule a walk-through</a>
             <a href="#quickstart" class="btn btn-ghost">Try the sandbox</a>
           </div>
           <div class="hero-meta reveal" data-delay="4">
@@ -70,11 +71,11 @@ import Layout from '../layouts/Layout.astro';
           </div>
           <div class="frame-marker frame-marker-tl">
             <span class="marker-tick"></span>
-            <span class="marker-text">intra-org · org trust authority</span>
+            <span class="marker-text">intra-org · per-agent identity</span>
           </div>
           <div class="frame-marker frame-marker-br">
             <span class="marker-tick"></span>
-            <span class="marker-text">live · sse stream</span>
+            <span class="marker-text">audit chain · externally verifiable</span>
           </div>
         </div>
       </div>
@@ -83,22 +84,23 @@ import Layout from '../layouts/Layout.astro';
 
   <hr class="divider" />
 
-  <!-- FEATURE SWITCHER · MASTIO -->
+  <!-- 02 WHAT MASTIO DOES -->
   <section class="feature-switch">
     <div class="container wide">
       <div class="feature-head">
         <div class="eyebrow reveal">
           <span class="eyebrow-number">02</span>
-          Mastio · org trust authority
+          Mastio · org control point
         </div>
         <h2 class="feature-title reveal" data-delay="1">
-          What <em>Mastio</em><br />
-          actually does.
+          One container.<br />
+          <em>Every agent. Every call.</em>
         </h2>
         <p class="feature-lead reveal" data-delay="2">
-          One control point per organization. Authority over agent
-          identity. Policy enforced before the call lands. An
-          append-only chain of everything that happened.
+          One Docker container per organization. Authority over AI agent
+          identity. Policy enforced before the LLM call lands. An
+          append-only chain of every action, externally verifiable by
+          your auditor or regulator.
         </p>
       </div>
 
@@ -108,30 +110,33 @@ import Layout from '../layouts/Layout.astro';
             <div class="feature-num">01</div>
             <h3>Cryptographic identity, per agent</h3>
             <p>
-              Mastio holds the org CA and mints x509 + SPIFFE identities
-              for every agent it admits. The caller authenticated at the
-              gateway is the agent process itself, not the user with an
-              API key.
+              x509 cert and SPIFFE ID per agent process. The caller
+              authenticated at the gateway is the agent itself, not a
+              shared API key reused by twelve services. Identity
+              rotates on its own schedule, revocation propagates in
+              seconds.
             </p>
             <a class="feature-link" href="/architecture#identity">Identity model →</a>
           </li>
           <li class="feature-item" data-feature="agents">
             <div class="feature-num">02</div>
-            <h3>Federated and local agents</h3>
+            <h3>Policy enforced pre-call</h3>
             <p>
-              Some agents stay confined inside the org. Others are
-              published to the federation registry with explicit
-              capabilities and reach. Same authority, two scopes.
+              PDP fires before the LLM API or MCP tool. Per-principal
+              scopes (this agent can read claim files, that agent
+              cannot). Decisions logged with reason. OPA-compatible
+              bundles or built-in DSL.
             </p>
-            <a class="feature-link" href="/architecture#registry">Registry model →</a>
+            <a class="feature-link" href="/architecture#registry">Policy model →</a>
           </li>
           <li class="feature-item" data-feature="audit">
             <div class="feature-num">03</div>
             <h3>Tamper-evident audit chain</h3>
             <p>
-              Every event (auth, enroll, reach change, message, tool
-              call) appended to a hash chain anchored via RFC 3161.
-              Reconstructable, evident even to the database admin.
+              Every event (auth, enroll, message, tool call, LLM token)
+              hashed and chained. RFC 3161 anchoring optional. Your
+              auditor verifies the chain externally without trusting
+              Cullis or your IT team.
             </p>
             <a class="feature-link" href="/architecture#audit">Audit chain →</a>
           </li>
@@ -147,7 +152,7 @@ import Layout from '../layouts/Layout.astro';
             </div>
             <div class="product-frame-screen feature-screen">
               <img src="/screenshots/mastio-pki.png" alt="Mastio PKI management" data-frame-img="pki" class="active" />
-              <img src="/screenshots/mastio-agents.png" alt="Mastio internal agents" data-frame-img="agents" />
+              <img src="/screenshots/mastio-agents.png" alt="Mastio policy management" data-frame-img="agents" />
               <img src="/screenshots/mastio-audit-log.png" alt="Mastio audit log" data-frame-img="audit" />
             </div>
           </div>
@@ -158,156 +163,215 @@ import Layout from '../layouts/Layout.astro';
 
   <hr class="divider" />
 
-  <!-- COURT -->
-  <section class="court-section">
-    <div class="container wide">
-      <div class="hero-eyebrow-row reveal">
-        <div class="eyebrow">
-          <span class="eyebrow-number">03</span>
-          Court · cross-org federation
-        </div>
-      </div>
-
-      <div class="court-top">
-        <div class="court-text">
-          <h2 class="court-title reveal" data-delay="2">
-            Routes envelopes<br />
-            it <em>cannot open.</em>
-          </h2>
-        </div>
-        <div class="court-aside">
-          <p class="reveal" data-delay="3">
-            When agents in different organizations need to talk, a Court
-            stands between them. It sees who routed what, when, between
-            which Mastios. It never holds keys to read the message,
-            never holds keys to impersonate a Mastio or an agent.
-          </p>
-          <p class="reveal" data-delay="4">
-            A Court compromise is a metadata leak. Never a
-            confidentiality breach, never a non-repudiation breach.
-            Cross-org non-repudiation comes from dual-write between the
-            two Mastios; Court is the third parallel witness.
-          </p>
-          <div class="hero-actions reveal" data-delay="5">
-            <a href="/architecture#federation" class="btn btn-ghost">How federation works</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="court-figure reveal">
-        <div class="frame-stack">
-          <div class="frame-glow frame-glow-amber"></div>
-          <div class="product-frame product-frame-hero">
-            <div class="product-frame-bar">
-              <span class="product-frame-dot live"></span>
-              <span class="product-frame-dot"></span>
-              <span class="product-frame-dot"></span>
-              <span class="product-frame-title">cullis · court · /dashboard/overview</span>
-              <span class="product-frame-status court-status">NETWORK</span>
-            </div>
-            <div class="product-frame-screen">
-              <img src="/screenshots/court-overview.png" alt="Court network overview" />
-            </div>
-          </div>
-          <div class="frame-marker frame-marker-tl frame-marker-amber">
-            <span class="marker-tick"></span>
-            <span class="marker-text">cross-org · sealed routing</span>
-          </div>
-          <div class="frame-marker frame-marker-br frame-marker-amber">
-            <span class="marker-tick"></span>
-            <span class="marker-text">audit chain · 29 entries</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="court-secondary">
-        <div class="court-secondary-figure reveal">
-          <div class="product-frame product-frame-flat">
-            <div class="product-frame-bar">
-              <span class="product-frame-dot live"></span>
-              <span class="product-frame-dot"></span>
-              <span class="product-frame-dot"></span>
-              <span class="product-frame-title">cullis · court · /dashboard/orgs</span>
-            </div>
-            <div class="product-frame-screen">
-              <img src="/screenshots/court-organizations.png" alt="Court organizations" />
-            </div>
-          </div>
-        </div>
-        <div class="court-secondary-caption reveal" data-delay="1">
-          <div class="caption-eyebrow">Onboarding</div>
-          <h3>One-time invite, then pinned.</h3>
-          <p>
-            New organizations join with a one-time token. Court pins
-            their CA, registers them, and from that moment they are
-            reachable from every other Mastio in the federation.
-            Revocation is one click and propagates immediately.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <hr class="divider" />
-
-  <!-- BRIDGE -->
+  <!-- 03 HOW IT FITS -->
   <section class="bridge-section">
     <div class="container narrow">
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">04</span>
-        Edge · the agent-side bridge
+        <span class="eyebrow-number">03</span>
+        Drop-in integration
       </div>
       <h2 class="reveal" data-delay="1">
-        One bridge, <em>five shapes.</em>
+        Wherever your <em>agent lives.</em>
       </h2>
       <p class="reveal" data-delay="2">
-        Wherever the agent runs, a small component holds its private
-        key, terminates mTLS toward Mastio, signs envelopes. It is
-        not a separate product line: it is the same cryptographic
-        role in five form factors, picked by where the agent lives.
+        Your AI agents are already running in different places:
+        laptops, browsers, backend services, containers. Mastio
+        attaches without you rewriting them.
       </p>
 
       <ul class="shapes reveal" data-delay="3">
         <li>
           <span class="shape-name">Connector</span>
-          <span class="shape-where">laptop daemon · macOS · Windows · Linux</span>
+          <span class="shape-where">laptop daemon · Claude Desktop, Cursor, Cline, LibreChat, Cherry Studio · macOS, Linux, Windows</span>
         </li>
         <li>
           <span class="shape-name">Cullis Chat</span>
-          <span class="shape-where">browser SPA · single power user</span>
-        </li>
-        <li>
-          <span class="shape-name">Frontdesk</span>
-          <span class="shape-where">multi-user SSO · server-side packaging</span>
+          <span class="shape-where">browser SPA · single power user or multi-user SSO deployment</span>
         </li>
         <li>
           <span class="shape-name">SDK</span>
-          <span class="shape-where">backend services · in-process Python</span>
+          <span class="shape-where">backend services · in-process Python · MCP-compatible</span>
         </li>
         <li>
-          <span class="shape-name">SPIRE</span>
+          <span class="shape-name">SPIRE / K8s</span>
           <span class="shape-where">Kubernetes workloads · existing identity fabric</span>
         </li>
       </ul>
+
+      <p class="day-2-note reveal" data-delay="4">
+        ↳ For cross-organization agent-to-agent routing, see
+        <a href="/architecture#federation">Cullis Court</a>
+        (Day-2 federation layer).
+      </p>
     </div>
   </section>
 
   <hr class="divider" />
 
-  <!-- QUICKSTART -->
+  <!-- 04 USE CASES -->
+  <section class="use-cases">
+    <div class="container wide">
+      <div class="use-cases-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">04</span>
+          Use cases
+        </div>
+        <h2 class="reveal" data-delay="1">
+          One infrastructure.<br />
+          <em>Many compliance regimes.</em>
+        </h2>
+        <p class="reveal" data-delay="2">
+          The same identity-policy-audit pattern serves regulated
+          industries across Europe and the United States. Pick your use
+          case.
+        </p>
+      </div>
+
+      <div class="use-case-grid reveal" data-delay="3">
+        <article class="use-case-card">
+          <div class="use-case-region">Insurance · EU</div>
+          <h3>Claim handling under AI Act high-risk</h3>
+          <p>
+            Claim intake agents, fraud detection, senior adjuster
+            override, reassurer signoff. Every decision auditable
+            end-to-end under AI Act Annex III and IDD Art. 17.
+          </p>
+          <a class="use-case-link" href="/insurance">Read the scenario →</a>
+        </article>
+
+        <article class="use-case-card">
+          <div class="use-case-region">Banking · EU + US</div>
+          <h3>KYC automation under DORA / SR 11-7</h3>
+          <p>
+            Customer service agents, KYC document review, transaction
+            monitoring. Audit trail aligned with DORA Art. 28-30 and
+            Fed SR 11-7 model risk management.
+          </p>
+          <span class="use-case-link use-case-link-soon">Coming soon</span>
+        </article>
+
+        <article class="use-case-card">
+          <div class="use-case-region">Healthcare · EU + US</div>
+          <h3>Clinical decision support under HIPAA / MDR</h3>
+          <p>
+            Triage agents, diagnosis assistance, prescription review.
+            Audit trail mapped to HIPAA 164.312(b) integrity controls
+            and MDR post-market surveillance.
+          </p>
+          <span class="use-case-link use-case-link-soon">Coming soon</span>
+        </article>
+
+        <article class="use-case-card">
+          <div class="use-case-region">Public sector · EU + US</div>
+          <h3>Citizen services under NIS2 / Colorado AI Act</h3>
+          <p>
+            Citizen-facing agents in social services, taxation, public
+            procurement. Sovereign deployment, audit chain mappable to
+            NIS2 essential-entity obligations and Colorado AI Act.
+          </p>
+          <span class="use-case-link use-case-link-soon">Coming soon</span>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 05 COMPLIANCE MAPPING -->
+  <section class="compliance-mapping">
+    <div class="container wide">
+      <div class="compliance-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">05</span>
+          Compliance mapping
+        </div>
+        <h2 class="reveal" data-delay="1">
+          The control map.<br />
+          <em>Every framework, every clause.</em>
+        </h2>
+        <p class="reveal" data-delay="2">
+          Compliance teams need to map Cullis capabilities to specific
+          clauses in their framework. We have done the mapping for you.
+        </p>
+      </div>
+
+      <div class="compliance-table-wrap reveal" data-delay="3">
+        <table class="compliance-table">
+          <thead>
+            <tr>
+              <th>Framework</th>
+              <th>Article / clause</th>
+              <th>Cullis capability</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>EU AI Act</strong></td>
+              <td>Art. 12, 15, 72</td>
+              <td>Tamper-evident audit chain, model run logging, post-market traceability</td>
+            </tr>
+            <tr>
+              <td><strong>DORA</strong></td>
+              <td>Art. 28, 30</td>
+              <td>Self-hosted deployment, append-only ICT third-party audit trail</td>
+            </tr>
+            <tr>
+              <td><strong>NIST AI RMF</strong></td>
+              <td>MEASURE 2.7, GOVERN 1.7</td>
+              <td>Standardized audit log export, per-agent identity, role separation</td>
+            </tr>
+            <tr>
+              <td><strong>Colorado AI Act</strong></td>
+              <td>Consumer disclosure for high-risk AI</td>
+              <td>Decision logging with reason, per-decision provenance</td>
+            </tr>
+            <tr>
+              <td><strong>ISO 42001</strong></td>
+              <td>AI Management System controls</td>
+              <td>Operational governance, lifecycle controls, audit evidence</td>
+            </tr>
+            <tr>
+              <td><strong>HIPAA</strong></td>
+              <td>164.312(b) audit controls</td>
+              <td>Append-only audit chain, integrity controls, external verification</td>
+            </tr>
+            <tr>
+              <td><strong>SR 11-7</strong></td>
+              <td>Model risk management</td>
+              <td>Model run traceability, override logging, accountable identity</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="compliance-note reveal" data-delay="4">
+        Capability mapping reflects Cullis Mastio current release.
+        Specific compliance assessment for a regulated deployment
+        remains the responsibility of the deploying organization.
+      </p>
+
+      <div class="compliance-cta reveal" data-delay="5">
+        <a href="https://mazzolad.com/writing" target="_blank" rel="noopener" class="btn btn-ghost">Read the research on mazzolad.com →</a>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 06 QUICKSTART -->
   <section class="prose-section" id="quickstart">
     <div class="container narrow">
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">05</span>
+        <span class="eyebrow-number">06</span>
         Quickstart
       </div>
       <h2 class="reveal" data-delay="1">
-        One command to <em>federated</em>.
+        From zero to <em>a full network</em>, in one command.
       </h2>
       <p class="reveal" data-delay="2">
-        Boot the full sandbox: Court, two Mastios, three agents,
-        two MCP servers across two organizations, wired with SPIRE,
-        Keycloak, Vault and Postgres.
+        Boot Mastio with example agents, MCP servers, and a second org
+        for federation preview. Pre-wired with SPIRE, Keycloak, Vault,
+        Postgres.
       </p>
       <pre class="reveal" data-delay="3"><code>git clone https://github.com/cullis-security/cullis
 cd cullis
@@ -324,23 +388,24 @@ cd cullis
 
   <hr class="divider" />
 
-  <!-- CLOSING -->
+  <!-- 07 CLOSING -->
   <section class="closing">
     <div class="container narrow">
       <div class="closing-rule"></div>
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">06</span>
+        <span class="eyebrow-number">07</span>
         Continue
       </div>
-      <h2 class="reveal" data-delay="1">Architecture, <em>deployment</em>, components.</h2>
+      <h2 class="reveal" data-delay="1">Talk to us. <em>Or read the code.</em></h2>
       <p class="reveal" data-delay="2">
-        The rest lives on its own pages. Read about the two routing modes,
-        the deployment shapes, and each component at length.
+        We are early. We want to talk with security and compliance
+        teams running their first AI agents in production. Schedule a
+        call, read the research, or dive into the architecture.
       </p>
       <div class="hero-actions reveal" data-delay="3">
-        <a href="/architecture" class="btn btn-primary">Architecture</a>
-        <a href="/deployment" class="btn btn-ghost">Deployment</a>
-        <a href="/components" class="btn btn-ghost">Components</a>
+        <a href="mailto:hello@cullis.io?subject=Cullis%20walk-through" class="btn btn-primary">Schedule a call</a>
+        <a href="https://mazzolad.com/writing" target="_blank" rel="noopener" class="btn btn-ghost">Read the research</a>
+        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
       </div>
     </div>
   </section>
@@ -354,7 +419,7 @@ cd cullis
       const titleEl = grid.querySelector<HTMLElement>('[data-frame-title]');
       const titles: Record<string, string> = {
         pki:    'cullis · mastio · /pki',
-        agents: 'cullis · mastio · /agents',
+        agents: 'cullis · mastio · /policy',
         audit:  'cullis · mastio · /audit-log',
       };
       items.forEach((item) => {
@@ -365,7 +430,6 @@ cd cullis
           if (titleEl && titles[key]) titleEl.textContent = titles[key];
         });
       });
-      // auto-rotate every 6s if user has not interacted
       let auto = true;
       grid.addEventListener('click', () => { auto = false; }, { once: true });
       let idx = 0;
@@ -375,7 +439,6 @@ cd cullis
         idx = (idx + 1) % order.length;
         const next = grid.querySelector<HTMLElement>(`[data-feature="${order[idx]}"]`);
         if (next) (next as HTMLElement).click();
-        // re-enable auto after click() above flipped the flag
         auto = true;
       }, 6000);
     }
@@ -399,13 +462,8 @@ cd cullis
     overflow: visible;
   }
 
-  .hero-eyebrow-row {
-    margin-bottom: 2rem;
-  }
-
-  .hero-eyebrow-row .eyebrow {
-    margin-bottom: 0;
-  }
+  .hero-eyebrow-row { margin-bottom: 2rem; }
+  .hero-eyebrow-row .eyebrow { margin-bottom: 0; }
 
   .hero-top {
     display: grid;
@@ -416,11 +474,7 @@ cd cullis
   }
 
   .hero-text { min-width: 0; }
-
-  .hero-aside {
-    min-width: 0;
-    padding-top: clamp(0.5rem, 1.5vw, 1.2rem);
-  }
+  .hero-aside { min-width: 0; padding-top: clamp(0.5rem, 1.5vw, 1.2rem); }
 
   .hero-title {
     font-size: clamp(3rem, 8vw, 7rem);
@@ -438,10 +492,7 @@ cd cullis
     margin: 0 0 2.2rem 0;
   }
 
-  .hero-lead strong {
-    color: var(--text-primary);
-    font-weight: 500;
-  }
+  .hero-lead strong { color: var(--text-primary); font-weight: 500; }
 
   .hero-actions {
     display: flex;
@@ -478,11 +529,7 @@ cd cullis
     letter-spacing: 0.04em;
   }
 
-  .hero-meta-text {
-    display: flex;
-    flex-direction: column;
-    gap: 0.18rem;
-  }
+  .hero-meta-text { display: flex; flex-direction: column; gap: 0.18rem; }
 
   .hero-meta-label {
     font-family: var(--font-mono);
@@ -500,12 +547,9 @@ cd cullis
   }
 
   /* ====================================================
-     PRODUCT FRAME — terminal-window mockup
+     PRODUCT FRAME
   ==================================================== */
-  .frame-stack {
-    position: relative;
-    isolation: isolate;
-  }
+  .frame-stack { position: relative; isolation: isolate; }
 
   .frame-glow {
     position: absolute;
@@ -533,11 +577,7 @@ cd cullis
     transform: perspective(2400px) rotateX(2deg);
     transform-origin: center top;
   }
-  .product-frame-hero:hover {
-    transform: perspective(2400px) rotateX(0deg);
-  }
-
-  .product-frame-flat { transform: none; }
+  .product-frame-hero:hover { transform: perspective(2400px) rotateX(0deg); }
 
   .product-frame-bar {
     display: flex;
@@ -587,25 +627,14 @@ cd cullis
     flex-shrink: 0;
   }
 
-  .court-status {
-    color: var(--accent-amber);
-    border-color: rgba(240, 165, 0, 0.25);
-    background: rgba(240, 165, 0, 0.06);
-  }
-
   .product-frame-screen {
     position: relative;
     background: var(--bg-surface);
     overflow: hidden;
   }
 
-  .product-frame-screen img {
-    display: block;
-    width: 100%;
-    height: auto;
-  }
+  .product-frame-screen img { display: block; width: 100%; height: auto; }
 
-  /* Frame markers — tiny annotated tags around the hero figure */
   .frame-marker {
     position: absolute;
     display: inline-flex;
@@ -620,33 +649,10 @@ cd cullis
     pointer-events: none;
   }
 
-  .marker-tick {
-    width: 18px;
-    height: 1px;
-    background: var(--accent-cyan);
-  }
-
-  .frame-marker-tl {
-    top: -1.4rem;
-    left: 0.5rem;
-  }
-
-  .frame-marker-br {
-    bottom: -1.4rem;
-    right: 0.5rem;
-  }
-
-  .frame-marker-amber .marker-tick {
-    background: var(--accent-amber);
-  }
-
-  .marker-text {
-    color: var(--text-tertiary);
-  }
-
-  .frame-glow-amber {
-    background: radial-gradient(60% 60% at 50% 50%, rgba(240, 165, 0, 0.06) 0%, transparent 70%);
-  }
+  .marker-tick { width: 18px; height: 1px; background: var(--accent-cyan); }
+  .frame-marker-tl { top: -1.4rem; left: 0.5rem; }
+  .frame-marker-br { bottom: -1.4rem; right: 0.5rem; }
+  .marker-text { color: var(--text-tertiary); }
 
   /* ====================================================
      FEATURE SWITCHER · MASTIO
@@ -679,11 +685,7 @@ cd cullis
     align-items: start;
   }
 
-  .feature-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
+  .feature-list { list-style: none; margin: 0; padding: 0; }
 
   .feature-item {
     position: relative;
@@ -734,19 +736,13 @@ cd cullis
     font-size: 0.96rem;
     line-height: 1.65;
     color: var(--text-secondary);
-    margin: 0 0 0.8rem 0;
+    margin: 0 0 0.9rem 0;
     max-width: 50ch;
-    max-height: 0;
-    opacity: 0;
-    overflow: hidden;
-    transition: max-height 0.5s ease, opacity 0.3s ease, margin 0.3s ease;
+    opacity: 0.55;
+    transition: opacity 0.3s ease;
   }
 
-  .feature-item.active p {
-    max-height: 250px;
-    opacity: 1;
-    margin: 0 0 0.9rem 0;
-  }
+  .feature-item.active p { opacity: 1; }
 
   .feature-link {
     display: inline-block;
@@ -756,27 +752,16 @@ cd cullis
     text-transform: uppercase;
     color: var(--accent-cyan);
     border: none;
-    max-height: 0;
-    opacity: 0;
-    overflow: hidden;
-    transition: max-height 0.4s ease, opacity 0.3s ease;
+    opacity: 0.35;
+    transition: opacity 0.3s ease;
   }
 
-  .feature-item.active .feature-link {
-    max-height: 30px;
-    opacity: 1;
-  }
+  .feature-item.active .feature-link { opacity: 1; }
 
   .feature-link:hover { border: none; color: var(--text-primary); }
 
-  .feature-figure {
-    position: sticky;
-    top: 6.5rem;
-  }
-
-  .feature-screen {
-    aspect-ratio: 1618 / 863;
-  }
+  .feature-figure { position: sticky; top: 6.5rem; }
+  .feature-screen { aspect-ratio: 1618 / 863; }
 
   .feature-screen img {
     position: absolute;
@@ -792,75 +777,7 @@ cd cullis
   .feature-screen img.active { opacity: 1; }
 
   /* ====================================================
-     COURT
-  ==================================================== */
-  .court-section { padding: clamp(4rem, 10vw, 7rem) 0; }
-
-  .court-top {
-    display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-    gap: clamp(2rem, 5vw, 5rem);
-    align-items: start;
-    margin-bottom: clamp(3rem, 6vw, 5rem);
-  }
-
-  .court-aside {
-    padding-top: clamp(0.5rem, 1.5vw, 1.2rem);
-  }
-
-  .court-title {
-    font-size: clamp(2.6rem, 7vw, 6rem);
-    line-height: 1.0;
-    margin: 0;
-    font-weight: 400;
-    letter-spacing: -0.025em;
-  }
-
-  .court-aside p {
-    font-size: 1.02rem;
-    line-height: 1.7;
-    margin-bottom: 1.2em;
-    max-width: 52ch;
-    color: var(--text-secondary);
-  }
-
-  .court-figure { margin-bottom: clamp(3rem, 6vw, 5rem); }
-
-  .court-secondary {
-    margin-top: clamp(3rem, 6vw, 5rem);
-    display: grid;
-    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-    gap: clamp(2rem, 5vw, 4rem);
-    align-items: center;
-  }
-
-  .court-secondary-caption .caption-eyebrow {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--accent-amber);
-    margin-bottom: 0.8rem;
-  }
-
-  .court-secondary-caption h3 {
-    font-family: var(--font-display);
-    font-size: clamp(1.4rem, 2.4vw, 1.9rem);
-    color: var(--text-primary);
-    margin: 0 0 1rem 0;
-    line-height: 1.25;
-    font-weight: 400;
-  }
-
-  .court-secondary-caption p {
-    font-size: 1rem;
-    color: var(--text-secondary);
-    max-width: 44ch;
-    line-height: 1.7;
-  }
-
-  /* ====================================================
-     BRIDGE
+     BRIDGE / HOW IT FITS
   ==================================================== */
   .bridge-section { padding: clamp(4rem, 9vw, 7rem) 0; }
 
@@ -912,6 +829,189 @@ cd cullis
     line-height: 1.5;
   }
 
+  .day-2-note {
+    margin-top: 2rem;
+    font-size: 0.92rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+  }
+
+  .day-2-note a {
+    color: var(--accent-cyan);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
+  }
+
+  .day-2-note a:hover { border-bottom-color: var(--accent-cyan); }
+
+  /* ====================================================
+     USE CASES
+  ==================================================== */
+  .use-cases { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .use-cases-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .use-cases-head h2 {
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .use-cases-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 60ch;
+    line-height: 1.7;
+  }
+
+  .use-case-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+
+  .use-case-card {
+    padding: 1.8rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    transition: border-color 0.3s ease, transform 0.3s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .use-case-card:hover {
+    border-color: var(--accent-cyan-dim);
+    transform: translateY(-2px);
+  }
+
+  .use-case-region {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-bottom: 1rem;
+  }
+
+  .use-case-card h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.2rem, 2vw, 1.5rem);
+    color: var(--text-primary);
+    margin: 0 0 0.8rem 0;
+    line-height: 1.3;
+    font-weight: 400;
+  }
+
+  .use-case-card p {
+    font-size: 0.95rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0 0 1.2rem 0;
+    flex: 1;
+  }
+
+  .use-case-link {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    border: none;
+    align-self: flex-start;
+  }
+
+  .use-case-link:hover { border: none; color: var(--text-primary); }
+
+  .use-case-link-soon {
+    color: var(--text-tertiary);
+    cursor: default;
+  }
+
+  .use-case-link-soon:hover {
+    color: var(--text-tertiary);
+  }
+
+  /* ====================================================
+     COMPLIANCE MAPPING
+  ==================================================== */
+  .compliance-mapping { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .compliance-head {
+    max-width: 760px;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+
+  .compliance-head h2 {
+    font-size: clamp(2.2rem, 5vw, 4rem);
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .compliance-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 60ch;
+    line-height: 1.7;
+  }
+
+  .compliance-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-card);
+  }
+
+  .compliance-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.93rem;
+    color: var(--text-secondary);
+  }
+
+  .compliance-table thead {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .compliance-table th {
+    text-align: left;
+    padding: 1rem 1.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    font-weight: 400;
+  }
+
+  .compliance-table td {
+    padding: 1.1rem 1.2rem;
+    border-bottom: 1px solid var(--border-subtle);
+    line-height: 1.55;
+    vertical-align: top;
+  }
+
+  .compliance-table tbody tr:last-child td { border-bottom: none; }
+  .compliance-table td:first-child { white-space: nowrap; }
+  .compliance-table strong { color: var(--text-primary); font-weight: 500; }
+
+  .compliance-note {
+    margin-top: clamp(1.5rem, 3vw, 2rem);
+    font-size: 0.88rem;
+    color: var(--text-tertiary);
+    font-style: italic;
+    max-width: 70ch;
+    line-height: 1.6;
+  }
+
+  .compliance-cta { margin-top: clamp(2rem, 4vw, 3rem); }
+
   /* ====================================================
      PROSE / QUICKSTART
   ==================================================== */
@@ -950,9 +1050,7 @@ cd cullis
   ==================================================== */
   @media (max-width: 980px) {
     .hero-top,
-    .feature-grid,
-    .court-top,
-    .court-secondary {
+    .feature-grid {
       grid-template-columns: 1fr;
       align-items: start;
     }
@@ -965,9 +1063,9 @@ cd cullis
       margin-bottom: 2rem;
     }
 
-    .product-frame-hero {
-      transform: none;
-    }
+    .product-frame-hero { transform: none; }
+
+    .use-case-grid { grid-template-columns: 1fr; }
   }
 
   @media (max-width: 640px) {
@@ -980,5 +1078,11 @@ cd cullis
     .product-frame-status { display: none; }
 
     .feature-item p { max-width: 100%; }
+
+    .compliance-table th,
+    .compliance-table td {
+      padding: 0.8rem 0.9rem;
+      font-size: 0.85rem;
+    }
   }
 </style>
