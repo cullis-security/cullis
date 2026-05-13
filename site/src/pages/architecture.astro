@@ -3,8 +3,8 @@ import Layout from '../layouts/Layout.astro';
 ---
 
 <Layout
-  title="Architecture — Cullis"
-  description="Three-tier trust network. Intra-organization routing is signed; cross-organization routing is end-to-end encrypted through a Court that cannot read it."
+  title="Architecture — Mastio inside your org, Court when you federate | Cullis"
+  description="Mastio is the control point each organization installs for its own AI agents. Court is the optional Day-2 layer that federates Mastios across organizations by routing sealed envelopes it cannot open."
 >
 
   <!-- HEAD -->
@@ -18,16 +18,17 @@ import Layout from '../layouts/Layout.astro';
         <div>
           <div class="eyebrow reveal" data-delay="1">
             <span class="eyebrow-number">01</span>
-            Of the three tiers
+            Of the architecture
           </div>
           <h1 class="reveal" data-delay="2">
-            How <em>Cullis</em><br />routes trust.
+            How <em>Mastio</em> works,<br />and how <em>Court</em> federates.
           </h1>
           <p class="lead reveal" data-delay="3">
-            Two routing modes, one binary. Traffic inside an organization
-            is <em>signed</em>; traffic between organizations is
-            <em>end-to-end encrypted</em> through infrastructure that cannot
-            read it.
+            Mastio is what every organization installs first: identity,
+            policy, audit, MCP and LLM gateway for its own AI agents.
+            Court is the optional Day-2 layer that connects two or more
+            Mastios across companies, routing sealed envelopes it cannot
+            open. Same binary, two adoption timelines.
           </p>
         </div>
       </div>
@@ -41,13 +42,14 @@ import Layout from '../layouts/Layout.astro';
     <div class="container">
       <div class="eyebrow reveal">
         <span class="eyebrow-number">02</span>
-        The three-tier network
+        Federation in action (Day-2)
       </div>
-      <h2 class="reveal" data-delay="1">Federation <em>topology</em>.</h2>
+      <h2 class="reveal" data-delay="1">When two Mastios <em>talk</em>.</h2>
       <p class="net-lead reveal" data-delay="2">
-        Two organizations, three agents, live traffic. Each dot is a real
-        message path — <em>cross-org</em> travels through the Court,
-        <em>intra-org</em> stays inside the local Mastio.
+        Two organizations, three agents, live traffic. The federation
+        layer activates when you need agent-to-agent across companies.
+        Inside one company, this stage is not in the picture: Mastio
+        handles intra-org traffic locally, Court is not contacted.
       </p>
 
       <figure class="reveal" data-delay="3">
@@ -195,7 +197,7 @@ import Layout from '../layouts/Layout.astro';
             <span class="mode-num">I.</span>
             <h3>Intra-organization</h3>
           </div>
-          <p class="mode-tag"><em>agent to agent inside the same company.</em></p>
+          <p class="mode-tag"><em>agent to agent inside the same company. Day-1, always on.</em></p>
           <ul class="mode-list">
             <li><span class="key">Path</span><span>Connector → Mastio → Connector</span></li>
             <li><span class="key">Payload</span><span>Signed (<code>ECDSA P-256</code>), not encrypted</span></li>
@@ -209,8 +211,9 @@ import Layout from '../layouts/Layout.astro';
           <div class="mode-head">
             <span class="mode-num">II.</span>
             <h3>Cross-organization</h3>
+            <span class="mode-day2">Day-2 · opt-in</span>
           </div>
-          <p class="mode-tag"><em>agent to agent across different companies.</em></p>
+          <p class="mode-tag"><em>agent to agent across different companies. Activated when you federate.</em></p>
           <ul class="mode-list">
             <li><span class="key">Path</span><span>Connector → Mastio A → Court → Mastio B → Connector</span></li>
             <li><span class="key">Payload</span><span>End-to-end encrypted (<code>ECDH P-256</code>, <code>AES-256-GCM</code>)</span></li>
@@ -300,15 +303,16 @@ import Layout from '../layouts/Layout.astro';
         <span class="eyebrow-number">05</span>
         Continue
       </div>
-      <h2>Deployment <em>patterns</em>, components.</h2>
+      <h2>Use case, <em>pricing</em>, deployment.</h2>
       <p>
-        The deployment page explains how a single Mastio scales from
-        air-gapped standalone to cross-organization federation — same binary,
-        no redeploy, no re-enrollment.
+        Mastio scales from air-gapped standalone to cross-organization
+        federation. Same binary, no redeploy, no re-enrollment. Pick
+        the path that matches your compliance surface.
       </p>
       <div class="hero-actions">
-        <a href="/deployment" class="btn btn-primary">Deployment patterns</a>
-        <a href="/" class="btn btn-ghost">Back to home</a>
+        <a href="/insurance" class="btn btn-primary">Insurance use case</a>
+        <a href="/pricing" class="btn btn-ghost">Pricing</a>
+        <a href="/deployment" class="btn btn-ghost">Deployment patterns</a>
       </div>
     </div>
   </section>
@@ -971,6 +975,20 @@ import Layout from '../layouts/Layout.astro';
     font-weight: 400;
     color: var(--text-primary);
     margin: 0;
+  }
+
+  .mode-day2 {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-amber);
+    padding: 0.2rem 0.55rem;
+    border: 1px solid rgba(240, 165, 0, 0.3);
+    background: rgba(240, 165, 0, 0.05);
+    border-radius: 2px;
+    align-self: center;
   }
 
   .mode-tag {
