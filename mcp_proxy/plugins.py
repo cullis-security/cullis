@@ -1,19 +1,27 @@
 """Mastio plugin registry — extension point for the cullis-enterprise package.
 
 Discovers plugins via Python entry points (group ``cullis.mastio_plugins``)
-and exposes 5 hook surfaces. Empty registry is the supported default: when
+and exposes 7 hook surfaces. Empty registry is the supported default: when
 no entry points are installed (community deploys) the proxy boots
 identically to a no-plugin build.
 
 Hook surfaces:
-  * ``routers()``         — list[APIRouter] mounted after core routers.
-  * ``middlewares()``     — list[(cls, kwargs)] added to the FastAPI app.
-  * ``kms_factory(name)`` — optional callable for a KMS provider name; the
-                            first plugin that returns non-None wins.
-  * ``startup(app)``      — coroutine awaited at lifespan startup, after
-                            core init has placed services on ``app.state``.
-  * ``shutdown(app)``     — coroutine awaited at lifespan shutdown, before
-                            core teardown disposes the engine + redis pool.
+  * ``routers()``                 — list[APIRouter] mounted after core routers.
+  * ``middlewares()``             — list[(cls, kwargs)] added to the FastAPI app.
+  * ``kms_factory(name)``         — optional callable for a KMS provider name; the
+                                    first plugin that returns non-None wins.
+  * ``startup(app)``              — coroutine awaited at lifespan startup, after
+                                    core init has placed services on ``app.state``.
+  * ``shutdown(app)``             — coroutine awaited at lifespan shutdown, before
+                                    core teardown disposes the engine + redis pool.
+  * ``approval_required(action)`` — return True if the plugin wants to gate the
+                                    given action_type (e.g. ``policies.save``)
+                                    behind its own approval workflow. The first
+                                    plugin that returns True wins.
+  * ``submit_approval(...)``      — coroutine that persists a pending approval
+                                    and returns its identifier. Called by core
+                                    endpoint handlers after ``approval_required``
+                                    returned True.
 
 Plugins override only the hooks they need; defaults are no-ops. Each plugin
 may declare ``requires_feature``: when set, ``filter_by_license`` drops the
@@ -59,6 +67,37 @@ class Plugin:
 
     async def shutdown(self, app: FastAPI) -> None:
         return None
+
+    def approval_required(self, action_type: str) -> bool:
+        """Whether this plugin gates ``action_type`` behind its approval flow.
+
+        Called by core endpoint handlers (policies.save, pki.rotate_ca, etc.)
+        before executing the action. The first plugin in registry order that
+        returns True wins; the action is intercepted and ``submit_approval``
+        is invoked instead of normal execution.
+
+        Default is False: community deploys without any plugin observe
+        unchanged behavior.
+        """
+        return False
+
+    async def submit_approval(
+        self,
+        action_type: str,
+        payload: dict[str, Any],
+        submitter_id: str,
+    ) -> str:
+        """Persist a pending approval and return its identifier (ULID).
+
+        The plugin is responsible for storage, quorum tracking, expiry, and
+        eventual execution of the action when quorum is reached. The core
+        endpoint that called this returns a redirect to the plugin-managed
+        approval detail page, e.g. ``/dashboard/approvals/{id}``.
+        """
+        raise NotImplementedError(
+            f"plugin {self.name} declared approval_required for "
+            f"{action_type!r} but did not implement submit_approval"
+        )
 
 
 @dataclass
@@ -142,6 +181,23 @@ class PluginRegistry:
                 await plugin.shutdown(app)
             except Exception as exc:
                 _log.warning("plugin %s shutdown raised: %s", plugin.name, exc)
+
+    def approval_required_for(self, action_type: str) -> Optional[Plugin]:
+        """First plugin that wants to gate ``action_type``, or None.
+
+        Endpoint handlers can use this to skip the body fully when no plugin
+        opts in (community deploy fast path).
+        """
+        for plugin in self.plugins:
+            try:
+                if plugin.approval_required(action_type):
+                    return plugin
+            except Exception as exc:
+                _log.warning(
+                    "plugin %s approval_required(%s) raised: %s",
+                    plugin.name, action_type, exc,
+                )
+        return None
 
 
 _registry: PluginRegistry | None = None

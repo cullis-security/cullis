@@ -44,6 +44,15 @@ from mcp_proxy.dashboard.session import (
     verify_admin_password,
     MIN_PASSWORD_LENGTH,
 )
+from mcp_proxy.admin.approval_hook import (
+    ACTION_AGENTS_DELETE,
+    ACTION_MASTIO_KEY_ROTATE,
+    ACTION_PKI_ROTATE_CA,
+    ACTION_POLICIES_SAVE,
+    ACTION_USERS_DELETE,
+    ACTION_VAULT_MIGRATE_KEYS,
+    maybe_intercept_for_approval,
+)
 
 _log = logging.getLogger("mcp_proxy.dashboard")
 
@@ -1594,6 +1603,14 @@ async def agent_delete(request: Request, agent_id: str):
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
+    intercept = await maybe_intercept_for_approval(
+        session=session,
+        action_type=ACTION_AGENTS_DELETE,
+        payload={"agent_id": agent_id},
+    )
+    if intercept is not None:
+        return intercept
+
     from sqlalchemy import text
 
     from mcp_proxy.db import get_agent, get_db, log_audit
@@ -1805,9 +1822,16 @@ async def policies_save(request: Request):
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
+    form = await request.form()
+    payload = {k: str(v) for k, v in form.items() if k != "csrf_token"}
+    intercept = await maybe_intercept_for_approval(
+        session=session, action_type=ACTION_POLICIES_SAVE, payload=payload,
+    )
+    if intercept is not None:
+        return intercept
+
     from mcp_proxy.db import set_config, get_config, log_audit
 
-    form = await request.form()
     tab = str(form.get("tab", "rules"))
 
     if tab == "rules":
@@ -2205,6 +2229,12 @@ async def pki_rotate_ca(request: Request):
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
+    intercept = await maybe_intercept_for_approval(
+        session=session, action_type=ACTION_PKI_ROTATE_CA, payload={},
+    )
+    if intercept is not None:
+        return intercept
+
     from mcp_proxy.db import get_config, set_config, log_audit
 
     org_id = await get_config("org_id")
@@ -2448,6 +2478,13 @@ async def mastio_key_rotate(request: Request):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     form = await request.form()
+    payload = {k: str(v) for k, v in form.items() if k != "csrf_token"}
+    intercept = await maybe_intercept_for_approval(
+        session=session, action_type=ACTION_MASTIO_KEY_ROTATE, payload=payload,
+    )
+    if intercept is not None:
+        return intercept
+
     if form.get("confirm_text") != "ROTATE":
         raise HTTPException(
             status_code=400,
@@ -2863,6 +2900,12 @@ async def vault_migrate_keys(request: Request):
         return session
     if not await verify_csrf(request, session):
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    intercept = await maybe_intercept_for_approval(
+        session=session, action_type=ACTION_VAULT_MIGRATE_KEYS, payload={},
+    )
+    if intercept is not None:
+        return intercept
 
     from mcp_proxy.db import get_config, get_db, log_audit
 
@@ -3859,6 +3902,15 @@ async def users_delete(principal_id: str, request: Request):
             f"/proxy/users/{principal_id}?error=csrf",
             status_code=303,
         )
+
+    intercept = await maybe_intercept_for_approval(
+        session=session,
+        action_type=ACTION_USERS_DELETE,
+        payload={"principal_id": principal_id},
+    )
+    if intercept is not None:
+        return intercept
+
     if _frontdesk_admin_target() is None:
         return RedirectResponse(
             f"/proxy/users/{principal_id}?error=Frontdesk+not+configured",
