@@ -282,6 +282,19 @@ class CullisClient:
         # detect which role is in front of it without a config change.
         self.server_role: str | None = None
 
+        # ADR-NN auto-relogin on 401. Set by a login method when it
+        # successfully mints a token; ``_authed_request`` invokes it
+        # once on token-expiry 401 (LOCAL_TOKEN past TTL, typically
+        # 1h for autonomous agents) before propagating the failure.
+        # Without this an agent that runs longer than the token TTL
+        # crash-loops on the same request forever — observed live
+        # during the insurance-demo dogfood on cullis-vm.
+        #
+        # The callable must be parameter-less and idempotent: it
+        # re-runs the same login the agent originally used (e.g.
+        # ``login_via_proxy`` mints a fresh assertion + DPoP key).
+        self._relogin_callable: "Callable[[], None] | None" = None
+
         # Dogfood Finding #9 (2026-04-29): when the SDK is built
         # against a Mastio proxy (``from_connector`` / proxy-bound
         # factories), session ops route through ``/v1/egress/sessions*``
@@ -395,19 +408,59 @@ class CullisClient:
             "DPoP": self._dpop_proof(method, url, self.token),
         }
 
-    def _authed_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """Make an authenticated request with automatic DPoP nonce retry."""
+    def _authed_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        _no_relogin: bool = False,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Make an authenticated request with automatic DPoP nonce retry.
+
+        On a token-expiry 401 (LOCAL_TOKEN past TTL), the client invokes
+        ``self._relogin_callable`` once — populated by the login method
+        used at bootstrap — and retries the request. ``_no_relogin``
+        guards against infinite recursion if the re-login itself yields
+        another 401.
+        """
         resp = self._http.request(
             method, f"{self.base}{path}",
             headers=self._headers(method, path), **kwargs,
         )
         self._update_nonce(resp)
+
+        # Existing DPoP nonce challenge path (replays the same token).
         if resp.status_code == 401 and "use_dpop_nonce" in resp.text:
             resp = self._http.request(
                 method, f"{self.base}{path}",
                 headers=self._headers(method, path), **kwargs,
             )
             self._update_nonce(resp)
+            return resp
+
+        # Token-expiry 401: re-mint a fresh access token and retry once.
+        # No magic string match — any 401 that is NOT a DPoP nonce
+        # challenge can be a token expiry (the broker only returns 401
+        # in those two cases for an authed request).
+        if (
+            resp.status_code == 401
+            and not _no_relogin
+            and self._relogin_callable is not None
+        ):
+            try:
+                self._relogin_callable()
+            except Exception:
+                # Re-login itself failed — propagate the original 401 so
+                # the caller sees the same observable behavior they got
+                # before this auto-retry shipped. The login method's own
+                # exception type leaks context to logs but doesn't
+                # surface to the caller.
+                return resp
+            return self._authed_request(
+                method, path, _no_relogin=True, **kwargs,
+            )
+
         return resp
 
     def _ws_url(self) -> str:
@@ -1628,6 +1681,8 @@ class CullisClient:
             resp.raise_for_status()
             self._update_nonce(resp)
             self.token = resp.json()["access_token"]
+            # Auto-relogin on token expiry — replay the same flow.
+            self._relogin_callable = self.login_via_proxy
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             raise ConnectionError(f"[{agent_id}] Proxy unreachable: {e}") from e
         except httpx.HTTPStatusError as e:
@@ -1742,6 +1797,8 @@ class CullisClient:
             resp.raise_for_status()
             self._update_nonce(resp)
             self.token = resp.json()["access_token"]
+            # Auto-relogin on token expiry — replay the same flow.
+            self._relogin_callable = self.login_via_proxy_with_local_key
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             raise ConnectionError(f"[{agent_id}] Proxy unreachable: {e}") from e
         except httpx.HTTPStatusError as e:
