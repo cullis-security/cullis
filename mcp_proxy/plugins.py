@@ -22,6 +22,10 @@ Hook surfaces:
                                     and returns its identifier. Called by core
                                     endpoint handlers after ``approval_required``
                                     returned True.
+  * ``is_internal_replay(...)``   — coroutine returning True when the incoming
+                                    request is a post-quorum replay the plugin
+                                    itself issued. When True the approval hook
+                                    steps aside and the endpoint runs normally.
 
 Plugins override only the hooks they need; defaults are no-ops. Each plugin
 may declare ``requires_feature``: when set, ``filter_by_license`` drops the
@@ -98,6 +102,25 @@ class Plugin:
             f"plugin {self.name} declared approval_required for "
             f"{action_type!r} but did not implement submit_approval"
         )
+
+    async def is_internal_replay(
+        self,
+        request: Any,
+        action_type: str,
+    ) -> bool:
+        """Whether ``request`` is a post-quorum replay this plugin issued itself.
+
+        Called by the approval hook BEFORE ``submit_approval`` so a plugin
+        that has already collected enough signoffs and is now replaying
+        the original mutation against its own endpoint can bypass the
+        gating loop. The plugin proves authenticity its own way: a
+        signed header, a server-only shared secret, a DB lookup against
+        the approval row, etc. The hook trusts the boolean.
+
+        Default is False: plugins that do not implement replay leave
+        every request subject to normal interception.
+        """
+        return False
 
 
 @dataclass

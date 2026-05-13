@@ -41,11 +41,18 @@ class ProxyDashboardSession:
     (see ``mcp_proxy.rbac``). Default ``roles=()`` is filled to ``(role,)``
     in ``__post_init__`` so single-role callers (community deploys, legacy
     cookies issued before multi-role) keep working unchanged.
+
+    ``user_id`` is optional and only populated by multi-user login plugins
+    (e.g. cullis_enterprise ``rbac_multi_admin``). Single-admin community
+    deploys leave it as ``None``. Plumbed end-to-end so the 4-eyes
+    approval hook can record the actual submitter identity instead of
+    falling back to the role name.
     """
     role: str
     csrf_token: str = ""
     logged_in: bool = True
     roles: tuple[str, ...] = ()
+    user_id: int | None = None
 
     def __post_init__(self) -> None:
         if not self.roles:
@@ -53,7 +60,7 @@ class ProxyDashboardSession:
 
 
 _NO_SESSION = ProxyDashboardSession(
-    role="none", csrf_token="", logged_in=False, roles=(),
+    role="none", csrf_token="", logged_in=False, roles=(), user_id=None,
 )
 
 _auto_key: str = ""
@@ -170,11 +177,17 @@ def get_session(request: Request) -> ProxyDashboardSession:
     if isinstance(raw_roles, list):
         parsed_roles = tuple(str(r) for r in raw_roles if isinstance(r, str) and r)
 
+    raw_user_id = data.get("user_id")
+    parsed_user_id: int | None = None
+    if isinstance(raw_user_id, int) and raw_user_id > 0:
+        parsed_user_id = raw_user_id
+
     return ProxyDashboardSession(
         role=data.get("role", "none"),
         csrf_token=data.get("csrf_token", ""),
         logged_in=True,
         roles=parsed_roles,
+        user_id=parsed_user_id,
     )
 
 
@@ -202,6 +215,7 @@ def set_session(
     response: Response,
     role: str = "admin",
     roles: tuple[str, ...] | list[str] | None = None,
+    user_id: int | None = None,
 ) -> str:
     """Set a signed session cookie on the response. Returns the CSRF token.
 
@@ -210,18 +224,27 @@ def set_session(
     pre-existing behaviour. When provided, ``role`` remains the primary
     display role; the dashboard UI shows it in the badge while
     ``require_role`` checks against the wider ``roles`` tuple.
+
+    ``user_id`` is optional and identifies the row in the calling plugin's
+    user table (e.g. ``admin_users.id`` for cullis_enterprise
+    ``rbac_multi_admin``). Plumbed through the cookie so the 4-eyes
+    approval hook can record the real submitter identity. Single-admin
+    community deploys leave it as ``None``.
     """
     csrf_token = os.urandom(16).hex()
     if roles is None:
         roles_tuple: tuple[str, ...] = (role,) if role else ()
     else:
         roles_tuple = tuple(str(r) for r in roles if r)
-    payload = json.dumps({
+    payload_data: dict[str, object] = {
         "role": role,
         "roles": list(roles_tuple),
         "csrf_token": csrf_token,
         "exp": int(time.time()) + _COOKIE_MAX_AGE,
-    })
+    }
+    if user_id is not None and user_id > 0:
+        payload_data["user_id"] = int(user_id)
+    payload = json.dumps(payload_data)
     signed = _sign(payload)
     _use_secure = _should_set_secure_cookie()
     response.set_cookie(

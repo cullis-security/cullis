@@ -1607,6 +1607,7 @@ async def agent_delete(request: Request, agent_id: str):
         session=session,
         action_type=ACTION_AGENTS_DELETE,
         payload={"agent_id": agent_id},
+        request=request,
     )
     if intercept is not None:
         return intercept
@@ -1826,6 +1827,7 @@ async def policies_save(request: Request):
     payload = {k: str(v) for k, v in form.items() if k != "csrf_token"}
     intercept = await maybe_intercept_for_approval(
         session=session, action_type=ACTION_POLICIES_SAVE, payload=payload,
+        request=request,
     )
     if intercept is not None:
         return intercept
@@ -2231,6 +2233,7 @@ async def pki_rotate_ca(request: Request):
 
     intercept = await maybe_intercept_for_approval(
         session=session, action_type=ACTION_PKI_ROTATE_CA, payload={},
+        request=request,
     )
     if intercept is not None:
         return intercept
@@ -2481,6 +2484,7 @@ async def mastio_key_rotate(request: Request):
     payload = {k: str(v) for k, v in form.items() if k != "csrf_token"}
     intercept = await maybe_intercept_for_approval(
         session=session, action_type=ACTION_MASTIO_KEY_ROTATE, payload=payload,
+        request=request,
     )
     if intercept is not None:
         return intercept
@@ -2903,6 +2907,7 @@ async def vault_migrate_keys(request: Request):
 
     intercept = await maybe_intercept_for_approval(
         session=session, action_type=ACTION_VAULT_MIGRATE_KEYS, payload={},
+        request=request,
     )
     if intercept is not None:
         return intercept
@@ -3907,6 +3912,7 @@ async def users_delete(principal_id: str, request: Request):
         session=session,
         action_type=ACTION_USERS_DELETE,
         payload={"principal_id": principal_id},
+        request=request,
     )
     if intercept is not None:
         return intercept

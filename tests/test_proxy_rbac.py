@@ -144,6 +144,106 @@ def test_set_session_explicit_roles(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_set_session_user_id_round_trip(monkeypatch):
+    """``user_id`` kwarg round-trips through the cookie payload.
+
+    Multi-user login plugins (e.g. cullis_enterprise rbac_multi_admin)
+    pass the admin_users.id row id at login time; the 4-eyes approval
+    hook consumes ``session.user_id`` to record the real submitter
+    identity instead of just the role name.
+    """
+    from fastapi import Response
+    from mcp_proxy.dashboard.session import (
+        _COOKIE_NAME, get_session, set_session,
+    )
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("MCP_PROXY_DASHBOARD_SIGNING_KEY", "k" * 32)
+
+    response = Response()
+    set_session(
+        response, role="technical_admin", roles=("technical_admin",), user_id=42,
+    )
+    cookie_value = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+
+    from starlette.requests import Request
+    scope = {
+        "type": "http",
+        "headers": [(b"cookie", f"{_COOKIE_NAME}={cookie_value}".encode())],
+    }
+    s = get_session(Request(scope))
+    assert s.role == "technical_admin"
+    assert s.user_id == 42
+    get_settings.cache_clear()
+
+
+def test_set_session_without_user_id_leaves_field_none(monkeypatch):
+    """Legacy single-admin set_session() calls produce sessions with
+    ``user_id=None``. Community deploys observe unchanged behaviour."""
+    from fastapi import Response
+    from mcp_proxy.dashboard.session import (
+        _COOKIE_NAME, get_session, set_session,
+    )
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("MCP_PROXY_DASHBOARD_SIGNING_KEY", "k" * 32)
+
+    response = Response()
+    set_session(response, role="admin")
+    cookie_value = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+
+    from starlette.requests import Request
+    scope = {
+        "type": "http",
+        "headers": [(b"cookie", f"{_COOKIE_NAME}={cookie_value}".encode())],
+    }
+    s = get_session(Request(scope))
+    assert s.role == "admin"
+    assert s.user_id is None
+    get_settings.cache_clear()
+
+
+def test_get_session_rejects_invalid_user_id(monkeypatch):
+    """Cookies with non-integer or non-positive user_id values yield None.
+
+    Defends against a downgrade attack where a forged cookie carries
+    ``user_id=0`` or ``user_id="../etc/passwd"`` hoping to be propagated
+    as a stringified submitter id to the approval hook.
+    """
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    from mcp_proxy.dashboard.session import _COOKIE_NAME, get_session
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    monkeypatch.setenv("MCP_PROXY_DASHBOARD_SIGNING_KEY", "k" * 32)
+    secret = ("k" * 32).encode()
+
+    from starlette.requests import Request
+
+    for bad in (0, -7, "42", None, [42]):
+        payload_dict = {
+            "role": "admin",
+            "roles": ["admin"],
+            "csrf_token": "tok",
+            "exp": int(time.time()) + 3600,
+            "user_id": bad,
+        }
+        payload = json.dumps(payload_dict)
+        sig = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+        cookie_value = f"{payload}.{sig}"
+        scope = {
+            "type": "http",
+            "headers": [(b"cookie", f"{_COOKIE_NAME}={cookie_value}".encode())],
+        }
+        s = get_session(Request(scope))
+        assert s.role == "admin", f"bad={bad!r} unexpectedly broke session"
+        assert s.user_id is None, f"bad user_id {bad!r} should be rejected"
+    get_settings.cache_clear()
+
+
 # ── require_role gate behaviour ──────────────────────────────────────
 
 
