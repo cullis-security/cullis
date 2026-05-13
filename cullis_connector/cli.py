@@ -247,6 +247,28 @@ def _build_parser() -> argparse.ArgumentParser:
              "scan every supported MCP client.",
     )
 
+    # show-token: print the loopback Ambassador Bearer token so the
+    # operator can paste it into a third-party OpenAI-compatible client
+    # (LibreChat, Cherry Studio, AnythingLLM, OpenWebUI, ...). The token
+    # already lives at ``<config_dir>/local.token`` mode 0600 but is
+    # invisible to anyone who does not know the path — this surfaces it
+    # in one command. ``--quiet`` suppresses the security warning on
+    # stderr so a script can ``$(cullis-connector show-token --quiet)``
+    # and grab just the token. ADR-027 culk_ tokens cover the remote
+    # /v1/* path; this is the local loopback equivalent.
+    show_token = subparsers.add_parser(
+        "show-token",
+        help="Print the local Ambassador Bearer token (treat as a password).",
+    )
+    _add_shared_args(show_token)
+    show_token.add_argument(
+        "--quiet", "-q",
+        dest="quiet",
+        action="store_true",
+        help="Print only the token (no security warning on stderr). "
+             "Use in scripts: TOKEN=$(cullis-connector show-token --quiet)",
+    )
+
     return parser
 
 
@@ -258,6 +280,7 @@ _KNOWN_SUBCOMMANDS = frozenset({
     "dashboard",
     "desktop",
     "doctor",
+    "show-token",
 })
 
 # Shared flags are parsed by the subparser that owns the chosen command.
@@ -701,6 +724,39 @@ def _cmd_desktop(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return run_desktop_app(cfg, host=host, port=port)
 
 
+def _cmd_show_token(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    """Print the loopback Ambassador Bearer token.
+
+    Generates the token on first call (same behaviour as the Ambassador's
+    first startup), so an operator who installed the connector but never
+    ran ``dashboard``/``desktop`` still gets a token instead of an empty
+    file error. The token goes to stdout one line, no trailing extra
+    whitespace, so ``$(cullis-connector show-token --quiet)`` works in
+    a script. Security guidance goes to stderr so it does NOT pollute
+    stdout capture.
+    """
+    from cullis_connector.ambassador.auth import (
+        LOCAL_TOKEN_FILENAME,
+        ensure_local_token,
+    )
+
+    token = ensure_local_token(cfg.config_dir)
+    token_path = cfg.config_dir / LOCAL_TOKEN_FILENAME
+
+    if not args.quiet:
+        print(
+            f"# Local Ambassador Bearer token at {token_path}\n"
+            "# Treat as a password. Copy into your OpenAI-compatible client's\n"
+            "# Authorization: Bearer <token> setting, or paste below into the\n"
+            "# API key field (LibreChat / Cherry Studio / AnythingLLM / OpenWebUI / ...).\n"
+            "# The Ambassador only accepts this token from 127.0.0.1, so a leak\n"
+            "# off-host is harmless until an attacker also has loopback access.",
+            file=sys.stderr,
+        )
+    print(token)
+    return 0
+
+
 def _cmd_doctor(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     """Audit IDE MCP configs for stale Cullis entries (Finding #8)."""
     from cullis_connector.doctor import has_problems, scan
@@ -761,6 +817,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_desktop(cfg, args)
     if command == "doctor":
         return _cmd_doctor(cfg, args)
+    if command == "show-token":
+        return _cmd_show_token(cfg, args)
     return _cmd_serve(cfg)
 
 
