@@ -12,11 +12,6 @@ minted the token), then retries the request. A second 401 propagates.
 """
 from __future__ import annotations
 
-from typing import Any
-
-import httpx
-import pytest
-
 from cullis_sdk.client import CullisClient
 
 
