@@ -38,6 +38,7 @@ async def maybe_intercept_for_approval(
     session: Any,
     action_type: str,
     payload: dict[str, Any],
+    request: Request | None = None,
 ) -> RedirectResponse | None:
     """If a plugin gates ``action_type``, submit a pending approval.
 
@@ -49,9 +50,10 @@ async def maybe_intercept_for_approval(
     Parameters
     ----------
     session
-        Authenticated dashboard session. ``session.role`` is forwarded as
-        the submitter identifier for plugin storage and audit. Plugins
-        observe richer principal identity via their own session table.
+        Authenticated dashboard session. ``session.user_id`` (when set by
+        a multi-user login plugin) is forwarded as the submitter
+        identifier; otherwise the helper falls back to ``session.role``
+        so legacy single-admin deploys keep working unchanged.
     action_type
         One of the ``ACTION_*`` constants above. Stable identifier across
         the core/plugin boundary.
@@ -59,6 +61,13 @@ async def maybe_intercept_for_approval(
         Opaque dict captured from the request body (form or JSON). The
         plugin persists this verbatim and re-plays it when quorum is
         reached.
+    request
+        The originating FastAPI request. Forwarded to
+        :meth:`Plugin.is_internal_replay` so the plugin can recognize
+        post-quorum self-issued requests and bypass interception.
+        Optional for back-compat with callers not yet updated; without
+        it the replay-bypass path is unavailable but normal interception
+        still works.
     """
     # Local import: avoid bootstrapping the plugin registry at module load
     # in tests that monkey-patch it.
@@ -68,7 +77,32 @@ async def maybe_intercept_for_approval(
     if plugin is None:
         return None
 
-    submitter_id = getattr(session, "role", None) or "admin"
+    # Replay bypass: when the gating plugin recognizes this request as a
+    # post-approval replay it issued itself, the hook steps aside and the
+    # endpoint executes normally. The plugin proves authenticity its own
+    # way (signed header, DB lookup against the approval row, etc.); the
+    # hook just trusts the boolean answer. is_internal_replay defaults to
+    # False so community deploys without a plugin override see no change.
+    if request is not None:
+        try:
+            if await plugin.is_internal_replay(request, action_type):
+                _log.info(
+                    "action %s replay bypass: plugin=%s",
+                    action_type, plugin.name,
+                )
+                return None
+        except Exception as exc:
+            _log.warning(
+                "plugin %s is_internal_replay(%s) raised: %s, "
+                "treating as not-a-replay",
+                plugin.name, action_type, exc,
+            )
+
+    raw_user_id = getattr(session, "user_id", None)
+    if isinstance(raw_user_id, int) and raw_user_id > 0:
+        submitter_id: str = str(raw_user_id)
+    else:
+        submitter_id = getattr(session, "role", None) or "admin"
     try:
         approval_id = await plugin.submit_approval(
             action_type=action_type,
