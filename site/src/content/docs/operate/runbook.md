@@ -141,7 +141,7 @@ docker compose up -d proxy
 
 **Prevent**
 
-- Auto-unseal via cloud KMS (AWS KMS, GCP KMS) for teams; manual unseal is fine for a single-operator org.
+- Auto-unseal via cloud KMS (AWS KMS, Azure Key Vault, GCP CKMS) for teams. See [Vault auto-unseal](/docs/operate/vault-auto-unseal) for setup and migration from Shamir. Manual unseal is fine for a single-operator org.
 
 ## 4. Redis down
 
