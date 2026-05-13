@@ -52,6 +52,25 @@ def get_kms_provider() -> KMSProvider:
         _log.info("KMS provider: local (proxy_config DB)")
         return _provider
 
+    if backend == "vault":
+        # In-tree provider (ADR-031). Vault is part of the open-core
+        # stack alongside the dashboard /proxy/vault page and the
+        # mcp_proxy.tools.secrets.VaultSecretProvider used for tool
+        # credentials, so it does not gate on the enterprise plugin.
+        from mcp_proxy.kms.vault import VaultKMSProvider
+        _provider = VaultKMSProvider(
+            vault_addr=settings.vault_addr,
+            vault_token=settings.vault_token,
+            org_ca_path=settings.vault_org_ca_path,
+            verify_tls=settings.vault_verify_tls,
+            ca_cert_path=settings.vault_ca_cert_path,
+        )
+        _log.info(
+            "KMS provider: vault (path=%s)",
+            settings.vault_org_ca_path,
+        )
+        return _provider
+
     # Plugin-provided backend.
     from mcp_proxy.plugins import get_registry
     factory = get_registry().kms_factory(backend)
@@ -60,7 +79,8 @@ def get_kms_provider() -> KMSProvider:
             f"MCP_PROXY_KMS_BACKEND={backend!r} but no plugin handles "
             "this backend. Either install the matching cullis-enterprise "
             "extra (e.g. ``pip install cullis-enterprise[cloud_kms_aws]``) "
-            "and license the feature, or set MCP_PROXY_KMS_BACKEND=local.",
+            "and license the feature, or set MCP_PROXY_KMS_BACKEND=local "
+            "or vault.",
         )
 
     provider = factory(settings)

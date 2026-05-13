@@ -36,12 +36,18 @@ class ProxySettings(BaseSettings):
 
     # KMS backend for the Org CA (and, in follow-up, Mastio leaf keys).
     # ``local`` keeps the keys in proxy_config DB (current default,
-    # works for community + small deploys). Other values dispatch to
-    # cullis-enterprise plugins via the ``kms_factory`` plugin hook —
-    # e.g. ``aws`` / ``azure`` / ``gcp`` resolve to their respective
-    # cloud KMS providers when cullis-enterprise is installed and the
-    # license grants the matching feature.
+    # works for community + small deploys). ``vault`` resolves in-tree
+    # to mcp_proxy.kms.vault.VaultKMSProvider (ADR-031). Other values
+    # dispatch to cullis-enterprise plugins via the ``kms_factory``
+    # plugin hook — e.g. ``aws`` / ``azure`` / ``gcp`` resolve to their
+    # respective cloud KMS providers when cullis-enterprise is
+    # installed and the license grants the matching feature.
     kms_backend: str = "local"
+
+    # Vault KV v2 path for the Org CA keypair (ADR-031). Used only when
+    # ``kms_backend == "vault"``. Single secret per Mastio instance with
+    # fields ``key_pem`` + ``cert_pem``.
+    vault_org_ca_path: str = "secret/data/cullis-mastio/org-ca"
 
     # Secrets backend
     secret_backend: str = "env"  # "env" | "vault"
