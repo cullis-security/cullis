@@ -3,8 +3,10 @@
 Entry point: `python -m mcp_proxy.cli <subcommand>`.
 
 Subcommands:
-  rebuild-cache    Drop and re-fetch the federation cache from the broker.
-  reset-password   Overwrite the admin bcrypt hash and re-enable local sign-in.
+  rebuild-cache              Drop + re-fetch the federation cache.
+  reset-password             Overwrite the admin bcrypt hash.
+  migrate-org-ca-to-vault    Copy Org CA from proxy_config DB into Vault
+                             (ADR-031 follow-up to PR #684).
 
 Each subcommand is a thin async wrapper around helpers that live next
 to the runtime code (e.g. mcp_proxy.sync.cache_admin) so the CLI itself
@@ -55,6 +57,37 @@ def _build_parser() -> argparse.ArgumentParser:
         help="New password (skip the interactive prompt). Length must "
         "meet the proxy's MIN_PASSWORD_LENGTH. If omitted the CLI "
         "prompts twice on stderr.",
+    )
+
+    migrate = sub.add_parser(
+        "migrate-org-ca-to-vault",
+        help="One-shot copy of the Org CA keypair from proxy_config DB "
+        "to Vault KV v2 (ADR-031). Reads org_ca_key + org_ca_cert via "
+        "the local source, writes them via the in-tree VaultKMSProvider, "
+        "verifies by read-back, optionally clears the DB rows.",
+    )
+    migrate.add_argument(
+        "--yes", action="store_true",
+        help="Skip the interactive confirmation prompt.",
+    )
+    migrate.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate end-to-end (DB has the keys, Vault is reachable, "
+        "target path either empty or --force) without writing to Vault "
+        "or touching the DB.",
+    )
+    migrate.add_argument(
+        "--clear-db", action="store_true",
+        help="After a successful write + read-back verification, NULL "
+        "out org_ca_key and org_ca_cert in proxy_config. Recommended "
+        "as the final operator step; omit when running a staged copy.",
+    )
+    migrate.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the Vault path even if it already holds an "
+        "Org CA. Without this flag the CLI refuses to write when Vault "
+        "already has key_pem + cert_pem to avoid clobbering a prior "
+        "migration.",
     )
 
     return parser
@@ -143,6 +176,188 @@ async def _cmd_reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _cmd_migrate_org_ca_to_vault(args: argparse.Namespace) -> int:
+    """Copy the Org CA from proxy_config DB to Vault KV v2 (ADR-031).
+
+    Uses the in-tree LocalKMSProvider as the read source and a fresh
+    VaultKMSProvider as the write target. We instantiate both
+    explicitly rather than going through the factory because the
+    operator typically runs this CLI while the Mastio is still on
+    ``kms_backend=local`` (otherwise the running Mastio would already
+    read from Vault and there is nothing to migrate). The factory's
+    cached provider is bypassed entirely.
+    """
+    from mcp_proxy.db import log_audit
+    from mcp_proxy.kms.local import LocalKMSProvider
+    from mcp_proxy.kms.vault import VaultKMSProvider
+
+    settings = get_settings()
+
+    # Vault settings must be present — VaultKMSProvider() raises
+    # ValueError otherwise, but a clearer up-front message helps.
+    missing = [
+        name for name, value in (
+            ("MCP_PROXY_VAULT_ADDR", settings.vault_addr),
+            ("MCP_PROXY_VAULT_TOKEN", settings.vault_token),
+            ("MCP_PROXY_VAULT_ORG_CA_PATH", settings.vault_org_ca_path),
+        ) if not value
+    ]
+    if missing:
+        sys.stderr.write(
+            "Vault settings missing: " + ", ".join(missing) + ". "
+            "Set them in proxy.env or via the dashboard /proxy/vault "
+            "page before running this migration.\n"
+        )
+        return 1
+
+    await init_db(settings.database_url)
+    try:
+        src = LocalKMSProvider()
+        dst = VaultKMSProvider(
+            vault_addr=settings.vault_addr,
+            vault_token=settings.vault_token,
+            org_ca_path=settings.vault_org_ca_path,
+            verify_tls=settings.vault_verify_tls,
+            ca_cert_path=settings.vault_ca_cert_path,
+        )
+
+        source = await src.load_org_ca()
+        if source is None:
+            sys.stderr.write(
+                "proxy_config has no Org CA to migrate (org_ca_key / "
+                "org_ca_cert are empty). This Mastio either never "
+                "generated a CA, or was already migrated.\n"
+            )
+            return 1
+        key_pem, cert_pem = source
+
+        existing = await dst.load_org_ca()
+        if existing is not None and not args.force:
+            sys.stderr.write(
+                f"Vault path {settings.vault_org_ca_path} already holds "
+                "an Org CA (key_pem + cert_pem present). Refusing to "
+                "overwrite without --force. If you intentionally want "
+                "to replace it (e.g. after a rotation), re-run with "
+                "--force.\n"
+            )
+            return 1
+
+        if args.dry_run:
+            sys.stdout.write(
+                f"DRY RUN: would write Org CA "
+                f"(key_pem={len(key_pem)} bytes, "
+                f"cert_pem={len(cert_pem)} bytes) to "
+                f"{settings.vault_addr}/v1/{settings.vault_org_ca_path}\n"
+            )
+            if existing is not None:
+                sys.stdout.write(
+                    "DRY RUN: target path is non-empty; --force is set, "
+                    "so the real run would overwrite.\n"
+                )
+            if args.clear_db:
+                sys.stdout.write(
+                    "DRY RUN: --clear-db is set; the real run would "
+                    "clear proxy_config.org_ca_key and org_ca_cert "
+                    "after read-back verification.\n"
+                )
+            return 0
+
+        if not args.yes:
+            sys.stderr.write(
+                f"This will write the Org CA private key + cert to "
+                f"{settings.vault_addr}/v1/{settings.vault_org_ca_path}"
+            )
+            if existing is not None:
+                sys.stderr.write(" (OVERWRITING existing value, --force)")
+            if args.clear_db:
+                sys.stderr.write(
+                    " and then clear proxy_config.org_ca_key + "
+                    "org_ca_cert"
+                )
+            sys.stderr.write(".\nContinue? [y/N]: ")
+            sys.stderr.flush()
+            ans = sys.stdin.readline().strip().lower()
+            if ans not in ("y", "yes"):
+                sys.stderr.write("aborted\n")
+                return 1
+
+        await dst.store_org_ca(key_pem, cert_pem)
+
+        # Read-back verification — the whole point of this CLI is to
+        # be safe to follow with --clear-db. We must be certain the
+        # write landed and that what came back matches what we sent.
+        verify = await dst.load_org_ca()
+        if verify is None:
+            await log_audit(
+                agent_id="admin",
+                action="kms.org_ca_migrate_to_vault",
+                status="failure",
+                detail="read-back returned None after store",
+            )
+            sys.stderr.write(
+                "ABORT: read-back from Vault returned None after the "
+                "write. The DB still holds the original Org CA — "
+                "nothing was cleared. Inspect the Vault path manually "
+                "before retrying.\n"
+            )
+            return 2
+        verify_key, verify_cert = verify
+        if verify_key != key_pem or verify_cert != cert_pem:
+            await log_audit(
+                agent_id="admin",
+                action="kms.org_ca_migrate_to_vault",
+                status="failure",
+                detail="read-back mismatch",
+            )
+            sys.stderr.write(
+                "ABORT: read-back from Vault does not match what was "
+                "written. The DB still holds the original Org CA — "
+                "nothing was cleared. Inspect the Vault path manually "
+                "before retrying.\n"
+            )
+            return 2
+
+        cleared = False
+        if args.clear_db:
+            # Set to empty string rather than DELETE the row, so the
+            # LocalKMSProvider treats it as unseeded (its truthiness
+            # check is ``if key_pem and cert_pem``) without disturbing
+            # the proxy_config schema. Operators who later flip back
+            # to local mode are forced to re-seed explicitly.
+            from mcp_proxy.db import set_config
+            await set_config("org_ca_key", "")
+            await set_config("org_ca_cert", "")
+            cleared = True
+
+        await log_audit(
+            agent_id="admin",
+            action="kms.org_ca_migrate_to_vault",
+            status="success",
+            detail=(
+                f"target={settings.vault_org_ca_path} "
+                f"overwrote={existing is not None} "
+                f"cleared_db={cleared}"
+            ),
+        )
+
+        sys.stdout.write(
+            f"Org CA migrated to Vault at {settings.vault_org_ca_path}. "
+            f"Read-back verified. "
+        )
+        if cleared:
+            sys.stdout.write(
+                "proxy_config.org_ca_key + org_ca_cert have been "
+                "cleared. "
+            )
+        sys.stdout.write(
+            "Restart the Mastio with MCP_PROXY_KMS_BACKEND=vault to "
+            "switch the live key source.\n"
+        )
+        return 0
+    finally:
+        await dispose_db()
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -155,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_rebuild_cache(args))
     if args.command == "reset-password":
         return asyncio.run(_cmd_reset_password(args))
+    if args.command == "migrate-org-ca-to-vault":
+        return asyncio.run(_cmd_migrate_org_ca_to_vault(args))
 
     parser.print_help(sys.stderr)
     return 2
