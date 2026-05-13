@@ -414,6 +414,111 @@ async def test_users_delete_404_is_idempotent_and_still_scrubs(
     get_settings.cache_clear()
 
 
+# ── reset TOFU pin (Mastio-local, no Frontdesk bridge) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_users_reset_tofu_pin_clears_and_redirects(tmp_path, monkeypatch):
+    """Pubkey thumbprint set → POST clears it, dashboard redirects with
+    ?ok=TOFU+pin+cleared, no Frontdesk Ambassador call."""
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        from mcp_proxy.db import get_db
+        from sqlalchemy import text
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO local_user_principals "
+                    "(principal_id, user_name, display_name, reach, "
+                    " surface, pubkey_thumbprint, created_at) "
+                    "VALUES (:pid, :uname, '', 'intra', 'frontdesk', "
+                    "        :thumb, datetime('now'))"
+                ),
+                {
+                    "pid": "td-org::user::alice", "uname": "alice",
+                    "thumb": "a" * 64,
+                },
+            )
+        # No Ambassador call expected — script empty responses and we
+        # assert nothing was popped.
+        calls = _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/reset-tofu-pin",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303, r.text
+            assert "TOFU+pin+cleared" in r.headers["location"]
+        assert calls == [], "no Frontdesk bridge expected for TOFU reset"
+        async with get_db() as conn:
+            row = (await conn.execute(
+                text(
+                    "SELECT pubkey_thumbprint FROM local_user_principals "
+                    "WHERE principal_id = 'td-org::user::alice'"
+                )
+            )).mappings().first()
+            assert row["pubkey_thumbprint"] is None
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_reset_tofu_pin_no_pin_redirects_error(tmp_path, monkeypatch):
+    """Row exists, pubkey already NULL → redirect with ?error=No+pin+to+clear
+    so the operator sees the helper was a no-op."""
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        from mcp_proxy.db import get_db
+        from sqlalchemy import text
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO local_user_principals "
+                    "(principal_id, user_name, display_name, reach, "
+                    " surface, created_at) "
+                    "VALUES ('td-org::user::bob', 'bob', '', 'intra', "
+                    "        'frontdesk', datetime('now'))"
+                )
+            )
+        _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::bob/reset-tofu-pin",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "No+pin+to+clear" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_reset_tofu_pin_requires_csrf(tmp_path, monkeypatch):
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/reset-tofu-pin",
+                data={"csrf_token": "wrong"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "error=csrf" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
 # ── security: plaintext password never logged ──────────────────────────
 
 

@@ -384,6 +384,35 @@
                 </form>
             </div>
 
+            <!-- Reset TOFU pin -->
+            <div class="border-t border-red-900/20 pt-5">
+                <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Reset TOFU Pin</p>
+                <p class="text-xs text-gray-500 mb-3">
+                    Clears the pinned public key bound to this principal. The next CSR will be accepted regardless of key and the fresh key gets re-pinned at signature time. Use when the user's Connector lost its keystore (laptop rebuilt, profile wiped) and is now bouncing with a TOFU mismatch. Cert thumbprint and credentials are not affected.
+                </p>
+                <div class="mb-3 flex items-start gap-2 text-[11px]">
+                    <span class="text-gray-600 uppercase tracking-wider mt-0.5">Pubkey thumb:</span>
+                    {% if user.pubkey_thumbprint %}
+                    <code class="text-gray-400 font-mono break-all" title="{{ user.pubkey_thumbprint }}">{{ user.pubkey_thumbprint[:32] }}{% if user.pubkey_thumbprint|length > 32 %}…{% endif %}</code>
+                    {% else %}
+                    <span class="text-gray-700 italic">not pinned</span>
+                    {% endif %}
+                </div>
+                <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/reset-tofu-pin"
+                      onsubmit="return confirm('Clear the TOFU pin? The next sign-in from this user will be trusted on first touch again. Verify the user identity out-of-band before resetting.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            {% if not user.pubkey_thumbprint %}disabled
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-gray-800/40 border border-gray-800 text-gray-600 rounded cursor-not-allowed"
+                            title="No pin to clear"
+                            {% else %}
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-amber-600/20 border border-amber-600/30 text-amber-400 rounded hover:bg-amber-600/30 transition-colors"
+                            {% endif %}>
+                        Reset TOFU Pin
+                    </button>
+                </form>
+            </div>
+
             <!-- Delete -->
             <div class="border-t border-red-900/20 pt-5">
                 <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Delete</p>

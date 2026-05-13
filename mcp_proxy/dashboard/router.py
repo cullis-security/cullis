@@ -3299,6 +3299,7 @@ async def _build_user_view() -> tuple[list[dict], bool]:
             "reach": row.get("reach"),
             "surface": row.get("surface"),
             "cert_thumbprint": row.get("cert_thumbprint"),
+            "pubkey_thumbprint": row.get("pubkey_thumbprint"),
             "created_at": row.get("created_at"),
             "last_active_at": row.get("last_active_at"),
             "in_frontdesk": user_name in fd_users,
@@ -3322,6 +3323,7 @@ async def _build_user_view() -> tuple[list[dict], bool]:
             "reach": "intra",
             "surface": "frontdesk",
             "cert_thumbprint": None,
+            "pubkey_thumbprint": None,
             "created_at": fd.get("created_at"),
             "last_active_at": None,
             "in_frontdesk": True,
@@ -3796,6 +3798,85 @@ async def users_delete(principal_id: str, request: Request):
     from urllib.parse import quote
     return RedirectResponse(
         f"/proxy/users?ok=Deleted+{quote(user_name)}",
+        status_code=303,
+    )
+
+
+@router.post("/users/{principal_id:path}/reset-tofu-pin")
+async def users_reset_tofu_pin(principal_id: str, request: Request):
+    """Clear the TOFU-pinned pubkey for a user principal.
+
+    Recovery path for the v0.1 keystore-loss case: Connector wiped
+    its on-disk keypair, customer rebuilt the laptop, or an early
+    Mastio (pre-PR #656) ran with in-memory keys and lost the pin
+    on restart. Operator confirms identity out-of-band, hits this
+    button, the next CSR from the user is accepted regardless of
+    pubkey and the fresh thumb gets repinned at signature time.
+
+    Mastio-local: the TOFU pin lives only in ``local_user_principals``
+    (the Frontdesk doesn't carry it). No Frontdesk bridge required.
+    Audit chain captures the reset with action=``reset_tofu_pin``
+    so an attacker who flips a real user's pin to their own pubkey
+    is recoverable forensically.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=csrf",
+            status_code=303,
+        )
+
+    _, user_name = _split_principal_id(principal_id)
+    if not user_name:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=invalid+principal+id",
+            status_code=303,
+        )
+
+    from mcp_proxy.db import clear_user_principal_pubkey_thumbprint, log_audit
+    try:
+        cleared = await clear_user_principal_pubkey_thumbprint(principal_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "users_reset_tofu_pin: clear failed for %s: %s",
+            principal_id, exc,
+        )
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Reset+failed",
+            status_code=303,
+        )
+
+    if not cleared:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=No+pin+to+clear",
+            status_code=303,
+        )
+
+    operator = (
+        getattr(session, "principal_id", None)
+        or getattr(session, "username", None)
+        or "dashboard-admin"
+    )
+    try:
+        await log_audit(
+            agent_id=principal_id,
+            action="reset_tofu_pin",
+            status="success",
+            details={
+                "operator": operator,
+                "user_name": user_name,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "users_reset_tofu_pin: audit append failed for %s: %s",
+            principal_id, exc,
+        )
+
+    return RedirectResponse(
+        f"/proxy/users/{principal_id}?ok=TOFU+pin+cleared",
         status_code=303,
     )
 
