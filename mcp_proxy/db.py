@@ -588,7 +588,8 @@ async def list_user_principals() -> list[dict]:
         result = await conn.execute(
             text(
                 "SELECT principal_id, user_name, display_name, reach, "
-                "       surface, cert_thumbprint, created_at, last_active_at "
+                "       surface, cert_thumbprint, pubkey_thumbprint, "
+                "       created_at, last_active_at "
                 "  FROM local_user_principals "
                 " ORDER BY created_at DESC"
             )
@@ -691,6 +692,37 @@ async def set_user_principal_pubkey_thumbprint_if_unset(
                 "   AND pubkey_thumbprint IS NULL"
             ),
             {"pid": principal_id, "thumb": pubkey_thumbprint},
+        )
+        return result.rowcount > 0
+
+
+async def clear_user_principal_pubkey_thumbprint(principal_id: str) -> bool:
+    """Null out the TOFU-pinned pubkey for a user principal.
+
+    Used by the admin "reset TOFU pin" path when the on-disk pubkey
+    pinned at first-touch has become stale (Connector wiped its
+    keystore, customer rebuilt the laptop, ADR-021 v0.1 in-memory keys
+    didn't survive a Mastio restart). After this call the next CSR
+    from this principal will be accepted regardless of pubkey and the
+    fresh thumb gets pinned on that signature via ``upsert_from_csr``.
+
+    Returns True iff a row was actually updated. False when the
+    principal_id doesn't exist OR ``pubkey_thumbprint`` was already
+    NULL (caller can decide whether that's a 404 or a no-op).
+
+    Cert thumbprint is left alone — it rotates every CSR refresh
+    anyway and is not the load-bearing TOFU identifier. Only the
+    SPKI hash matters.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                "UPDATE local_user_principals "
+                "   SET pubkey_thumbprint = NULL "
+                " WHERE principal_id = :pid "
+                "   AND pubkey_thumbprint IS NOT NULL"
+            ),
+            {"pid": principal_id},
         )
         return result.rowcount > 0
 

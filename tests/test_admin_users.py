@@ -160,6 +160,135 @@ async def test_auth_required(tmp_path, monkeypatch):
 # ── upsert from CSR sign ───────────────────────────────────────────────
 
 
+# ── reset TOFU pin ─────────────────────────────────────────────────────
+
+
+async def test_reset_tofu_pin_clears_pubkey(tmp_path, monkeypatch):
+    """Happy path: pin set via CSR upsert, then cleared, then unset."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "users-tofu")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            from mcp_proxy.admin.users import upsert_from_csr
+            await upsert_from_csr(
+                principal_id="users-tofu.cullis.test/users-tofu/user/jane",
+                org_id="users-tofu",
+                cert_thumbprint="sha256:" + "0" * 16,
+                pubkey_thumbprint="a" * 64,
+            )
+            from mcp_proxy.db import get_user_principal_pubkey_thumbprint
+            exists, thumb = await get_user_principal_pubkey_thumbprint(
+                "users-tofu::user::jane",
+            )
+            assert (exists, thumb) == (True, "a" * 64)
+
+            h = await _headers()
+            r = await cli.post(
+                "/v1/admin/users/jane/reset-tofu-pin", headers=h,
+            )
+            assert r.status_code == 200, r.text
+            assert r.json() == {
+                "principal_id": "users-tofu::user::jane",
+                "cleared": True,
+            }
+
+            exists, thumb = await get_user_principal_pubkey_thumbprint(
+                "users-tofu::user::jane",
+            )
+            assert (exists, thumb) == (True, None)
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_reset_tofu_pin_missing_user_returns_404(tmp_path, monkeypatch):
+    app = await _spin_proxy(tmp_path, monkeypatch, "users-tofu-404")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _headers()
+            r = await cli.post(
+                "/v1/admin/users/ghost/reset-tofu-pin", headers=h,
+            )
+            assert r.status_code == 404
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_reset_tofu_pin_already_null_returns_404(tmp_path, monkeypatch):
+    """Row exists, pubkey already NULL → 404 so the caller can treat
+    'nothing to do' the same way as 'principal missing'. Idempotent
+    from the caller's point of view."""
+    app = await _spin_proxy(tmp_path, monkeypatch, "users-tofu-null")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            h = await _headers()
+            await cli.post(
+                "/v1/admin/users", headers=h,
+                json={"user_name": "jane"},
+            )
+            r = await cli.post(
+                "/v1/admin/users/jane/reset-tofu-pin", headers=h,
+            )
+            assert r.status_code == 404
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_reset_tofu_pin_requires_admin_secret(tmp_path, monkeypatch):
+    app = await _spin_proxy(tmp_path, monkeypatch, "users-tofu-auth")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            r = await cli.post("/v1/admin/users/jane/reset-tofu-pin")
+            assert r.status_code == 422
+            r = await cli.post(
+                "/v1/admin/users/jane/reset-tofu-pin",
+                headers={"X-Admin-Secret": "wrong"},
+            )
+            assert r.status_code == 403
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+async def test_reset_tofu_pin_writes_audit_row(tmp_path, monkeypatch):
+    app = await _spin_proxy(tmp_path, monkeypatch, "users-tofu-audit")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as cli:
+        async with app.router.lifespan_context(app):
+            from mcp_proxy.admin.users import upsert_from_csr
+            await upsert_from_csr(
+                principal_id=(
+                    "users-tofu-audit.cullis.test/"
+                    "users-tofu-audit/user/jane"
+                ),
+                org_id="users-tofu-audit",
+                cert_thumbprint="sha256:" + "0" * 16,
+                pubkey_thumbprint="b" * 64,
+            )
+            h = await _headers()
+            r = await cli.post(
+                "/v1/admin/users/jane/reset-tofu-pin", headers=h,
+            )
+            assert r.status_code == 200
+
+            from sqlalchemy import text
+            from mcp_proxy.db import get_db
+            async with get_db() as conn:
+                rows = (await conn.execute(text(
+                    "SELECT action, status, agent_id FROM audit_log "
+                    " WHERE action = 'reset_tofu_pin'"
+                ))).mappings().all()
+            assert len(rows) == 1
+            assert rows[0]["status"] == "success"
+            assert rows[0]["agent_id"] == "users-tofu-audit::user::jane"
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+# ── upsert from CSR ────────────────────────────────────────────────────
+
+
 async def test_upsert_from_csr_creates_row(tmp_path, monkeypatch):
     """``upsert_from_csr`` is the runtime helper the CSR endpoint calls
     after a successful signature. Verifies the side-effect directly,

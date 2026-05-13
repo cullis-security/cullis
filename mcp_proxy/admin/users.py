@@ -226,6 +226,67 @@ async def list_users(
     return UserListResponse(users=items, total=len(items))
 
 
+@router.post(
+    "/{user_name}/reset-tofu-pin",
+    dependencies=[Depends(_require_admin_secret)],
+)
+async def reset_tofu_pin(user_name: str, request: Request) -> dict:
+    """Clear the TOFU-pinned pubkey for a user principal.
+
+    Mirror of the dashboard Danger Zone button. Scripted recovery
+    path for the v0.1 keystore-loss case (Connector wiped its
+    on-disk keypair, pre-PR #656 Mastio kept user keys in-memory
+    and lost the pin on restart). Cert thumbprint is left alone —
+    only the SPKI hash is the load-bearing TOFU identifier.
+
+    Audit chain captures the reset with ``action=reset_tofu_pin``
+    and ``operator=admin-secret`` so an attacker who flips a real
+    user's pin to their own pubkey is recoverable forensically.
+
+    Returns:
+        ``200`` ``{"principal_id": ..., "cleared": true}`` on success.
+        ``404`` when principal_id missing OR the pin was already NULL
+        (idempotent caller can treat both as "nothing to do").
+    """
+    if not user_name or len(user_name) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid user_name",
+        )
+    mgr = getattr(request.app.state, "agent_manager", None)
+    if mgr is None or not getattr(mgr, "ca_loaded", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="agent manager not initialized — Org CA not loaded",
+        )
+    pid = _principal_id(mgr.org_id, user_name)
+
+    from mcp_proxy.db import clear_user_principal_pubkey_thumbprint, log_audit
+    cleared = await clear_user_principal_pubkey_thumbprint(pid)
+    if not cleared:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="principal not found or pin already cleared",
+        )
+
+    try:
+        await log_audit(
+            agent_id=pid,
+            action="reset_tofu_pin",
+            status="success",
+            details={
+                "operator": "admin-secret",
+                "user_name": user_name,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "reset_tofu_pin: audit append failed for %s: %s", pid, exc,
+        )
+
+    return {"principal_id": pid, "cleared": True}
+
+
 # ── populator helper ────────────────────────────────────────────────────
 
 
