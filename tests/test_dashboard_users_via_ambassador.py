@@ -414,6 +414,153 @@ async def test_users_delete_404_is_idempotent_and_still_scrubs(
     get_settings.cache_clear()
 
 
+# ── provision registry-only → Frontdesk ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_users_provision_to_frontdesk_happy_path(tmp_path, monkeypatch):
+    """Registry-only Mastio user + Frontdesk now wired → POST mints
+    temp pw, pushes to Frontdesk /admin/users, redirects with the
+    single-consume ticket so the cleartext shows up on the detail
+    page once."""
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        from mcp_proxy.db import get_db
+        from sqlalchemy import text
+        async with get_db() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO local_user_principals "
+                    "(principal_id, user_name, display_name, reach, "
+                    " surface, created_at) "
+                    "VALUES (:pid, :uname, '', 'intra', 'registry', "
+                    "        datetime('now'))"
+                ),
+                {"pid": "td-org::user::alice", "uname": "alice"},
+            )
+        calls = _install_fake_frontdesk(
+            monkeypatch, responses=[(201, {"user_name": "alice"}, None)],
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/provision-to-frontdesk",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303, r.text
+            loc = r.headers["location"]
+            assert "/proxy/users/" in loc
+            assert "new_pw_ticket=" in loc, (
+                "ticket must be in redirect so the detail page surfaces "
+                "the cleartext exactly once"
+            )
+    # Forwarded call shape
+    assert len(calls) == 1
+    c = calls[0]
+    assert c["method"] == "POST"
+    assert c["path"] == "/admin/users"
+    body = c["json_body"]
+    assert body["user_name"] == "alice"
+    assert body["must_change_password"] is True
+    assert isinstance(body["password"], str) and len(body["password"]) == 16
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_provision_to_frontdesk_409_already_in_frontdesk(
+    tmp_path, monkeypatch,
+):
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        _install_fake_frontdesk(
+            monkeypatch, responses=[(409, {"detail": "exists"}, None)],
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/provision-to-frontdesk",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "User+already+in+Frontdesk" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_provision_to_frontdesk_refuses_when_frontdesk_offline(
+    tmp_path, monkeypatch,
+):
+    """Without ``CULLIS_MASTIO_FRONTDESK_AMBASSADOR_URL`` there is
+    nothing to delegate to. Operator gets a clear error instead of a
+    transport timeout."""
+    app = await _spin(tmp_path, monkeypatch, frontdesk=False)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/provision-to-frontdesk",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "Frontdesk+not+configured" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_provision_to_frontdesk_transport_error(
+    tmp_path, monkeypatch,
+):
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        _install_fake_frontdesk(
+            monkeypatch, responses=[(0, None, "transport_error")],
+        )
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/provision-to-frontdesk",
+                data={"csrf_token": csrf},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "Frontdesk+unreachable" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_provision_to_frontdesk_requires_csrf(tmp_path, monkeypatch):
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            r = await cli.post(
+                "/proxy/users/td-org::user::alice/provision-to-frontdesk",
+                data={"csrf_token": "wrong"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "error=csrf" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
 # ── reset TOFU pin (Mastio-local, no Frontdesk bridge) ─────────────────
 
 

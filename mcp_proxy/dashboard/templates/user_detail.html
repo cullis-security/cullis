@@ -368,7 +368,24 @@
                 <p class="text-[11px] text-gray-600">Operations on this principal are mostly irreversible. The audit chain keeps the history regardless. The Mastio forwards each action to the Frontdesk Ambassador (the canale that holds the credential).</p>
             </div>
 
-            <!-- Reset password -->
+            {% if not user.in_frontdesk %}
+            <!-- Provision to Frontdesk (registry-only → Frontdesk-backed) -->
+            <div class="border-t border-red-900/20 pt-5">
+                <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Provision to Frontdesk</p>
+                <p class="text-xs text-gray-500 mb-3">
+                    This user is registry-only (created while Frontdesk was offline, or never went through SSO). The Mastio knows the principal_id and can mint API tokens, but the user has no password to sign in via the Frontdesk SPA. Click to mint a 16-char temp credential, push it to the Frontdesk, and surface it here once.
+                </p>
+                <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/provision-to-frontdesk"
+                      onsubmit="return confirm('Provision this user to the Frontdesk? A temp password will be minted, pushed to the Frontdesk, and shown to you once. Hand it over out-of-band and the user is forced to rotate at next sign-in.')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit"
+                            class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-emerald-600/20 border border-emerald-600/30 text-emerald-400 rounded hover:bg-emerald-600/30 transition-colors">
+                        Provision to Frontdesk
+                    </button>
+                </form>
+            </div>
+            {% else %}
+            <!-- Reset password (Frontdesk-backed user only) -->
             <div class="border-t border-red-900/20 pt-5">
                 <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Reset Password</p>
                 <p class="text-xs text-gray-500 mb-3">
@@ -383,6 +400,7 @@
                     </button>
                 </form>
             </div>
+            {% endif %}
 
             <!-- Reset TOFU pin -->
             <div class="border-t border-red-900/20 pt-5">

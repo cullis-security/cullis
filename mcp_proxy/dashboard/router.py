@@ -3741,6 +3741,114 @@ async def users_reset_password(principal_id: str, request: Request):
     )
 
 
+@router.post("/users/{principal_id:path}/provision-to-frontdesk")
+async def users_provision_to_frontdesk(principal_id: str, request: Request):
+    """Promote a registry-only user to a Frontdesk-backed credential.
+
+    Closes the gap surfaced 2026-05-13: customer installs Mastio
+    standalone (no Frontdesk), creates users via the registry-only
+    fallback path (PR #596), then later attaches a Frontdesk bundle.
+    Pre-fix the operator had no way to mint a Frontdesk credential
+    for those existing users without ``delete + recreate`` or curling
+    the Frontdesk Ambassador admin API by hand.
+
+    Mints a 16-char temp password, forwards it to the Frontdesk via
+    POST ``/admin/users`` (same call path users_create uses on the
+    happy create-with-Frontdesk path), surfaces the password back to
+    the operator via a single-consume ticket so the cleartext never
+    rides in URL / nginx logs / browser history.
+
+    Refused when:
+      - Frontdesk Ambassador not configured (no target to call)
+      - User is already present in the Frontdesk (avoid silent rotate)
+      - principal_id cannot be parsed
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=csrf",
+            status_code=303,
+        )
+    if _frontdesk_admin_target() is None:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Frontdesk+not+configured",
+            status_code=303,
+        )
+
+    _, user_name = _split_principal_id(principal_id)
+    if not user_name:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=invalid+principal+id",
+            status_code=303,
+        )
+
+    new_pw = _generate_temp_password()
+    status_code, body, transport_err = await _frontdesk_admin_call(
+        "POST",
+        "/admin/users",
+        json_body={
+            "user_name": user_name,
+            "password": new_pw,
+            "must_change_password": True,
+        },
+    )
+    if transport_err:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Frontdesk+unreachable",
+            status_code=303,
+        )
+    if status_code == 409:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=User+already+in+Frontdesk",
+            status_code=303,
+        )
+    if status_code >= 400:
+        _log.warning(
+            "users_provision_to_frontdesk: frontdesk rejected status=%s",
+            status_code,
+        )
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Provision+failed",
+            status_code=303,
+        )
+
+    operator = (
+        getattr(session, "principal_id", None)
+        or getattr(session, "username", None)
+        or "dashboard-admin"
+    )
+    try:
+        from mcp_proxy.db import log_audit
+        await log_audit(
+            agent_id=principal_id,
+            action="user.provision_to_frontdesk",
+            status="success",
+            details={
+                "operator": operator,
+                "user_name": user_name,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "users_provision_to_frontdesk: audit append failed for %s: %s",
+            principal_id, exc,
+        )
+
+    from urllib.parse import quote
+    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
+    ticket = mint_password_ticket(new_pw)
+    # Reuse the new_pw_ticket query the create-user happy path already
+    # surfaces — the user_detail page renders the cleartext + copy
+    # button when it sees this ticket on GET, then burns the ticket so
+    # a refresh does not re-render.
+    return RedirectResponse(
+        f"/proxy/users/{quote(principal_id)}?new_pw_ticket={quote(ticket)}",
+        status_code=303,
+    )
+
+
 @router.post("/users/{principal_id:path}/delete")
 async def users_delete(principal_id: str, request: Request):
     session = require_login(request)
