@@ -403,7 +403,10 @@ if [[ "$MODE" == "development" ]]; then
         echo "        env is ignored on subsequent boots; the persisted hash wins.)"
         echo "    3. Enroll agents via the Connector or paste an invite token"
     else
-        echo "    2. Complete the first-boot setup wizard"
+        echo "    2. First-boot setup: the dashboard will redirect to"
+        echo "         ${PUBLIC_URL}/proxy/register"
+        echo "       Pick the admin password there (typed once, never stored"
+        echo "        on disk in plaintext or surfaced on stdout)."
         echo "    3. Enroll agents via the Connector or paste an invite token"
     fi
 else
