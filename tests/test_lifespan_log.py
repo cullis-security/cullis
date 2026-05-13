@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import pytest
-
 
 def test_emit_lifespan_log_writes_json_to_stderr(capsys):
     from mcp_proxy._lifespan_log import emit_lifespan_log
