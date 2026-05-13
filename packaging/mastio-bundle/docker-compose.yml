@@ -197,13 +197,21 @@ services:
       - proxy_net
     restart: unless-stopped
     healthcheck:
+      # IPv4 literal on purpose: nginx:1.27-alpine ships musl libc, whose
+      # getaddrinfo prefers AAAA over A — ``localhost`` resolves to ``::1``
+      # first. Our ``listen 9443 ssl`` directive binds IPv4 only
+      # (``0.0.0.0:9443``), so a wget to ``localhost`` got Connection
+      # refused on the IPv6 attempt and never fell back to IPv4. nginx
+      # was serving traffic from the host fine, but compose reported the
+      # container ``unhealthy`` for every probe. ``127.0.0.1`` skips the
+      # resolver entirely.
       test:
         - CMD-SHELL
         - >-
           test -s /etc/nginx/certs/mastio-server.crt &&
           test -s /etc/nginx/certs/mastio-server.key &&
           test -s /etc/nginx/certs/org-ca.crt &&
-          wget -q --no-check-certificate -O /dev/null https://localhost:9443/health
+          wget -q --no-check-certificate -O /dev/null https://127.0.0.1:9443/health
       interval: 30s
       timeout: 5s
       retries: 3
