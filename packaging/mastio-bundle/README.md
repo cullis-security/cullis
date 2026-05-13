@@ -63,7 +63,7 @@ list of tunables (backend, provider, sidecar URL, timeout).
 ## Pin a release
 
 ```bash
-CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh
+CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh
 ```
 
 `latest` is fine for a quick try; pin to a specific tag in production.
@@ -123,7 +123,7 @@ registry:
 ```bash
 helm install cullis-mastio \
   oci://ghcr.io/cullis-security/charts/cullis-mastio \
-  --version 0.3.0 \
+  --version 0.4.2 \
   --set nginx.san="mastio.myorg.example.com,mastio.local" \
   --set proxy.proxyPublicUrl=https://mastio.myorg.example.com
 ```

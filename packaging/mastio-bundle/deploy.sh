@@ -9,7 +9,7 @@
 # --shared-broker overlay opts into federation when a Court is up on
 # the same docker host.
 #
-# Pin a release with CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh
+# Pin a release with CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh
 # (defaults to "latest" — fine for dev, pin in production).
 #
 # Modes (combinable):
@@ -21,7 +21,7 @@
 #
 # Examples:
 #   ./deploy.sh                                # standalone (default)
-#   CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh    # pinned version
+#   CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh    # pinned version
 #   ./deploy.sh --shared-broker                # join Court on same host
 #   ./deploy.sh --prod                         # standalone, prod safety
 #   ./deploy.sh --down                         # stop + remove
@@ -458,11 +458,11 @@ Environment:
 
 Examples:
   ./deploy.sh                                    # standalone (default)
-  CULLIS_MASTIO_VERSION=0.3.0 ./deploy.sh        # pinned version
+  CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh        # pinned version
   ./deploy.sh --shared-broker                    # join Court on same host
   ./deploy.sh --prod                             # standalone, prod safety
-  ./deploy.sh --upgrade 0.3.0-rc3                # image-only bump
-  ./deploy.sh --upgrade-bundle 0.4.0             # full bundle refresh
+  ./deploy.sh --upgrade 0.4.2                    # image-only bump
+  ./deploy.sh --upgrade-bundle 0.4.2             # full bundle refresh
   ./deploy.sh --migrate-volumes                  # one-shot bind migration
   ./deploy.sh --down                             # stop + remove
 EOF
