@@ -176,6 +176,12 @@
              hx-trigger="load, every 10s"
              hx-swap="innerHTML"></div>
 
+        <!-- Update-available banner (HTMX, lazy poll with 24h server cache) -->
+        <div id="update-status-banner"
+             hx-get="/proxy/api/update-status"
+             hx-trigger="load delay:500ms"
+             hx-swap="innerHTML"></div>
+
         <main class="flex-1 overflow-y-auto p-6">
             {% block content %}{% endblock %}
         </main>
