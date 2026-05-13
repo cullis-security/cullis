@@ -144,10 +144,34 @@ _rewrite_env_pin() {
     echo "${var}=${value}" >> "$envfile"
 }
 
+# Copy a bind dir into the backup target. Must run as root through a
+# busybox sidecar because post-init-permissions the dir + sensitive
+# files (mastio-server.key 0600, mcp_proxy.db 0600) are owned by uid
+# 10001 and unreadable by the invoking ``cullis``/operator user. The
+# in-container cp also handles ownership preservation cleanly. Chown
+# the *backup copy* back to the invoking user so the operator can read
+# / restore it without sudo.
+_copy_bind_dir_for_backup() {
+    local src_dir="$1" dst_dir="$2"
+    [[ -d "$src_dir" ]] || return 0
+    compgen -G "$src_dir/*" >/dev/null 2>&1 || return 0
+    mkdir -p "$(dirname "$dst_dir")"
+    docker run --rm \
+        -v "$src_dir:/src:ro" \
+        -v "$(dirname "$dst_dir"):/dst-parent" \
+        --user 0:0 \
+        busybox:stable sh -c "
+            cp -a /src /dst-parent/$(basename "$dst_dir")
+            chown -R $(id -u):$(id -g) /dst-parent/$(basename "$dst_dir")
+        " >/dev/null
+}
+
 # Tar-aware backup. Snapshots proxy.env + data dir + nginx-certs dir into
 # ./backups/<label>-<ts>/ so an operator who hits a regression mid-upgrade
 # has an obvious restore target. Cheap (rsync-style copy, not tar) so the
-# operator can ``cp -a`` it back without untar tooling.
+# operator can ``cp -a`` it back without untar tooling. The bind-dir
+# copies route through a root busybox so 0600 files (mastio-server.key,
+# mcp_proxy.db) survive the read.
 _backup_user_state() {
     local label="$1" ts backup_dir data_dir nginx_certs_dir
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -158,12 +182,8 @@ _backup_user_state() {
     if [[ -f "$SCRIPT_DIR/proxy.env" ]]; then
         cp -a "$SCRIPT_DIR/proxy.env" "$backup_dir/proxy.env"
     fi
-    if [[ -d "$data_dir" ]] && compgen -G "$data_dir/*" >/dev/null; then
-        cp -a "$data_dir" "$backup_dir/data"
-    fi
-    if [[ -d "$nginx_certs_dir" ]] && compgen -G "$nginx_certs_dir/*" >/dev/null; then
-        cp -a "$nginx_certs_dir" "$backup_dir/nginx-certs"
-    fi
+    _copy_bind_dir_for_backup "$data_dir"         "$backup_dir/data"
+    _copy_bind_dir_for_backup "$nginx_certs_dir"  "$backup_dir/nginx-certs"
     ok "Backup written to ${backup_dir#$SCRIPT_DIR/}"
     BACKUP_DIR="$backup_dir"
 }
