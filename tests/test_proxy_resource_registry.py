@@ -107,6 +107,47 @@ async def test_load_resources_empty_db(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_load_resources_emits_visibility_record(tmp_path, capsys):
+    """Loader's summary line must reach stderr.
+
+    Regression for the silently-dropped lifespan log discovered while
+    debugging the insurance demo. The loader was running, populating the
+    registry, but the ``_log.info(...)`` summary never appeared in
+    ``docker compose logs``. The fix routes the summary through the
+    JSON-on-stderr lifespan log helper instead. This test asserts the
+    summary lands on stderr in the documented shape.
+    """
+    import json as _json
+    url = f"sqlite+aiosqlite:///{tmp_path / 'vis.db'}"
+    await init_db(url)
+    try:
+        await _seed_resource(
+            resource_id="res-vis", name="visibility-svc",
+            endpoint_url="http://visibility-svc:9100",
+            allowed_domains='["visibility-svc:9100"]',
+        )
+        registry = ToolRegistry()
+        loaded = await load_resources_into_registry(registry)
+    finally:
+        await dispose_db()
+    assert loaded == 1
+
+    captured = capsys.readouterr()
+    summary_lines = [
+        ln for ln in captured.err.splitlines()
+        if ln.startswith("{") and "MCP resource loader" in ln
+    ]
+    assert summary_lines, (
+        f"loader summary not on stderr; got: {captured.err!r}"
+    )
+    record = _json.loads(summary_lines[-1])
+    assert record["level"] == "INFO"
+    assert record["logger"] == "mcp_proxy.tools.resource_loader"
+    assert "1 loaded" in record["message"]
+    assert "0 skipped" in record["message"]
+
+
+@pytest.mark.asyncio
 async def test_load_resources_populates_registry(tmp_path):
     """Two enabled rows → two registry entries with resource_id set."""
     url = f"sqlite+aiosqlite:///{tmp_path / 'two.db'}"

@@ -410,14 +410,25 @@ async def lifespan(app: FastAPI):
     # proxy still serves builtin tools if the DB read blows up.
     from mcp_proxy.tools.registry import tool_registry
     from mcp_proxy.tools.resource_loader import load_resources_into_registry
+    from mcp_proxy._lifespan_log import emit_lifespan_log
     try:
         loaded = await load_resources_into_registry(tool_registry)
-        _log.info("MCP resource registry populated (count=%d)", loaded)
+        # PR #687 follow-up: the standard logger silently drops this
+        # lifespan record (and the per-resource ones in the loader).
+        # See ``mcp_proxy/_lifespan_log.py`` for the audit trail.
+        emit_lifespan_log(
+            level="INFO",
+            logger="mcp_proxy",
+            message=f"MCP resource registry populated (count={loaded})",
+        )
     except Exception as exc:
-        _log.warning(
-            "Failed to load MCP resources from DB — continuing with "
-            "builtin tools only: %s",
-            exc,
+        emit_lifespan_log(
+            level="WARNING",
+            logger="mcp_proxy",
+            message=(
+                "Failed to load MCP resources from DB — continuing with "
+                f"builtin tools only: {exc!r}"
+            ),
         )
 
     # Phase 3b — local WS manager. Phase 3c will plug this into message

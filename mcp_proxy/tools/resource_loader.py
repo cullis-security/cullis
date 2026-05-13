@@ -197,9 +197,17 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
         registry.register_definition(tool_def)
         loaded += 1
 
-    _log.info(
-        "MCP resource loader: %d loaded, %d skipped (conflict with builtin)",
-        loaded,
-        skipped_conflict,
+    # PR #687 follow-up: this record reliably went missing in production
+    # despite emitting through the same logger hierarchy that publishes
+    # neighbouring lifespan logs. Bypass via the JSON-on-stderr helper
+    # used by the global rate limit middleware for the same reason.
+    from mcp_proxy._lifespan_log import emit_lifespan_log
+    emit_lifespan_log(
+        level="INFO",
+        logger="mcp_proxy.tools.resource_loader",
+        message=(
+            f"MCP resource loader: {loaded} loaded, "
+            f"{skipped_conflict} skipped (conflict with builtin)"
+        ),
     )
     return loaded
