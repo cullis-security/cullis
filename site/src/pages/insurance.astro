@@ -1,0 +1,922 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Insurance — AI agents that pass an AI Act audit | Cullis"
+  description="A claim handling scenario walked end-to-end: identity for every agent, tamper-evident audit chain, and a regulator who verifies decisions 18 months later without trusting Cullis or your IT team."
+>
+
+  <!-- 01 HEAD -->
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-USE-001</div>
+          <div class="folio">§ <em>Insurance</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">01</span>
+            Use case · insurance
+          </div>
+          <h1 class="reveal" data-delay="2">
+            AI agents that <em>pass an<br />AI Act audit.</em>
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Insurance is one of the most exposed verticals under the
+            EU AI Act. Claim handling, fraud detection, risk-based
+            pricing, and reassurer signoff all land squarely in Annex
+            III high-risk territory. This page walks a single claim
+            from intake to regulator audit, showing exactly which
+            evidence Cullis Mastio captures at each step.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 02 WHY INSURANCE -->
+  <section class="vertical-section">
+    <div class="container">
+      <div class="vertical-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">02</span>
+          Why insurance is first
+        </div>
+        <h2 class="reveal" data-delay="1">
+          Three compliance regimes meet on<br />the same claim file.
+        </h2>
+        <p class="reveal" data-delay="2">
+          The forcing function is regulatory, not commercial. Insurers
+          deploying AI agents now face an overlapping set of obligations
+          that all want the same evidence: who decided what, when,
+          based on which model run, with which input.
+        </p>
+      </div>
+
+      <div class="regime-grid reveal" data-delay="3">
+        <article class="regime-card">
+          <div class="regime-tag">EU AI Act</div>
+          <h3>Annex III, point 5</h3>
+          <p>
+            "AI systems intended to be used by private entities to
+            evaluate the creditworthiness of natural persons or
+            establish their credit score" plus "AI systems intended to
+            be used for risk assessment and pricing in relation to
+            natural persons in the case of life and health insurance"
+            are high-risk. Claim handling that drives payout decisions
+            falls under the same risk class via Art. 6 read jointly
+            with Annex III.
+          </p>
+          <p class="regime-articles">
+            Articles 9 (risk management), 12 (record-keeping),
+            15 (accuracy, robustness, cybersecurity), 72 (post-market
+            monitoring).
+          </p>
+        </article>
+
+        <article class="regime-card">
+          <div class="regime-tag">IDD</div>
+          <h3>Insurance Distribution Directive Art. 17</h3>
+          <p>
+            Distributors must act "honestly, fairly and professionally
+            in accordance with the best interests of their customers."
+            When an AI agent assesses claims or prices a contract, the
+            decision and the data behind it must be reconstructable
+            for the customer's complaint procedure and for the
+            national authority's supervisory review.
+          </p>
+          <p class="regime-articles">
+            Articles 17 (general principles), 20 (information for
+            customers), 30 (suitability assessment).
+          </p>
+        </article>
+
+        <article class="regime-card">
+          <div class="regime-tag">DORA</div>
+          <h3>Digital Operational Resilience Act</h3>
+          <p>
+            Insurers are explicitly in scope under Art. 2(1)(c).
+            Third-party ICT providers, including the software stack
+            behind AI agents, must satisfy Art. 28 risk management
+            requirements. Self-hosted does not exempt the vendor from
+            third-party classification, but it reduces the controls
+            the insurer must run on the provider's environment.
+          </p>
+          <p class="regime-articles">
+            Articles 5 (governance), 6 (ICT risk management
+            framework), 28 (third-party ICT risk).
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 03 WALK-THROUGH -->
+  <section class="walkthrough-section">
+    <div class="container">
+      <div class="walkthrough-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">03</span>
+          The claim journey
+        </div>
+        <h2 class="reveal" data-delay="1">
+          One claim, six agents,<br /><em>one audit chain.</em>
+        </h2>
+        <p class="reveal" data-delay="2">
+          The scenario below is the same one that runs in
+          <code>reference/insurance-demo/</code> in the public
+          repository. You can clone it and replay it locally.
+        </p>
+      </div>
+
+      <ol class="steps">
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">01</div>
+          <div class="step-body">
+            <h3>Customer files a claim.</h3>
+            <p>
+              The customer-facing portal receives the claim. A
+              <code>claim-intake</code> agent process starts. Cullis
+              Mastio mints a fresh x509 certificate for the process,
+              signed by the org CA, with an embedded SPIFFE identity
+              <code>spiffe://yourcompany.eu/claim-intake</code>. The
+              cert lifetime is 15 minutes; rotation is automatic.
+            </p>
+            <p class="step-evidence">
+              <strong>Audit chain entries:</strong> agent enrollment,
+              cert mint, SPIFFE ID assignment, cert thumbprint.
+            </p>
+          </div>
+        </li>
+
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">02</div>
+          <div class="step-body">
+            <h3>The agent reads the claim and calls an LLM.</h3>
+            <p>
+              The claim-intake agent loads the policy file, the
+              customer's history, and the new claim narrative. It
+              calls the LLM through Mastio's gateway. Mastio writes a
+              hash of the prompt, the model identifier
+              (<code>claude-sonnet-4-6</code>, <code>gpt-5</code>, or
+              whichever you allow), the response token count, the
+              latency, and the cost.
+            </p>
+            <p class="step-evidence">
+              <strong>Audit chain entries:</strong> LLM call event,
+              prompt SHA-256, model name, token count, cost, latency,
+              policy decision (allowed / denied / rate-limited).
+            </p>
+          </div>
+        </li>
+
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">03</div>
+          <div class="step-body">
+            <h3>A fraud-detection agent reviews.</h3>
+            <p>
+              The claim is enqueued for a second pass by a
+              <code>fraud-detection</code> agent. It runs its own
+              authentication, mints its own cert, gets its own audit
+              trail. Mastio links the two events through a shared
+              <code>claim_id</code> dimension: the audit chain shows
+              <em>fraud-review of claim 12345 was performed by
+              fraud-detection at timestamp X</em> with a hash that
+              binds it to the intake event.
+            </p>
+            <p class="step-evidence">
+              <strong>Audit chain entries:</strong> linked event
+              <code>claim.fraud_review</code>, parent event ID,
+              outcome (cleared / flagged), reasoning hash.
+            </p>
+          </div>
+        </li>
+
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">04</div>
+          <div class="step-body">
+            <h3>A senior human adjuster approves with override.</h3>
+            <p>
+              A human, not an agent, opens the case in the claims
+              dashboard. The dashboard authenticates them via Frontdesk
+              SSO (Keycloak, Okta, or Azure AD). When they click
+              approve, the dashboard captures the human's principal
+              ID, the timestamp, the override reason they typed, and
+              writes a signed event. The signature uses the human's
+              own dashboard session key, not the agent's cert.
+            </p>
+            <p class="step-evidence">
+              <strong>Audit chain entries:</strong> human override
+              event, principal ID, override reason, dashboard session
+              hash, downstream action (payout / referral / denial).
+            </p>
+          </div>
+        </li>
+
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">05</div>
+          <div class="step-body">
+            <h3>Reassurer agent at the partner carrier picks up.</h3>
+            <p>
+              For claims above the retention threshold, a reassurer
+              agent at the reassurance partner needs to ratify. This
+              is the cross-organization step. Cullis Court federates
+              the event: the reassurance partner's Mastio receives a
+              sealed envelope that Court routes but cannot open. The
+              reassurer agent reads the case, signs its decision, and
+              the envelope returns through the same path.
+            </p>
+            <p class="step-evidence">
+              <strong>Audit chain entries:</strong> cross-org event
+              <code>reassurer.ratify</code>, partner org ID, sealed
+              envelope hash, Court routing receipt, dual-write
+              confirmation on both Mastios.
+            </p>
+          </div>
+        </li>
+
+        <li class="step reveal" data-delay="3">
+          <div class="step-num">06</div>
+          <div class="step-body">
+            <h3>Eighteen months later, a regulator asks.</h3>
+            <p>
+              An AI Act conformity assessor (or your national
+              insurance authority) requests evidence for claim
+              <code>12345</code>. Your compliance team exports the
+              audit chain segment for that claim ID. The export is a
+              signed bundle that the regulator can verify externally,
+              without trusting Cullis or your IT team. The
+              verification proves the chain is unbroken from intake
+              to payout, every signature ties back to a known
+              principal, and no event was tampered with.
+            </p>
+            <p class="step-evidence">
+              <strong>Auditor verification:</strong>
+              <code>cullis-cli audit verify --bundle claim-12345.tar
+              --pubkey regulator.pem</code> returns OK or names the
+              broken link.
+            </p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 04 AUDIT EVIDENCE TABLE -->
+  <section class="evidence-section">
+    <div class="container">
+      <div class="evidence-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">04</span>
+          What gets recorded
+        </div>
+        <h2 class="reveal" data-delay="1">
+          Every step, hashed and chained.
+        </h2>
+        <p class="reveal" data-delay="2">
+          Each event written to the audit log is hashed and chained
+          to the previous one. The chain head is anchored periodically
+          via RFC 3161 timestamping. An auditor exporting the chain
+          for a specific claim receives a self-contained bundle that
+          verifies without needing to reach back to Cullis or your
+          systems.
+        </p>
+      </div>
+
+      <div class="evidence-table-wrap reveal" data-delay="3">
+        <table class="evidence-table">
+          <thead>
+            <tr>
+              <th>Step</th>
+              <th>Event type</th>
+              <th>Captured fields</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>01 Intake</strong></td>
+              <td><code>agent.enroll</code><br /><code>cert.mint</code></td>
+              <td>agent_id, SPIFFE ID, cert thumbprint, expires_at, signing CA fingerprint</td>
+            </tr>
+            <tr>
+              <td><strong>02 LLM call</strong></td>
+              <td><code>llm.call</code></td>
+              <td>prompt SHA-256, model name, completion tokens, cost, latency_ms, policy decision, decision reason</td>
+            </tr>
+            <tr>
+              <td><strong>03 Fraud review</strong></td>
+              <td><code>claim.fraud_review</code></td>
+              <td>parent_event_id, fraud_agent_id, outcome enum, reasoning SHA-256</td>
+            </tr>
+            <tr>
+              <td><strong>04 Human override</strong></td>
+              <td><code>human.approve</code></td>
+              <td>principal_id, dashboard_session_id, override_reason, downstream_action, signature</td>
+            </tr>
+            <tr>
+              <td><strong>05 Reassurer ratify</strong></td>
+              <td><code>reassurer.ratify</code></td>
+              <td>partner_org_id, sealed_envelope_hash, court_routing_id, dual_write_confirmation_local, dual_write_confirmation_remote</td>
+            </tr>
+            <tr>
+              <td><strong>06 Audit export</strong></td>
+              <td><code>audit.export</code></td>
+              <td>requester_id, claim_id_filter, time_window, bundle_sha256, anchor_tsa_token</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 05 BOUNDARIES -->
+  <section class="boundaries-section">
+    <div class="container">
+      <div class="boundaries-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">05</span>
+          Where Cullis ends
+        </div>
+        <h2 class="reveal" data-delay="1">
+          The substrate, not the brain.
+        </h2>
+        <p class="reveal" data-delay="2">
+          Compliance with the AI Act is not a single-vendor problem.
+          Cullis is honest about its scope: identity, policy
+          enforcement before the call, and tamper-evident audit. The
+          rest stays where it should: with your data scientists, your
+          MLOps team, and your fairness reviewers.
+        </p>
+      </div>
+
+      <ul class="boundaries-list reveal" data-delay="3">
+        <li>
+          <span class="boundary-not">Does not</span>
+          analyze model bias or fairness across demographic groups.
+          Use Fairlearn, AIF360, Aequitas, or your in-house tooling.
+          Cullis provides the per-decision provenance those tools need
+          to operate on a defensible data set.
+        </li>
+        <li>
+          <span class="boundary-not">Does not</span>
+          test model accuracy or calibration. Use your model
+          evaluation pipeline. Cullis records which model ran when, so
+          your evaluation can correlate accuracy drift with audit
+          events.
+        </li>
+        <li>
+          <span class="boundary-not">Does not</span>
+          make the policy. The PDP enforces decisions you write
+          (allow/deny rules, scope-based access, rate limits). Cullis
+          runs them; your compliance team designs them.
+        </li>
+        <li>
+          <span class="boundary-not">Does not</span>
+          replace the human-in-the-loop requirement. Article 14 of the
+          AI Act mandates human oversight on high-risk systems. Cullis
+          makes the human override evidence trustworthy; it does not
+          remove the human.
+        </li>
+        <li>
+          <span class="boundary-not">Does not</span>
+          file regulatory paperwork on your behalf. Conformity
+          assessments, post-market monitoring reports, and incident
+          notifications under Article 73 remain your operational
+          responsibility. Cullis ships the substrate; you write the
+          report.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 06 GET STARTED -->
+  <section class="getstarted-section">
+    <div class="container">
+      <div class="getstarted-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">06</span>
+          Get started
+        </div>
+        <h2 class="reveal" data-delay="1">
+          A 90-day pilot on one BU.
+        </h2>
+        <p class="reveal" data-delay="2">
+          We are looking for two to three insurance design partners in
+          EU for the second half of 2026. The scope is conservative
+          and reversible: one AI lab business unit, five to ten agents
+          in non-production-critical workloads, no SLA. In exchange we
+          ask for a 30-minute fortnightly review call and the
+          willingness to give a verbal reference if the pilot works.
+          No logo, no public quote required.
+        </p>
+      </div>
+
+      <div class="pilot-grid reveal" data-delay="3">
+        <article class="pilot-card">
+          <div class="pilot-tag">Scope</div>
+          <h3>One BU, 5-10 agents</h3>
+          <p>
+            Pick one insurance line (motor, life, health, P&amp;C) or
+            one process (claim intake, fraud, pricing). Five to ten
+            agent identities are enough to stress the audit chain
+            without putting production at risk.
+          </p>
+        </article>
+
+        <article class="pilot-card">
+          <div class="pilot-tag">Duration</div>
+          <h3>90 days</h3>
+          <p>
+            Long enough to see a real claim lifecycle. Short enough to
+            decide cleanly. Termination clause: 30 days notice, source
+            code escrow included.
+          </p>
+        </article>
+
+        <article class="pilot-card">
+          <div class="pilot-tag">Cost</div>
+          <h3>EUR 15-25k all-in</h3>
+          <p>
+            Covers pilot license, onboarding, weekly review cadence,
+            and a Phase-1 external pentest run in parallel by an
+            independent assessor (mediaservice.net or NCC Group). The
+            Letter of Attestation is yours at pilot end.
+          </p>
+        </article>
+
+        <article class="pilot-card">
+          <div class="pilot-tag">Output</div>
+          <h3>Decision-ready evidence</h3>
+          <p>
+            A signed audit bundle for ten real claim journeys, a
+            compliance mapping against your in-house AI Act and IDD
+            controls, and a pentest Letter of Attestation. Enough to
+            decide whether to go to production.
+          </p>
+        </article>
+      </div>
+
+      <div class="getstarted-cta reveal" data-delay="4">
+        <a href="mailto:hello@cullis.io?subject=Insurance%20pilot%20conversation"
+           class="btn btn-primary">Schedule a pilot conversation</a>
+        <a href="https://github.com/cullis-security/cullis"
+           target="_blank" rel="noopener" class="btn btn-ghost">See the code</a>
+        <a href="/" class="btn btn-ghost">Back to overview</a>
+      </div>
+    </div>
+  </section>
+
+</Layout>
+
+<style>
+  /* ====================================================
+     PAGE HEAD (matches architecture.astro)
+  ==================================================== */
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+    letter-spacing: -0.025em;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 58ch;
+    color: var(--text-secondary);
+  }
+
+  /* ====================================================
+     VERTICAL SECTION (regimes)
+  ==================================================== */
+  .vertical-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .vertical-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .vertical-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .vertical-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 60ch;
+    line-height: 1.7;
+  }
+
+  .regime-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+
+  .regime-card {
+    padding: 1.8rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 0.8rem;
+  }
+
+  .regime-tag {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+  }
+
+  .regime-card h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.2rem, 2vw, 1.5rem);
+    color: var(--text-primary);
+    margin: 0 0 0.4rem 0;
+    line-height: 1.3;
+    font-weight: 400;
+  }
+
+  .regime-card p {
+    font-size: 0.92rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .regime-articles {
+    font-family: var(--font-mono) !important;
+    font-size: 0.78rem !important;
+    color: var(--text-tertiary) !important;
+    line-height: 1.55 !important;
+    margin-top: auto !important;
+    padding-top: 0.6rem;
+    border-top: 1px dashed var(--border-subtle);
+  }
+
+  /* ====================================================
+     WALK-THROUGH (numbered narrative)
+  ==================================================== */
+  .walkthrough-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .walkthrough-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .walkthrough-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .walkthrough-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
+  .walkthrough-head code,
+  .step-body code,
+  .step-evidence code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    color: var(--accent-cyan);
+    background: rgba(0, 229, 199, 0.06);
+    padding: 0.1em 0.35em;
+    border-radius: 2px;
+  }
+
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    counter-reset: step;
+  }
+
+  .step {
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    gap: clamp(1.5rem, 3vw, 2.5rem);
+    padding: 2.2rem 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .step:first-child { border-top: none; padding-top: 0; }
+
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: clamp(2rem, 4vw, 3rem);
+    color: var(--accent-cyan);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-weight: 300;
+  }
+
+  .step-body { min-width: 0; }
+
+  .step-body h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.3rem, 2.4vw, 1.85rem);
+    color: var(--text-primary);
+    margin: 0 0 0.8rem 0;
+    line-height: 1.25;
+    font-weight: 400;
+  }
+
+  .step-body p {
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    margin: 0 0 1rem 0;
+    max-width: 64ch;
+  }
+
+  .step-evidence {
+    font-size: 0.88rem !important;
+    color: var(--text-tertiary) !important;
+    padding: 0.9rem 1.1rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 2px solid var(--accent-cyan);
+    margin: 0 !important;
+  }
+
+  .step-evidence strong {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: inline-block;
+    margin-right: 0.5rem;
+  }
+
+  /* ====================================================
+     EVIDENCE TABLE
+  ==================================================== */
+  .evidence-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .evidence-head {
+    max-width: 760px;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+
+  .evidence-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .evidence-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 60ch;
+    line-height: 1.7;
+  }
+
+  .evidence-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-card);
+  }
+
+  .evidence-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.93rem;
+    color: var(--text-secondary);
+  }
+
+  .evidence-table thead {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .evidence-table th {
+    text-align: left;
+    padding: 1rem 1.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    font-weight: 400;
+  }
+
+  .evidence-table td {
+    padding: 1.1rem 1.2rem;
+    border-bottom: 1px solid var(--border-subtle);
+    line-height: 1.55;
+    vertical-align: top;
+  }
+
+  .evidence-table tbody tr:last-child td { border-bottom: none; }
+
+  .evidence-table td:first-child {
+    white-space: nowrap;
+    color: var(--text-primary);
+  }
+
+  .evidence-table code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--accent-cyan);
+  }
+
+  /* ====================================================
+     BOUNDARIES
+  ==================================================== */
+  .boundaries-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .boundaries-head {
+    max-width: 760px;
+    margin-bottom: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .boundaries-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .boundaries-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 62ch;
+    line-height: 1.7;
+  }
+
+  .boundaries-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-width: 780px;
+  }
+
+  .boundaries-list li {
+    padding: 1.2rem 0;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+  }
+
+  .boundaries-list li:first-child { border-top: none; padding-top: 0; }
+
+  .boundary-not {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-amber);
+    padding: 0.15em 0.55em;
+    margin-right: 0.6em;
+    border: 1px solid rgba(240, 165, 0, 0.3);
+    background: rgba(240, 165, 0, 0.05);
+    border-radius: 2px;
+    vertical-align: 0.15em;
+  }
+
+  /* ====================================================
+     GET STARTED
+  ==================================================== */
+  .getstarted-section { padding: clamp(4rem, 10vw, 7rem) 0 clamp(6rem, 10vw, 9rem) 0; }
+
+  .getstarted-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .getstarted-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .getstarted-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 64ch;
+    line-height: 1.7;
+  }
+
+  .pilot-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.2rem;
+    margin-bottom: clamp(3rem, 6vw, 4.5rem);
+  }
+
+  .pilot-card {
+    padding: 1.6rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .pilot-tag {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+  }
+
+  .pilot-card h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.15rem, 1.8vw, 1.4rem);
+    color: var(--text-primary);
+    margin: 0 0 0.4rem 0;
+    line-height: 1.3;
+    font-weight: 400;
+  }
+
+  .pilot-card p {
+    font-size: 0.92rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .getstarted-cta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  /* ====================================================
+     RESPONSIVE
+  ==================================================== */
+  @media (max-width: 980px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-right: 0;
+      padding-bottom: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .regime-grid { grid-template-columns: 1fr; }
+    .pilot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .step {
+      grid-template-columns: 1fr;
+      gap: 0.8rem;
+    }
+
+    .step-num { font-size: 1.8rem; }
+  }
+
+  @media (max-width: 640px) {
+    .pilot-grid { grid-template-columns: 1fr; }
+
+    .evidence-table th,
+    .evidence-table td {
+      padding: 0.8rem 0.9rem;
+      font-size: 0.85rem;
+    }
+  }
+</style>
