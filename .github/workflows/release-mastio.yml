@@ -204,8 +204,52 @@ jobs:
           set -euo pipefail
           STAGING="dist/cullis-mastio-bundle-${VERSION}"
           mkdir -p "${STAGING}"
-          cp -r packaging/mastio-bundle/. "${STAGING}/"
-          ls -lah "${STAGING}/"
+
+          # ADR-030 — explicit allowlist mirrored from release-frontdesk-
+          # bundle.yml (which the v0.2.7 broken-tarball incident proved
+          # the value of). ``cp -r .`` was sweeping in any operator
+          # artefact that happened to appear during a dogfood run
+          # (proxy.env with real secrets, ./data, ./nginx-certs, backups/)
+          # — and the customer-facing tarball is the wrong place for any
+          # of those. Every file the operator needs at runtime is named
+          # below; everything else stays in the source tree.
+          cp packaging/mastio-bundle/docker-compose.yml               "${STAGING}/"
+          cp packaging/mastio-bundle/docker-compose.prod.yml          "${STAGING}/"
+          cp packaging/mastio-bundle/docker-compose.shared-broker.yml "${STAGING}/"
+          cp packaging/mastio-bundle/deploy.sh                        "${STAGING}/"
+          cp packaging/mastio-bundle/generate-proxy-env.sh            "${STAGING}/"
+          cp packaging/mastio-bundle/proxy.env.example                "${STAGING}/"
+          cp packaging/mastio-bundle/README.md                        "${STAGING}/"
+          cp -r packaging/mastio-bundle/nginx                         "${STAGING}/"
+
+          chmod +x "${STAGING}/deploy.sh" \
+                   "${STAGING}/generate-proxy-env.sh"
+
+          # Post-stage sanity check: every file the bundle's
+          # docker-compose.yml or deploy.sh references at runtime must
+          # exist in the staged tarball. Same defensive pattern as the
+          # Frontdesk bundle (PR #662) — catches "I forgot to add new
+          # file X to the cp list" regressions HERE at release time
+          # rather than on the customer's host post-download.
+          MISSING=0
+          for f in \
+              "docker-compose.yml" \
+              "docker-compose.prod.yml" \
+              "docker-compose.shared-broker.yml" \
+              "deploy.sh" \
+              "generate-proxy-env.sh" \
+              "proxy.env.example" \
+              "README.md" \
+              "nginx/mastio/00-maps.conf" \
+              "nginx/mastio/mastio.conf"; do
+              if [ ! -f "${STAGING}/${f}" ]; then
+                  echo "::error::staged bundle missing required file: ${f}"
+                  MISSING=1
+              fi
+          done
+          if [ "$MISSING" = "1" ]; then exit 1; fi
+
+          ls -lahR "${STAGING}/"
           # Stable-name top-level dir inside the archive: `cullis-mastio-bundle/`
           # (no version suffix) so the README quickstart `cd cullis-mastio-bundle/`
           # works against any release. The archive filename carries the version.

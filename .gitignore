@@ -44,6 +44,11 @@ proxy-*.env
 .keys/
 postgresql+asyncpg:/
 
+# ADR-030 — Mastio bundle bind-mount targets (operator state, not source)
+packaging/mastio-bundle/data/
+packaging/mastio-bundle/nginx-certs/
+packaging/mastio-bundle/backups/
+
 # Nginx proxy (TLS private keys, per-VM configs)
 nginx-proxy/
 

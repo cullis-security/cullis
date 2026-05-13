@@ -165,6 +165,12 @@ sed -i "s|^MCP_PROXY_DASHBOARD_SIGNING_KEY=.*|MCP_PROXY_DASHBOARD_SIGNING_KEY=${
 sed -i "s|^MCP_PROXY_BROKER_URL=.*|MCP_PROXY_BROKER_URL=${BROKER}|"                  "$OUT"
 sed -i "s|^MCP_PROXY_BROKER_JWKS_URL=.*|MCP_PROXY_BROKER_JWKS_URL=${JWKS}|"          "$OUT"
 sed -i "s|^MCP_PROXY_PROXY_PUBLIC_URL=.*|MCP_PROXY_PROXY_PUBLIC_URL=${PUBLIC}|"      "$OUT"
+
+# ADR-030 — the bundle bind-mount paths default to ./data and ./nginx-certs.
+# proxy.env.example ships them already, so no sed required here. The block
+# is intentionally idempotent: re-running this script never clobbers an
+# operator's custom path because the example carries the canonical value
+# and any override survives via --force-only overwrite.
 # proxy.env.example does not ship the seed line. Append only when the
 # operator asked for the auto-seed path; otherwise omit so the Mastio
 # main.py boot path correctly leaves the hash NULL and routes

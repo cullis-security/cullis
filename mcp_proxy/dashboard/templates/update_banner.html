@@ -15,14 +15,26 @@
     </summary>
     <div class="px-6 py-4 bg-amber-950/30 text-amber-200/80 text-xs space-y-3 border-t border-amber-700/20">
         <p class="text-amber-300/90">
-            On the host where this Mastio runs, execute the four commands below.
-            Volumes (DB, Org CA, certs) are preserved.
-            The Mastio container restarts with the new image; the dashboard URL stays the same.
+            On the host where this Mastio runs, execute the one-liner below.
+            ``--upgrade-bundle`` downloads the new tarball, backs up your state,
+            updates the bundle scripts + image, and restarts the stack. Data
+            (DB, Org CA, certs) is preserved. Dashboard URL stays the same.
         </p>
-        <pre class="bg-surface-950 border border-gray-800 p-3 rounded overflow-x-auto"><code style="font-family: 'JetBrains Mono', monospace;">cd ~/cullis-mastio-bundle
+        <pre class="bg-surface-950 border border-gray-800 p-3 rounded overflow-x-auto"><code style="font-family: 'JetBrains Mono', monospace;">cd ~/cullis-mastio-bundle &amp;&amp; ./deploy.sh --upgrade-bundle {{ latest_stripped }} --from-banner</code></pre>
+        <details class="text-[10px] text-amber-400/60">
+            <summary class="cursor-pointer hover:text-amber-300/80">Advanced — step-by-step instead of the one-liner</summary>
+            <div class="mt-2 space-y-2">
+                <p>
+                    The four commands the one-liner above runs for you. Use this
+                    if you want to inspect each step or if your bundle's
+                    ``deploy.sh`` predates ADR-030 (Mastio &lt; v0.4.0):
+                </p>
+                <pre class="bg-surface-950 border border-gray-800 p-3 rounded overflow-x-auto"><code style="font-family: 'JetBrains Mono', monospace;">cd ~/cullis-mastio-bundle
 wget https://github.com/cullis-security/cullis/releases/download/{{ latest }}/cullis-mastio-bundle-{{ latest_stripped }}.tar.gz
 tar xzf cullis-mastio-bundle-{{ latest_stripped }}.tar.gz --strip-components=1 --overwrite
 ./deploy.sh --pull</code></pre>
+            </div>
+        </details>
         {% if latest_url %}
         <p class="text-[10px] text-amber-400/70">
             Release notes: <a href="{{ latest_url }}" target="_blank" rel="noopener noreferrer" class="underline hover:text-amber-200">{{ latest_url }}</a>

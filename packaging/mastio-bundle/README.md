@@ -103,10 +103,17 @@ generate-proxy-env.sh               # config generator
 deploy.sh                           # entrypoint
 ```
 
-The Mastio writes its Org CA + nginx server cert into a docker volume
-on first boot; the `mastio-nginx` sidecar mounts the same volume
-read-only and serves TLS on host port 9443. No manual cert
-provisioning.
+The Mastio writes its Org CA + nginx server cert into `./nginx-certs/`
+(host bind mount, ADR-030) on first boot; the `mastio-nginx` sidecar
+mounts the same path read-only and serves TLS on host port 9443. The
+SQLite DB lives at `./data/mcp_proxy.db`. No manual cert provisioning,
+no `docker volume rm` indirection for backups — host filesystem is the
+source of truth.
+
+Customers upgrading from v0.3.x with legacy named volumes
+(`mcp_proxy_data`, `mastio_nginx_certs`) are auto-migrated to the bind
+layout the first time they run `./deploy.sh --upgrade-bundle <version>`;
+see the **Updating** section below.
 
 ## Kubernetes
 
@@ -131,7 +138,7 @@ full values reference.
 | `permission denied` on `./deploy.sh` | `chmod +x deploy.sh generate-proxy-env.sh` |
 | `docker compose is not installed` | Install Docker Engine 20.10+ with Compose v2 |
 | `network cullis-broker_default not found` (with `--shared-broker`) | Bring the Court compose project up first, or drop `--shared-broker` |
-| Browser warns "self-signed certificate" | Expected. The Org CA is local; accept once or extract `org-ca.crt` from the `mcp_proxy_data` volume and import it. |
+| Browser warns "self-signed certificate" | Expected. The Org CA is local; accept once or import `./nginx-certs/org-ca.crt` (also exported to `./certs/org-ca.pem` by `./deploy.sh` post-up). |
 | Agent gets `401 Invalid DPoP proof: htu mismatch` | The Mastio validates DPoP proofs against `MCP_PROXY_PROXY_PUBLIC_URL` (default `https://localhost:9443` for quickstart). Production deploys MUST override this in `proxy.env` to match the public hostname agents reach the Mastio at — e.g. `MCP_PROXY_PROXY_PUBLIC_URL=https://mastio.myorg.example.com`. |
 | Agent fails with `SSL: CERTIFICATE_VERIFY_FAILED` or `hostname doesn't match` | The nginx sidecar's TLS cert is signed by the auto-generated Org CA and includes only the SAN entries listed in `MCP_PROXY_NGINX_SAN` (default `mastio.local,localhost`). `./deploy.sh` auto-extracts the hostname from your prompt answer and adds it to the SAN; if you set `MCP_PROXY_PROXY_PUBLIC_URL` manually after-the-fact, also append the hostname to `MCP_PROXY_NGINX_SAN` (e.g. `MCP_PROXY_NGINX_SAN=mastio.acme.local,mastio.local,localhost`) and `./deploy.sh --pull` to re-mint the cert. |
 | Agent fails with `getaddrinfo failed` / `Name or service not known` | The hostname you set as the public URL must resolve to the Mastio host's IP from the agent's machine. Three paths: (1) corporate DNS (e.g. Active Directory) — recommended; (2) public DNS A record if the Mastio is internet-reachable; (3) `/etc/hosts` line on each agent machine (`192.168.10.42  mastio.acme.local`) — okay for 2-3 employees, brittle past that. |
@@ -139,11 +146,45 @@ full values reference.
 
 ## Updating
 
+**Recommended — full bundle refresh (ADR-030):**
+
 ```bash
-./deploy.sh --pull           # pull latest, restart
-# or pin:
-CULLIS_MASTIO_VERSION=0.3.1 ./deploy.sh --pull
+./deploy.sh --upgrade-bundle 0.4.0
 ```
 
-Volumes (`mcp_proxy_data`, `mastio_nginx_certs`) survive restarts; Org
-CA and DB persist across image upgrades.
+Downloads the released tarball from GitHub, backs up `proxy.env` + `./data/` + `./nginx-certs/` to `./backups/pre-upgrade-<ts>/`, extracts the new bundle scripts in place (without touching your state), bumps `CULLIS_MASTIO_VERSION`, pulls the matching image, and restarts the stack with `compose up -d --wait`. The dashboard's "update available" banner shows the same command as a one-liner you can paste into the host shell.
+
+**Image-only bump (scripts stay at the bundle's original version):**
+
+```bash
+./deploy.sh --upgrade 0.4.0
+# or:
+./deploy.sh --pull
+```
+
+Use this if you trust the new image but want to keep your current `deploy.sh` / compose / scripts. Note: future env vars introduced by a release will NOT reach `proxy.env` until you do a full bundle refresh.
+
+**Migrate from legacy named volumes (one-shot, v0.3.x → v0.4.x):**
+
+```bash
+./deploy.sh --migrate-volumes
+```
+
+Stops the stack, copies `mcp_proxy_data` → `./data/` and `mastio_nginx_certs` → `./nginx-certs/` via a transient busybox container (so file ownership stays correct), and leaves the named volumes in place so you can confirm the new layout boots cleanly before deleting them with `docker volume rm`. Idempotent: safe to re-run.
+
+`--upgrade-bundle` triggers this automatically when it detects legacy volumes, prompting interactively unless you pass `--from-banner` (the banner one-liner does this for you).
+
+**Advanced — step-by-step fallback:**
+
+If your `deploy.sh` predates v0.4.0 and you cannot use `--upgrade-bundle` yet, you can do the upgrade by hand:
+
+```bash
+cd ~/cullis-mastio-bundle
+wget https://github.com/cullis-security/cullis/releases/download/mastio-v0.4.0/cullis-mastio-bundle-0.4.0.tar.gz
+tar xzf cullis-mastio-bundle-0.4.0.tar.gz --strip-components=1 --overwrite
+./deploy.sh --pull
+```
+
+The new `deploy.sh` will offer to run `--migrate-volumes` on the next invocation if it still finds named volumes.
+
+**Data preservation:** `./data/` (SQLite DB), `./nginx-certs/` (Org CA + server cert), and `proxy.env` are preserved across every upgrade path above. Org CA and admin password persist across image bumps.
