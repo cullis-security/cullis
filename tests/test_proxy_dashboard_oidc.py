@@ -352,6 +352,37 @@ def _fake_request(base_url: str = "http://localhost:9100/"):
     return r
 
 
+@pytest.mark.asyncio
+async def test_settings_renders_change_admin_password_section(proxy_app):
+    """Regression test for the PR #654 follow-up: the ``Change admin
+    password`` section in settings.html is gated by
+    ``{% if local_password_enabled %}``. Pre-fix the GET handler at
+    ``/proxy/settings`` never passed that variable into the template
+    context, so Jinja treated it as undefined → falsy → the entire
+    section was hidden. Customer dogfood (2026-05-13) hit this when
+    looking for the rotation form. Fix: pass
+    ``local_password_enabled``, ``oidc_configured`` and
+    ``force_local_password_env`` to ``_ctx(...)`` so the conditional
+    branches in the template can render."""
+    _, client = proxy_app
+    # Default state: local password is enabled (no OIDC configured, no
+    # operator-driven disable). The dashboard.session helper returns
+    # True for this case so the section should render.
+    name, value = _admin_cookie()
+    client.cookies.set(name, value)
+    resp = await client.get("/proxy/settings")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Change admin password" in body, (
+        "expected the Change admin password rotation form to render — "
+        "regression of the template-context bug surfaced 2026-05-13"
+    )
+    # The toggle copy from the sibling block (same gate) must also be
+    # present so we catch the case where someone passes the variable
+    # only at the inner block and forgets the outer.
+    assert "Local admin password" in body
+
+
 def test_oidc_redirect_uri_prefers_dedicated_setting(monkeypatch):
     from mcp_proxy import config as _config
     from mcp_proxy.dashboard.router import _oidc_redirect_uri

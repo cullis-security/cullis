@@ -32,13 +32,36 @@ die()  { err "$1"; exit 1; }
 
 MODE="interactive"
 FORCE=0
+# Opt-in to auto-seed the first-boot admin password. Default behavior
+# (off) leaves ``admin_password_hash`` NULL on first boot so the
+# operator picks the password interactively at ``/proxy/register``.
+# Power users who script the install (Ansible / Terraform / CI smoke)
+# pass ``--auto-admin-pwd`` to retain the legacy seed-in-env flow.
+# Memory-wise: the dashboard is never publicly exposed on Cullis's
+# threat model (operator behind VPN / internal segment), so the
+# /register race-window is not a concern; the gain is one fewer
+# random-string-on-stdout to handle.
+AUTO_ADMIN_PWD="${MASTIO_AUTO_ADMIN_PWD:-0}"
 for arg in "$@"; do
     case "$arg" in
-        --defaults) MODE="defaults" ;;
-        --prod)     MODE="prod" ;;
-        --force)    FORCE=1 ;;
+        --defaults)        MODE="defaults" ;;
+        --prod)            MODE="prod" ;;
+        --force)           FORCE=1 ;;
+        --auto-admin-pwd)  AUTO_ADMIN_PWD=1 ;;
         --help|-h)
-            echo "Usage: $0 [--defaults|--prod] [--force]"
+            cat <<'USAGE'
+Usage: ./generate-proxy-env.sh [--defaults|--prod] [--force] [--auto-admin-pwd]
+
+  --defaults         Same-host localhost defaults (no prompts).
+  --prod             Needs BROKER_URL + PROXY_PUBLIC_URL env vars.
+  --force            Overwrite existing proxy.env.
+  --auto-admin-pwd   Auto-generate the first-boot admin password and
+                     write it to MCP_PROXY_INITIAL_ADMIN_PASSWORD.
+                     Default (without this flag) leaves the hash NULL
+                     so the operator chooses the password at
+                     /proxy/register on first sign-in.
+                     Equivalent env: MASTIO_AUTO_ADMIN_PWD=1
+USAGE
             exit 0
             ;;
         *) die "Unknown argument: $arg (use --help)" ;;
@@ -81,15 +104,29 @@ gen_secret() {
 
 ADMIN_SECRET="$(gen_secret)"
 SIGNING_KEY="$(gen_secret)"
-# Bcrypt seed for the very first lifespan: paired with the
-# MCP_PROXY_INITIAL_ADMIN_PASSWORD env that ``mcp_proxy/main.py`` reads
-# right after init_db. No-op on subsequent boots (the persisted hash
-# wins). Without this, a fresh tarball cannot come up self-serve;
-# Frontdesk + CI + customer quickstart all block on a /proxy/register
-# browser hop.
-INITIAL_ADMIN_PASSWORD="$(gen_secret)"
-
-ok "Generated random admin secret + signing key + first-boot password"
+# First-boot admin password.
+#
+# Default (AUTO_ADMIN_PWD=0): leave INITIAL_ADMIN_PASSWORD empty so
+# ``proxy.env`` does not seed the bcrypt hash at boot. The operator
+# hits ``/proxy/login`` on first sign-in, the dashboard redirects to
+# ``/proxy/register``, and the operator picks the password interactively
+# (typed once, never on stdout). Threat model: dashboard is never
+# publicly exposed (operator behind VPN / internal segment), so the
+# first-POST-wins race on /register is bounded by network access
+# control rather than internet exposure.
+#
+# Opt-in (--auto-admin-pwd | MASTIO_AUTO_ADMIN_PWD=1): keep the legacy
+# behavior — generate a random secret, write it into proxy.env, the
+# Mastio lifespan reads + hashes it on first boot. Use this for
+# scripted provisioning (Ansible / Terraform / CI smoke) where a
+# /register browser hop is not feasible.
+if [[ "$AUTO_ADMIN_PWD" -eq 1 ]]; then
+    INITIAL_ADMIN_PASSWORD="$(gen_secret)"
+    ok "Generated random admin secret + signing key + first-boot password (--auto-admin-pwd)"
+else
+    INITIAL_ADMIN_PASSWORD=""
+    ok "Generated random admin secret + signing key (admin password chosen interactively at /proxy/register on first sign-in)"
+fi
 
 case "$MODE" in
     prod)
@@ -128,16 +165,23 @@ sed -i "s|^MCP_PROXY_DASHBOARD_SIGNING_KEY=.*|MCP_PROXY_DASHBOARD_SIGNING_KEY=${
 sed -i "s|^MCP_PROXY_BROKER_URL=.*|MCP_PROXY_BROKER_URL=${BROKER}|"                  "$OUT"
 sed -i "s|^MCP_PROXY_BROKER_JWKS_URL=.*|MCP_PROXY_BROKER_JWKS_URL=${JWKS}|"          "$OUT"
 sed -i "s|^MCP_PROXY_PROXY_PUBLIC_URL=.*|MCP_PROXY_PROXY_PUBLIC_URL=${PUBLIC}|"      "$OUT"
-# proxy.env.example does not ship the seed line (we mint per-deploy);
-# append unconditionally. The Mastio lifespan ignores it once a hash
-# exists, so re-running --force does not surprise-reset the password.
-echo "MCP_PROXY_INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}" >> "$OUT"
+# proxy.env.example does not ship the seed line. Append only when the
+# operator asked for the auto-seed path; otherwise omit so the Mastio
+# main.py boot path correctly leaves the hash NULL and routes
+# /proxy/login → /proxy/register for interactive setup.
+if [[ -n "$INITIAL_ADMIN_PASSWORD" ]]; then
+    echo "MCP_PROXY_INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}" >> "$OUT"
+fi
 
 ok "Wrote ${OUT}"
 echo ""
 echo -e "  ${BOLD}MCP_PROXY_ADMIN_SECRET${RESET}            ${GRAY}${ADMIN_SECRET:0:8}…${RESET}"
-echo -e "  ${BOLD}MCP_PROXY_INITIAL_ADMIN_PASSWORD${RESET}  ${GRAY}${INITIAL_ADMIN_PASSWORD}${RESET}"
-echo -e "                                  ${GRAY}(login at /proxy/login as ``admin`` with this password, then rotate)${RESET}"
+if [[ -n "$INITIAL_ADMIN_PASSWORD" ]]; then
+    echo -e "  ${BOLD}MCP_PROXY_INITIAL_ADMIN_PASSWORD${RESET}  ${GRAY}${INITIAL_ADMIN_PASSWORD}${RESET}"
+    echo -e "                                  ${GRAY}(login at /proxy/login as ``admin`` with this password, then rotate)${RESET}"
+else
+    echo -e "  ${BOLD}MCP_PROXY_INITIAL_ADMIN_PASSWORD${RESET}  ${GRAY}(unset — pick interactively at /proxy/register on first sign-in)${RESET}"
+fi
 echo -e "  ${BOLD}MCP_PROXY_BROKER_URL${RESET}              ${GRAY}${BROKER}${RESET}"
 echo -e "  ${BOLD}MCP_PROXY_PROXY_PUBLIC_URL${RESET}        ${GRAY}${PUBLIC}${RESET}"
 echo -e "  ${BOLD}MCP_PROXY_ENVIRONMENT${RESET}             ${GRAY}${ENVIRONMENT}${RESET}"

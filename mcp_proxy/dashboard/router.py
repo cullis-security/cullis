@@ -495,7 +495,11 @@ async def register_submit(request: Request):
         agent_id="admin",
         action="auth.register",
         status="success",
-        detail="admin password initialized",
+        details={
+            "event": "admin_password_registered",
+            "client_ip": _login_client_ip(request),
+            "user_agent": (request.headers.get("user-agent") or "")[:200],
+        },
     )
 
     # Force a clean sign-in for the very first session.
@@ -4185,7 +4189,9 @@ async def settings_page(request: Request):
     if isinstance(session, RedirectResponse):
         return session
 
-    from mcp_proxy.dashboard.oidc import load_oidc_config
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.dashboard.oidc import is_oidc_configured, load_oidc_config
+    from mcp_proxy.dashboard.session import is_local_password_login_enabled
 
     cfg = await load_oidc_config()
     return templates.TemplateResponse("settings.html", _ctx(
@@ -4194,8 +4200,11 @@ async def settings_page(request: Request):
         issuer_url=cfg["issuer_url"],
         client_id=cfg["client_id"],
         has_client_secret=bool(cfg["client_secret"]),
-        error=None,
-        success=None,
+        local_password_enabled=await is_local_password_login_enabled(),
+        oidc_configured=await is_oidc_configured(),
+        force_local_password_env=get_settings().force_local_password,
+        error=request.query_params.get("error"),
+        success=request.query_params.get("ok"),
     ))
 
 
@@ -4224,6 +4233,9 @@ async def settings_submit(request: Request):
         errors.append("Client ID is required when issuer URL is set.")
 
     if errors:
+        from mcp_proxy.config import get_settings
+        from mcp_proxy.dashboard.oidc import is_oidc_configured
+        from mcp_proxy.dashboard.session import is_local_password_login_enabled
         cfg = await load_oidc_config()
         return templates.TemplateResponse("settings.html", _ctx(
             request, session,
@@ -4231,6 +4243,9 @@ async def settings_submit(request: Request):
             issuer_url=issuer_url or cfg["issuer_url"],
             client_id=client_id or cfg["client_id"],
             has_client_secret=bool(cfg["client_secret"]),
+            local_password_enabled=await is_local_password_login_enabled(),
+            oidc_configured=await is_oidc_configured(),
+            force_local_password_env=get_settings().force_local_password,
             error="; ".join(errors),
             success=None,
         ), status_code=400)
@@ -4248,6 +4263,9 @@ async def settings_submit(request: Request):
         detail=f"issuer={issuer_url or '(cleared)'}, client_id={client_id or '(cleared)'}",
     )
 
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.dashboard.oidc import is_oidc_configured
+    from mcp_proxy.dashboard.session import is_local_password_login_enabled
     cfg = await load_oidc_config()
     return templates.TemplateResponse("settings.html", _ctx(
         request, session,
@@ -4255,6 +4273,9 @@ async def settings_submit(request: Request):
         issuer_url=cfg["issuer_url"],
         client_id=cfg["client_id"],
         has_client_secret=bool(cfg["client_secret"]),
+        local_password_enabled=await is_local_password_login_enabled(),
+        oidc_configured=await is_oidc_configured(),
+        force_local_password_env=get_settings().force_local_password,
         error=None,
         success="OIDC configuration saved.",
     ))
