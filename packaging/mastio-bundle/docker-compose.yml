@@ -22,8 +22,33 @@
 
 services:
 
+  # ADR-030 — chown the host bind targets to the Mastio runtime UID/GID
+  # (10001:10001) at every ``compose up``. Runs as root, exits immediately.
+  # Idempotent: if ownership already matches, the chown is a no-op. Without
+  # this, host directories created as root (e.g. by an earlier ``docker
+  # compose up`` that auto-created an absent bind target) would lock the
+  # mcp-proxy user out of /data and the SQLite open would fail.
+  init-permissions:
+    image: busybox:stable
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - |
+        chown -R 10001:10001 /data /nginx-certs
+        chmod 0750 /data /nginx-certs
+    volumes:
+      - ${MASTIO_DATA_DIR:-./data}:/data
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/nginx-certs
+    restart: "no"
+    networks:
+      - proxy_net
+
   mcp-proxy:
     image: ghcr.io/cullis-security/cullis-mastio:${CULLIS_MASTIO_VERSION:-latest}
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
     # ADR-014 — no host port publish. The Mastio listens on 9100 only
     # on proxy_net; the mastio-nginx sidecar below publishes 9443.
     expose:
@@ -121,14 +146,23 @@ services:
       PROXY_FEDERATION_SYNC:       ${PROXY_FEDERATION_SYNC:-}
       CULLIS_EGRESS_DPOP_MODE:     ${CULLIS_EGRESS_DPOP_MODE:-}
     volumes:
-      - mcp_proxy_data:/data
+      # ADR-030 — bind mount on the host so /data sits next to deploy.sh
+      # (./data/mcp_proxy.db). Replaces the legacy ``mcp_proxy_data``
+      # named volume. Operators on v0.3.x migrate via
+      # ``./deploy.sh --migrate-volumes`` (or auto-triggered by
+      # ``--upgrade-bundle``).
+      - ${MASTIO_DATA_DIR:-./data}:/data
       # Optional corporate CA bundle. Mount a host directory at ./certs
       # if you need to trust an internal CA (env vars above point at
       # files under /certs only when MCP_PROXY_BROKER_CA_BUNDLE is set).
+      # Distinct from ``./nginx-certs`` below: ./certs is *read-only*
+      # corporate trust input; ./nginx-certs is the *read-write* Mastio
+      # output (Org CA + nginx server cert).
       - ${CULLIS_CERTS_DIR:-./certs}:/certs:ro
-      # ADR-014 — shared volume for nginx sidecar TLS material. Mastio
-      # writes; mastio-nginx mounts read-only.
-      - mastio_nginx_certs:/var/lib/mastio/nginx-certs:rw
+      # ADR-014 — Org CA + nginx server cert lives here; mastio-nginx
+      # mounts the same bind path read-only below. Replaces the legacy
+      # ``mastio_nginx_certs`` named volume (ADR-030).
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/var/lib/mastio/nginx-certs:rw
     networks:
       - proxy_net
     # When the Mastio orchestrates user lifecycle on a sibling Frontdesk
@@ -152,7 +186,10 @@ services:
       - "${MCP_PROXY_PORT:-9443}:9443"
     volumes:
       - ./nginx/mastio:/etc/nginx/conf.d:ro
-      - mastio_nginx_certs:/etc/nginx/certs:ro
+      # ADR-030 — same bind dir as mcp-proxy's /var/lib/mastio/nginx-certs,
+      # mounted read-only here so the sidecar serves the cert without
+      # being able to mutate it.
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/etc/nginx/certs:ro
     depends_on:
       mcp-proxy:
         condition: service_healthy
@@ -175,9 +212,3 @@ services:
 networks:
   proxy_net:
     driver: bridge
-
-volumes:
-  mcp_proxy_data:
-    driver: local
-  mastio_nginx_certs:
-    driver: local

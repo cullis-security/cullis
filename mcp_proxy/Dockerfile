@@ -56,9 +56,14 @@ COPY --from=tailwind-build /out/tailwind.css /app/mcp_proxy/dashboard/static/css
 
 # Data directory for SQLite + ADR-014 nginx-cert directory shared with
 # the mastio-nginx sidecar (Mastio writes Org CA + server cert here at
-# first-boot; sidecar mounts read-only).
+# first-boot; sidecar mounts read-only). UID/GID pinned to 10001:10001
+# (ADR-030, aligned with Frontdesk bundle) so bind-mount host
+# directories can be chown'd to a fixed numeric pair at every
+# ``compose up`` via the init-permissions service, without having to
+# resolve the system-allocated UID of an opaque ``useradd --system``.
 RUN mkdir -p /data /var/lib/mastio/nginx-certs && \
-    useradd --no-create-home --system proxyuser && \
+    groupadd --system --gid 10001 proxyuser && \
+    useradd --no-create-home --system --uid 10001 --gid 10001 proxyuser && \
     chown proxyuser:proxyuser /data /var/lib/mastio/nginx-certs
 
 ENV PYTHONPATH=/app
