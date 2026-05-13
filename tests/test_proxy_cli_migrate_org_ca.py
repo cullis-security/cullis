@@ -19,10 +19,9 @@ import json
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
 
 from mcp_proxy.cli import main as cli_main
-from mcp_proxy.db import dispose_db, get_config, get_db, init_db, set_config
+from mcp_proxy.db import dispose_db, get_config, init_db, set_config
 
 
 _VAULT_ADDR = "https://vault.example:8200"
