@@ -1,0 +1,775 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout
+  title="Pricing — Pilot, Production, Enterprise | Cullis"
+  description="Transparent pricing for regulated industries. Pilot at EUR 15-25k all-in (90 days, pentest included). Production from EUR 40k/year. Enterprise from EUR 120k/year with all plugins."
+>
+
+  <!-- 01 HEAD -->
+  <section class="page-head">
+    <div class="container">
+      <div class="head-grid">
+        <aside class="head-marginalia reveal">
+          <div class="scribble">CLLS-PRI-001</div>
+          <div class="folio">§ <em>Pricing</em></div>
+        </aside>
+        <div>
+          <div class="eyebrow reveal" data-delay="1">
+            <span class="eyebrow-number">01</span>
+            Pricing
+          </div>
+          <h1 class="reveal" data-delay="2">
+            What it <em>costs.</em>
+          </h1>
+          <p class="lead reveal" data-delay="3">
+            Three tiers, transparent ranges, no per-seat pricing. A
+            short pilot to figure out if the substrate fits, then a
+            production license sized to your deployment footprint and
+            compliance surface. We are early, the ranges below will
+            tighten as the customer base grows.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 02 THREE TIERS -->
+  <section class="tiers-section">
+    <div class="container">
+      <div class="tiers-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">02</span>
+          The three tiers
+        </div>
+        <h2 class="reveal" data-delay="1">
+          Pilot, Production, Enterprise.
+        </h2>
+        <p class="reveal" data-delay="2">
+          Pilot is for finding out if Cullis fits your compliance
+          surface. Production is for running it in one or two
+          environments with normal support. Enterprise unlocks the
+          plugin set you need when the deployment spans multiple
+          orgs, federates externally, or integrates with cloud KMS
+          and external identity providers.
+        </p>
+      </div>
+
+      <div class="tier-grid reveal" data-delay="3">
+
+        <article class="tier-card">
+          <div class="tier-tag">Pilot</div>
+          <div class="tier-price">
+            <span class="tier-price-amount">EUR 15-25k</span>
+            <span class="tier-price-suffix">all-in · 90 days</span>
+          </div>
+          <h3>Decide cleanly.</h3>
+          <p>
+            One AI lab business unit, five to ten agents in
+            non-production-critical workloads. We are looking for
+            two to three insurance design partners in EU for H2 2026
+            at this tier.
+          </p>
+          <ul class="tier-includes">
+            <li>Mastio license for the pilot scope</li>
+            <li>External Phase-1 pentest with Letter of Attestation</li>
+            <li>Onboarding workshop, 2 days</li>
+            <li>Weekly fortnightly review call, 30 minutes</li>
+            <li>Source code escrow registration</li>
+            <li>30-day termination clause</li>
+          </ul>
+          <p class="tier-not">
+            No SLA. No 24/7 support. No enterprise plugins.
+          </p>
+          <a href="mailto:hello@cullis.io?subject=Pilot%20conversation"
+             class="btn btn-primary tier-cta">Schedule a pilot conversation</a>
+        </article>
+
+        <article class="tier-card tier-card-mid">
+          <div class="tier-tag">Production</div>
+          <div class="tier-price">
+            <span class="tier-price-amount">from EUR 40k</span>
+            <span class="tier-price-suffix">per year · 12 months min</span>
+          </div>
+          <h3>Run it for real.</h3>
+          <p>
+            One Mastio per organization, up to 50 agents and 500
+            audited daily transactions. Production support, normal
+            roadmap influence, the same open-source codebase as the
+            community build.
+          </p>
+          <ul class="tier-includes">
+            <li>Mastio license, one organization</li>
+            <li>Email support, SLA P1 4h ack, P2 24h ack</li>
+            <li>Customer-facing CHANGELOG</li>
+            <li>DR runbook + tested recovery procedures</li>
+            <li>Status page + incident notifications</li>
+            <li>Quarterly compliance touch-points</li>
+          </ul>
+          <p class="tier-not">
+            No SAML / SCIM. No cloud KMS plugins. No multi-org
+            federation. No 4-eyes RBAC.
+          </p>
+          <a href="mailto:hello@cullis.io?subject=Production%20conversation"
+             class="btn btn-ghost tier-cta">Talk pricing</a>
+        </article>
+
+        <article class="tier-card tier-card-top">
+          <div class="tier-tag">Enterprise</div>
+          <div class="tier-price">
+            <span class="tier-price-amount">from EUR 120k</span>
+            <span class="tier-price-suffix">per year · scoped</span>
+          </div>
+          <h3>The whole stack.</h3>
+          <p>
+            Multi-Mastio deployments, cross-organization federation,
+            enterprise identity, cloud KMS, separation-of-duty. Sized
+            on agents and audited transactions; pricing scales with
+            deployment footprint, not seats.
+          </p>
+          <ul class="tier-includes">
+            <li>Everything in Production, plus:</li>
+            <li>SAML 2.0 + OIDC enterprise identity plugins</li>
+            <li>SCIM provisioning (when shipped)</li>
+            <li>Cloud KMS providers: AWS, Azure, GCP</li>
+            <li>Multi-admin RBAC + 4-eyes workflow (when shipped)</li>
+            <li>S3 / MinIO audit export</li>
+            <li>Cullis Court federation license</li>
+            <li>Annual external pentest, LoA renewed</li>
+            <li>Dedicated support channel</li>
+          </ul>
+          <a href="mailto:hello@cullis.io?subject=Enterprise%20conversation"
+             class="btn btn-ghost tier-cta">Talk pricing</a>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 03 FEATURE MATRIX -->
+  <section class="matrix-section">
+    <div class="container">
+      <div class="matrix-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">03</span>
+          What's in each tier
+        </div>
+        <h2 class="reveal" data-delay="1">
+          The feature matrix.
+        </h2>
+        <p class="reveal" data-delay="2">
+          Every capability mapped to its tier. Items marked "(roadmap)"
+          are committed for shipping but not in the current release.
+          Items marked "community" are in the public repository and
+          available to all tiers without separate licensing.
+        </p>
+      </div>
+
+      <div class="matrix-table-wrap reveal" data-delay="3">
+        <table class="matrix-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Pilot</th>
+              <th>Production</th>
+              <th>Enterprise</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Cryptographic identity</strong><br />
+                <span class="cap-detail">x509 + SPIFFE per agent</span></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>Policy enforced pre-call</strong><br />
+                <span class="cap-detail">PDP, OPA-compatible</span></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>Tamper-evident audit chain</strong><br />
+                <span class="cap-detail">hash-chain, RFC 3161 anchor</span></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>Connector (laptop daemon)</strong><br />
+                <span class="cap-detail">Claude Desktop, Cursor, Cline</span></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>SDK Python</strong></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>Sandbox demo (all components)</strong></td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+              <td class="yes">community</td>
+            </tr>
+            <tr>
+              <td><strong>Email support, SLA</strong></td>
+              <td class="no">no</td>
+              <td class="yes">P1 4h / P2 24h</td>
+              <td class="yes">priority channel</td>
+            </tr>
+            <tr>
+              <td><strong>Pentest LoA</strong></td>
+              <td class="yes">Phase-1 included</td>
+              <td class="no">no</td>
+              <td class="yes">annual renewal</td>
+            </tr>
+            <tr>
+              <td><strong>DR runbook + tested recovery</strong></td>
+              <td class="no">no</td>
+              <td class="yes">included</td>
+              <td class="yes">included</td>
+            </tr>
+            <tr>
+              <td><strong>Status page + incident notifications</strong></td>
+              <td class="no">no</td>
+              <td class="yes">included</td>
+              <td class="yes">included</td>
+            </tr>
+            <tr>
+              <td><strong>SAML 2.0 + OIDC</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="yes">plugin</td>
+            </tr>
+            <tr>
+              <td><strong>SCIM provisioning</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="soon">roadmap</td>
+            </tr>
+            <tr>
+              <td><strong>Cloud KMS providers (AWS / Azure / GCP)</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="yes">plugin</td>
+            </tr>
+            <tr>
+              <td><strong>Multi-admin RBAC + 4-eyes workflow</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="soon">roadmap</td>
+            </tr>
+            <tr>
+              <td><strong>S3 / MinIO audit export</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="yes">plugin</td>
+            </tr>
+            <tr>
+              <td><strong>Cullis Court federation (multi-org)</strong></td>
+              <td class="no">no</td>
+              <td class="no">no</td>
+              <td class="yes">included</td>
+            </tr>
+            <tr>
+              <td><strong>Source code escrow</strong></td>
+              <td class="yes">registered</td>
+              <td class="yes">registered</td>
+              <td class="yes">registered</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 04 QUESTIONS -->
+  <section class="faq-section">
+    <div class="container">
+      <div class="faq-head">
+        <div class="eyebrow reveal">
+          <span class="eyebrow-number">04</span>
+          Questions we hear a lot
+        </div>
+        <h2 class="reveal" data-delay="1">
+          What buyers ask first.
+        </h2>
+      </div>
+
+      <ol class="faq-list">
+        <li class="faq-item reveal" data-delay="2">
+          <h3>How is the pilot priced?</h3>
+          <p>
+            Fixed EUR 15-25k all-in for 90 days. The variance depends
+            on integration scope and whether you bring your own pentest
+            vendor. We typically work with mediaservice.net or NCC
+            Group for the Phase-1 pentest; the Letter of Attestation
+            is yours at pilot end regardless of whether you go to
+            production.
+          </p>
+        </li>
+        <li class="faq-item reveal" data-delay="2">
+          <h3>Does the pilot auto-convert to a production contract?</h3>
+          <p>
+            No. Pilot end is a clean decision point. You receive the
+            pentest LoA, the audit bundle for the agents you ran, and
+            a compliance mapping against your in-house controls. You
+            decide separately, no automatic billing rollover.
+          </p>
+        </li>
+        <li class="faq-item reveal" data-delay="2">
+          <h3>What if my deployment outgrows Production?</h3>
+          <p>
+            Upgrade path is documented and priced ahead of time. The
+            Production tier covers one Mastio with up to 50 agents
+            and 500 audited daily transactions. Past those thresholds
+            the contract moves to Enterprise pricing, prorated to
+            the remaining months. No surprise invoicing.
+          </p>
+        </li>
+        <li class="faq-item reveal" data-delay="2">
+          <h3>Do you accept public-sector procurement processes?</h3>
+          <p>
+            Yes, in scope. We work with DORA-bound and NIS2 essential
+            entities, including procurement frameworks that require
+            third-party ICT risk assessment, source code escrow, and
+            documented exit strategies. We have not yet completed a
+            framework agreement under SEAC, MEPA, or similar; reach
+            out and we coordinate the paperwork.
+          </p>
+        </li>
+        <li class="faq-item reveal" data-delay="2">
+          <h3>What does "FSL-1.1-Apache-2.0" mean for my deployment?</h3>
+          <p>
+            Cullis Mastio and Cullis Court ship under the Functional
+            Source License 1.1 with an Apache-2.0 grant after a
+            two-year delay. You can deploy, modify, and audit the
+            source. Production use is permitted under the license
+            terms. The SDK and the Connector are Apache-2.0 and MIT
+            respectively from day one. Enterprise plugins live in a
+            separate private repository under a commercial license
+            and are not source-available to non-Enterprise customers.
+          </p>
+        </li>
+        <li class="faq-item reveal" data-delay="2">
+          <h3>Can I see the contract template before signing?</h3>
+          <p>
+            Yes. We share the pilot agreement and production MSA on
+            request before any conversation moves to legal. Both are
+            short documents, two to four pages, mostly liability and
+            termination clauses. Source escrow is via a registered
+            third-party escrow agent (NCC Escrow or equivalent EU).
+          </p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- 05 GET STARTED -->
+  <section class="closing-section">
+    <div class="container">
+      <div class="closing-rule reveal"></div>
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">05</span>
+        Talk to us
+      </div>
+      <h2 class="reveal" data-delay="1">
+        The pricing page is short on purpose.
+      </h2>
+      <p class="reveal" data-delay="2">
+        We are an early vendor with a small customer base. Your scope,
+        your compliance surface, and your timeline matter more than
+        the matrix above. Reach out, we tailor the first conversation
+        to your context.
+      </p>
+      <div class="closing-cta reveal" data-delay="3">
+        <a href="mailto:hello@cullis.io?subject=Cullis%20pricing%20conversation"
+           class="btn btn-primary">Schedule a 30-min call</a>
+        <a href="/insurance" class="btn btn-ghost">Insurance use case</a>
+        <a href="https://github.com/cullis-security/cullis"
+           target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
+      </div>
+    </div>
+  </section>
+
+</Layout>
+
+<style>
+  /* ====================================================
+     PAGE HEAD (matches insurance.astro / architecture.astro)
+  ==================================================== */
+  .page-head {
+    padding-top: clamp(7rem, 14vw, 10rem);
+    padding-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .head-grid {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.6fr) minmax(0, 3fr);
+    gap: clamp(1rem, 3vw, 3rem);
+    align-items: start;
+  }
+
+  .head-marginalia {
+    padding-right: 1rem;
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .page-head h1 {
+    font-size: clamp(2.5rem, 6vw, 5rem);
+    line-height: 1.05;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+    letter-spacing: -0.025em;
+  }
+
+  .lead {
+    font-size: clamp(1.05rem, 1.5vw, 1.2rem);
+    line-height: 1.7;
+    max-width: 58ch;
+    color: var(--text-secondary);
+  }
+
+  /* ====================================================
+     TIERS
+  ==================================================== */
+  .tiers-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .tiers-head {
+    max-width: 760px;
+    margin-bottom: clamp(3rem, 6vw, 5rem);
+  }
+
+  .tiers-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .tiers-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 64ch;
+    line-height: 1.7;
+  }
+
+  .tier-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.5rem;
+    align-items: stretch;
+  }
+
+  .tier-card {
+    padding: 2rem 1.8rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .tier-card-mid { border-color: var(--accent-cyan-dim); }
+
+  .tier-card-top {
+    border-color: var(--accent-cyan);
+    background: linear-gradient(180deg, var(--bg-card), rgba(0, 229, 199, 0.025));
+  }
+
+  .tier-tag {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+  }
+
+  .tier-price {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .tier-price-amount {
+    font-family: var(--font-display);
+    font-size: clamp(1.6rem, 3vw, 2.1rem);
+    color: var(--text-primary);
+    font-weight: 400;
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+  }
+
+  .tier-price-suffix {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    color: var(--text-tertiary);
+  }
+
+  .tier-card h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.3rem, 2vw, 1.55rem);
+    color: var(--text-primary);
+    margin: 0;
+    font-weight: 400;
+    font-style: italic;
+  }
+
+  .tier-card p {
+    font-size: 0.95rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .tier-includes {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .tier-includes li {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+    padding-left: 1.2rem;
+    position: relative;
+  }
+
+  .tier-includes li::before {
+    content: "+";
+    position: absolute;
+    left: 0;
+    color: var(--accent-cyan);
+    font-family: var(--font-mono);
+    font-weight: 600;
+  }
+
+  .tier-not {
+    font-size: 0.85rem !important;
+    color: var(--text-tertiary) !important;
+    font-style: italic;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--border-subtle);
+  }
+
+  .tier-cta {
+    margin-top: auto;
+    align-self: flex-start;
+  }
+
+  /* ====================================================
+     FEATURE MATRIX
+  ==================================================== */
+  .matrix-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .matrix-head {
+    max-width: 760px;
+    margin-bottom: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .matrix-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .matrix-head p {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    max-width: 64ch;
+    line-height: 1.7;
+  }
+
+  .matrix-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-card);
+  }
+
+  .matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.93rem;
+    color: var(--text-secondary);
+  }
+
+  .matrix-table thead {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .matrix-table th {
+    text-align: left;
+    padding: 1rem 1.2rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    font-weight: 400;
+  }
+
+  .matrix-table th:not(:first-child) { text-align: center; }
+
+  .matrix-table td {
+    padding: 0.95rem 1.2rem;
+    border-bottom: 1px solid var(--border-subtle);
+    line-height: 1.5;
+    vertical-align: top;
+  }
+
+  .matrix-table td:not(:first-child) {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    vertical-align: middle;
+  }
+
+  .matrix-table tbody tr:last-child td { border-bottom: none; }
+
+  .matrix-table td:first-child strong {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .cap-detail {
+    font-size: 0.82rem;
+    color: var(--text-tertiary);
+    display: block;
+    margin-top: 0.15rem;
+  }
+
+  .matrix-table td.yes { color: var(--accent-cyan); }
+  .matrix-table td.no { color: var(--text-tertiary); }
+  .matrix-table td.soon { color: var(--accent-amber); }
+
+  /* ====================================================
+     FAQ
+  ==================================================== */
+  .faq-section { padding: clamp(4rem, 10vw, 7rem) 0; }
+
+  .faq-head {
+    max-width: 760px;
+    margin-bottom: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .faq-head h2 {
+    font-size: clamp(2rem, 4.5vw, 3.4rem);
+    line-height: 1.08;
+    font-weight: 400;
+  }
+
+  .faq-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-width: 780px;
+    counter-reset: faq;
+  }
+
+  .faq-item {
+    padding: 1.6rem 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .faq-item:first-child {
+    border-top: none;
+    padding-top: 0;
+  }
+
+  .faq-item h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.15rem, 2vw, 1.4rem);
+    color: var(--text-primary);
+    margin: 0 0 0.6rem 0;
+    line-height: 1.3;
+    font-weight: 400;
+  }
+
+  .faq-item p {
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 65ch;
+  }
+
+  /* ====================================================
+     CLOSING
+  ==================================================== */
+  .closing-section { padding: clamp(4rem, 8vw, 7rem) 0; }
+
+  .closing-rule {
+    width: 40px;
+    height: 2px;
+    background: var(--accent-cyan);
+    margin-bottom: 2rem;
+  }
+
+  .closing-section h2 {
+    font-size: clamp(2rem, 4.5vw, 3.2rem);
+    line-height: 1.1;
+    margin-bottom: 1.5rem;
+    font-weight: 400;
+  }
+
+  .closing-section p {
+    font-size: 1.1rem;
+    color: var(--text-secondary);
+    margin-bottom: 2.5rem;
+    line-height: 1.7;
+    max-width: 64ch;
+  }
+
+  .closing-cta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  /* ====================================================
+     RESPONSIVE
+  ==================================================== */
+  @media (max-width: 980px) {
+    .head-grid { grid-template-columns: 1fr; }
+    .head-marginalia {
+      border-right: none;
+      border-bottom: 1px solid var(--border-subtle);
+      padding-right: 0;
+      padding-bottom: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .tier-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 640px) {
+    .matrix-table th,
+    .matrix-table td {
+      padding: 0.7rem 0.8rem;
+      font-size: 0.82rem;
+    }
+  }
+</style>
