@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}API keys{% endblock %}
+{% block content %}
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="panel-eyebrow">Local Ambassador</div>
+        <h1 class="panel-title">API keys for OpenAI-compatible clients</h1>
+        <p class="panel-sub">
+            Paste this Bearer token into LibreChat, Cherry Studio, AnythingLLM,
+            OpenWebUI, or any other client that speaks the OpenAI API. The
+            Connector's Ambassador (running on this machine) accepts it only
+            from 127.0.0.1 loopback, so a leak off-host is harmless until an
+            attacker also has access to this machine.
+        </p>
+    </div>
+
+    <div class="identity-card" style="margin-top: 12px;">
+        <div class="identity-row">
+            <span class="identity-k">Endpoint</span>
+            <span class="identity-v mono">{{ ambassador_url }}/v1</span>
+        </div>
+        <div class="identity-row" style="align-items: center;">
+            <span class="identity-k">Bearer token</span>
+            <span class="identity-v mono"
+                  id="token-display"
+                  data-token-full="{{ token }}"
+                  data-token-masked="{{ token_masked }}"
+                  data-revealed="false"
+                  style="word-break: break-all;">{{ token_masked }}</span>
+        </div>
+        <div class="identity-row">
+            <span class="identity-k">File on disk</span>
+            <span class="identity-v mono" style="font-size: 11px; opacity: 0.7;">{{ token_path }} (0600)</span>
+        </div>
+    </div>
+
+    <div class="btn-row" style="margin-top: 16px;">
+        <button type="button"
+                id="reveal-btn"
+                class="btn btn-ghost"
+                onclick="toggleReveal()">
+            Reveal
+        </button>
+        <button type="button"
+                class="btn btn-ghost"
+                onclick="copyText(document.getElementById('token-display').dataset.tokenFull)">
+            Copy token
+        </button>
+        <button type="button"
+                id="rotate-btn"
+                class="btn btn-ghost"
+                hx-post="/api-keys/rotate"
+                hx-swap="none"
+                hx-confirm="Rotate token? Every client (LibreChat, Cherry Studio, ...) currently configured with the old token will stop working until you paste in the new one."
+                hx-on::after-request="handleRotateResult(this, event)">
+            Rotate
+        </button>
+    </div>
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <div class="panel-eyebrow">Step-by-step</div>
+        <h2 class="panel-title" style="font-size: 18px;">How to use it</h2>
+        <p class="panel-sub">
+            Generic pattern across every OpenAI-compatible client. Concrete
+            screenshots for LibreChat / Cherry Studio / AnythingLLM /
+            OpenWebUI live at the docs link below.
+        </p>
+    </div>
+
+    <ol class="step-list" style="padding-left: 20px; line-height: 1.7;">
+        <li>
+            Open your client's <em>Custom OpenAI Provider</em> settings (label
+            varies: "OpenAI-compatible API", "Custom endpoint", "Base URL").
+        </li>
+        <li>
+            <strong>Base URL</strong>: paste <code class="mono">{{ ambassador_url }}/v1</code>
+            (or <code class="mono">{{ ambassador_url }}</code> if the client appends
+            <code>/v1</code> automatically).
+        </li>
+        <li>
+            <strong>API key</strong>: click <em>Copy token</em> above, paste into the
+            <code>API key</code> field. The client sends it as
+            <code class="mono">Authorization: Bearer &lt;token&gt;</code>.
+        </li>
+        <li>
+            <strong>Model</strong>: leave on default or pick from your Mastio's
+            configured providers. The Connector forwards to the Mastio you
+            enrolled at, so the model catalog mirrors what your org allows.
+        </li>
+    </ol>
+
+    <div class="btn-row" style="margin-top: 16px;">
+        <a class="btn btn-ghost" href="https://cullis.io/docs/connector/openai-clients" target="_blank" rel="noopener">
+            Per-client setup docs →
+        </a>
+        <a class="btn btn-ghost" href="/connected">
+            ← Back to overview
+        </a>
+    </div>
+</section>
+
+<p class="footer-hint">
+    Loopback-only acceptance: the token never authorizes a remote call.
+    For remote OpenAI-compatible access (Mastio-hosted) use ADR-027
+    <code class="mono">culk_*</code> tokens issued by your org admin.
+</p>
+
+{% endblock %}
+
+{% block after_body %}
+<script>
+function toggleReveal() {
+    const el = document.getElementById('token-display');
+    const btn = document.getElementById('reveal-btn');
+    const revealed = el.dataset.revealed === 'true';
+    if (revealed) {
+        el.textContent = el.dataset.tokenMasked;
+        el.dataset.revealed = 'false';
+        btn.textContent = 'Reveal';
+    } else {
+        el.textContent = el.dataset.tokenFull;
+        el.dataset.revealed = 'true';
+        btn.textContent = 'Hide';
+    }
+}
+
+function handleRotateResult(btn, event) {
+    btn.disabled = false;
+    let payload = {};
+    try { payload = JSON.parse(event.detail.xhr.responseText); } catch (e) {}
+    if (!event.detail.successful || !payload.token) {
+        showToast(payload.error || 'Rotate failed');
+        return;
+    }
+    const el = document.getElementById('token-display');
+    el.dataset.tokenFull = payload.token;
+    el.dataset.tokenMasked = payload.token_masked;
+    // Show the new token immediately so the operator can copy it before
+    // re-masking, but flip the Reveal button label so the state stays
+    // consistent on the next click.
+    el.textContent = payload.token;
+    el.dataset.revealed = 'true';
+    document.getElementById('reveal-btn').textContent = 'Hide';
+    showToast('New token generated. Re-paste it into every client.');
+}
+</script>
+{% endblock %}

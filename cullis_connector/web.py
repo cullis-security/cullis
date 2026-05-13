@@ -89,6 +89,19 @@ _CHAT_REPO_DEV_DIR = (
 )
 
 
+def _mask_token(token: str) -> str:
+    """Return a Stripe/OpenAI-style preview of a Bearer token.
+
+    First 8 chars + 8 middle bullets + last 4 chars. Long enough that
+    two distinct tokens are visually distinct in a screenshot, short
+    enough that the secret bulk is not on screen. Used by the API keys
+    dashboard page (the operator clicks ``Reveal`` for the full value).
+    """
+    if len(token) <= 12:
+        return "•" * len(token)
+    return f"{token[:8]}{'•' * 8}{token[-4:]}"
+
+
 def _resolve_chat_dist() -> Path | None:
     """Return the directory holding the built Cullis Chat SPA, or None.
 
@@ -1506,6 +1519,67 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 ),
             },
         )
+
+    @app.get("/api-keys", response_class=HTMLResponse)
+    def api_keys_get(request: Request) -> Response:
+        """Render the local Ambassador Bearer token + Reveal/Copy/Rotate UI.
+
+        Wave 2 of the show-token gap closure ([[gap-connector-show-token-cli]]).
+        The CLI ``cullis-connector show-token`` covers the script path; this
+        page covers the GUI path (LibreChat / Cherry Studio / AnythingLLM /
+        OpenWebUI operators who never open a terminal).
+        """
+        if not has_identity(config.config_dir):
+            return RedirectResponse("/setup", status_code=303)
+
+        from cullis_connector.ambassador.auth import (
+            LOCAL_TOKEN_FILENAME,
+            ensure_local_token,
+        )
+
+        token = ensure_local_token(config.config_dir)
+        token_masked = _mask_token(token)
+        token_path = config.config_dir / LOCAL_TOKEN_FILENAME
+
+        # The Ambassador binds to the same host:port as the dashboard. We
+        # already know the dashboard URL the operator just opened in the
+        # browser (request.base_url); re-use it so the snippet shown matches
+        # exactly the URL they will paste into LibreChat / Cherry Studio.
+        ambassador_url = str(request.base_url).rstrip("/")
+
+        return templates.TemplateResponse(
+            request,
+            "api_keys.html",
+            {
+                "token": token,
+                "token_masked": token_masked,
+                "token_path": str(token_path),
+                "ambassador_url": ambassador_url,
+            },
+        )
+
+    @app.post("/api-keys/rotate")
+    def api_keys_rotate() -> JSONResponse:
+        """Force-rotate the local Bearer token and return the new value.
+
+        Idempotent at the file level (file is overwritten atomically by
+        ``rotate_local_token``); not idempotent semantically — every external
+        client cached with the old value stops working until re-pasted. The
+        dashboard's HTMX form confirms this with a ``hx-confirm`` dialog
+        before firing the request. Same-origin protection comes from the
+        global ``_csrf_origin_guard`` middleware already in place; no extra
+        CSRF token because the Ambassador only listens on 127.0.0.1.
+        """
+        if not has_identity(config.config_dir):
+            return JSONResponse({"error": "no identity"}, status_code=400)
+
+        from cullis_connector.ambassador.auth import rotate_local_token
+
+        token = rotate_local_token(config.config_dir)
+        return JSONResponse({
+            "token": token,
+            "token_masked": _mask_token(token),
+        })
 
     @app.post("/autostart/toggle")
     def autostart_toggle() -> JSONResponse:

@@ -57,9 +57,34 @@ def ensure_local_token(config_dir: Path) -> str:
         token = token_path.read_text(encoding="utf-8").strip()
         if token:
             return token
-        _log.warning("local token file at %s is empty — regenerating", token_path)
+        _log.warning("local token file at %s is empty, regenerating", token_path)
+    return _write_new_local_token(config_dir, reason="generated")
+
+
+def rotate_local_token(config_dir: Path) -> str:
+    """Force-regenerate the local Bearer token and return the new value.
+
+    Used by the dashboard's "Rotate" button on the API keys page. The
+    previous token is irretrievable once this returns; every external
+    client (LibreChat, Cherry Studio, AnythingLLM, OpenWebUI, ...) that
+    cached the old value must be re-pasted with the new one. No grace
+    window, no audit row for the old token: the file mode 0600 plus the
+    loopback-only acceptance is the only trust anchor, so there is
+    nothing to "revoke" beyond overwriting the disk content.
+    """
+    return _write_new_local_token(config_dir, reason="rotated")
+
+
+def _write_new_local_token(config_dir: Path, *, reason: str) -> str:
+    """Generate a fresh token, write it 0600, return it.
+
+    Shared body for ``ensure_local_token`` first-create path and the
+    ``rotate_local_token`` explicit overwrite path. ``reason`` is only
+    used for the log line.
+    """
     token = secrets.token_hex(32)
     config_dir.mkdir(parents=True, exist_ok=True)
+    token_path = config_dir / LOCAL_TOKEN_FILENAME
     token_path.write_text(token + "\n", encoding="utf-8")
     try:
         token_path.chmod(0o600)
@@ -68,7 +93,7 @@ def ensure_local_token(config_dir: Path) -> str:
         # info, not warning, because the local trust boundary is the
         # OS user not the file mode in those environments.
         _log.info("could not chmod 0600 on %s (filesystem may not support it)", token_path)
-    _log.info("generated new local token at %s", token_path)
+    _log.info("%s local token at %s", reason, token_path)
     return token
 
 
