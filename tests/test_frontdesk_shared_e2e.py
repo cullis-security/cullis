@@ -43,7 +43,15 @@ SECRET = b"frontdesk-test-cookie-secret-32!"
 
 
 def _override_token(*, agent_id: str, org: str) -> TokenPayload:
-    """The Frontdesk Ambassador's own workload identity for CSR calls."""
+    """The Frontdesk Ambassador's own workload identity for CSR calls.
+
+    H4 H-001 fix in app/registry/user_principals_router.py requires the
+    caller's principal_type to be ``workload`` whenever the requested
+    CSR subject is a ``user/*`` principal. Frontdesk is the canonical
+    workload that mints user principals on behalf of authenticated
+    browsers, so this fixture sets ``principal_type="workload"``
+    explicitly instead of relying on the default ``agent``.
+    """
     return TokenPayload(
         sub=f"spiffe://cullis.test/{org}/agent/{agent_id.split('::', 1)[-1]}",
         agent_id=agent_id,
@@ -53,6 +61,7 @@ def _override_token(*, agent_id: str, org: str) -> TokenPayload:
         jti="frontdesk-jti",
         scope=[],
         cnf={"jkt": "x" * 43},
+        principal_type="workload",
     )
 
 

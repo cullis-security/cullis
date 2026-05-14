@@ -16,7 +16,7 @@ import logging
 
 from cryptography import x509 as crypto_x509
 from cryptography.hazmat.primitives import serialization
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from app.auth.jwt import get_current_agent
 from app.auth.models import TokenPayload
 from app.config import get_settings
 from app.db.database import get_db
+from app.rate_limit.limiter import get_client_ip, rate_limiter
 from app.registry.binding_store import get_approved_binding
 from app.registry.models import (
     AgentListResponse, AgentPublicKeyResponse, AgentResponse,
@@ -53,12 +54,17 @@ def _as_agent_response(agent, trust_domain: str) -> AgentResponse:
 
 @router.get("/agents", response_model=AgentListResponse)
 async def list_federated_agents(
+    request: Request,
     org_id: str | None = None,
     current_agent: TokenPayload = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """List registered agents. An agent sees only its own org unless
     ``org_id`` matches its own — cross-org listing is refused."""
+    # Security review F-002 — federation reads are reachable from any
+    # authenticated agent in any peer org; rate-limit per client IP.
+    await rate_limiter.check(get_client_ip(request), "federation.read")
+
     filter_org = current_agent.org if org_id is None else org_id
     if filter_org != current_agent.org:
         raise HTTPException(
@@ -76,6 +82,7 @@ async def list_federated_agents(
 
 @router.get("/agents/search", response_model=AgentListResponse)
 async def search_federated_agents(
+    request: Request,
     capability: list[str] | None = Query(None, description="Filter by capabilities (AND)"),
     agent_id: str | None = Query(None, description="Direct lookup by agent_id"),
     agent_uri: str | None = Query(None, description="Direct lookup by SPIFFE URI"),
@@ -87,6 +94,10 @@ async def search_federated_agents(
     db: AsyncSession = Depends(get_db),
 ):
     """Cross-org discovery with flexible filters. At least one filter required."""
+    # Security review F-002 — federation reads are reachable from any
+    # authenticated agent in any peer org; rate-limit per client IP.
+    await rate_limiter.check(get_client_ip(request), "federation.read")
+
     if not any([capability, agent_id, agent_uri, org_id, pattern, q]):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -213,6 +224,7 @@ class MastioUrlResponse(BaseModel):
     responses={404: {"description": "Org unknown or no URL published"}},
 )
 async def get_org_mastio_url(
+    request: Request,
     org_id: str,
     db: AsyncSession = Depends(get_db),
 ):
@@ -230,6 +242,13 @@ async def get_org_mastio_url(
     set the URL collapse to a single 404 so the endpoint cannot be used
     to enumerate the registry beyond what is already public.
     """
+    # Security review F-002 — this endpoint is fully unauthenticated,
+    # so an attacker can poll discovery in a tight loop. Rate-limit by
+    # client IP to prevent CPU-burn / registry-enumeration flooding.
+    await rate_limiter.check(
+        get_client_ip(request), "federation.mastio_url_lookup",
+    )
+
     org = await get_org_by_id(db, org_id)
     if (
         not org

@@ -173,6 +173,36 @@ async def sign_csr(
             detail="cannot sign a CSR for a principal in a different org",
         )
 
+    # Security review F-001 (security-review-app-2026-05-14.md): the
+    # caller must be the org's Ambassador / Frontdesk workload, not a
+    # regular agent. Without this gate, any DPoP-authenticated agent
+    # in the org could mint a fresh user-principal cert (including
+    # ``user/admin``) and present it at ``/auth/token`` with
+    # ``principal_type=user`` to bypass the ADR-009 mastio counter-
+    # signature and the mTLS gate (auth/router.py:151,
+    # auth/mastio_countersig.enforce_on_token_request:118-119).
+    # Workload principals are provisioned by the Mastio out-of-band
+    # (Ambassador onboarding), so requiring this principal type pins
+    # the CSR endpoint to its intended caller.
+    principal_type_in_path = body.principal_id.split("/", 3)[2]
+    if (
+        principal_type_in_path == "user"
+        and token.principal_type != "workload"
+    ):
+        _log.warning(
+            "principals.csr: non-workload caller "
+            "[caller_agent_id=%s caller_principal_type=%s principal_id=%s] "
+            "refused to mint a user-principal cert",
+            token.agent_id, token.principal_type, body.principal_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "only a workload principal (Ambassador) may sign a "
+                "user-principal CSR"
+            ),
+        )
+
     try:
         cert_pem, thumbprint, not_after = await sign_user_csr(
             csr_pem=body.csr_pem,

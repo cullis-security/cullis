@@ -42,6 +42,7 @@ from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_counters
 from app.auth.mastio_mtls import enforce_if_required as enforce_mastio_mtls
 from app.db.audit import MastioAuditReplica, log_event
 from app.db.database import get_db
+from app.rate_limit.limiter import get_client_ip, rate_limiter
 from app.registry.org_store import get_org_by_id
 
 
@@ -90,6 +91,13 @@ async def replicate_audit_batch(
     db: AsyncSession = Depends(get_db),
 ) -> ReplicateResponse:
     """Receive a Mastio audit batch and persist it after verification."""
+    # Security review F-002 — rate-limit by client IP before any
+    # ECDSA verify or audit append. Mirrors the
+    # ``onboarding.rotate_mastio_pubkey`` bucket (issue #282).
+    await rate_limiter.check(
+        get_client_ip(request), "federation.audit_replicate",
+    )
+
     # 1. Resolve the publishing org + its pinned pubkey.
     org = await get_org_by_id(db, body.mastio_org_id)
     if org is None:
