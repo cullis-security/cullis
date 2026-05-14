@@ -157,12 +157,27 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # Resource ceilings prevent a misbehaving agent (or a deliberate
+    # flood) from starving the host. The numbers below match the
+    # capacity-planning floor (~1500 RPS read-shaped traffic, 8-core
+    # 8-GiB VPS) with ~50% headroom. Raise both ``limits`` proportionally
+    # if the operator runs the bundle on a fatter VM and the
+    # capacity-planning rule-of-thumb maps. ``reservations`` keep the
+    # container schedulable even on a busy host.
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2g
+        reservations:
+          cpus: "0.5"
+          memory: 256m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 30s
 
   mastio-nginx:
     image: nginx:1.27-alpine
@@ -177,6 +192,18 @@ services:
     networks:
       - proxy_net
     restart: unless-stopped
+    # nginx is lighter than mcp-proxy; small cap is enough to keep the
+    # sidecar resilient under the keepalive-pool load profile from
+    # PR #697 (~2000 RPS upstream). Reservation keeps the sidecar
+    # schedulable when the host is hot.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 256m
+        reservations:
+          cpus: "0.25"
+          memory: 32m
     healthcheck:
       test:
         - CMD-SHELL
@@ -187,8 +214,8 @@ services:
           wget -q --no-check-certificate -O /dev/null https://127.0.0.1:9443/health
       interval: 30s
       timeout: 5s
-      retries: 3
-      start_period: 15s
+      retries: 5
+      start_period: 30s
 
 networks:
   proxy_net:
