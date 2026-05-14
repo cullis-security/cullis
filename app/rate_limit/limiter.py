@@ -257,3 +257,19 @@ rate_limiter.register("broker.poll",            window_seconds=60, max_requests=
 rate_limiter.register("onboarding.invite_inspect",
                                                 window_seconds=60,  max_requests=30)
 rate_limiter.register("onboarding.attach",      window_seconds=300, max_requests=5)
+# Federation surfaces — security review F-002 (security-review-app-
+# 2026-05-14.md). Federation endpoints are reachable from any internet
+# peer; an attacker who guesses an org_id could otherwise burn ECDSA
+# verify CPU and stuff the per-org audit chain with
+# ``federation.*_rejected`` rows via the countersig-failing publish
+# paths, or flood the unauthenticated mastio-url discovery in a tight
+# loop. Same cadence as ``onboarding.rotate_mastio_pubkey`` for the
+# heavyweight writes; reads get a higher ceiling since they're shaped
+# like ``/.well-known/`` style discovery.
+rate_limiter.register("federation.publish",
+                                                window_seconds=60,  max_requests=30)
+rate_limiter.register("federation.audit_replicate",
+                                                window_seconds=60,  max_requests=30)
+rate_limiter.register("federation.read",        window_seconds=60,  max_requests=60)
+rate_limiter.register("federation.mastio_url_lookup",
+                                                window_seconds=60,  max_requests=60)

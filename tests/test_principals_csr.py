@@ -181,9 +181,16 @@ async def test_sign_user_csr_malformed_pem_raises():
 # ── /v1/principals/csr endpoint (5 tests) ──────────────────────────
 
 
-def _override_token(*, agent_id: str, org: str) -> TokenPayload:
+def _override_token(
+    *, agent_id: str, org: str, principal_type: str = "workload",
+) -> TokenPayload:
+    # Security review F-001: only ``principal_type=workload`` (the
+    # Ambassador / Frontdesk) may sign a user-principal CSR. Default
+    # this helper to ``workload`` so the happy-path tests reflect the
+    # real caller; tests that need to exercise the gate pass
+    # ``principal_type="agent"`` explicitly.
     return TokenPayload(
-        sub=f"spiffe://cullis.test/{org}/agent/{agent_id.split('::', 1)[-1]}",
+        sub=f"spiffe://cullis.test/{org}/{principal_type}/{agent_id.split('::', 1)[-1]}",
         agent_id=agent_id,
         org=org,
         exp=2_000_000_000,
@@ -191,6 +198,7 @@ def _override_token(*, agent_id: str, org: str) -> TokenPayload:
         jti="test-jti",
         scope=[],
         cnf={"jkt": "x" * 43},
+        principal_type=principal_type,
     )
 
 
@@ -286,3 +294,122 @@ async def test_csr_endpoint_400_san_mismatch(client, auth_as_acme):
     # body must not echo it (audit lane H-IO-2 Phase A). Asserting the
     # masked surface keeps this guard in place against future regressions.
     assert r.json()["detail"] == "CSR validation failed"
+
+
+# ── F-001 regression: only workload caller may mint a user cert ───
+#
+# security-review-app-2026-05-14.md F-001: without this gate any DPoP-
+# authenticated principal in the org can submit a CSR for
+# ``<td>/<org>/user/<anyone>`` (including ``user/admin``) and get a
+# Mastio-CA-signed user cert valid for 1h, then present it at
+# ``/auth/token`` with ``principal_type=user`` to bypass the ADR-009
+# countersig + mTLS gates. The fix requires the caller to be a
+# ``principal_type=workload`` (the Ambassador / Frontdesk).
+
+
+@pytest_asyncio.fixture
+async def auth_as_acme_regular_agent():
+    """Caller is a regular agent in acme, NOT the Ambassador workload.
+
+    Models the F-001 attacker shape: a compromised low-privilege agent
+    (sales-bot, leaked SDK token) trying to escalate to a user cert.
+    """
+    app.dependency_overrides[get_current_agent] = (
+        lambda: _override_token(
+            agent_id="acme::sales-bot",
+            org="acme",
+            principal_type="agent",
+        )
+    )
+    yield
+    app.dependency_overrides.pop(get_current_agent, None)
+
+
+async def test_csr_endpoint_403_regular_agent_cannot_mint_user_cert(
+    client, auth_as_acme_regular_agent,
+):
+    """F-001 regression — a ``principal_type=agent`` caller in the same
+    org may NOT mint a user-principal cert. Without the workload gate,
+    this returned 201 with a freshly-signed Mastio-CA cert for
+    ``user/admin`` and let the agent escalate at /auth/token.
+    """
+    _, csr_pem = _make_csr("spiffe://acme.test/acme/user/admin")
+    r = await client.post(
+        "/v1/principals/csr",
+        json={
+            "principal_id": "acme.test/acme/user/admin",
+            "csr_pem": csr_pem,
+        },
+    )
+    assert r.status_code == 403, r.text
+    detail = r.json()["detail"].lower()
+    assert "workload" in detail or "ambassador" in detail
+
+
+async def test_csr_endpoint_403_user_principal_cannot_mint_user_cert(
+    client,
+):
+    """F-001 sister case — a ``principal_type=user`` caller (e.g. a
+    Frontdesk user impersonating the Ambassador) is also refused. The
+    gate is strictly ``workload``, not ``workload or user``.
+    """
+    app.dependency_overrides[get_current_agent] = (
+        lambda: _override_token(
+            agent_id="acme::mario",
+            org="acme",
+            principal_type="user",
+        )
+    )
+    try:
+        _, csr_pem = _make_csr("spiffe://acme.test/acme/user/admin")
+        r = await client.post(
+            "/v1/principals/csr",
+            json={
+                "principal_id": "acme.test/acme/user/admin",
+                "csr_pem": csr_pem,
+            },
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_agent, None)
+    assert r.status_code == 403, r.text
+
+
+async def test_csr_endpoint_workload_caller_can_mint_user_cert(
+    client, auth_as_acme,
+):
+    """Sanity check that the legitimate Ambassador workload path
+    still succeeds. ``auth_as_acme`` now defaults to
+    ``principal_type=workload`` after the F-001 fix.
+    """
+    _, csr_pem = _make_csr("spiffe://acme.test/acme/user/mario")
+    r = await client.post(
+        "/v1/principals/csr",
+        json={
+            "principal_id": "acme.test/acme/user/mario",
+            "csr_pem": csr_pem,
+        },
+    )
+    assert r.status_code == 201, r.text
+
+
+async def test_csr_endpoint_403_caller_principal_type_workload_for_agent_cert_ok(
+    client, auth_as_acme_regular_agent,
+):
+    """The workload gate is scoped to user-principal CSRs. An
+    ``agent`` caller can still submit a CSR for an agent-principal
+    (legacy path) — the gate keys on the principal-type segment of
+    the requested principal_id, not on the caller type globally.
+    """
+    _, csr_pem = _make_csr("spiffe://acme.test/acme/agent/sales-bot")
+    r = await client.post(
+        "/v1/principals/csr",
+        json={
+            "principal_id": "acme.test/acme/agent/sales-bot",
+            "csr_pem": csr_pem,
+        },
+    )
+    # Hits ``sign_user_csr`` which still enforces SAN/CN shape and may
+    # 400 (the helper builds a SAN with the requested URI, so this
+    # should succeed and return 201 with a cert). The key assertion
+    # here is "not 403 due to workload gate".
+    assert r.status_code != 403, r.text

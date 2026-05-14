@@ -34,6 +34,7 @@ from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_counters
 from app.auth.mastio_mtls import enforce_if_required as enforce_mastio_mtls
 from app.db.database import get_db
 from app.db.audit import log_event
+from app.rate_limit.limiter import get_client_ip, rate_limiter
 from app.registry.org_store import get_org_by_id
 from app.registry.store import (
     get_agent_by_id, register_agent, update_agent_cert,
@@ -136,6 +137,11 @@ async def publish_agent(
       (so Mastio X can't publish agents in Mastio Y's namespace).
     - The ``cert_pem`` must be signed by the org's CA.
     """
+    # Security review F-002 — rate-limit by client IP before any
+    # ECDSA verify or audit append. Mirrors the
+    # ``onboarding.rotate_mastio_pubkey`` bucket (issue #282).
+    await rate_limiter.check(get_client_ip(request), "federation.publish")
+
     # 1. Derive org_id from agent_id prefix and look up the mastio pubkey.
     org_id = body.agent_id.split("::", 1)[0]
     org = await get_org_by_id(db, org_id)
@@ -328,6 +334,10 @@ async def publish_stats(
     pubkey return 403 so an operator who forgot onboarding step 2 gets
     a clear message instead of a silent no-op.
     """
+    # Security review F-002 — rate-limit by client IP before any
+    # ECDSA verify or audit append.
+    await rate_limiter.check(get_client_ip(request), "federation.publish")
+
     org = await get_org_by_id(db, body.org_id)
     if org is None:
         raise HTTPException(
