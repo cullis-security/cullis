@@ -71,11 +71,13 @@ jobs:
           # with real license JWT, etc.
           cp packaging/mastio-enterprise-bundle/docker-compose.yml  "${STAGING}/"
           cp packaging/mastio-enterprise-bundle/deploy.sh           "${STAGING}/"
+          cp packaging/mastio-enterprise-bundle/backup.sh           "${STAGING}/"
+          cp packaging/mastio-enterprise-bundle/restore.sh          "${STAGING}/"
           cp packaging/mastio-enterprise-bundle/proxy.env.example   "${STAGING}/"
           cp packaging/mastio-enterprise-bundle/README.md           "${STAGING}/"
           cp -r packaging/mastio-enterprise-bundle/nginx            "${STAGING}/"
 
-          chmod +x "${STAGING}/deploy.sh"
+          chmod +x "${STAGING}/deploy.sh" "${STAGING}/backup.sh" "${STAGING}/restore.sh"
 
           # Post-stage sanity check: each file the docker-compose.yml or
           # deploy.sh touches at runtime must exist in the staged tarball.
@@ -83,6 +85,8 @@ jobs:
           for f in \
               "docker-compose.yml" \
               "deploy.sh" \
+              "backup.sh" \
+              "restore.sh" \
               "proxy.env.example" \
               "README.md" \
               "nginx/mastio/00-maps.conf" \
