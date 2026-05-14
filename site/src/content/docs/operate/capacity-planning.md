@@ -122,6 +122,28 @@ Two caveats worth quoting back to anyone asking for numbers:
   rate). We will publish per-scenario numbers as we add k6 scripts
   for them.
 
+## Container resource ceilings
+
+The shipping bundle pins explicit `deploy.resources.limits` on both
+the mcp-proxy and the mastio-nginx sidecar so a misbehaving agent (or
+a deliberate flood) cannot starve the host:
+
+| Service | CPU limit | Memory limit | CPU reservation | Memory reservation |
+|---|---|---|---|---|
+| `mcp-proxy` | 4.0 | 2 GiB | 0.5 | 256 MiB |
+| `mastio-nginx` | 2.0 | 256 MiB | 0.25 | 32 MiB |
+
+The numbers track the 1500-RPS floor above with ~50% headroom for an
+8-core / 8-GiB VPS. Bigger VMs should scale the `mcp-proxy` limits
+proportionally before relying on horizontal scale-out, and operators
+running on smaller hardware should at minimum keep the reservations
+so the containers stay schedulable under load.
+
+The healthcheck retry budget on both services is `interval: 30s`,
+`timeout: 5s`, `retries: 5`, `start_period: 30s`. That gives the
+Mastio enough time to chew through a cold-start license-verify +
+plugin-load cycle on a busy box without flapping into restart loops.
+
 ## Tuning levers we already pulled
 
 The default bundle has nginx upstream keep-alive configured (pool
