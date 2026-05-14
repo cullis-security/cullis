@@ -37,9 +37,20 @@ _log = logging.getLogger("mcp_proxy.license")
 
 
 _PLACEHOLDER_MARKER = "CULLIS_PLACEHOLDER_PUBKEY"
-_DEV_PUBKEY_PEM = (
-    f"-----BEGIN PUBLIC KEY-----\n{_PLACEHOLDER_MARKER}\n-----END PUBLIC KEY-----\n"
-).encode()
+# Production RS256 public key for Cullis Enterprise license JWTs.
+# The matching private key is held offline by Cullis Security and is
+# never committed. Operators can override with CULLIS_LICENSE_PUBKEY_PATH
+# for self-issued test/staging tokens.
+_DEV_PUBKEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAokKvv5ycc25CZGAy34G0
+yMn7O5+kgWjC4s87OC7kvPw9rsrLrN+CItLI16DNf5UwPL0lvuPQCfgHKif0i2+R
+W2yzWwMktQcbf5SoFNI8381rjQ/JARaeJdanA59ZQS5+jjJbDD2OrCc27e42GVNR
+ka2hK4I76lm3xqaLVHCCMJ5KwlDlg8JlqwYFyBXYh/44hjVUGimF9WaUbF4gDK5/
+xiB1pKLkyyl/Alhg7dIVQk5e7zP6pUW65Sz7CIapqUY8PqPUwjE9izMTdcFkoRIW
+0QYRC6cFVjO5vKWAB0I9P4f31NAGcZzRbWduPhApykCy4RCnuGRoDyTn01032eEj
+fQIDAQAB
+-----END PUBLIC KEY-----
+"""
 
 
 @dataclass(frozen=True)
