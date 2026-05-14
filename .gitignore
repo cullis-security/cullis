@@ -114,3 +114,6 @@ packaging/frontdesk-bundle/tls/
 # bootstrap scripts on demand, MUST never be committed.
 /state/
 .gstack/
+
+# k6 stress test artefacts (transient summary dumps next to the scripts).
+scripts/stress/summary*.json
