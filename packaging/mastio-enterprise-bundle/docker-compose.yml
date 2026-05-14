@@ -1,0 +1,195 @@
+# =============================================================================
+# Cullis Mastio Enterprise — image-based bundle for paid deployments
+# =============================================================================
+#
+# Same topology as packaging/mastio-bundle/docker-compose.yml (Mastio +
+# mTLS nginx sidecar, ADR-006/ADR-014/ADR-030) but with two enterprise
+# additions:
+#
+#   1. ``image:`` points at the private GHCR image
+#      ``ghcr.io/cullis-security/cullis-mastio-enterprise``. The operator
+#      must ``docker login ghcr.io`` first with a PAT issued by Cullis
+#      Security at deal close.
+#   2. ``CULLIS_LICENSE_*`` env vars plumbed through. Without a valid
+#      enterprise license JWT the container boots in community mode and
+#      none of the paid plugins activate (mcp_proxy/license.py + the
+#      plugin license gate enforce this).
+#
+# The remaining ``CULLIS_*`` plugin envs are paid-feature-specific:
+# operators enable each plugin on their license + provide the matching
+# backend config. See proxy.env.example for the full list with inline
+# pointers to the docs.
+#
+# Usage:
+#   ./deploy.sh                 # standalone enterprise (default)
+#   ./deploy.sh --down          # stop + remove
+#
+# Compose project name is pinned to ``cullis-mastio-enterprise`` so the
+# stack does not collide with a sibling open-core ``cullis-mastio``
+# bundle on the same docker host.
+# =============================================================================
+
+services:
+
+  # ADR-030 — same bind-target chown pattern as mastio-bundle.
+  init-permissions:
+    image: busybox:stable
+    user: "0:0"
+    command:
+      - sh
+      - -c
+      - |
+        chown -R 10001:10001 /data /nginx-certs
+        chmod 0750 /data /nginx-certs
+    volumes:
+      - ${MASTIO_DATA_DIR:-./data}:/data
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/nginx-certs
+    restart: "no"
+    networks:
+      - proxy_net
+
+  mcp-proxy:
+    image: ghcr.io/cullis-security/cullis-mastio-enterprise:${CULLIS_MASTIO_VERSION:-latest}
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    expose:
+      - "9100"
+    environment:
+      MCP_PROXY_VERSION:           ${CULLIS_MASTIO_VERSION:-unknown}
+      MCP_PROXY_ENVIRONMENT:       ${MCP_PROXY_ENVIRONMENT:-development}
+      MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
+      MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
+      MCP_PROXY_DASHBOARD_SIGNING_KEY: ${MCP_PROXY_DASHBOARD_SIGNING_KEY:-}
+      MCP_PROXY_INITIAL_ADMIN_PASSWORD: ${MCP_PROXY_INITIAL_ADMIN_PASSWORD:-}
+      MCP_PROXY_DATABASE_URL:      sqlite+aiosqlite:////data/mcp_proxy.db
+      MCP_PROXY_BROKER_URL:        ${MCP_PROXY_BROKER_URL:-}
+      MCP_PROXY_BROKER_JWKS_URL:   ${MCP_PROXY_BROKER_JWKS_URL:-}
+      MCP_PROXY_PDP_URL:           ${MCP_PROXY_PDP_URL:-http://mcp-proxy:9100/pdp/policy}
+      MCP_PROXY_PROXY_PUBLIC_URL:  ${MCP_PROXY_PROXY_PUBLIC_URL:-https://host.docker.internal:9443}
+      MCP_PROXY_ALLOWED_ORIGINS:   ${MCP_PROXY_ALLOWED_ORIGINS:-}
+      MCP_PROXY_NGINX_CERT_DIR:    ${MCP_PROXY_NGINX_CERT_DIR:-/var/lib/mastio/nginx-certs}
+      MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost,host.docker.internal,mastio-nginx,mcp-proxy}
+      SSL_CERT_FILE:               ${MCP_PROXY_BROKER_CA_BUNDLE:-}
+      REQUESTS_CA_BUNDLE:          ${MCP_PROXY_BROKER_CA_BUNDLE:-}
+      MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}
+      MCP_PROXY_VAULT_ADDR:        ${MCP_PROXY_VAULT_ADDR:-}
+      MCP_PROXY_VAULT_TOKEN:       ${MCP_PROXY_VAULT_TOKEN:-}
+      MCP_PROXY_KMS_BACKEND:       ${MCP_PROXY_KMS_BACKEND:-local}
+      MCP_PROXY_ANTHROPIC_API_KEY: ${MCP_PROXY_ANTHROPIC_API_KEY:-}
+      MCP_PROXY_TOOL_PDP_ENABLED:        ${MCP_PROXY_TOOL_PDP_ENABLED:-}
+      MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET: ${MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET:-}
+      MCP_PROXY_LOCAL_AUTH_ENABLED:      ${MCP_PROXY_LOCAL_AUTH_ENABLED:-}
+      MCP_PROXY_FORCE_LOCAL_PASSWORD:    ${MCP_PROXY_FORCE_LOCAL_PASSWORD:-}
+      MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S: ${MCP_PROXY_AI_GATEWAY_REQUEST_TIMEOUT_S:-180}
+
+      # ──────────────────── enterprise: license ─────────────────────
+      # JWT (raw) takes precedence over the file path. The dashboard
+      # reads features from the active license at boot; mismatched +
+      # expired licenses degrade to community mode silently with a
+      # warning in the logs.
+      CULLIS_LICENSE_KEY:           ${CULLIS_LICENSE_KEY:-}
+      CULLIS_LICENSE_PATH:          ${CULLIS_LICENSE_PATH:-}
+      # Override pubkey only for operator-issued staging tokens. Leave
+      # empty in production: the image ships with the Cullis Security
+      # pubkey baked in (see mcp_proxy/license.py).
+      CULLIS_LICENSE_PUBKEY_PATH:   ${CULLIS_LICENSE_PUBKEY_PATH:-}
+
+      # ──────────── enterprise plugins: audit export ───────────────
+      CULLIS_AUDIT_EXPORT_S3_BUCKET:    ${CULLIS_AUDIT_EXPORT_S3_BUCKET:-}
+      CULLIS_AUDIT_EXPORT_S3_REGION:    ${CULLIS_AUDIT_EXPORT_S3_REGION:-}
+      CULLIS_AUDIT_EXPORT_S3_PREFIX:    ${CULLIS_AUDIT_EXPORT_S3_PREFIX:-}
+      AWS_ACCESS_KEY_ID:                ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY:            ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN:                ${AWS_SESSION_TOKEN:-}
+      CULLIS_AUDIT_EXPORT_DATADOG_API_KEY: ${CULLIS_AUDIT_EXPORT_DATADOG_API_KEY:-}
+      CULLIS_AUDIT_EXPORT_DATADOG_SITE:    ${CULLIS_AUDIT_EXPORT_DATADOG_SITE:-}
+
+      # ────────────── enterprise plugins: SAML SSO ─────────────────
+      CULLIS_SAML_SP_ENTITY_ID:    ${CULLIS_SAML_SP_ENTITY_ID:-}
+      CULLIS_SAML_SP_ACS_URL:      ${CULLIS_SAML_SP_ACS_URL:-}
+      CULLIS_SAML_IDP_ENTITY_ID:   ${CULLIS_SAML_IDP_ENTITY_ID:-}
+      CULLIS_SAML_IDP_SSO_URL:     ${CULLIS_SAML_IDP_SSO_URL:-}
+      CULLIS_SAML_IDP_CERT_PATH:   ${CULLIS_SAML_IDP_CERT_PATH:-}
+      CULLIS_SAML_SP_KEY_DIR:      ${CULLIS_SAML_SP_KEY_DIR:-/var/lib/cullis/saml}
+
+      # ─────────── enterprise plugins: cloud KMS (Org CA) ──────────
+      # AWS Secrets Manager (cloud_kms_aws): set _SECRET_ID + region +
+      # AWS creds above. Pick ONE of vault / aws / azure / gcp via
+      # MCP_PROXY_KMS_BACKEND. Mix-and-matching is undefined.
+      CULLIS_CLOUD_KMS_AWS_SECRET_ID: ${CULLIS_CLOUD_KMS_AWS_SECRET_ID:-}
+      CULLIS_CLOUD_KMS_AWS_REGION:    ${CULLIS_CLOUD_KMS_AWS_REGION:-}
+      # Azure Key Vault (cloud_kms_azure)
+      CULLIS_CLOUD_KMS_AZURE_VAULT_URL: ${CULLIS_CLOUD_KMS_AZURE_VAULT_URL:-}
+      CULLIS_CLOUD_KMS_AZURE_SECRET_NAME: ${CULLIS_CLOUD_KMS_AZURE_SECRET_NAME:-}
+      AZURE_CLIENT_ID:                ${AZURE_CLIENT_ID:-}
+      AZURE_TENANT_ID:                ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_SECRET:            ${AZURE_CLIENT_SECRET:-}
+      # GCP Secret Manager (cloud_kms_gcp)
+      CULLIS_CLOUD_KMS_GCP_PROJECT_ID: ${CULLIS_CLOUD_KMS_GCP_PROJECT_ID:-}
+      CULLIS_CLOUD_KMS_GCP_SECRET_ID:  ${CULLIS_CLOUD_KMS_GCP_SECRET_ID:-}
+      GOOGLE_APPLICATION_CREDENTIALS:  ${GOOGLE_APPLICATION_CREDENTIALS:-}
+
+      # ─────── enterprise plugins: scim 2.0 + multi-admin ──────────
+      CULLIS_SCIM_BEARER_TOKEN:       ${CULLIS_SCIM_BEARER_TOKEN:-}
+
+      # ────────────────── ADR-029 / pass-through ───────────────────
+      PROXY_TRUST_DOMAIN:          ${PROXY_TRUST_DOMAIN:-}
+      PROXY_INTRA_ORG:             ${PROXY_INTRA_ORG:-}
+      PROXY_TRANSPORT_INTRA_ORG:   ${PROXY_TRANSPORT_INTRA_ORG:-}
+      PROXY_EGRESS_INSPECTION_ENABLED: ${PROXY_EGRESS_INSPECTION_ENABLED:-}
+      PROXY_FEDERATION_SYNC:       ${PROXY_FEDERATION_SYNC:-}
+      CULLIS_EGRESS_DPOP_MODE:     ${CULLIS_EGRESS_DPOP_MODE:-}
+
+      MCP_PROXY_FRONTDESK_AMBASSADOR_URL: ${MCP_PROXY_FRONTDESK_AMBASSADOR_URL:-}
+      MCP_PROXY_FRONTDESK_ADMIN_SECRET:   ${MCP_PROXY_FRONTDESK_ADMIN_SECRET:-}
+
+    volumes:
+      - ${MASTIO_DATA_DIR:-./data}:/data
+      - ${CULLIS_CERTS_DIR:-./certs}:/certs:ro
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/var/lib/mastio/nginx-certs:rw
+      # SAML SP key dir is plugin-managed but mounted on host so it
+      # survives container recreation. Empty until saml_sso plugin
+      # boots and writes the SP signing keypair.
+      - ${MASTIO_SAML_KEYS_DIR:-./saml-keys}:/var/lib/cullis/saml:rw
+    networks:
+      - proxy_net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  mastio-nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${MCP_PROXY_PORT:-9443}:9443"
+    volumes:
+      - ./nginx/mastio:/etc/nginx/conf.d:ro
+      - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/etc/nginx/certs:ro
+    depends_on:
+      mcp-proxy:
+        condition: service_healthy
+    networks:
+      - proxy_net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          wget -q --no-check-certificate -O /dev/null https://127.0.0.1:9443/health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  proxy_net:
+    driver: bridge
