@@ -18,7 +18,7 @@ from alembic.config import Config as AlembicConfig
 
 from mcp_proxy.db import create_agent, dispose_db, init_db
 
-HEAD_REVISION = "0032_ai_creds_at_rest_enc"
+HEAD_REVISION = "0033_audit_dpop_jkt"
 PREVIOUS_REVISION = "0015_enrollment_dpop_jkt"
 NEW_COLUMNS = {"enrollment_method", "spiffe_id", "enrolled_at"}
 
