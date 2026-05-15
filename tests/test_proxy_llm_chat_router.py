@@ -685,3 +685,257 @@ async def test_chat_completions_streaming_setup_error_returns_json(
     detail = json.loads(rows[0]["detail"])
     assert detail["reason"] == "provider_key_missing"
     assert detail["stream"] is True
+
+
+# ────────────────────────────────────────────────────────────────────
+# P1 Tier B — Cullis Chat SSE backend instrumentation
+#
+# The frontend SPA's parser (frontend/cullis-chat/src/lib/sse.ts)
+# expects named SSE events ``tool_call_start``, ``tool_call_end``,
+# and a trailing ``cullis_audit`` summary so the ToolCallIndicator
+# chip renders against real backend traffic, not only the mock
+# ambassador. These tests pin the Mastio emission shape.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parse an SSE body that may include both ``data:``-only frames
+    and ``event: <name>\\ndata: ...`` named frames.
+
+    Returns a list of records ``{event: str, data: <parsed>}``.
+    Default event name is ``"message"`` per the SSE spec when only a
+    data line is present; the literal ``[DONE]`` sentinel is preserved
+    as a string in ``data``.
+    """
+    out: list[dict] = []
+    for raw in body.split("\n\n"):
+        block = raw.strip()
+        if not block:
+            continue
+        event_name = "message"
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event_name = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].lstrip())
+        payload_raw = "\n".join(data_lines)
+        if payload_raw == "[DONE]":
+            out.append({"event": event_name, "data": "[DONE]"})
+        else:
+            out.append({"event": event_name, "data": json.loads(payload_raw)})
+    return out
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_emits_tool_call_named_events(
+    app_with_router, monkeypatch,
+):
+    """A model that returns tool_calls must produce a paired
+    ``tool_call_start`` + ``tool_call_end`` named event per index,
+    interleaved with the regular ``data:`` chunk stream, and a
+    trailing ``cullis_audit`` summary."""
+    chunks = [
+        # First delta carries the role.
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None},
+        ]},
+        # Model emits the first tool block (name + arg fragment).
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_a", "type": "function",
+                 "function": {"name": "search_docs", "arguments": "{\"q\":"}},
+            ]}, "finish_reason": None},
+        ]},
+        # Argument increment for the same tool (no name → no new start).
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "\"gdpr\"}"}},
+            ]}, "finish_reason": None},
+        ]},
+        # Model emits a second parallel tool block.
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 1, "id": "call_b", "type": "function",
+                 "function": {"name": "postgres.query", "arguments": "{}"}},
+            ]}, "finish_reason": None},
+        ]},
+        # Model finishes the tool_calls assistant turn.
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "tool_calls"},
+        ]},
+        {"id": "x", "choices": [],
+         "usage": {"prompt_tokens": 20, "completion_tokens": 10}},
+    ]
+    monkeypatch.setattr(
+        router_module, "dispatch_stream", _build_fake_streamer(chunks=chunks),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.text)
+
+    # Two distinct tool blocks → two start + two end events, in order.
+    starts = [e for e in events if e["event"] == "tool_call_start"]
+    ends = [e for e in events if e["event"] == "tool_call_end"]
+    assert [e["data"]["tool"] for e in starts] == ["search_docs", "postgres.query"]
+    assert [e["data"]["tool"] for e in ends] == ["search_docs", "postgres.query"]
+    for e in ends:
+        assert "latency_ms" in e["data"]
+        assert isinstance(e["data"]["latency_ms"], int)
+        assert e["data"]["latency_ms"] >= 0
+
+    # Trailing cullis_audit event sums up the turn.
+    audits = [e for e in events if e["event"] == "cullis_audit"]
+    assert len(audits) == 1, audits
+    audit = audits[0]["data"]
+    assert audit["trace_id"].startswith("trace_")
+    assert {t["name"] for t in audit["tools"]} == {"search_docs", "postgres.query"}
+
+    # Each tool_call writes its own audit row so the forensic chain
+    # carries one entry per tool, plus the overall egress_llm_chat row.
+    tool_rows = await _audit_rows("llm.tool_call", status="success")
+    tools_logged = {json.loads(r["detail"])["tool"] for r in tool_rows}
+    assert tools_logged == {"search_docs", "postgres.query"}
+    for row in tool_rows:
+        detail = json.loads(row["detail"])
+        assert detail["event"] == "llm.tool_call"
+        assert detail["principal_type"] == "agent"
+        assert detail["model"] == "claude-haiku-4-5"
+        assert detail["trace_id"].startswith("trace_")
+        assert detail["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_no_tool_calls_emits_no_named_events(
+    app_with_router, monkeypatch,
+):
+    """The pure-text path stays a plain data:-only stream so callers
+    that don't care about tool chips (CLI, raw curl) see no shape
+    change vs. the pre-P1 baseline."""
+    chunks = [
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"content": "hi"}, "finish_reason": None},
+        ]},
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "stop"},
+        ]},
+        {"id": "x", "choices": [],
+         "usage": {"prompt_tokens": 5, "completion_tokens": 1}},
+    ]
+    monkeypatch.setattr(
+        router_module, "dispatch_stream", _build_fake_streamer(chunks=chunks),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.text)
+    assert all(e["event"] == "message" for e in events), [
+        e["event"] for e in events
+    ]
+    tool_rows = await _audit_rows("llm.tool_call")
+    assert tool_rows == []
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_parallel_tool_calls_share_finish(
+    app_with_router, monkeypatch,
+):
+    """Two tool blocks emitted within the same assistant turn both
+    close out on the single ``finish_reason='tool_calls'`` chunk."""
+    chunks = [
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_a", "type": "function",
+                 "function": {"name": "tool_a", "arguments": "{}"}},
+                {"index": 1, "id": "call_b", "type": "function",
+                 "function": {"name": "tool_b", "arguments": "{}"}},
+            ]}, "finish_reason": None},
+        ]},
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "tool_calls"},
+        ]},
+        {"id": "x", "choices": [],
+         "usage": {"prompt_tokens": 8, "completion_tokens": 4}},
+    ]
+    monkeypatch.setattr(
+        router_module, "dispatch_stream", _build_fake_streamer(chunks=chunks),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    events = _parse_sse_events(r.text)
+    starts = [e["data"]["tool"] for e in events if e["event"] == "tool_call_start"]
+    ends = [e["data"]["tool"] for e in events if e["event"] == "tool_call_end"]
+    assert sorted(starts) == ["tool_a", "tool_b"]
+    assert sorted(ends) == ["tool_a", "tool_b"]
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_streaming_malformed_tool_chunk_does_not_break_stream(
+    app_with_router, monkeypatch,
+):
+    """A misshapen ``tool_calls`` payload from a misbehaving provider
+    must not poison the user-visible stream. The regular ``data:``
+    chunks keep flowing; only the parser entry is skipped."""
+    chunks = [
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"tool_calls": "not-a-list"},
+             "finish_reason": None},
+        ]},
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {"content": "fallback text"},
+             "finish_reason": None},
+        ]},
+        {"id": "x", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "stop"},
+        ]},
+        {"id": "x", "choices": [],
+         "usage": {"prompt_tokens": 5, "completion_tokens": 2}},
+    ]
+    monkeypatch.setattr(
+        router_module, "dispatch_stream", _build_fake_streamer(chunks=chunks),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app_with_router), base_url="http://test",
+    ) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={**_request_body(), "stream": True},
+        )
+
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.text)
+    # Text content survived.
+    text_chunks = [
+        e for e in events
+        if e["event"] == "message" and isinstance(e["data"], dict)
+        and e["data"].get("choices") and e["data"]["choices"][0]["delta"].get("content")
+    ]
+    assert any(
+        c["data"]["choices"][0]["delta"]["content"] == "fallback text"
+        for c in text_chunks
+    )
+    # No false tool events from the malformed payload.
+    assert not any(e["event"] == "tool_call_start" for e in events)
