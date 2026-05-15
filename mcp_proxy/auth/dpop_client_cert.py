@@ -166,6 +166,19 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
                    "Connector so it can publish its JWK thumbprint.",
         )
 
+    # P1.2 — stamp the verified jkt into the per-request contextvar so
+    # ``log_audit()`` downstream picks it up for the ``audit_log.dpop_jkt``
+    # column without each call site forwarding it. Only stamps on the
+    # success path (after pinning passed); a 401 above must not
+    # correlate the audit row to a thumbprint the verifier just rejected.
+    # Counterpart to the same wiring in ``dependencies.py`` (Bearer-DPoP)
+    # and ``local_agent_dep.py`` (LOCAL_TOKEN): without this branch every
+    # ``/v1/chat/completions``, ``/v1/llm/chat``, and ``/v1/egress/*`` row
+    # left the column NULL even though the proof key is the agent's
+    # pinned identity — exactly the lookup forensic queries need.
+    from mcp_proxy.auth.dpop_context import set_dpop_jkt
+    set_dpop_jkt(proof_jkt)
+
     _log.debug(
         "Egress mTLS+DPoP accepted (agent=%s, jkt=%s, mode=%s, bound=%s)",
         agent.agent_id, proof_jkt, mode, bool(stored_jkt),
