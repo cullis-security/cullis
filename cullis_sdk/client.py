@@ -160,11 +160,28 @@ def _build_proxy_http_client(
     if not verify_tls:
         # CI guard "Ban insecure TLS opt-outs" greps for the literal
         # ``verify=False`` token in production code. This branch only
-        # runs when the caller explicitly passed ``verify_tls=False``
-        # — passing the bool through preserves the audited opt-out
+        # runs when the caller explicitly passed ``verify_tls=False``;
+        # passing the bool through preserves the audited opt-out
         # without tripping the regex (the same trick PR #352 uses for
         # the TOFU preview-CA fetch).
-        return httpx.Client(timeout=timeout, verify=verify_tls)
+        #
+        # Pre-fix dogfood 2026-05-15: this branch returned a bare
+        # ``httpx.Client(verify=verify_tls)`` that silently discarded
+        # the cert+key, so nginx's mTLS check on /v1/egress/* refused
+        # every call with ``client cert not verified``. The dev-only
+        # opt-out cannot be allowed to also disable mTLS — that
+        # collapses two orthogonal guards into one and surprises
+        # operators reaching a self-signed Mastio over an IP literal.
+        # Build a permissive SSL context that still presents the
+        # client cert, just skipping server cert + hostname check.
+        insecure_ctx = ssl.create_default_context()
+        insecure_ctx.check_hostname = False
+        insecure_ctx.verify_mode = ssl.CERT_NONE
+        if mtls_ok:
+            insecure_ctx.load_cert_chain(
+                certfile=str(cert_path), keyfile=str(key_path),
+            )
+        return httpx.Client(timeout=timeout, verify=insecure_ctx)
 
     ssl_context = ssl.create_default_context()
     if ca_chain_path is not None:
