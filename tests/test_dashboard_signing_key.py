@@ -32,6 +32,7 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         admin_secret="strong-random-admin-secret",
         broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
         secret_backend="vault",
+        kms_backend="vault",  # H3 P0.1 — prod refuses local KMS backend
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",
     )

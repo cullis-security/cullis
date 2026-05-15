@@ -228,6 +228,7 @@ def test_proxy_validate_config_prod_refuses_wildcard_allowed_origins():
         admin_secret="strong-random-admin-secret",
         broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
         secret_backend="vault",
+        kms_backend="vault",  # H3 P0.1: pin so SystemExit is from wildcard origin only
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",
         allowed_origins="*",

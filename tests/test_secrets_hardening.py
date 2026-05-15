@@ -115,6 +115,10 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         standalone=False,
         broker_verify_tls=True,
         secret_backend="vault",
+        # H3 P0.1 — production refuses kms_backend=local; the
+        # prod-shaped helper therefore declares vault by default. Tests
+        # that need to exercise the local-rejection branch override it.
+        kms_backend="vault",
         vault_verify_tls=True,
         # Audit F-B-10 — prod now refuses empty signing key, so every
         # prod-shaped helper has to provide one.
@@ -147,12 +151,62 @@ def test_proxy_validate_config_prod_allows_vault_backend():
 
 def test_proxy_validate_config_rejects_standalone_prod_with_env_backend():
     """Standalone mode skips broker checks but the secret backend refusal
-    still applies — agent keys live in the proxy regardless of uplink."""
+    still applies, agent keys live in the proxy regardless of uplink."""
     settings = ProxySettings(
         environment="production",
         admin_secret="strong-random-admin-secret",
         standalone=True,
         secret_backend="env",
+        kms_backend="vault",  # H3 P0.1: pin so the SystemExit is from secret_backend only
+        vault_verify_tls=True,
+        dashboard_signing_key="strong-signing-key",  # F-B-10
+    )
+    with pytest.raises(SystemExit):
+        proxy_validate_config(settings)
+
+
+# ── Proxy: H3 P0.1 kms_backend ──────────────────────────────────────
+
+def test_proxy_validate_config_rejects_prod_with_kms_backend_local():
+    """Production refuses kms_backend=local because the Org CA private
+    key would live in the Mastio database with no HSM-grade protection.
+    Closes the gap surfaced by the 2026-05-15 threat-model verification
+    pass."""
+    settings = _prod_proxy_settings(kms_backend="local")
+    with pytest.raises(SystemExit):
+        proxy_validate_config(settings)
+
+
+def test_proxy_validate_config_dev_tolerates_kms_backend_local():
+    """Development keeps kms_backend=local working for sandbox / first-
+    boot dogfood scenarios."""
+    settings = ProxySettings(
+        environment="development",
+        secret_backend="env",
+        kms_backend="local",
+    )
+    # Must not raise.
+    proxy_validate_config(settings)
+
+
+def test_proxy_validate_config_prod_allows_vault_kms():
+    """The shipping production posture (kms_backend=vault) must continue
+    to pass after the local-rejection branch lands."""
+    settings = _prod_proxy_settings(kms_backend="vault")
+    # Must not raise.
+    proxy_validate_config(settings)
+
+
+def test_proxy_validate_config_rejects_standalone_prod_with_kms_local():
+    """Standalone mode does not exempt the Org CA: standalone Mastios
+    sign agent certs with the same key, so kms_backend=local still
+    leaks the key on host compromise."""
+    settings = ProxySettings(
+        environment="production",
+        admin_secret="strong-random-admin-secret",
+        standalone=True,
+        secret_backend="vault",  # pin so the SystemExit is from kms_backend only
+        kms_backend="local",
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",  # F-B-10
     )

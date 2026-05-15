@@ -613,9 +613,30 @@ def validate_config(settings: ProxySettings) -> None:
                 "MCP_PROXY_SECRET_BACKEND=%r is not supported in production. "
                 "Set MCP_PROXY_SECRET_BACKEND=vault and configure "
                 "MCP_PROXY_VAULT_ADDR + MCP_PROXY_VAULT_TOKEN. 'env' keeps "
-                "agent private keys at rest in the process environment — "
+                "agent private keys at rest in the process environment, "
                 "dev/test only.",
                 settings.secret_backend,
+            )
+            raise SystemExit(1)
+
+        # H3 P0.1 — kms_backend=local stores the Org CA private key in the
+        # Mastio's own database (proxy_config table). A host compromise
+        # that reaches the DB file recovers the key material directly. In
+        # production we require a vault-backed or HSM-backed KMS so the
+        # key never lives on disk in cleartext. Closes the gap surfaced by
+        # the 2026-05-15 threat-model verification pass: the old code
+        # refused secret_backend=env but silently accepted kms_backend=
+        # local, contradicting the threat-model claim of "production
+        # refuses local KMS backend".
+        if settings.kms_backend.lower() == "local":
+            _log.critical(
+                "MCP_PROXY_KMS_BACKEND=%r is not supported in production. "
+                "Set MCP_PROXY_KMS_BACKEND=vault (open-core, see "
+                "operate/vault-org-ca.md) or one of the enterprise cloud "
+                "KMS plugins (aws/azure/gcp). 'local' keeps the Org CA "
+                "private key in the Mastio database, with no HSM-grade "
+                "protection — dev/test only.",
+                settings.kms_backend,
             )
             raise SystemExit(1)
 
@@ -681,9 +702,10 @@ def validate_config(settings: ProxySettings) -> None:
 
     _log.info(
         "Startup validation passed (environment=%s, secret_backend=%s, "
-        "standalone=%s).",
+        "kms_backend=%s, standalone=%s).",
         settings.environment,
         settings.secret_backend,
+        settings.kms_backend,
         settings.standalone,
     )
 

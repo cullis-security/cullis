@@ -40,6 +40,10 @@ def _prod_settings(**overrides) -> ProxySettings:
         admin_secret="strong-random-admin-secret",
         broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
         standalone=False,
+        # H3 P0.1 — prod refuses kms_backend=local; pin so the SystemExit
+        # in TLS-focused tests comes from the TLS knob under test, not
+        # from KMS.
+        kms_backend="vault",
         # Audit F-B-10 — prod now refuses empty signing key.
         dashboard_signing_key="strong-signing-key",
     )
