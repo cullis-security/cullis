@@ -40,6 +40,8 @@ async def test_in_memory_ttl_expiry_allows_reuse():
     assert await store.consume_jti("jti-expiring", ttl_seconds=1) is True
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_in_memory_concurrent_consume_serialized():
     """Two concurrent consumes of the same jti: only one wins."""
     store = jti_mod.InMemoryDpopJtiStore()

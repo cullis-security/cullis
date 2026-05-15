@@ -101,6 +101,8 @@ async def test_verify_local_chain_detects_tampering(fresh_db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_concurrent_appends_keep_chain_monotonic(fresh_db):
     import asyncio
 

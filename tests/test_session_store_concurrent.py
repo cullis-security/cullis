@@ -33,6 +33,8 @@ from app.broker.session import SessionStore
 # ── Threadpool driver ────────────────────────────────────────────────────
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 def test_threaded_create_vs_close_all_no_iteration_error():
     """Hammer create() and close_all_for_agent() from many threads.
 
@@ -86,6 +88,8 @@ def test_threaded_create_vs_close_all_no_iteration_error():
     assert not errors, f"concurrent create/close raced: {errors!r}"
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 def test_threaded_concurrent_close_idempotent():
     """N closers on the same session-set never double-mark or crash."""
     store = SessionStore(active_cap_per_agent=10_000)
@@ -126,6 +130,8 @@ def test_threaded_concurrent_close_idempotent():
         assert s.close_reason == SessionCloseReason.normal
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 def test_threaded_create_under_per_agent_cap_stays_within_cap():
     """create() runs evict + cap check + insert atomically.
 
@@ -179,6 +185,8 @@ def test_threaded_create_under_per_agent_cap_stays_within_cap():
 
 
 @pytest.mark.asyncio
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_asyncio_gather_create_then_close_all():
     """End-to-end on the event loop: many gather()-ed coroutines drive the
     store the way the broker router does in production. No RuntimeError,

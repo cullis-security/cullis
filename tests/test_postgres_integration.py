@@ -50,34 +50,55 @@ async def override_get_db():
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
-@pytest_asyncio.fixture(scope="module", autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def setup_pg_db():
-    """Create tables on Postgres and clean up at the end."""
+    """Create tables on Postgres and clean up after every test.
+
+    Function-scoped (audit-2026-05-15 quick win #1). The previous
+    ``scope="module"`` made the two tests share both ``app.dependency_
+    overrides[get_db]`` and the module-level engine pointers. Under
+    ``pytest -n auto --dist=loadfile`` both tests do land on the
+    same worker, but other tests on that worker also mutate
+    ``app.dependency_overrides`` via the conftest SQLite override
+    fixture — an interleaving where the SQLite fixture pop'ed the
+    override mid-postgres-test caused two tests to flake recurrently
+    (PR #720 / #722 / #723 / #725 / #727 / #728 / #729 / #730 / #731).
+    Function scope makes the override lifecycle local to each test,
+    and the drop_all + dispose teardown wipes Postgres rows so the
+    two tests can't accidentally see each other's seeded agents.
+
+    The captured originals are restored even on test failure so a
+    pytest abort never leaves another worker's test pointing at the
+    Postgres engine.
+    """
     async with pg_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    app.dependency_overrides[get_db] = override_get_db
 
     import app.db.database as db_module
     import app.main as main_module
     _orig_engine = db_module.engine
     _orig_session = db_module.AsyncSessionLocal
     _orig_main = main_module.AsyncSessionLocal
+    _had_override = get_db in app.dependency_overrides
+    _orig_override = app.dependency_overrides.get(get_db)
 
+    app.dependency_overrides[get_db] = override_get_db
     db_module.engine = pg_engine
     db_module.AsyncSessionLocal = PgSession
     main_module.AsyncSessionLocal = PgSession
 
-    yield
-
-    db_module.engine = _orig_engine
-    db_module.AsyncSessionLocal = _orig_session
-    main_module.AsyncSessionLocal = _orig_main
-    app.dependency_overrides.pop(get_db, None)
-
-    async with pg_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await pg_engine.dispose()
+    try:
+        yield
+    finally:
+        db_module.engine = _orig_engine
+        db_module.AsyncSessionLocal = _orig_session
+        main_module.AsyncSessionLocal = _orig_main
+        if _had_override:
+            app.dependency_overrides[get_db] = _orig_override
+        else:
+            app.dependency_overrides.pop(get_db, None)
+        async with pg_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest_asyncio.fixture
