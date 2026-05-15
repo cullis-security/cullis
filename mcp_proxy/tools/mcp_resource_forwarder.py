@@ -44,6 +44,45 @@ DEFAULT_FORWARD_TIMEOUT = 15.0  # seconds — fail fast, no retry
 # accept both and only ever read the first JSON message.
 _MCP_ACCEPT = "application/json, text/event-stream"
 
+# H3 P0.3 — explicit deny-list for headers that must NEVER reach the
+# upstream MCP resource. The current forwarder builds ``request_headers``
+# from server-known fields only (Accept + per-tool auth header), so by
+# construction nothing leaks; this set is defence-in-depth against
+# future refactors that might add ``**request.headers`` to the dict by
+# accident. The threat-model claim in the MCP-proxy Tampering row now
+# names this list explicitly.
+#
+# Names are matched case-insensitively (HTTP headers).
+_DANGEROUS_UPSTREAM_HEADERS = frozenset({
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-cullis-agent-id",
+    "x-cullis-org-id",
+    "x-cullis-admin",
+    "x-cullis-mastio-signature",
+    "x-forwarded-user",
+    "x-forwarded-email",
+    "x-original-authorization",
+    "proxy-authorization",
+})
+
+
+def _strip_dangerous_upstream_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Drop any header in :data:`_DANGEROUS_UPSTREAM_HEADERS` (case-insensitive).
+
+    Defence-in-depth: today ``forward_to_mcp_resource`` constructs the
+    upstream request headers from a fixed set (Accept + per-tool auth
+    header), so no client-supplied header is ever forwarded. This helper
+    guarantees that even a future refactor that accidentally splices in
+    ``request.headers`` cannot leak the caller's ``Authorization`` /
+    ``Cookie`` / ``X-API-Key`` to a third-party MCP server.
+
+    Returns a new dict; the input is not mutated.
+    """
+    return {k: v for k, v in headers.items() if k.lower() not in _DANGEROUS_UPSTREAM_HEADERS}
+
 
 async def _build_auth_header(
     *,
@@ -160,7 +199,18 @@ async def forward_to_mcp_resource(
     }
 
     transport = WhitelistedTransport(allowed_domains=tool_def.allowed_domains)
-    request_headers = {"Accept": _MCP_ACCEPT, **auth_header}
+    # H3 P0.4 — explicit deny-list for headers that might leak from a
+    # future client-propagation refactor. Today ``_client_headers`` is
+    # empty by construction (the forwarder does not read from
+    # ``ctx``-tagged request headers); applying the strip here is
+    # defence in depth. The merge order is significant: the per-tool
+    # ``auth_header`` (server-built from the registry credential) is
+    # applied AFTER the strip so it cannot be accidentally removed by
+    # a deny-list rule that overlaps the auth shape (e.g.
+    # ``Authorization`` / ``X-API-Key``).
+    _client_headers: dict[str, str] = {}
+    sanitised_client = _strip_dangerous_upstream_headers(_client_headers)
+    request_headers = {"Accept": _MCP_ACCEPT, **sanitised_client, **auth_header}
     try:
         async with httpx.AsyncClient(
             transport=transport,
