@@ -10,14 +10,16 @@
 | Script | What it stresses | Status |
 |---|---|---|
 | `health-throughput.js` | TLS edge + nginx → mcp-proxy plumbing (cheap read) | live |
+| `soak-stability.js` | Same path, 50 VUs sustained 1h — memory leak detection | live |
 | `dpop-egress.js` | DPoP signature verification + token issuance | TODO |
 | `a2a-routing.js` | Intra-org A2A message dispatch via PDP + broker | TODO |
 | `enrollment-burst.js` | Concurrent CSR issuance + DB insert | TODO |
 
-Only `health-throughput.js` is wired today. The remaining scenarios are
-listed so future work can land in one place. Each new scenario should
-keep the same conventions: human-readable `handleSummary` for the
-maintainer + a JSON dump (`summary.json`) for diffable artefacts.
+`health-throughput.js` and `soak-stability.js` are wired today. The
+remaining scenarios are listed so future work can land in one place.
+Each new scenario should keep the same conventions: human-readable
+`handleSummary` for the maintainer + a JSON dump (`summary.json` or
+`soak-summary.json`) for diffable artefacts.
 
 ## How to run
 
@@ -33,10 +35,18 @@ nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify health-throughput.js"
 # Or against a remote stack:
 BASE_URL=https://mastio.example.com:9443 \
     k6 run --insecure-skip-tls-verify health-throughput.js
+
+# Soak (1h sustained 50 VUs, watch for RSS drift in a second terminal):
+nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify soak-stability.js"
+docker stats --no-stream cullis-mastio-mcp-proxy-1   # in another shell
+
+# Shorter soak smoke (e.g. validate the script itself):
+SOAK_MINUTES=2 k6 run --insecure-skip-tls-verify soak-stability.js
 ```
 
-The script writes `summary.json` next to itself and prints a one-screen
-text summary to stdout. `summary.json` is gitignored.
+The scripts write `summary.json` / `soak-summary.json` next to
+themselves and print a one-screen text summary to stdout. Both JSON
+artefacts are gitignored.
 
 ## When to re-run
 
@@ -47,6 +57,10 @@ text summary to stdout. `summary.json` is gitignored.
   ships nginx-layer changes.
 - When operators report latency spikes or ENADDRNOTAVAIL upstream
   errors at scale.
+- Before a release that ships changes to long-lived resources (DB
+  connection pools, MCP session caches, audit hash chain accumulators):
+  re-run `soak-stability.js` for at least 1h and compare RSS at start
+  vs end — anything > 10 % drift is worth investigating.
 
 ## How to read the output
 
