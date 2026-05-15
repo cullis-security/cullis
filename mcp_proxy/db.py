@@ -358,6 +358,7 @@ async def log_audit(
     details: Mapping[str, Any] | None = None,
     request_id: str | None = None,
     duration_ms: float | None = None,
+    dpop_jkt: str | None = None,
 ) -> None:
     """Insert an immutable, hash-chained audit log entry.
 
@@ -382,6 +383,15 @@ async def log_audit(
             dict(details), separators=(",", ":"), sort_keys=True, default=str,
         )
 
+    # P1.2 — fall back to the per-request contextvar stamped by the
+    # DPoP auth deps so DPoP-bound paths populate the column without
+    # threading the value through every caller. The kwarg still wins
+    # when an explicit value is passed (audit replays / system tasks
+    # that want to assert a non-default jkt).
+    if dpop_jkt is None:
+        from mcp_proxy.auth.dpop_context import current_dpop_jkt
+        dpop_jkt = current_dpop_jkt()
+
     ts = datetime.now(timezone.utc).isoformat()
     async with _audit_chain_lock:
         for _attempt in range(_AUDIT_CHAIN_MAX_RETRIES):
@@ -405,11 +415,11 @@ async def log_audit(
                             """INSERT INTO audit_log (
                                    timestamp, agent_id, action, tool_name,
                                    status, detail, request_id, duration_ms,
-                                   chain_seq, prev_hash, row_hash
+                                   chain_seq, prev_hash, row_hash, dpop_jkt
                                ) VALUES (
                                    :timestamp, :agent_id, :action, :tool_name,
                                    :status, :detail, :request_id, :duration_ms,
-                                   :chain_seq, :prev_hash, :row_hash
+                                   :chain_seq, :prev_hash, :row_hash, :dpop_jkt
                                )"""
                         ),
                         {
@@ -424,6 +434,7 @@ async def log_audit(
                             "chain_seq": chain_seq,
                             "prev_hash": prev_hash,
                             "row_hash": row_hash,
+                            "dpop_jkt": dpop_jkt,
                         },
                     )
                     return

@@ -129,6 +129,12 @@ async def _enforce_local_token_dpop_binding(
             headers={"WWW-Authenticate": 'DPoP realm="mcp-proxy"'},
         )
 
+    # P1.2 — stamp the verified jkt into the per-request contextvar.
+    # log_audit() reads it as a fallback so the row that records this
+    # request links to the DPoP key without per-callsite plumbing.
+    from mcp_proxy.auth.dpop_context import set_dpop_jkt
+    set_dpop_jkt(proof_jkt)
+
 
 async def _is_known_local_kid(token: str, keystore) -> bool:
     """Pre-check: the token's ``kid`` matches a keystore row that is

@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from mcp_proxy.db import dispose_db, init_db
 from mcp_proxy.db_models import LocalMessage
 
-HEAD_REVISION = "0032_ai_creds_at_rest_enc"
+HEAD_REVISION = "0033_audit_dpop_jkt"
 PREVIOUS_REVISION = "0007_mcp_resources"
 
 
