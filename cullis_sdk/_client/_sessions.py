@@ -16,7 +16,16 @@ exposes ``_authed_request``, ``_egress_http`` and the boolean
 """
 from __future__ import annotations
 
+import warnings
+
 from cullis_sdk.types import SessionInfo
+
+
+# Sunset target shared by every session lifecycle method. ADR-008 makes
+# the oneshot fire-and-forget flow the canonical A2A surface (memory:
+# ``oneshot_only_for_demo``); these classical session helpers stay
+# around for one more minor before removal.
+_SUNSET = "Will be removed in cullis-sdk v0.5 (~2026-08-15)."
 
 
 class _SessionsMixin:
@@ -31,7 +40,16 @@ class _SessionsMixin:
         the proxy's local mini-broker handles intra-org and falls
         through to the broker bridge for cross-org. Direct-broker
         clients keep using ``/v1/broker/sessions``.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`send_oneshot` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.open_session() is deprecated. Use send_oneshot(...) "
+            f"instead for the canonical A2A surface. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             resp = self._egress_http("post", "/v1/egress/sessions", json={
                 "target_agent_id": target_agent_id,
@@ -50,7 +68,18 @@ class _SessionsMixin:
         return resp.json()["session_id"]
 
     def accept_session(self, session_id: str) -> None:
-        """Accept a pending session."""
+        """Accept a pending session.
+
+        .. deprecated:: 0.4.x
+           Use an oneshot-based flow (``send_oneshot`` / ``receive_oneshot``)
+           instead. Will be removed in v0.5.
+        """
+        warnings.warn(
+            "CullisClient.accept_session() is deprecated. Use an oneshot-based "
+            f"flow (send_oneshot/receive_oneshot) instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             resp = self._egress_http(
                 "post", f"/v1/egress/sessions/{session_id}/accept"
@@ -69,7 +98,16 @@ class _SessionsMixin:
         terminal state with the same semantics for the initiator).
         Direct-broker clients still get the reject path so the broker
         can distinguish 'rejected by target' from 'closed'.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`send_oneshot` (sessionless) instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.reject_session() is deprecated. Use send_oneshot(...) "
+            f"(sessionless) instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             resp = self._egress_http(
                 "post", f"/v1/egress/sessions/{session_id}/close"
@@ -81,7 +119,18 @@ class _SessionsMixin:
         resp.raise_for_status()
 
     def close_session(self, session_id: str) -> None:
-        """Close an active session."""
+        """Close an active session.
+
+        .. deprecated:: 0.4.x
+           Use an oneshot-based flow (``send_oneshot`` / ``receive_oneshot``)
+           instead. Will be removed in v0.5.
+        """
+        warnings.warn(
+            "CullisClient.close_session() is deprecated. Use an oneshot-based "
+            f"flow (send_oneshot/receive_oneshot) instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             resp = self._egress_http(
                 "post", f"/v1/egress/sessions/{session_id}/close"
@@ -98,7 +147,16 @@ class _SessionsMixin:
         The egress shape wraps the list in ``{"sessions": [...]}`` and
         the broker shape returns a flat list — unwrap on the egress
         side so callers see the same return type.
+
+        .. deprecated:: 0.4.x
+           Use discovery + ``send_oneshot`` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.list_sessions() is deprecated. Use discovery + "
+            f"send_oneshot(...) instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         params = {}
         if status:
             params["status"] = status

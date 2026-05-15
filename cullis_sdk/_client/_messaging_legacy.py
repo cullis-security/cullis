@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import warnings
 from typing import Any
 
 import httpx
@@ -64,6 +65,13 @@ from cullis_sdk._logging import RED, log
 from cullis_sdk.crypto.e2e import decrypt_from_agent, encrypt_for_agent
 from cullis_sdk.crypto.message_signer import sign_message, verify_signature
 from cullis_sdk.types import InboxMessage
+
+
+# Sunset target shared by every legacy session-based messaging method.
+# ADR-008 makes the oneshot fire-and-forget surface canonical (memory:
+# ``oneshot_only_for_demo``); these helpers stay around for one more
+# minor before removal.
+_SUNSET = "Will be removed in cullis-sdk v0.5 (~2026-08-15)."
 
 
 class _MessagingLegacyMixin:
@@ -90,7 +98,16 @@ class _MessagingLegacyMixin:
           ``{"status": "accepted", "session_id": ...}``  (direct push)
           ``{"status": "queued",   "msg_id": ..., "deduped": False, "session_id": ...}``
         so the caller can react to queued deliveries.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`send_oneshot` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.send() is deprecated. Use send_oneshot(...) instead "
+            f"for the canonical A2A surface. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self._signing_key_pem:
             raise RuntimeError("Signing key not available — call login() first")
 
@@ -214,7 +231,16 @@ class _MessagingLegacyMixin:
         bundle) or assigned manually to ``_signing_key_pem`` after
         :meth:`from_api_key_file` — when the resolver picks
         ``mtls-only``.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`send_oneshot` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.send_via_proxy() is deprecated. Use send_oneshot(...) "
+            f"instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resolve_resp = self._egress_http(
             "post",
             "/v1/egress/resolve",
@@ -317,7 +343,18 @@ class _MessagingLegacyMixin:
         ``envelope`` messages are handed back untouched; the existing
         ``decrypt_from_agent`` helper remains the caller's responsibility
         until the envelope-via-proxy pass-through lands in a follow-up.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`receive_oneshot` / :meth:`poll_oneshot_inbox` instead.
+           Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.receive_via_proxy() is deprecated. Use "
+            "receive_oneshot(...) or poll_oneshot_inbox(...) instead. "
+            f"{_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resp = self._egress_http(
             "get",
             f"/v1/egress/messages/{session_id}",
@@ -391,7 +428,16 @@ class _MessagingLegacyMixin:
         Returns ``True`` on 204, ``False`` on 404/409 (terminal state —
         safe to continue; the broker has already moved on). Raises on
         transport failures so the caller can retry.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`ack_oneshot` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.ack_message() is deprecated. Use ack_oneshot(...) "
+            f"instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             return self.ack_via_proxy(session_id, msg_id)
         path = f"/v1/broker/sessions/{session_id}/messages/{msg_id}/ack"
@@ -409,7 +455,16 @@ class _MessagingLegacyMixin:
 
         Returns the message dict with the payload replaced by the decrypted plaintext.
         Raises ValueError if decryption fails (integrity violation).
+
+        .. deprecated:: 0.4.x
+           Use :meth:`decrypt_oneshot` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.decrypt_payload() is deprecated. Use decrypt_oneshot(...) "
+            f"instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self._signing_key_pem:
             return msg
         p = msg.get("payload", {})
@@ -439,7 +494,16 @@ class _MessagingLegacyMixin:
         blob to a JSON string under ``payload_ciphertext``. Reverse
         both shape diffs so callers see the same ``list[InboxMessage]``
         as the broker path.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`poll_oneshot_inbox` instead. Will be removed in v0.5.
         """
+        warnings.warn(
+            "CullisClient.poll() is deprecated. Use poll_oneshot_inbox(...) "
+            f"instead. {_SUNSET}",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self._use_egress_for_sessions:
             for attempt in range(5):
                 try:

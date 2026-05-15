@@ -44,7 +44,20 @@ class _WebSocketMixin:
         carries ``queued: true``. Pass ``auto_ack=False`` if the
         application needs process-then-ack semantics (call
         :meth:`ack_message` manually).
+
+        .. deprecated:: 0.4.x
+           Use :meth:`poll_oneshot_inbox` for polling, or implement a native
+           WebSocket consumer against the broker. Will be removed in v0.5.
         """
+        import warnings
+        warnings.warn(
+            "CullisClient.connect_websocket() is deprecated. Use "
+            "poll_oneshot_inbox(...) for polling, or implement a native WS "
+            "consumer against the broker. "
+            "Will be removed in cullis-sdk v0.5 (~2026-08-15).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return WebSocketConnection(
             self,
             auto_ack=auto_ack,
