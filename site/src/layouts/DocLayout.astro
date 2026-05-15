@@ -21,7 +21,7 @@ for (const doc of sorted) {
   if (!groups[doc.data.category]) groups[doc.data.category] = [];
   groups[doc.data.category].push(doc);
 }
-const categoryOrder = ['Quickstart', 'Install', 'Enroll', 'Operate', 'Reference'];
+const categoryOrder = ['Quickstart', 'Install', 'Enroll', 'Operate', 'Security', 'Reference'];
 const orderedCategories = Object.keys(groups).sort(
   (a, b) => categoryOrder.indexOf(a) - categoryOrder.indexOf(b)
 );
