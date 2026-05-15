@@ -103,76 +103,6 @@ async def _register_agent_on_broker(agent_id: str, org_id: str) -> None:
         )
 
 
-@pytest.mark.skip(
-    reason="ADR-012 + PR-D: standalone-default boots the local /v1/auth/token "
-           "handler at module import, so /v1/auth/token never falls through to "
-           "the reverse-proxy forwarder. DPoP htu / x5c propagation is now "
-           "tested via the local handler path (test_proxy_local_token.py)."
-)
-@pytest.mark.asyncio
-async def test_auth_token_via_proxy(proxy_forwarding, dpop):
-    """Agent auth via proxy: DPoP htu and x5c both propagate so broker accepts."""
-    _, client = proxy_forwarding
-
-    org_id = f"rp-org-{uuid.uuid4().hex[:6]}"
-    agent_id = f"{org_id}::agent-1"
-    await _register_agent_on_broker(agent_id, org_id)
-
-    # Prime the DPoP nonce via the proxy (health endpoint lives on the proxy
-    # itself, so prime directly from the broker to match the DPoP helper).
-    async with AsyncClient(
-        transport=ASGITransport(app=broker_app), base_url="http://test",
-    ) as broker:
-        prime = await broker.get("/health")
-        dpop._update_nonce(prime)
-
-    assertion = make_assertion(agent_id, org_id)
-    dpop_proof = dpop.proof("POST", "/v1/auth/token")
-    resp = await client.post(
-        "/v1/auth/token",
-        json={"client_assertion": assertion},
-        headers={"DPoP": dpop_proof},
-    )
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["token_type"] == "DPoP"
-    assert body["access_token"]
-    # The proxy tags every reverse-proxied response so SDKs can detect role.
-    assert resp.headers.get("x-cullis-role") == "proxy"
-
-
-@pytest.mark.skip(
-    reason="ADR-012 + PR-D: see test_auth_token_via_proxy. /v1/auth/token "
-           "doesn't reach the reverse-proxy forwarder; the local handler "
-           "is responsible for DPoP-Nonce now."
-)
-@pytest.mark.asyncio
-async def test_dpop_nonce_header_propagates(proxy_forwarding, dpop):
-    """Broker-issued DPoP-Nonce header must survive reverse-proxy forwarding."""
-    _, client = proxy_forwarding
-
-    org_id = f"rp-nonce-{uuid.uuid4().hex[:6]}"
-    agent_id = f"{org_id}::agent-1"
-    await _register_agent_on_broker(agent_id, org_id)
-
-    # Send a proof without a nonce — the broker replies 401 use_dpop_nonce
-    # with a fresh DPoP-Nonce header. The proxy must forward that header
-    # verbatim so the SDK can retry with it.
-    dpop._nonce = None
-    assertion = make_assertion(agent_id, org_id)
-    proof_no_nonce = dpop.proof("POST", "/v1/auth/token", nonce=None)
-    resp = await client.post(
-        "/v1/auth/token",
-        json={"client_assertion": assertion},
-        headers={"DPoP": proof_no_nonce},
-    )
-    assert resp.status_code == 401
-    assert "use_dpop_nonce" in resp.text
-    assert resp.headers.get("dpop-nonce"), "proxy dropped DPoP-Nonce header"
-    assert resp.headers.get("x-cullis-role") == "proxy"
-
-
 @pytest.mark.asyncio
 async def test_reverse_proxy_tags_role_header(proxy_forwarding):
     """Any reverse-proxied response must carry x-cullis-role=proxy."""
@@ -185,17 +115,3 @@ async def test_reverse_proxy_tags_role_header(proxy_forwarding):
     assert resp.headers.get("x-cullis-role") == "proxy"
 
 
-@pytest.mark.skip(
-    reason="ADR-012 + PR-D: see test_auth_token_via_proxy. The 503 "
-           "broker_url-missing short-circuit no longer fires for /v1/auth/token "
-           "(local handler intercepts). The reverse-proxy 503 path is still "
-           "exercised on other forwarded routes."
-)
-@pytest.mark.asyncio
-async def test_reverse_proxy_503_when_broker_url_unset(proxy_forwarding):
-    """With no broker_url configured, the reverse proxy short-circuits 503."""
-    proxy_app, client = proxy_forwarding
-    proxy_app.state.reverse_proxy_broker_url = None
-
-    resp = await client.post("/v1/auth/token", json={})
-    assert resp.status_code == 503, resp.text

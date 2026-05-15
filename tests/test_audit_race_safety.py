@@ -55,6 +55,8 @@ async def race_db():
         await session.commit()
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_revoke_binding_sets_token_invalidated_at(race_db: AsyncSession):
     """Audit F-D-1: ``revoke_binding`` must stamp ``token_invalidated_at``
     on the agent row so tokens issued before the revoke fail the
@@ -109,6 +111,8 @@ async def test_revoke_binding_sets_token_invalidated_at(race_db: AsyncSession):
 # ────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_concurrent_log_event_produces_distinct_seq(race_db: AsyncSession):
     """Audit F-D-8, happy path under gather pressure.
 
@@ -142,6 +146,8 @@ async def test_concurrent_log_event_produces_distinct_seq(race_db: AsyncSession)
     assert total == n_concurrent
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_log_event_retries_on_chain_seq_collision(race_db: AsyncSession):
     """Audit F-D-8: simulate a multi-worker collision by inserting a row
     with the seq our next ``log_event`` will try, bypassing the
@@ -203,6 +209,8 @@ async def proxy_audit_db(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_proxy_local_audit_unique_constraint_triggers_retry(proxy_audit_db):
     """Audit F-D-8 proxy twin: append_local_audit must retry on
     ``UNIQUE(org_id, chain_seq)`` collision (simulating a second worker

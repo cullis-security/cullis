@@ -66,6 +66,8 @@ async def mgr(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 async def test_concurrent_rotations_exactly_one_succeeds(mgr):
     """Two rotations fired with ``asyncio.gather`` must resolve with
     exactly one success and one deterministic error — never both

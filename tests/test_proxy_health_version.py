@@ -14,10 +14,23 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.serial
+@pytest.mark.xdist_group(name="serial_state_mutators")
 def test_mastio_version_defaults_to_dev_in_source_checkout():
     """Without CULLIS_MASTIO_VERSION env (the default for a source
     checkout / pytest run), ``_MASTIO_VERSION`` is ``dev`` so ops cannot
-    confuse a dev process with a tagged release."""
+    confuse a dev process with a tagged release.
+
+    Marked serial: ``mcp_proxy.main._MASTIO_VERSION`` is a module-level
+    constant resolved at first import. Any test in another file that
+    sets ``CULLIS_MASTIO_VERSION`` env + re-imports the module
+    (intentionally or by side-effect) parks a non-``dev`` value that
+    this test then sees. 6 reruns across PRs #720 / #722 / #723 / #727
+    / #728 / #730 traced to this pattern. The xdist_group marker is a
+    forward-looking pin for when the suite migrates to
+    ``--dist=loadgroup``; today it still lets ``pytest -m serial`` run
+    this test in isolation.
+    """
     import mcp_proxy.main as _m
     assert _m._MASTIO_VERSION == "dev"
 
