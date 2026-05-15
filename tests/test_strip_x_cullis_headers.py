@@ -140,38 +140,32 @@ async def test_log_silent_by_default(monkeypatch):
     """Default config: silent. A noisy client must not flood the log
     with one entry per request.
 
-    Verified by hooking the mcp_proxy logger's records list directly:
-    ``caplog`` is unreliable here because the production logger
-    setup runs with ``propagate=False`` and rewires handlers under
-    uvicorn, so a normal ``caplog.at_level`` misses the records.
-    Same pattern the global rate limit logging takes (see memory
-    ``mastio_logger_silently_muted_in_lifespan``).
+    Verified by monkey-patching the module-level ``_log`` so we
+    capture the calls directly. ``caplog`` is unreliable here because
+    the production logger setup runs with ``propagate=False`` and
+    uvicorn rewires its handlers, dropping caplog hooks mid-run on CI
+    (see memory ``mastio_logger_silently_muted_in_lifespan``).
     """
     monkeypatch.delenv("CULLIS_LOG_STRIPPED_HEADERS", raising=False)
+    from mcp_proxy.middleware import strip_x_cullis_headers as mod
+
+    captured: list[tuple[str, tuple]] = []
+
+    class _FakeLog:
+        def info(self, msg, *args):
+            captured.append((msg, args))
+
+    monkeypatch.setattr(mod, "_log", _FakeLog())
+
     app = _build_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
 
-    captured: list[logging.LogRecord] = []
-
-    class _CollectHandler(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    logger = logging.getLogger("mcp_proxy")
-    handler = _CollectHandler(level=logging.INFO)
-    logger.addHandler(handler)
-    prev_level = logger.level
-    logger.setLevel(logging.INFO)
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(prev_level)
-
+    rendered = [(msg % args) if args else msg for msg, args in captured]
     assert not any(
-        "stripped" in (r.getMessage() or "") and "x-cullis" in r.getMessage().lower()
-        for r in captured
+        "stripped" in line and "x-cullis" in line.lower()
+        for line in rendered
     )
 
 
@@ -180,42 +174,37 @@ async def test_log_fires_under_opt_in(monkeypatch):
     """``CULLIS_LOG_STRIPPED_HEADERS=1`` → INFO record per stripped
     request, with the stripped names visible for forensic correlation.
 
-    Same handler-attached collector pattern as the silent test —
+    Same module-level monkey-patch pattern as the silent test —
     pytest's ``caplog`` fixture misses records when ``propagate=False``
     + uvicorn's logging reinit drop them mid-test on CI runners.
     """
     monkeypatch.setenv("CULLIS_LOG_STRIPPED_HEADERS", "1")
+    from mcp_proxy.middleware import strip_x_cullis_headers as mod
+
+    captured: list[tuple[str, tuple]] = []
+
+    class _FakeLog:
+        def info(self, msg, *args):
+            captured.append((msg, args))
+
+    monkeypatch.setattr(mod, "_log", _FakeLog())
+
     # Snapshot env at construction (see middleware docstring); rebuild
     # the app after setenv.
     app = _build_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
 
-    captured: list[logging.LogRecord] = []
-
-    class _CollectHandler(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    logger = logging.getLogger("mcp_proxy")
-    handler = _CollectHandler(level=logging.INFO)
-    logger.addHandler(handler)
-    prev_level = logger.level
-    logger.setLevel(logging.INFO)
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(prev_level)
-
-    msgs = [r.getMessage() for r in captured]
+    rendered = [(msg % args) if args else msg for msg, args in captured]
     # ASGI normalises header names to lower-case on the wire, so the
     # log message records the lower form regardless of how the client
     # spelled it. The forensic correlation point is the header family
     # ("x-cullis-trust"), not the exact casing.
     assert any(
-        "stripped" in m and "x-cullis-trust" in m.lower() for m in msgs
-    ), msgs
+        "stripped" in line and "x-cullis-trust" in line.lower()
+        for line in rendered
+    ), rendered
 
 
 # ── pass-through when no X-Cullis-* present ────────────────────────
