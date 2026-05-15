@@ -171,6 +171,76 @@ def reset_cache() -> None:
     _cached = None
 
 
+class LicenseSwapError(Exception):
+    """Raised by :func:`swap_token` when a candidate token is rejected.
+
+    The cached license remains unchanged so a bad swap (operator paste
+    error, expired JWT, wrong-tenant token) cannot accidentally
+    downgrade a running deployment to community.
+    """
+
+
+def swap_token(new_token: str) -> LicenseClaims:
+    """Hot-swap the in-process license without a restart (H3 P0.2).
+
+    Validates ``new_token`` against the same baked / overridden public
+    key used at boot. On success the cached :class:`LicenseClaims` is
+    replaced atomically and the plugin registry is invalidated so the
+    feature gate re-applies on the next call. On failure the cache
+    stays unchanged and :class:`LicenseSwapError` is raised with a
+    short reason the dashboard can show to the operator.
+
+    Pubkey rotation (i.e. swapping the verifier itself, not just the
+    license token) still requires a container rebuild — that's
+    intentional, the pubkey is part of the supply-chain attestation.
+    """
+    global _cached
+
+    candidate = (new_token or "").strip()
+    if not candidate:
+        raise LicenseSwapError("license token is empty")
+
+    pubkey = _load_pubkey()
+    if not pubkey:
+        # Public-repo placeholder build: refuse to claim a swap
+        # succeeded when verification is impossible.
+        raise LicenseSwapError(
+            "no real license pubkey configured (set CULLIS_LICENSE_PUBKEY_PATH)",
+        )
+
+    claims = _verify(candidate, pubkey)
+    if claims is None:
+        # _verify already logged the underlying reason (expired /
+        # invalid signature). Surface a stable short message.
+        raise LicenseSwapError(
+            "license token failed verification (expired or wrong signature)",
+        )
+
+    # Atomic replace. Tier downgrades + entitlement narrowing are
+    # legitimate operator actions (e.g. a customer downsizing their
+    # plan); the dashboard surfaces the new tier so this is visible.
+    _cached = claims
+    _log.info(
+        "license hot-swap: tier=%s org=%s features=%d exp=%s",
+        claims.tier,
+        claims.org,
+        len(claims.features),
+        time.strftime("%Y-%m-%d", time.gmtime(claims.exp)) if claims.exp else "unset",
+    )
+
+    # The plugin registry caches its feature-filtered view at first
+    # use; force it to re-evaluate against the new claims so paid
+    # plugins that were dark before this swap come online (and vice
+    # versa for a downgrade).
+    try:
+        from mcp_proxy.plugins import reset_registry
+        reset_registry()
+    except Exception:  # defensive — never fail the swap on a side-effect
+        _log.exception("plugin registry reset after license swap failed")
+
+    return claims
+
+
 def has_feature(feature: str) -> bool:
     return load_license().has(feature)
 
