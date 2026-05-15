@@ -23,8 +23,6 @@ and assert that:
 """
 from __future__ import annotations
 
-import logging
-
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI, Request
