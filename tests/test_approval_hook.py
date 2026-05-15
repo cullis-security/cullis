@@ -18,7 +18,10 @@ from starlette.responses import RedirectResponse
 
 from mcp_proxy import plugins as mp_plugins
 from mcp_proxy.admin.approval_hook import (
+    ACTION_AGENT_ENROLL,
     ACTION_AGENTS_DELETE,
+    ACTION_FEDERATION_PEER,
+    ACTION_LICENSE_IMPORT,
     ACTION_MASTIO_KEY_ROTATE,
     ACTION_PKI_ROTATE_CA,
     ACTION_POLICIES_SAVE,
@@ -524,3 +527,67 @@ async def test_default_plugin_is_internal_replay_false():
     keep seeing every request as a fresh action."""
     p = Plugin()
     assert await p.is_internal_replay(_mock_request(), ACTION_POLICIES_SAVE) is False
+
+
+# ── H3 P0.5: new ACTION_* constants ───────────────────────────────────────
+
+
+def test_new_action_constants_are_distinct_and_stable():
+    """The three new ACTION_* identifiers must be distinct strings and
+    must not collide with the existing six. Plugins persist these
+    strings in their config rows, so a rename is a coordinated release."""
+    new = {
+        ACTION_AGENT_ENROLL: "agent.enroll",
+        ACTION_LICENSE_IMPORT: "license.import",
+        ACTION_FEDERATION_PEER: "federation.peer",
+    }
+    # Each constant must equal its documented stable identifier.
+    for const, expected in new.items():
+        assert const == expected, f"{const!r} drifted from {expected!r}"
+
+    existing = {
+        ACTION_POLICIES_SAVE, ACTION_PKI_ROTATE_CA, ACTION_MASTIO_KEY_ROTATE,
+        ACTION_VAULT_MIGRATE_KEYS, ACTION_USERS_DELETE, ACTION_AGENTS_DELETE,
+    }
+    overlap = set(new) & existing
+    assert overlap == set(), (
+        f"new ACTION_* collide with existing ones: {overlap}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_intercept_gates_agent_enroll_when_plugin_opts_in(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Wiring smoke: the enrolment approve path runs through
+    maybe_intercept_for_approval with ACTION_AGENT_ENROLL."""
+    captured: dict[str, Any] = {}
+
+    class EnrollGate(Plugin):
+        name = "enroll_gate"
+
+        def approval_required(self, action_type: str) -> bool:
+            return action_type == ACTION_AGENT_ENROLL
+
+        async def submit_approval(
+            self, action_type: str, payload: dict, submitter_id: str,
+        ) -> str:
+            captured["action_type"] = action_type
+            captured["payload"] = payload
+            return "01HENROLL..."
+
+    monkeypatch.setattr(
+        mp_plugins, "get_registry",
+        lambda: PluginRegistry(plugins=[EnrollGate()]),
+    )
+
+    result = await maybe_intercept_for_approval(
+        session=_mock_session(),
+        action_type=ACTION_AGENT_ENROLL,
+        payload={"agent_id": "alice", "capabilities": ["mcp.tools.call"]},
+    )
+
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == 303
+    assert captured["action_type"] == ACTION_AGENT_ENROLL
+    assert captured["payload"]["agent_id"] == "alice"

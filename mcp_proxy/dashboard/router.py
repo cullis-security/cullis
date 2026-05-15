@@ -45,6 +45,7 @@ from mcp_proxy.dashboard.session import (
     MIN_PASSWORD_LENGTH,
 )
 from mcp_proxy.admin.approval_hook import (
+    ACTION_AGENT_ENROLL,
     ACTION_AGENTS_DELETE,
     ACTION_MASTIO_KEY_ROTATE,
     ACTION_PKI_ROTATE_CA,
@@ -3055,6 +3056,25 @@ async def enrollments_approve(request: Request, session_id: str):
 
     capabilities = [c.strip() for c in capabilities_raw.split(",") if c.strip()]
     groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+
+    # H3 P0.5 — 4-eyes intercept. When the enterprise rbac_multi_admin
+    # plugin is loaded and policy-gated, this submits the action for a
+    # second admin signoff and redirects the submitter to the approvals
+    # page. When no plugin opts in (community / single-admin deploys),
+    # the helper returns None and the endpoint proceeds unchanged.
+    intercept = await maybe_intercept_for_approval(
+        session=session,
+        action_type=ACTION_AGENT_ENROLL,
+        payload={
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "capabilities": capabilities,
+            "groups": groups,
+        },
+        request=request,
+    )
+    if intercept is not None:
+        return intercept
 
     agent_manager = _resolve_agent_manager(request)
 
