@@ -260,6 +260,53 @@ async def _handle_stream(
             detail={"reason": exc.reason, "trace_id": trace_id},
         ) from exc
 
+    # P1 Cullis Chat SSE backend — tool_call event emission.
+    # ``tool_call_start`` and ``tool_call_end`` are named SSE events the
+    # SPA's parser (frontend/cullis-chat/src/lib/sse.ts) listens to so
+    # the ``ToolCallIndicator`` chip renders against real traffic, not
+    # only against the mock ambassador. LiteLLM normalises every
+    # provider (Anthropic, OpenAI, Bedrock, …) to the OpenAI delta
+    # shape, so a single parser on ``delta.tool_calls`` covers them
+    # all. Per-tool audit rows mirror the local audit conventions
+    # established for ``egress_llm_chat`` and reuse the same trace_id.
+    tool_state: dict[int, dict] = {}   # index → {name, started_at}
+    tools_summary: list[dict] = []     # for the trailing cullis_audit event
+
+    async def _emit_tool_end(idx: int, st: dict):
+        latency_ms = int((time.monotonic() - st["started_at"]) * 1000)
+        tools_summary.append({"name": st["name"], "latency_ms": latency_ms})
+        try:
+            await log_audit(
+                agent_id=agent.agent_id,
+                action="llm.tool_call",
+                status="success",
+                tool_name=st["name"],
+                duration_ms=float(latency_ms),
+                details={
+                    "event": "llm.tool_call",
+                    "principal_id": agent.agent_id,
+                    "principal_type": agent.principal_type,
+                    "backend": streamer.backend,
+                    "provider": streamer.provider,
+                    "model": req.model,
+                    "trace_id": trace_id,
+                    "tool": st["name"],
+                    "latency_ms": latency_ms,
+                },
+            )
+        except Exception as exc:
+            # Audit failure must not break the SSE stream — the
+            # surrounding ``egress_llm_chat`` row will still record
+            # the overall request, and the operator will see the
+            # log warning. ``audit_fail_deny`` decides whether the
+            # individual log_audit raises; we swallow at the boundary
+            # so a per-tool hiccup does not 500 the chat.
+            logger.warning(
+                "log_audit for tool_call %s failed: %s",
+                st["name"], exc,
+            )
+        return latency_ms
+
     async def sse():
         terminated_with_error: GatewayError | None = None
         try:
@@ -269,7 +316,64 @@ async def _handle_stream(
                 # mid-stream client disconnect. The backend stays
                 # trace-id-agnostic.
                 chunk.setdefault("cullis_trace_id", trace_id)
+
+                # Tool-call delta parser. Wrapped in a defensive
+                # try/except so a malformed chunk from a misbehaving
+                # provider does not poison the user-visible stream;
+                # the data: frame is still yielded below regardless.
+                try:
+                    choices = chunk.get("choices") or []
+                    if choices:
+                        choice0 = choices[0]
+                        delta = choice0.get("delta") or {}
+                        tc_list = delta.get("tool_calls") or []
+                        for tc in tc_list:
+                            idx = tc.get("index", 0)
+                            fn = tc.get("function") or {}
+                            name = fn.get("name")
+                            # ``name`` arrives on the first delta of a
+                            # tool block; subsequent deltas carry only
+                            # ``arguments`` increments. Emit
+                            # tool_call_start exactly once per index.
+                            if name and idx not in tool_state:
+                                tool_state[idx] = {
+                                    "name": name,
+                                    "started_at": time.monotonic(),
+                                }
+                                yield (
+                                    "event: tool_call_start\n"
+                                    f"data: {json.dumps({'tool': name})}\n\n"
+                                )
+
+                        # ``finish_reason='tool_calls'`` closes every
+                        # active tool block in this assistant turn.
+                        finish = choice0.get("finish_reason")
+                        if finish == "tool_calls" and tool_state:
+                            for idx, st in list(tool_state.items()):
+                                latency_ms = await _emit_tool_end(idx, st)
+                                yield (
+                                    "event: tool_call_end\n"
+                                    f"data: {json.dumps({'tool': st['name'], 'latency_ms': latency_ms})}\n\n"
+                                )
+                                del tool_state[idx]
+                except Exception as parser_exc:
+                    logger.warning(
+                        "tool_call SSE parser skipped chunk: %s",
+                        parser_exc,
+                    )
+
                 yield f"data: {json.dumps(chunk)}\n\n"
+
+            # Trailing summary event the SPA uses to populate the
+            # audit panel ("3 tools called in 470ms"). Shape mirrors
+            # the mock ambassador (frontend/cullis-chat/mock/ambassador.mjs).
+            if tools_summary:
+                summary = {
+                    "trace_id": trace_id,
+                    "latency_ms": int(streamer.latency_ms),
+                    "tools": tools_summary,
+                }
+                yield f"event: cullis_audit\ndata: {json.dumps(summary)}\n\n"
             yield "data: [DONE]\n\n"
         except GatewayError as exc:
             terminated_with_error = exc
