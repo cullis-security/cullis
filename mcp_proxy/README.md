@@ -63,6 +63,60 @@ sync/              Federation sync workers
 tools/             CLI helpers
 ```
 
+## MCP builtin: `cullis_send_to_agent`
+
+The Mastio's MCP aggregator (`POST /v1/mcp`) ships with a builtin tool
+that lets any MCP client (Frontdesk SPA, Claude Code, Codex, Cursor,
+LibreChat, ...) ask the model to send a one-shot message to another
+Cullis agent without writing transport code. Identity propagation +
+audit chain are handled server-side — the model only supplies
+recipient and content.
+
+```jsonc
+// JSON-RPC tools/call body
+{
+  "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": {
+    "name": "cullis_send_to_agent",
+    "arguments": {
+      "target_agent_id": "mario",              // bare name, or "orgb::mario", or "spiffe://..."
+      "target_org_id": "orgb",                  // optional; defaults to caller's org
+      "content": "lavoro finito",               // string → {"text": ...}, or pass a dict
+      "correlation_id": "corr-abc",             // optional; server generates one when omitted
+      "reply_to": "msg-prev",                   // optional
+      "ttl_seconds": 300                        // optional; default 5 min, max 1 h
+    }
+  }
+}
+```
+
+Response shape (success):
+
+```jsonc
+{
+  "correlation_id": "...", "msg_id": "...",
+  "status": "enqueued", "target_agent_id": "...", "target_org_id": "..."
+}
+```
+
+Errors come back as `{ "error": "reach_denied" | "policy_denied" |
+"invalid_recipient" | "broker_unavailable" | "broker_forward_failed" |
+"send_failed" | "invalid_parameters", "reason": "..." }` so the model
+can branch in-band. The Mastio audit chain still captures the specific
+detail for ops.
+
+Capability gate: agents need `cullis.a2a.send` in their scope. Typed
+principals (user / workload) bypass the scope check — their binding
+table is the authoritative authz — but the same reach + policy +
+audit gates apply.
+
+Implementation note: the tool invokes
+`mcp_proxy.egress.oneshot.send_oneshot_internal` directly. There is
+no loopback HTTP + ephemeral DPoP (the pattern that broke
+`chat_completion`). The HTTP route `POST /v1/egress/message/send` is
+now a thin wrapper around the same helper, so the two surfaces share
+one implementation.
+
 ## Running
 
 For local dev and demos, use the sandbox stack at the repo root:

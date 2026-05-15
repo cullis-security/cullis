@@ -187,6 +187,7 @@ async def _handle_tools_call(
         agent=agent,
         db=None,
         secret_provider=secret_provider,
+        app_state=request.app.state,
     )
 
     if resp.status == "success":

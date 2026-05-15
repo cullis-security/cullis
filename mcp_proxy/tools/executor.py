@@ -31,12 +31,19 @@ async def run(
     secret_provider: SecretProvider,
     *,
     timeout: float = DEFAULT_TOOL_TIMEOUT,
+    app_state: Any | None = None,
 ) -> ToolExecuteResponse:
     """Execute a tool on behalf of an authenticated agent.
 
     The ``db`` parameter is retained for API compatibility but no longer
     used — ``log_audit`` opens its own connection via ``get_db()`` since
     the SQLAlchemy async refactor (#36).
+
+    ``app_state`` is the FastAPI ``request.app.state`` object (or
+    equivalent) so handlers that need cross-subsystem dependencies
+    (broker bridge, WS manager, audit chain) can fetch them from a
+    single well-known location. Callers that don't have one (CLI
+    paths, unit tests) pass ``None``.
     """
     del db  # kept in signature for backwards compatibility
     t0 = time.monotonic()
@@ -161,6 +168,7 @@ async def run(
             http_client=http_client,
             request_id=request_id,
             secret_provider=secret_provider,
+            app_state=app_state,
         )
 
         # 5. Execute handler with timeout

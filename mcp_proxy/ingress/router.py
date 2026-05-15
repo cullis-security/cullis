@@ -57,6 +57,7 @@ async def execute_tool(
         agent=agent,
         db=db,
         secret_provider=secret_provider,
+        app_state=request.app.state,
     )
     return response
 

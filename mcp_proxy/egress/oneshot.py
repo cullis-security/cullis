@@ -159,24 +159,37 @@ def _serialize_envelope(body: SendOneShotRequest) -> str:
     return json.dumps(envelope, separators=(",", ":"), sort_keys=True)
 
 
-# ── POST /v1/egress/message/send ────────────────────────────────────
+# ── send_oneshot helpers — Python-callable + HTTP route ─────────────
+#
+# Refactor 2026-05-15 (scope #5 of the session roadmap): the body of the
+# original ``send_oneshot`` route handler is now ``send_oneshot_internal``,
+# a pure async function that takes already-resolved state. The HTTP
+# route is a thin wrapper that pulls dependencies via FastAPI's DI and
+# forwards. The MCP tool builtin ``cullis_send_to_agent`` invokes the
+# internal helper directly — no loopback HTTP + ephemeral DPoP (which
+# would trip the chat_completion DPoP-pinning bug pattern).
 
-@router.post("/message/send", response_model=SendOneShotResponse)
-async def send_oneshot(
+async def send_oneshot_internal(
+    *,
+    agent: InternalAgent,
     body: SendOneShotRequest,
-    request: Request,
-    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
+    broker_bridge: Any | None,
+    ws_manager: Any | None,
+    settings: Any,
 ) -> SendOneShotResponse:
-    """Enqueue a sessionless message for delivery to ``recipient_id``.
+    """Enqueue a sessionless message — Python-callable form.
 
-    Intra-org recipients land in ``local_messages`` with ``is_oneshot=1``
-    and get pushed via the local WS manager if the recipient is online,
-    queued otherwise.
+    Identical semantics to the ``POST /v1/egress/message/send`` route
+    (and used by it): reach gate → policy gate → local enqueue +
+    optional WS push, or cross-org forward via the broker bridge.
+    Audit rows are written through ``append_local_audit`` exactly as
+    the route used to.
 
-    Cross-org recipients return 501 until Phase 2 wires the broker-side
-    forwarder.
+    Raises ``HTTPException`` on reach-deny / policy-deny / missing
+    bridge / broker-forward failure — same status codes the route
+    surfaces to the SDK. In-process callers (the MCP tool runner)
+    catch ``HTTPException`` and translate to their own error envelope.
     """
-    settings = get_settings()
     local_org = settings.org_id or ""
     trust_domain = settings.trust_domain
 
@@ -247,7 +260,7 @@ async def send_oneshot(
         )
 
     if path == "cross":
-        bridge = getattr(request.app.state, "broker_bridge", None)
+        bridge = broker_bridge
         if bridge is None:
             await append_local_audit(
                 event_type="oneshot_denied",
@@ -354,7 +367,6 @@ async def send_oneshot(
     # Push via the local WS manager if the recipient is connected. The
     # session-based /send does this via app.state.local_ws_manager; same
     # hook works for one-shot. Offline recipients drain on next connect.
-    ws_manager = getattr(request.app.state, "local_ws_manager", None)
     if ws_manager is not None and inserted:
         try:
             await ws_manager.send_to_agent(
@@ -387,6 +399,28 @@ async def send_oneshot(
         correlation_id=corr_id,
         msg_id=msg_id,
         status="duplicate" if not inserted else "enqueued",
+    )
+
+
+@router.post("/message/send", response_model=SendOneShotResponse)
+async def send_oneshot(
+    body: SendOneShotRequest,
+    request: Request,
+    agent: InternalAgent = Depends(get_agent_from_dpop_client_cert),
+) -> SendOneShotResponse:
+    """HTTP entry point — thin wrapper around :func:`send_oneshot_internal`.
+
+    Resolves the FastAPI dependencies (settings, broker bridge, WS
+    manager, authenticated agent) and forwards everything to the
+    in-process helper so the MCP tool builtin and the HTTP route
+    share a single source of truth.
+    """
+    return await send_oneshot_internal(
+        agent=agent,
+        body=body,
+        broker_bridge=getattr(request.app.state, "broker_bridge", None),
+        ws_manager=getattr(request.app.state, "local_ws_manager", None),
+        settings=get_settings(),
     )
 
 

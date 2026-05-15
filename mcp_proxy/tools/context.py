@@ -27,3 +27,11 @@ class ToolContext:
     # resolve ``auth_secret_ref`` (env://... or vault://...). Optional so
     # builtin handlers don't have to care.
     secret_provider: Any | None = None
+    # Scope #5 (session 2026-05-15) — handlers that need to call into
+    # other Mastio subsystems (broker bridge, local WS manager, audit
+    # chain) can pull them from the FastAPI app state. Populated by
+    # ``executor.run`` when invoked through a route that has a
+    # ``Request`` object; ``None`` when the executor was invoked
+    # without one (eg. CLI / tests). Builtin handlers that touch
+    # ``app_state`` must tolerate ``None`` for that test path.
+    app_state: Any | None = None
