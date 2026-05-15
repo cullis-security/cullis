@@ -287,6 +287,21 @@ class ProxySettings(BaseSettings):
     # Accepts redis:// or rediss:// URLs.
     redis_url: str = ""
 
+    # H3 P0.3 — audit-fail-deny mode (CISO due-diligence claim).
+    # Controls what happens when ``log_audit`` cannot persist a row
+    # (DB down, disk full, integrity-error retry budget exhausted):
+    #   true  → log critical + re-raise; the caller surfaces 500 to
+    #           the client. No untraceable side effects ever land.
+    #   false → log critical + swallow; the request returns normally
+    #           with a warning in the proxy log. Useful only when an
+    #           operator explicitly wants availability over forensic
+    #           completeness (audit log re-buildable from upstream
+    #           sinks such as S3 / Datadog plugins). Default-true is
+    #           the production-correct stance and matches the threat-
+    #           model claim ``operate/security/threat-model.md`` MCP
+    #           proxy section, Repudiation row.
+    audit_fail_deny: bool = True
+
     # Audit L1-H1 / Ultra U-DD-1: in production the DPoP JTI store and the
     # login-challenge nonce store both refuse to fall back to in-memory
     # when Redis is unavailable, because a multi-worker deploy without a

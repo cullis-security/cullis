@@ -431,10 +431,30 @@ async def log_audit(
                     # UNIQUE(chain_seq) collision — another worker
                     # claimed this seq. Reread the head and retry.
                     continue
-        raise RuntimeError(
+        # H3 P0.3 — audit-fail-deny gate. The default-true stance (raise
+        # so the request surfaces 500 and the caller never returns a
+        # success without a matching audit row) is the production-
+        # correct behaviour and matches the threat-model claim. The
+        # opt-out (audit_fail_deny=false) is for operators who run an
+        # external audit sink (S3 / Datadog plugin) and prefer to keep
+        # serving on local-audit unavailability.
+        from mcp_proxy.config import get_settings
+        try:
+            fail_deny = get_settings().audit_fail_deny
+        except Exception:  # pragma: no cover — settings.get() never raises today
+            fail_deny = True
+        msg = (
             f"log_audit: could not append after {_AUDIT_CHAIN_MAX_RETRIES} "
             "retries (chain_seq UNIQUE conflict). Confirm the audit_log "
-            "schema or look for a stuck worker.",
+            "schema or look for a stuck worker."
+        )
+        if fail_deny:
+            raise RuntimeError(msg)
+        _log.critical(
+            "%s. MCP_PROXY_AUDIT_FAIL_DENY=false: returning to caller "
+            "without persisting the audit row. agent_id=%s action=%s "
+            "tool_name=%s status=%s request_id=%s",
+            msg, agent_id, action, tool_name, status, request_id,
         )
 
 
