@@ -136,46 +136,79 @@ async def test_non_cullis_headers_pass_through(client):
 
 
 @pytest.mark.asyncio
-async def test_log_silent_by_default(caplog, monkeypatch):
+async def test_log_silent_by_default(monkeypatch):
     """Default config: silent. A noisy client must not flood the log
-    with one entry per request."""
+    with one entry per request.
+
+    Verified by hooking the mcp_proxy logger's records list directly:
+    ``caplog`` is unreliable here because the production logger
+    setup runs with ``propagate=False`` and rewires handlers under
+    uvicorn, so a normal ``caplog.at_level`` misses the records.
+    Same pattern the global rate limit logging takes (see memory
+    ``mastio_logger_silently_muted_in_lifespan``).
+    """
     monkeypatch.delenv("CULLIS_LOG_STRIPPED_HEADERS", raising=False)
     app = _build_app()
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        with caplog.at_level(logging.INFO, logger="mcp_proxy"):
+
+    captured: list[logging.LogRecord] = []
+
+    class _CollectHandler(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
+    logger = logging.getLogger("mcp_proxy")
+    handler = _CollectHandler(level=logging.INFO)
+    logger.addHandler(handler)
+    prev_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
             await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
     assert not any(
-        "stripped" in r.message and "x-cullis" in r.message.lower()
-        for r in caplog.records
+        "stripped" in (r.getMessage() or "") and "x-cullis" in r.getMessage().lower()
+        for r in captured
     )
 
 
 @pytest.mark.asyncio
-async def test_log_fires_under_opt_in(caplog, monkeypatch):
+async def test_log_fires_under_opt_in(monkeypatch):
     """``CULLIS_LOG_STRIPPED_HEADERS=1`` → INFO record per stripped
-    request, with the stripped names visible for forensic correlation."""
-    monkeypatch.setenv("CULLIS_LOG_STRIPPED_HEADERS", "1")
-    # Snapshot env at construction (see middleware docstring); we
-    # therefore have to rebuild the app under the new env.
-    app = _build_app()
-    transport = ASGITransport(app=app)
+    request, with the stripped names visible for forensic correlation.
 
-    # Configure the mcp_proxy logger so caplog captures records that
-    # do not propagate. The middleware logs at INFO via the bare
-    # ``logging.getLogger("mcp_proxy")``, which is silenced by the
-    # logging_setup module in prod; tests rewire to caplog directly.
+    Same handler-attached collector pattern as the silent test —
+    pytest's ``caplog`` fixture misses records when ``propagate=False``
+    + uvicorn's logging reinit drop them mid-test on CI runners.
+    """
+    monkeypatch.setenv("CULLIS_LOG_STRIPPED_HEADERS", "1")
+    # Snapshot env at construction (see middleware docstring); rebuild
+    # the app after setenv.
+    app = _build_app()
+
+    captured: list[logging.LogRecord] = []
+
+    class _CollectHandler(logging.Handler):
+        def emit(self, record):
+            captured.append(record)
+
     logger = logging.getLogger("mcp_proxy")
-    logger.addHandler(caplog.handler)
+    handler = _CollectHandler(level=logging.INFO)
+    logger.addHandler(handler)
+    prev_level = logger.level
     logger.setLevel(logging.INFO)
     try:
+        transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            with caplog.at_level(logging.INFO, logger="mcp_proxy"):
-                await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
+            await ac.get("/echo", headers={"X-Cullis-Trust": "x"})
     finally:
-        logger.removeHandler(caplog.handler)
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
 
-    msgs = [r.message for r in caplog.records]
+    msgs = [r.getMessage() for r in captured]
     # ASGI normalises header names to lower-case on the wire, so the
     # log message records the lower form regardless of how the client
     # spelled it. The forensic correlation point is the header family
