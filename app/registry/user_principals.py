@@ -59,6 +59,13 @@ class UserPrincipalRecord(Base):
             "idx_user_principals_lookup",
             "org_id", "sso_subject",
         ),
+        # cert_thumbprint lookup powers cert-rotation, revocation and
+        # TOFU-pin verification; mirrored in
+        # alembic/versions/t0o1p2q3r4s5_idx_thumbprint.py.
+        Index(
+            "idx_user_principals_cert_thumbprint",
+            "cert_thumbprint",
+        ),
     )
 
     principal_id     = Column(String(255), primary_key=True)

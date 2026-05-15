@@ -9,7 +9,7 @@ from fnmatch import fnmatch
 from datetime import datetime, timezone
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
-from sqlalchemy import Column, String, Boolean, DateTime, Text, select
+from sqlalchemy import Column, String, Boolean, DateTime, Index, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import Base
@@ -26,6 +26,14 @@ def _verify_secret(plain: str, hashed: str) -> bool:
 
 class AgentRecord(Base):
     __tablename__ = "agents"
+    __table_args__ = (
+        # cert_thumbprint lookup powers cert-rotation, revocation and
+        # TOFU-pin verification; without an index every one of those
+        # paths does a full table scan. Non-unique because rotation can
+        # transiently keep two rows pointing at the same thumbprint.
+        # Mirrored in alembic/versions/t0o1p2q3r4s5_idx_thumbprint.py.
+        Index("idx_agents_cert_thumbprint", "cert_thumbprint"),
+    )
 
     agent_id = Column(String(256), primary_key=True, index=True)
     org_id = Column(String(128), nullable=False, index=True)
