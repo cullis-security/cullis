@@ -187,7 +187,9 @@ def test_chat_completion_stream_signs_with_egress_dpop_key(tmp_path, monkeypatch
     assert dpop, "DPoP header must be set by proxy_headers()"
     # The DPoP header is a JWT; decode its protected header and pull
     # the JWK to confirm the signing key was the egress one.
-    import base64, json as _json
+    import base64
+    import hashlib
+    import json as _json
     header_b64, payload_b64, _sig = dpop.split(".")
     header_b64 += "=" * (-len(header_b64) % 4)
     header = _json.loads(base64.urlsafe_b64decode(header_b64))
@@ -197,7 +199,6 @@ def test_chat_completion_stream_signs_with_egress_dpop_key(tmp_path, monkeypatch
         {k: jwk[k] for k in ("crv", "kty", "x", "y") if k in jwk},
         separators=(",", ":"), sort_keys=True,
     ).encode()
-    import hashlib
     proof_jkt = base64.urlsafe_b64encode(
         hashlib.sha256(canon).digest(),
     ).decode().rstrip("=")
