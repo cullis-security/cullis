@@ -151,13 +151,68 @@ async def test_badge_approvals_empty_when_plugin_unavailable(proxy_app, monkeypa
     assert resp.text == ""
 
 
-# ── has_feature global is callable from any template ────────────────
+# ── has_feature global is callable from every dashboard sub-router ─
 
 
-def test_has_feature_registered_as_jinja_global():
-    """Smoke check: the Jinja2 ``globals`` dict carries ``has_feature``
-    so every template inheriting from ``base.html`` can call it without
-    threading the flag through per-route context."""
-    from mcp_proxy.dashboard.router import templates
-    assert "has_feature" in templates.env.globals
-    assert callable(templates.env.globals["has_feature"])
+def test_has_feature_registered_on_every_dashboard_templates_instance():
+    """Each dashboard sub-router builds its own ``Jinja2Templates``
+    instance; ``base.html`` calls ``has_feature(...)`` and would 500
+    against any instance that did not register the global.
+
+    The fix is the shared ``build_templates`` factory in
+    ``_template_env``. This guard catches regressions where someone
+    constructs a fresh ``Jinja2Templates(directory=...)`` again instead
+    of going through the factory.
+    """
+    from mcp_proxy.dashboard import (
+        ai_providers,
+        downloads,
+        link_broker,
+        mcp_resources,
+        policies_local,
+        router as _router,
+        tool_rules,
+        updates_router,
+    )
+
+    instances = {
+        "router.py": _router.templates,
+        "ai_providers.py": ai_providers.templates,
+        "downloads.py": downloads.templates,
+        "link_broker.py": link_broker.templates,
+        "mcp_resources.py": mcp_resources.templates,
+        "policies_local.py": policies_local.templates,
+        "tool_rules.py": tool_rules.templates,
+        "updates_router.py": updates_router._templates,
+    }
+
+    missing = [
+        name for name, t in instances.items()
+        if "has_feature" not in t.env.globals
+        or not callable(t.env.globals["has_feature"])
+    ]
+    assert not missing, (
+        "Jinja2Templates instances without has_feature global "
+        "(use mcp_proxy.dashboard._template_env.build_templates): "
+        + ", ".join(missing)
+    )
+
+
+@pytest.mark.asyncio
+async def test_ai_providers_page_renders_with_feature_on(proxy_app, monkeypatch):
+    """Smoke: a sub-router page extending base.html must render cleanly
+    when has_feature is on. Catches the original GET /proxy/ai-providers
+    500 regression where ai_providers.py built its own env without the
+    global."""
+    import mcp_proxy.license
+    monkeypatch.setattr(mcp_proxy.license, "has_feature", lambda _f: True)
+
+    _, client = proxy_app
+    cookie_name, cookie_value = _admin_cookie()
+    client.cookies.set(cookie_name, cookie_value)
+
+    resp = await client.get("/proxy/ai-providers")
+    assert resp.status_code == 200, resp.text
+    # Confirms the conditional rendered the link inside this page too,
+    # not only on /proxy/agents.
+    assert 'href="/proxy/admin/approvals"' in resp.text

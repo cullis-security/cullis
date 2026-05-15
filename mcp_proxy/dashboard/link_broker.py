@@ -32,10 +32,10 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from mcp_proxy.config import get_settings
+from mcp_proxy.dashboard._template_env import build_templates
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
     require_login,
@@ -47,7 +47,7 @@ _log = logging.getLogger("mcp_proxy.dashboard.link_broker")
 
 import pathlib as _pl
 _TEMPLATE_DIR = _pl.Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+templates = build_templates(_TEMPLATE_DIR)
 
 
 dashboard_router = APIRouter(prefix="/proxy", tags=["dashboard-link-broker"])

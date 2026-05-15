@@ -29,7 +29,6 @@ from cryptography.x509.oid import NameOID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
 
 from mcp_proxy.dashboard.session import (
@@ -59,50 +58,14 @@ from mcp_proxy.admin.approval_hook import (
 _log = logging.getLogger("mcp_proxy.dashboard")
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
-
-def _parse_device_info(raw):
-    """Best-effort parse of ``internal_agents.device_info`` (migration 0013)
-    — Connectors send a mix of conventions across versions, so we normalize
-    a handful of aliases and fall back to ``None`` on anything malformed so
-    the template short-circuits to a dash."""
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    def _pick(*keys):
-        for k in keys:
-            v = data.get(k)
-            if v:
-                return str(v)
-        return None
-
-    return {
-        "os": _pick("os", "platform", "system"),
-        "hostname": _pick("hostname", "host", "node"),
-        "version": _pick("version", "connector_version", "client_version"),
-    }
-
-
-templates.env.filters["parse_device"] = _parse_device_info
-
-# Expose the license feature check to templates so ``base.html`` can
-# render plugin-specific nav links conditionally without each handler
-# having to forward the flag through its context dict. We bind through
-# the module rather than capturing a direct reference so test-time
-# ``monkeypatch.setattr(mcp_proxy.license, "has_feature", ...)`` lands
-# on subsequent template renders too — capturing the function at
-# import time would freeze the binding past monkeypatch.
-from mcp_proxy import license as _license_mod  # noqa: E402
-templates.env.globals["has_feature"] = (
-    lambda feature: _license_mod.has_feature(feature)
+from mcp_proxy.dashboard._template_env import (  # noqa: E402
+    _parse_device_info,
+    build_templates,
 )
+from mcp_proxy import license as _license_mod  # noqa: E402
+
+templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/proxy", tags=["dashboard"])
 
