@@ -37,6 +37,7 @@ from cullis_connector.ambassador.streaming import (
     extract_assistant_text,
     fake_stream,
 )
+from cullis_connector.ambassador.streaming_loop import stream_tool_use_loop
 
 _log = logging.getLogger("cullis_connector.ambassador.router")
 
@@ -294,6 +295,47 @@ def chat_completions(req: ChatCompletionRequest, request: Request):
         # client's own agent id so the audit row still names who acted.
         _principal_id = getattr(client, "agent_id", None)
         _principal_type = "agent"
+
+    # P1 Tier B F2b — streaming tool-use loop opt-in. When the env
+    # flag is on AND the request asks for stream=true, bridge the
+    # multi-turn loop to a real SSE pass-through so the SPA's
+    # ToolCallIndicator chip + audit panel render against live
+    # traffic (PR #719 is the Mastio emit side, this completes the
+    # browser-visible side). Default false to keep fake_stream as the
+    # back-compat path while the streaming branch matures.
+    _stream_loop_enabled = (
+        os.getenv("CULLIS_CONNECTOR_STREAMING_LOOP", "false").lower()
+        in ("1", "true", "yes", "on")
+    )
+
+    if req.stream and _stream_loop_enabled:
+        def _stream_then_invalidate():
+            try:
+                yield from stream_tool_use_loop(
+                    client,
+                    body,
+                    max_iters=8,
+                    pdp_enabled=_pdp_enabled,
+                    principal_id=_principal_id,
+                    principal_type=_principal_type,
+                    principal_org=_principal_org,
+                )
+            except Exception:
+                # Mirror the non-streaming exception handling: a
+                # mid-stream auth failure invalidates the cached
+                # agent-bound client so the next request re-logs in
+                # fresh. Per-user clients are short-lived. The error
+                # then propagates and Starlette closes the connection.
+                if user_creds is None:
+                    client_holder.invalidate()
+                _log.exception("streaming tool-use loop failed")
+                raise
+
+        return StreamingResponse(
+            _stream_then_invalidate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     try:
         response, truncated = run_tool_use_loop(

@@ -6,8 +6,9 @@ Single public symbol:
 * :class:`_AiGatewayMixin` — mixin folded into ``CullisClient`` that
   exposes the three Mastio-side surfaces:
 
-    1. **AI gateway egress (ADR-017)** — ``chat_completion`` and
-       ``list_models`` talk to the Mastio's embedded LiteLLM proxy.
+    1. **AI gateway egress (ADR-017)** — ``chat_completion``,
+       ``chat_completion_stream`` and ``list_models`` talk to the
+       Mastio's embedded LiteLLM proxy.
     2. **MCP aggregator (ADR-007, proxy-side only)** —
        ``list_mcp_tools`` and ``call_mcp_tool`` invoke JSON-RPC against
        ``/v1/mcp`` on the local proxy.
@@ -15,12 +16,13 @@ Single public symbol:
        ``evaluate_tool_call_policy`` asks the Mastio whether a tool
        call is permitted, returning a boring fail-safe dict.
 
-Movement only — no behavior change. ``chat_completion`` is not a
-streaming endpoint here (the streaming SSE wiring lives proxy-side
-under ``llm_chat_router``); it returns the parsed JSON body. The
-mixin assumes the host class exposes ``_authed_request``.
+The mixin assumes the host class exposes ``_authed_request`` and the
+raw ``_http`` httpx client + ``_headers`` helper (for the streaming
+path that cannot use the auto-retry wrapper).
 """
 from __future__ import annotations
+
+from typing import Iterator
 
 
 class _AiGatewayMixin:
@@ -44,6 +46,53 @@ class _AiGatewayMixin:
         resp = self._authed_request("POST", "/v1/llm/chat", json=request)
         resp.raise_for_status()
         return resp.json()
+
+    def chat_completion_stream(self, request: dict) -> Iterator[str]:
+        """Streaming variant of :meth:`chat_completion`.
+
+        Forces ``stream=True`` on the request and yields SSE frame
+        strings exactly as they arrive from the Mastio, including
+        named events (``event: tool_call_start`` etc., see
+        ``mcp_proxy/egress/llm_chat_router.py`` P1 emit) and the
+        terminal ``data: [DONE]\\n\\n``. The caller is responsible
+        for SSE framing semantics — this iterator just hands over
+        complete frames split on ``\\n\\n``.
+
+        Bypasses :meth:`_authed_request` because the wrapper retries
+        the whole call on a token-expiry 401, which is incompatible
+        with a streaming response that has already started flushing
+        bytes. The trade-off: no auto-relogin / DPoP nonce retry on
+        the stream path. Callers that need that resilience must
+        catch the 401 themselves and re-invoke after refreshing the
+        token via the normal sync surface.
+        """
+        body = dict(request)
+        body["stream"] = True
+        path = "/v1/llm/chat"
+        with self._http.stream(
+            "POST", f"{self.base}{path}",
+            headers=self._headers("POST", path),
+            json=body,
+        ) as resp:
+            resp.raise_for_status()
+            buf = ""
+            # iter_text decodes UTF-8 chunks from the upstream socket.
+            # Concatenate into a buffer and slice on \n\n so partial
+            # frames split across TCP packets land in a single yield.
+            for raw in resp.iter_text():
+                if not raw:
+                    continue
+                buf += raw
+                while "\n\n" in buf:
+                    frame, buf = buf.split("\n\n", 1)
+                    if frame:
+                        yield frame + "\n\n"
+            tail = buf.strip()
+            if tail:
+                # Upstream closed without a trailing blank line —
+                # surface what we have so the caller can detect
+                # ``[DONE]`` even on a slightly malformed stream.
+                yield tail
 
     def list_models(self) -> list[dict]:
         """Return the OpenAI-compatible model list from Mastio.
