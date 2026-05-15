@@ -90,10 +90,11 @@ def _stub_signing(monkeypatch):
     care about is who got called and in what order, not the signature
     bytes themselves."""
     monkeypatch.setattr(
-        "cullis_sdk.client.sign_message", lambda *a, **kw: "fake-inner-sig",
+        "cullis_sdk._client._messaging_oneshot.sign_message",
+        lambda *a, **kw: "fake-inner-sig",
     )
     monkeypatch.setattr(
-        "cullis_sdk.client.sign_oneshot_envelope",
+        "cullis_sdk._client._messaging_oneshot.sign_oneshot_envelope",
         lambda *a, **kw: "fake-outer-sig",
     )
 
