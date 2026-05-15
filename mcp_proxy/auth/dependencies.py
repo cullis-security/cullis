@@ -110,5 +110,13 @@ async def _get_authenticated_agent_dpop(request: Request) -> TokenPayload:
             headers={"WWW-Authenticate": _DPOP_WWW_AUTH},
         )
 
+    # P1.2 — stamp the verified jkt into the per-request contextvar so
+    # log_audit() picks it up downstream without threading the value
+    # through every call site. Stamp only on the success path: a 401
+    # before this point must not correlate the audit row to a
+    # thumbprint the verifier just rejected.
+    from mcp_proxy.auth.dpop_context import set_dpop_jkt
+    set_dpop_jkt(jkt)
+
     _log.debug("Authenticated agent: %s (org=%s)", payload.agent_id, payload.org)
     return payload
