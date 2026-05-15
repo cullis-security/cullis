@@ -92,6 +92,18 @@ def _parse_device_info(raw):
 
 templates.env.filters["parse_device"] = _parse_device_info
 
+# Expose the license feature check to templates so ``base.html`` can
+# render plugin-specific nav links conditionally without each handler
+# having to forward the flag through its context dict. We bind through
+# the module rather than capturing a direct reference so test-time
+# ``monkeypatch.setattr(mcp_proxy.license, "has_feature", ...)`` lands
+# on subsequent template renders too — capturing the function at
+# import time would freeze the binding past monkeypatch.
+from mcp_proxy import license as _license_mod  # noqa: E402
+templates.env.globals["has_feature"] = (
+    lambda feature: _license_mod.has_feature(feature)
+)
+
 router = APIRouter(prefix="/proxy", tags=["dashboard"])
 
 
@@ -3213,6 +3225,36 @@ async def badge_users(request: Request):
     if n:
         return HTMLResponse(
             f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-accent-500/15 text-accent-400">{n}</span>'
+        )
+    return HTMLResponse("")
+
+
+@router.get("/badge/approvals")
+async def badge_approvals(request: Request):
+    """Pending 4-eyes approvals count for the sidebar.
+
+    Empty in community mode (no ``rbac_multi_admin`` feature in the
+    license) or when the enterprise plugin is not installed on this
+    deploy — the late import keeps the open-core build independent of
+    the enterprise package. Anything unexpected on the read path
+    degrades silently to "no badge" rather than breaking the nav.
+    """
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+    if not _license_mod.has_feature("rbac_multi_admin"):
+        return HTMLResponse("")
+    try:
+        from cullis_enterprise.mastio.rbac_multi_admin import (
+            models as _approvals_models,
+        )
+        pending = await _approvals_models.list_pending_approvals()
+    except Exception:
+        return HTMLResponse("")
+    count = len(pending)
+    if count:
+        return HTMLResponse(
+            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-amber-500/20 text-amber-400">{count}</span>'
         )
     return HTMLResponse("")
 
