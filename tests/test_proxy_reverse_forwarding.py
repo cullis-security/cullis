@@ -6,14 +6,12 @@ x5c) and Host preserved, so the broker's DPoP ``htu`` check still passes.
 """
 from __future__ import annotations
 
-import uuid
-
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app as broker_app  # ensures conftest side-effects load
-from tests.cert_factory import get_org_ca_pem, make_assertion
+from tests.cert_factory import get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS
 
 
