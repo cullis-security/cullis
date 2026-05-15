@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import Any
 
 _log = logging.getLogger("cullis_connector.ambassador.client")
@@ -40,6 +41,7 @@ class AmbassadorClient:
         cert_pem: str,
         key_pem: str,
         verify_tls: bool | str = True,
+        dpop_key_path: Path | None = None,
     ) -> None:
         self._site_url = site_url
         self._agent_id = agent_id
@@ -47,6 +49,14 @@ class AmbassadorClient:
         self._cert_pem = cert_pem
         self._key_pem = key_pem
         self._verify_tls = verify_tls
+        # ``dpop_key_path`` is the on-disk persistent egress DPoP key
+        # (``<config_dir>/identity/dpop.jwk``) whose thumbprint is
+        # pinned in ``internal_agents.dpop_jkt`` at enrollment time.
+        # The SDK's chat completion path (PR #724) signs with this key
+        # via ``_egress_dpop_key`` so the cert-pinned route on the
+        # Mastio accepts the call. ``None`` falls back to the legacy
+        # behaviour (bearer-DPoP path only) which 401s on chat.
+        self._dpop_key_path = dpop_key_path
         self._client: Any = None
         self._created_at: float = 0.0
         self._lock = threading.Lock()
@@ -73,6 +83,47 @@ class AmbassadorClient:
         client.login_from_pem(
             self._agent_id, self._org_id, self._cert_pem, self._key_pem,
         )
+        # PR #724 follow-up — populate the egress DPoP key the chat
+        # completion path now requires. ``login_from_pem`` only sets
+        # the ephemeral ``_dpop_privkey`` for the bearer-DPoP wrapper;
+        # ``_egress_dpop_key`` stays ``None`` on the basic constructor
+        # path, so a Mastio call to ``/v1/llm/chat`` would arrive
+        # without a DPoP header and be refused. Load the persistent
+        # key from disk so its thumbprint matches the pinned
+        # ``internal_agents.dpop_jkt``.
+        if self._dpop_key_path is not None:
+            try:
+                from cullis_sdk.dpop import DpopKey
+                # Mirror ``from_connector`` (cullis_sdk/client.py:1100-1107):
+                # load when the file exists, generate + persist on
+                # cold-start. ``DpopKey.load_or_generate`` takes an
+                # ``agent_id`` + ``base_dir`` form which doesn't match the
+                # Connector-laid-out ``identity/dpop.jwk`` path, so we
+                # use the explicit load/generate pair here.
+                if self._dpop_key_path.exists():
+                    client._egress_dpop_key = DpopKey.load(self._dpop_key_path)
+                else:
+                    client._egress_dpop_key = DpopKey.generate(
+                        path=self._dpop_key_path,
+                    )
+                _log.info(
+                    "ambassador egress DPoP key loaded "
+                    "(jkt=%s…)",
+                    client._egress_dpop_key.thumbprint()[:16],
+                )
+            except Exception as exc:
+                # Cert-pinned routes will 401 if this fails. Log loudly
+                # but don't refuse to build — bearer-DPoP routes like
+                # ``/v1/mcp`` still work, and a clear runtime error on
+                # the chat path is easier to diagnose than a silent
+                # build-time refusal.
+                _log.warning(
+                    "ambassador egress DPoP key load failed (%s): %s. "
+                    "Chat completions through this client will 401 on "
+                    "Mastio's cert-pinned path until the file is "
+                    "readable at %s.",
+                    type(exc).__name__, exc, self._dpop_key_path,
+                )
         self._client = client
         self._created_at = time.monotonic()
         _log.info(

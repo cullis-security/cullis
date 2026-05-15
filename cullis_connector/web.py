@@ -360,6 +360,13 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
 
+    # PR #724 follow-up — surface the on-disk DPoP key so the
+    # AmbassadorClient can populate _egress_dpop_key on the SDK
+    # instance. The chat completion path (cert-pinned on Mastio) signs
+    # with this persistent key; without it Mastio refuses with 401
+    # "DPoP proof was signed by a key not registered for this agent".
+    _dpop_key_path = config.config_dir / "identity" / "dpop.jwk"
+
     holder = AmbassadorClient(
         site_url=site_url,
         agent_id=agent_id,
@@ -367,6 +374,7 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
         cert_pem=bundle.cert_pem,
         key_pem=key_pem,
         verify_tls=config.verify_arg,
+        dpop_key_path=_dpop_key_path,
     )
     # Loopback enforcement defaults to True for the laptop topology
     # (Connector bound to 127.0.0.1, defence-in-depth on the bind). In
