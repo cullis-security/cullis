@@ -97,6 +97,12 @@ class FakeCullisClient:
     tools_to_return: list[dict] = []
     tool_results: dict[str, Any] = {}
 
+    # P1 Tier B F2b streaming loop — each entry is a list of SSE frame
+    # strings the fake yields from a single ``chat_completion_stream``
+    # call. ``stream_chunks`` pops FIFO per loop iteration.
+    stream_chunks: list[list[str]] = []
+    stream_calls: list[dict] = []
+
     # ADR-029 Phase D, programmable PDP for tool-level tests. Each entry
     # in pdp_responses pops FIFO; pdp_raise toggles an exception path.
     pdp_calls: list[dict] = []
@@ -115,6 +121,8 @@ class FakeCullisClient:
         cls.pdp_calls = []
         cls.pdp_responses = []
         cls.pdp_raise = False
+        cls.stream_chunks = []
+        cls.stream_calls = []
 
     def __init__(self, *args, **kwargs) -> None:
         self._init_args = args
@@ -160,6 +168,34 @@ class FakeCullisClient:
         if name in type(self).tool_results:
             return type(self).tool_results[name]
         return {"content": [{"type": "text", "text": f"tool {name} ok"}]}
+
+    def chat_completion_stream(self, body: dict):
+        """P1 Tier B F2b streaming variant. Yields SSE frame strings
+        from the per-iteration ``stream_chunks`` queue. The body each
+        iter receives is captured separately so a test can pin the
+        tool-result messages were threaded through the next turn."""
+        type(self).stream_calls.append(body)
+        if not type(self).stream_chunks:
+            # Default: trivial text-only stream + DONE.
+            import json as _json
+            yield (
+                "data: " + _json.dumps({
+                    "choices": [{"index": 0,
+                                  "delta": {"content": "default streamed"},
+                                  "finish_reason": None}],
+                }) + "\n\n"
+            )
+            yield (
+                "data: " + _json.dumps({
+                    "choices": [{"index": 0,
+                                  "delta": {},
+                                  "finish_reason": "stop"}],
+                }) + "\n\n"
+            )
+            yield "data: [DONE]\n\n"
+            return
+        for f in type(self).stream_chunks.pop(0):
+            yield f
 
     def evaluate_tool_call_policy(self, **kwargs) -> dict:
         type(self).pdp_calls.append(kwargs)
@@ -695,3 +731,322 @@ def test_pdp_transport_error_fail_safe_deny(client, bearer, monkeypatch):
     last_message = second_call["messages"][-1]
     assert last_message["role"] == "tool"
     assert "policy_denied" in last_message["content"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# P1 Tier B F2b — streaming tool-use loop opt-in.
+# Default OFF: stream=true still walks through ``fake_stream`` (the
+# tests above already pin that path). The opt-in flag flips routing
+# to ``stream_tool_use_loop`` so the SPA sees real SSE frames including
+# named ``tool_call_start`` / ``tool_call_end`` events and a final
+# aggregated ``cullis_audit`` summary.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _split_sse_events(body: str) -> list[dict]:
+    """Parse the SSE body emitted by ``stream_tool_use_loop`` into a
+    list of ``{event, data}`` records. Mirrors the helper used in the
+    Mastio side (tests/test_proxy_llm_chat_router.py) and tolerates
+    both ``data:``-only frames and named events. ``data: [DONE]`` is
+    kept verbatim as a string in ``data`` so callers can assert on
+    the terminator."""
+    import json as _json
+    out: list[dict] = []
+    for raw in body.split("\n\n"):
+        block = raw.strip()
+        if not block:
+            continue
+        event = "message"
+        data_lines: list[str] = []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                event = line[len("event:"):].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[len("data:"):].lstrip())
+        payload = "\n".join(data_lines)
+        if payload == "[DONE]":
+            out.append({"event": event, "data": "[DONE]"})
+        else:
+            try:
+                out.append({"event": event, "data": _json.loads(payload)})
+            except Exception:
+                out.append({"event": event, "data": payload})
+    return out
+
+
+def test_streaming_loop_off_by_default_still_uses_fake_stream(client, bearer, monkeypatch):
+    """No env flag → router still calls run_tool_use_loop and serializes
+    the final answer via fake_stream. stream_chunks is never consumed."""
+    monkeypatch.delenv("CULLIS_CONNECTOR_STREAMING_LOOP", raising=False)
+    FakeCullisClient.chat_responses = [{
+        "choices": [{
+            "message": {"role": "assistant", "content": "back-compat answer"},
+            "finish_reason": "stop",
+        }],
+    }]
+    FakeCullisClient.stream_chunks = [["WOULD NEVER REACH CLIENT"]]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "stream": True,
+            "messages": [{"role": "user", "content": "ciao"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert "back-compat answer" in resp.text
+    # Streaming surface untouched.
+    assert FakeCullisClient.stream_calls == []
+    assert "WOULD NEVER REACH CLIENT" not in resp.text
+
+
+def test_streaming_loop_passes_frames_through_and_emits_audit(
+    client, bearer, monkeypatch,
+):
+    """Env flag on + text-only stream → frames pass through verbatim,
+    Mastio per-turn cullis_audit is swallowed, a single aggregated
+    cullis_audit + [DONE] is appended at the end."""
+    import json as _json
+    monkeypatch.setenv("CULLIS_CONNECTOR_STREAMING_LOOP", "true")
+
+    FakeCullisClient.stream_chunks = [[
+        "data: " + _json.dumps({
+            "choices": [{"index": 0,
+                          "delta": {"role": "assistant"},
+                          "finish_reason": None}],
+        }) + "\n\n",
+        "data: " + _json.dumps({
+            "choices": [{"index": 0,
+                          "delta": {"content": "hello there"},
+                          "finish_reason": None}],
+        }) + "\n\n",
+        "data: " + _json.dumps({
+            "choices": [{"index": 0,
+                          "delta": {},
+                          "finish_reason": "stop"}],
+        }) + "\n\n",
+        "event: cullis_audit\n"
+        "data: " + _json.dumps({
+            "trace_id": "trace_abc",
+            "latency_ms": 250,
+            "tools": [],
+        }) + "\n\n",
+        "data: [DONE]\n\n",
+    ]]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "stream": True,
+            "messages": [{"role": "user", "content": "ciao"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = _split_sse_events(resp.text)
+
+    # Mastio's per-turn cullis_audit is consumed; the only one the SPA
+    # sees is the aggregated one.
+    audit_events = [e for e in events if e["event"] == "cullis_audit"]
+    assert len(audit_events) == 1
+    aud = audit_events[0]["data"]
+    assert aud["trace_id"] == "trace_abc"
+    assert aud["latency_ms"] == 250
+    assert aud["tools"] == []
+
+    # Token content survived the round trip.
+    contents = [
+        e["data"]["choices"][0]["delta"].get("content")
+        for e in events
+        if e["event"] == "message" and isinstance(e["data"], dict)
+        and e["data"].get("choices")
+    ]
+    assert "hello there" in contents
+
+    # Connector terminator is the only [DONE] on the wire (Mastio's
+    # per-turn DONE was swallowed).
+    done_events = [e for e in events if e["data"] == "[DONE]"]
+    assert len(done_events) == 1
+
+
+def test_streaming_loop_executes_tool_calls_and_aggregates_audit(
+    client, bearer, monkeypatch,
+):
+    """A first-turn stream that ends with finish_reason='tool_calls'
+    triggers MCP tool execution + a second turn. Final cullis_audit
+    sums the tool list across turns and the second turn's text is the
+    last content the SPA sees."""
+    import json as _json
+    monkeypatch.setenv("CULLIS_CONNECTOR_STREAMING_LOOP", "true")
+
+    FakeCullisClient.tools_to_return = [{
+        "name": "postgres.query",
+        "description": "run sql",
+        "inputSchema": {"type": "object"},
+    }]
+    FakeCullisClient.tool_results = {
+        "postgres.query": {"content": [{"type": "text", "text": "42 rows"}]},
+    }
+
+    # Turn 1: assistant emits a tool_call block + tool_call_start/end
+    # named events (as the Mastio's F1 emit would in real traffic).
+    FakeCullisClient.stream_chunks = [
+        [
+            "event: tool_call_start\n"
+            "data: " + _json.dumps({"tool": "postgres.query"}) + "\n\n",
+            "data: " + _json.dumps({
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "id": "call_x", "type": "function",
+                     "function": {"name": "postgres.query",
+                                   "arguments": "{\"sql\":\"select 1\"}"}}
+                ]}, "finish_reason": None}],
+            }) + "\n\n",
+            "data: " + _json.dumps({
+                "choices": [{"index": 0, "delta": {},
+                              "finish_reason": "tool_calls"}],
+            }) + "\n\n",
+            "event: tool_call_end\n"
+            "data: " + _json.dumps({"tool": "postgres.query",
+                                     "latency_ms": 120}) + "\n\n",
+            "event: cullis_audit\n"
+            "data: " + _json.dumps({
+                "trace_id": "trace_t1",
+                "latency_ms": 200,
+                "tools": [{"name": "postgres.query", "latency_ms": 120}],
+            }) + "\n\n",
+            "data: [DONE]\n\n",
+        ],
+        # Turn 2: final text answer.
+        [
+            "data: " + _json.dumps({
+                "choices": [{"index": 0,
+                              "delta": {"content": "found 42 rows"},
+                              "finish_reason": None}],
+            }) + "\n\n",
+            "data: " + _json.dumps({
+                "choices": [{"index": 0, "delta": {},
+                              "finish_reason": "stop"}],
+            }) + "\n\n",
+            "event: cullis_audit\n"
+            "data: " + _json.dumps({
+                "trace_id": "trace_t2",
+                "latency_ms": 150,
+                "tools": [],
+            }) + "\n\n",
+            "data: [DONE]\n\n",
+        ],
+    ]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "stream": True,
+            "messages": [{"role": "user", "content": "how many rows?"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _split_sse_events(resp.text)
+
+    # Tool was actually executed via the SDK aggregator.
+    assert FakeCullisClient.call_tool_calls == [
+        ("postgres.query", {"sql": "select 1"}),
+    ]
+
+    # Two SDK streaming calls (one per turn). Second turn's messages
+    # include the role=tool reply built from the MCP result.
+    assert len(FakeCullisClient.stream_calls) == 2
+    second_messages = FakeCullisClient.stream_calls[1]["messages"]
+    assert second_messages[-1]["role"] == "tool"
+    assert "42 rows" in second_messages[-1]["content"]
+
+    # Named events from both turns reach the SPA.
+    starts = [e for e in events if e["event"] == "tool_call_start"]
+    ends = [e for e in events if e["event"] == "tool_call_end"]
+    assert [e["data"]["tool"] for e in starts] == ["postgres.query"]
+    assert [e["data"]["tool"] for e in ends] == ["postgres.query"]
+
+    # Single aggregated audit at end, summing both turns.
+    audits = [e for e in events if e["event"] == "cullis_audit"]
+    assert len(audits) == 1
+    aud = audits[0]["data"]
+    assert aud["trace_id"] == "trace_t2"  # last trace seen
+    assert aud["latency_ms"] == 350       # 200 + 150
+    assert aud["tools"] == [{"name": "postgres.query", "latency_ms": 120}]
+
+    # Final answer text reaches the SPA.
+    contents = [
+        e["data"]["choices"][0]["delta"].get("content")
+        for e in events
+        if e["event"] == "message" and isinstance(e["data"], dict)
+        and e["data"].get("choices")
+    ]
+    assert "found 42 rows" in contents
+
+
+def test_streaming_loop_pdp_deny_skips_tool_execution(
+    client, bearer, monkeypatch,
+):
+    """Tool-call PDP denial during streaming bypasses execution and
+    feeds a ``policy_denied`` text back as the tool result, exactly
+    like the non-streaming loop does."""
+    import json as _json
+    monkeypatch.setenv("CULLIS_CONNECTOR_STREAMING_LOOP", "true")
+    monkeypatch.setenv("CULLIS_CONNECTOR_TOOL_PDP_ENABLED", "true")
+
+    FakeCullisClient.tools_to_return = [{
+        "name": "postgres.query", "description": "x",
+        "inputSchema": {"type": "object"},
+    }]
+    FakeCullisClient.pdp_responses = [{
+        "allowed": False, "reason": "tool not permitted in this session",
+    }]
+    FakeCullisClient.stream_chunks = [
+        [
+            "data: " + _json.dumps({
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "id": "call_a", "type": "function",
+                     "function": {"name": "postgres.query",
+                                   "arguments": "{}"}}
+                ]}, "finish_reason": None}],
+            }) + "\n\n",
+            "data: " + _json.dumps({
+                "choices": [{"index": 0, "delta": {},
+                              "finish_reason": "tool_calls"}],
+            }) + "\n\n",
+            "data: [DONE]\n\n",
+        ],
+        [
+            "data: " + _json.dumps({
+                "choices": [{"index": 0,
+                              "delta": {"content": "cannot do that"},
+                              "finish_reason": "stop"}],
+            }) + "\n\n",
+            "data: [DONE]\n\n",
+        ],
+    ]
+
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={
+            "model": "claude-haiku-4-5",
+            "stream": True,
+            "messages": [{"role": "user", "content": "run the query"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Tool was NOT executed.
+    assert FakeCullisClient.call_tool_calls == []
+    # PDP was consulted.
+    assert len(FakeCullisClient.pdp_calls) == 1
+    # Second turn's last message is the policy_denied stand-in.
+    second_messages = FakeCullisClient.stream_calls[1]["messages"]
+    assert second_messages[-1]["role"] == "tool"
+    assert "policy_denied" in second_messages[-1]["content"]

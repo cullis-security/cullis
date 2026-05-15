@@ -19,6 +19,7 @@ unchanged — both modes can coexist on the same image.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,7 @@ from cullis_connector.ambassador.shared.proxy_trust import (
 from cullis_connector.ambassador.streaming import (
     extract_assistant_text, fake_stream,
 )
+from cullis_connector.ambassador.streaming_loop import stream_tool_use_loop
 
 _log = logging.getLogger("cullis_connector.ambassador.shared.router")
 
@@ -381,6 +383,30 @@ async def chat_completions(
     except Exception as exc:
         _log.exception("shared ambassador SDK login failed for %s", cred.principal_id)
         raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+
+    # P1 Tier B F2b — streaming tool-use loop opt-in. Same gate the
+    # ambassador router uses (cullis_connector/ambassador/router.py),
+    # mirrored here so shared-mode deploys (Frontdesk) get the same
+    # SPA-visible chip + audit-panel behaviour. Default false.
+    _stream_loop_enabled = (
+        os.getenv("CULLIS_CONNECTOR_STREAMING_LOOP", "false").lower()
+        in ("1", "true", "yes", "on")
+    )
+    if req.stream and _stream_loop_enabled:
+        def _stream_then_log_failure():
+            try:
+                yield from stream_tool_use_loop(client, body, max_iters=8)
+            except Exception:
+                _log.exception(
+                    "shared streaming tool-use loop failed for %s",
+                    cred.principal_id,
+                )
+                raise
+        return StreamingResponse(
+            _stream_then_log_failure(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     try:
         response, truncated = run_tool_use_loop(client, body, max_iters=8)
