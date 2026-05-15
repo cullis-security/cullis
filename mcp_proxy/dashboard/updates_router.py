@@ -45,8 +45,9 @@ import pathlib
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
+
+from mcp_proxy.dashboard._template_env import build_templates
 
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
@@ -63,7 +64,7 @@ from mcp_proxy.updates import Migration, discover, get_by_id
 from mcp_proxy.updates.boot import detect_pending_migrations
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
-_templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+_templates = build_templates(_TEMPLATE_DIR)
 
 
 _log = logging.getLogger("mcp_proxy.dashboard.updates")

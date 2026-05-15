@@ -29,7 +29,6 @@ from cryptography.x509.oid import NameOID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
 
 from mcp_proxy.dashboard.session import (
@@ -59,38 +58,14 @@ from mcp_proxy.admin.approval_hook import (
 _log = logging.getLogger("mcp_proxy.dashboard")
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 
+from mcp_proxy.dashboard._template_env import (  # noqa: E402
+    _parse_device_info,
+    build_templates,
+)
+from mcp_proxy import license as _license_mod  # noqa: E402
 
-def _parse_device_info(raw):
-    """Best-effort parse of ``internal_agents.device_info`` (migration 0013)
-    — Connectors send a mix of conventions across versions, so we normalize
-    a handful of aliases and fall back to ``None`` on anything malformed so
-    the template short-circuits to a dash."""
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    def _pick(*keys):
-        for k in keys:
-            v = data.get(k)
-            if v:
-                return str(v)
-        return None
-
-    return {
-        "os": _pick("os", "platform", "system"),
-        "hostname": _pick("hostname", "host", "node"),
-        "version": _pick("version", "connector_version", "client_version"),
-    }
-
-
-templates.env.filters["parse_device"] = _parse_device_info
+templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/proxy", tags=["dashboard"])
 
@@ -3213,6 +3188,36 @@ async def badge_users(request: Request):
     if n:
         return HTMLResponse(
             f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-accent-500/15 text-accent-400">{n}</span>'
+        )
+    return HTMLResponse("")
+
+
+@router.get("/badge/approvals")
+async def badge_approvals(request: Request):
+    """Pending 4-eyes approvals count for the sidebar.
+
+    Empty in community mode (no ``rbac_multi_admin`` feature in the
+    license) or when the enterprise plugin is not installed on this
+    deploy — the late import keeps the open-core build independent of
+    the enterprise package. Anything unexpected on the read path
+    degrades silently to "no badge" rather than breaking the nav.
+    """
+    session = get_session(request)
+    if not session.logged_in:
+        return HTMLResponse("")
+    if not _license_mod.has_feature("rbac_multi_admin"):
+        return HTMLResponse("")
+    try:
+        from cullis_enterprise.mastio.rbac_multi_admin import (
+            models as _approvals_models,
+        )
+        pending = await _approvals_models.list_pending_approvals()
+    except Exception:
+        return HTMLResponse("")
+    count = len(pending)
+    if count:
+        return HTMLResponse(
+            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-amber-500/20 text-amber-400">{count}</span>'
         )
     return HTMLResponse("")
 

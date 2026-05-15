@@ -20,8 +20,8 @@ import time
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 
+from mcp_proxy.dashboard._template_env import build_templates
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
     require_login,
@@ -48,7 +48,7 @@ from mcp_proxy.egress.provider_catalog import (
 _log = logging.getLogger("mcp_proxy.dashboard.ai_providers")
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/proxy/ai-providers", tags=["dashboard-ai-providers"])
 

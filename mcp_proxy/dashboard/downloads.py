@@ -18,11 +18,12 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+
+from mcp_proxy.dashboard._template_env import build_templates
 
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/downloads", tags=["downloads"])
 

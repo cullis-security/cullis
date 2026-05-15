@@ -20,11 +20,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from mcp_proxy.config import get_settings
+from mcp_proxy.dashboard._template_env import build_templates
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
     require_login,
@@ -38,7 +38,7 @@ from mcp_proxy.tools.resource_loader import reload_resources
 _log = logging.getLogger("mcp_proxy.dashboard.mcp_resources")
 
 _TEMPLATE_DIR = pathlib.Path(__file__).parent / "templates"
-templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
+templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/proxy/backends", tags=["dashboard-backends"])
 
