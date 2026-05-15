@@ -156,6 +156,48 @@ fresh TCP socket to mcp-proxy on every request. Upgrade from
 your nginx error log for `Address not available` lines if you ever
 build a custom sidecar that re-opens this hole.
 
+## Soak stability (one-hour run)
+
+A second k6 scenario, `scripts/stress/soak-stability.js`, holds 50 VUs
+against `/health` for a configurable duration (default 60 minutes) so
+the operator can rule out slow memory leaks before cutting a release.
+
+Baseline run on 2026-05-15 against `mastio-bundle-v0.4.2` on the same
+8-core VM as the headline RPS test:
+
+| Metric | Value |
+|---|---|
+| Duration | 60 min, 50 VUs constant |
+| Total requests | 7,390,997 |
+| Sustained RPS | 2,053 |
+| Error rate | 0.000 % |
+| Latency avg | 24.2 ms |
+| Latency p(50) | 21.1 ms |
+| Latency p(95) | 70.1 ms |
+| Latency p(99) | 73.8 ms |
+| Latency max | 163.4 ms |
+
+RSS drift on the two containers, measured via `docker stats` sampled
+once a minute for the full hour:
+
+| Container | Pre-load | Steady under load | Post-load |
+|---|---|---|---|
+| `mcp-proxy` | 124.9 MiB | ~127 MiB (+1.7 %) | 125.0 MiB (+0.08 %) |
+| `mastio-nginx` | 23.5 MiB | ~30 MiB (+28 %) | 24.4 MiB (+3.9 %) |
+
+The under-load delta on the nginx sidecar is working-set (connection
+buffers, upstream keep-alive pool, request slabs) and unwinds within
+~30 seconds of load cessation. Both containers land back at their
+pre-load RSS within rounding once the workload drains. No leak signal
+on the mcp-proxy process either: the FastAPI worker is essentially
+flat across the hour.
+
+Re-run the scenario before any release that touches long-lived
+resources (DB connection pools, MCP session caches, audit hash chain
+accumulators) and compare the pre-load / post-load column. Anything
+above ~10 % residual drift on either container is worth investigating
+before tagging.
+
 ## Followups (planned)
 
 - **DPoP egress throughput**: measure how many `/v1/egress/...`
@@ -164,8 +206,6 @@ build a custom sidecar that re-opens this hole.
 - **A2A intra-org routing**: measure end-to-end message dispatch
   through PDP plus broker plus E2E encryption.
 - **Enrolment burst**: measure concurrent CSR issuance + DB insert.
-- **Soak / leak detection**: one-hour continuous run at 50 VUs,
-  watching RSS for drift.
 
 The placeholders for each scenario live alongside the live script in
 `scripts/stress/` in the repo.
