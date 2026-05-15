@@ -32,6 +32,21 @@ ACTION_VAULT_MIGRATE_KEYS = "vault.migrate_keys"
 ACTION_USERS_DELETE = "users.delete"
 ACTION_AGENTS_DELETE = "agents.delete"
 
+# H3 P0.5 — additional actions covered by the 4-eyes gate after the
+# 2026-05-15 threat-model verification pass surfaced that enrolment,
+# license import, and federation peering were not gated.
+#
+# ACTION_AGENT_ENROLL is wired today on the dashboard enrolment
+# approve endpoint. ACTION_LICENSE_IMPORT and ACTION_FEDERATION_PEER
+# are declared now so plugins can pre-configure quorum policies for
+# them; the endpoints themselves land in the license renewal hot-swap
+# PR (P0.2) and the federation attach PR (future). When those
+# endpoints arrive, they must call ``maybe_intercept_for_approval``
+# with the matching constant.
+ACTION_AGENT_ENROLL = "agent.enroll"
+ACTION_LICENSE_IMPORT = "license.import"
+ACTION_FEDERATION_PEER = "federation.peer"
+
 
 async def maybe_intercept_for_approval(
     *,
