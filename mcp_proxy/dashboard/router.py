@@ -47,6 +47,7 @@ from mcp_proxy.dashboard.session import (
 from mcp_proxy.admin.approval_hook import (
     ACTION_AGENT_ENROLL,
     ACTION_AGENTS_DELETE,
+    ACTION_LICENSE_IMPORT,
     ACTION_MASTIO_KEY_ROTATE,
     ACTION_PKI_ROTATE_CA,
     ACTION_POLICIES_SAVE,
@@ -4690,6 +4691,105 @@ async def settings_admin_password_change(request: Request):
     return RedirectResponse(
         "/proxy/settings?ok=Admin+password+rotated."
         "+Re-login+required+on+next+session.",
+        status_code=303,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# License hot-swap (H3 P0.2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/settings/license")
+async def settings_license_swap(request: Request):
+    """Hot-swap the in-process license JWT without a restart.
+
+    Closes the rotation gap for the first paid deal: customers on a
+    paid tier need to rotate the license JWT every ~90 days without
+    bouncing the bundle. Validates the candidate token against the
+    baked / overridden public key; on success the cache is replaced
+    atomically and the plugin registry is invalidated so the feature
+    gate re-applies on the next call. On validation failure the cache
+    stays unchanged and the operator gets a flash message.
+
+    Optional 4-eyes gate: when the enterprise rbac_multi_admin plugin
+    is loaded and policy-gated, the import is queued for a second
+    admin signoff via ``ACTION_LICENSE_IMPORT``. Community deploys
+    skip the gate entirely.
+    """
+    from urllib.parse import quote
+
+    from mcp_proxy.db import log_audit
+    from mcp_proxy.license import LicenseSwapError, swap_token
+
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    form = await request.form()
+    candidate = str(form.get("license_jwt", "")).strip()
+    if not candidate:
+        return RedirectResponse(
+            "/proxy/settings?error=Paste+the+license+JWT+before+submitting",
+            status_code=303,
+        )
+
+    # 4-eyes gate. We forward the JWT prefix to the plugin payload so
+    # the second signer can see WHICH license is being imported (the
+    # 90gg rotation procedure ships out-of-band, so the prefix is
+    # enough to cross-reference); we do NOT log the full JWT to the
+    # payload because the plugin persists it for audit.
+    jwt_prefix = candidate.split(".", 1)[0][:80]
+    intercept = await maybe_intercept_for_approval(
+        session=session,
+        action_type=ACTION_LICENSE_IMPORT,
+        payload={"license_jwt_prefix": jwt_prefix},
+        request=request,
+    )
+    if intercept is not None:
+        return intercept
+
+    try:
+        claims = swap_token(candidate)
+    except LicenseSwapError as exc:
+        # Audit the failed swap attempt so a paste-error / hostile JWT
+        # is forensically visible. The candidate token itself is NOT
+        # logged (it may be a valid JWT for the wrong tenant and we do
+        # not want to leak it via grep).
+        actor = (
+            getattr(session, "principal_id", None)
+            or getattr(session, "username", None)
+            or "admin"
+        )
+        await log_audit(
+            agent_id=actor,
+            action="license_swap",
+            status="error",
+            detail=f"reason={exc} actor={actor}",
+        )
+        return RedirectResponse(
+            f"/proxy/settings?error={quote(f'License swap rejected: {exc}')}",
+            status_code=303,
+        )
+
+    actor = (
+        getattr(session, "principal_id", None)
+        or getattr(session, "username", None)
+        or "admin"
+    )
+    await log_audit(
+        agent_id=actor,
+        action="license_swap",
+        status="success",
+        detail=(
+            f"tier={claims.tier} org={claims.org} "
+            f"features={len(claims.features)} exp={claims.exp} actor={actor}"
+        ),
+    )
+    return RedirectResponse(
+        f"/proxy/settings?ok={quote('License updated. Tier: ' + claims.tier)}",
         status_code=303,
     )
 
