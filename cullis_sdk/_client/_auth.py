@@ -160,9 +160,26 @@ class _AuthMixin:
     def login(self, agent_id: str, org_id: str, cert_path: str, key_path: str,
               *,
               countersign_fn: Optional[Callable[[str], str]] = None) -> None:
-        """Authenticate via x509 + DPoP, reading cert and key from file paths."""
+        """Authenticate via x509 + DPoP, reading cert and key from file paths.
+
+        .. deprecated:: 0.4.x
+           Use :meth:`from_api_key_file` (ADR-011 unified enrollment + runtime
+           auth) instead. Will be removed in v0.5.
+        """
+        import warnings
+        warnings.warn(
+            "CullisClient.login() is deprecated. Use from_api_key_file(...) "
+            "(ADR-011 unified enrollment + runtime auth) instead. "
+            "Will be removed in cullis-sdk v0.5 (~2026-08-15).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         cert_pem = Path(cert_path).read_text()
         key_pem = Path(key_path).read_text()
+        # ``login_from_pem`` itself emits a DeprecationWarning; ``login``
+        # callers will see both this and the inner one. They point at
+        # complementary stack frames (user → login, login → login_from_pem)
+        # which is the expected story.
         self.login_from_pem(
             agent_id, org_id, cert_pem, key_pem,
             countersign_fn=countersign_fn,
