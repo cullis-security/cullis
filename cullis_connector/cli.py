@@ -824,3 +824,360 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
+
+
+# ── `cullis` thin CLI (agent-targeted send/inbox) ────────────────────────
+#
+# Roadmap session 2026-05-15 scope #4 v1. ``cullis`` is a separate
+# console script that talks HTTP to the local Connector daemon
+# (``http://127.0.0.1:7777``) and never touches the SDK directly. Every
+# subcommand resolves to one HTTP call against an existing Ambassador
+# route — no new server-side endpoints. Targets coding-CLI agents
+# (Claude Code / Codex / Cursor) that want a quick ``cullis send`` /
+# ``cullis inbox`` shortcut instead of curl + Bearer juggling.
+#
+# Out of scope for v1: ``discover`` / ``list-agents`` (need Broker
+# endpoints that don't exist yet) and ``send-to-user`` (different
+# Broker route shape).
+
+# Ambassador default bind from ``cullis_connector/web.py`` —
+# loopback-only, fixed port. Kept in sync there by the dashboard
+# command's ``--port`` default; if the user moved the daemon they
+# override with ``--connector-url``.
+_DEFAULT_CONNECTOR_URL = "http://127.0.0.1:7777"
+
+
+class _CullisCLIError(Exception):
+    """Friendly CLI failure. Message goes to stderr, exit code 1."""
+
+
+def _resolve_token_path(args: argparse.Namespace) -> "Path":
+    """Pick the file holding the loopback Bearer token.
+
+    Precedence (highest first):
+
+    * ``--token-file`` on the CLI.
+    * ``CULLIS_BEARER_TOKEN_FILE`` env var.
+    * The active profile's ``config_dir / "local.token"`` (the same
+      file ``cullis-connector show-token`` reads), so a user running
+      ``--profile north`` picks up the matching token without touching
+      the env.
+
+    The function does NOT read the file — it just decides where to
+    look. ``_get_bearer_token`` opens it and produces the friendly
+    error if it's missing.
+    """
+    from pathlib import Path
+    import os as _os
+
+    explicit = getattr(args, "token_file", None)
+    if explicit:
+        return Path(explicit).expanduser()
+    env_path = _os.environ.get("CULLIS_BEARER_TOKEN_FILE", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    cfg = load_config({
+        "profile": getattr(args, "profile", None),
+        "config_dir": getattr(args, "config_dir", None),
+    })
+    from cullis_connector.ambassador.auth import LOCAL_TOKEN_FILENAME
+    return cfg.config_dir / LOCAL_TOKEN_FILENAME
+
+
+def _get_bearer_token(args: argparse.Namespace) -> str:
+    """Read the loopback Bearer token from disk.
+
+    Raises ``_CullisCLIError`` with an actionable hint if the file
+    isn't there — the most likely cause is the daemon never started,
+    not a permissions issue.
+    """
+    token_path = _resolve_token_path(args)
+    if not token_path.exists():
+        raise _CullisCLIError(
+            f"No Cullis Connector token at {token_path}.\n"
+            "Start the daemon first:\n"
+            "    cullis-connector dashboard --profile <name>\n"
+            "or\n"
+            "    cullis-connector serve\n"
+            "then re-run this command. Override the path with "
+            "--token-file or $CULLIS_BEARER_TOKEN_FILE."
+        )
+    token = token_path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise _CullisCLIError(
+            f"Cullis Connector token at {token_path} is empty. "
+            "Rotate it from the dashboard's API keys page or delete "
+            "the file and restart the daemon."
+        )
+    return token
+
+
+def _http_request(
+    args: argparse.Namespace,
+    method: str,
+    path: str,
+    *,
+    json_body: dict | None = None,
+    params: dict | None = None,
+) -> dict:
+    """Call the local Ambassador. Returns the parsed JSON body.
+
+    Network / 4xx / 5xx errors raise ``_CullisCLIError`` with a one-
+    line summary the caller can print verbatim. The daemon answers
+    JSON on every documented route; if it doesn't (eg. a reverse
+    proxy injected an HTML 502 page), we surface the status + the
+    first 200 bytes of the body so the user can diagnose.
+    """
+    import httpx
+
+    token = _get_bearer_token(args)
+    base = args.connector_url.rstrip("/")
+    url = f"{base}{path}"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.request(
+                method, url, headers=headers, json=json_body, params=params,
+            )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        raise _CullisCLIError(
+            f"Cannot reach Cullis Connector at {base} ({exc}). "
+            "Check the daemon is running: `cullis-connector dashboard` "
+            "or `cullis-connector serve`."
+        ) from exc
+
+    if resp.status_code >= 400:
+        # Mastio + Ambassador both speak JSON ``{detail: ...}`` on
+        # errors. Fall back to a truncated raw body for anything else.
+        try:
+            detail = resp.json().get("detail", resp.text[:200])
+        except Exception:
+            detail = resp.text[:200]
+        raise _CullisCLIError(
+            f"HTTP {resp.status_code} from {method} {path}: {detail}"
+        )
+
+    try:
+        body = resp.json()
+    except Exception as exc:
+        raise _CullisCLIError(
+            f"Cullis Connector returned non-JSON at {method} {path}: "
+            f"{resp.text[:200]}"
+        ) from exc
+    return body if isinstance(body, dict) else {"data": body}
+
+
+def _cullis_build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="cullis",
+        description=(
+            "Cullis CLI — thin alias for the local Connector daemon. "
+            "Wraps the loopback Ambassador's /v1/inbox + /v1/ambassador "
+            "routes; the daemon must already be running."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"cullis {__version__}")
+    parser.add_argument(
+        "--connector-url",
+        dest="connector_url",
+        default=_DEFAULT_CONNECTOR_URL,
+        help=(
+            "Override the Connector daemon URL "
+            f"(default: {_DEFAULT_CONNECTOR_URL})."
+        ),
+    )
+    parser.add_argument(
+        "--token-file",
+        dest="token_file",
+        default=None,
+        help=(
+            "Path to the loopback Bearer token file. Defaults to "
+            "$CULLIS_BEARER_TOKEN_FILE if set, otherwise "
+            "<config_dir>/local.token resolved through --profile."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        dest="profile",
+        default=None,
+        help=(
+            "Connector profile name (default: 'default'). Maps to "
+            "~/.cullis/profiles/<name>/ for token lookup. Mirrors the "
+            "cullis-connector --profile flag."
+        ),
+    )
+    parser.add_argument(
+        "--config-dir",
+        dest="config_dir",
+        default=None,
+        help=(
+            "Explicit config_dir override (escape hatch — usually "
+            "--profile is enough)."
+        ),
+    )
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    send = sub.add_parser(
+        "send",
+        help="Send a one-shot intra-org message to another principal.",
+        description=(
+            "POST /v1/inbox/send via the local Connector. The Ambassador "
+            "resolves the recipient through the Mastio's egress, signs + "
+            "envelopes the payload, and queues the delivery."
+        ),
+    )
+    send.add_argument(
+        "--to", dest="to", required=True,
+        help="Recipient principal id (e.g. orga::alice, user::mario).",
+    )
+    body_group = send.add_mutually_exclusive_group(required=True)
+    body_group.add_argument(
+        "--content", dest="content",
+        help="Plain-text message body — wrapped as {\"text\": <content>}.",
+    )
+    body_group.add_argument(
+        "--payload-json", dest="payload_json",
+        help="Structured JSON object payload (e.g. '{\"intent\":\"ping\"}').",
+    )
+    send.add_argument(
+        "--correlation-id", dest="correlation_id", default=None,
+        help="Optional correlation id propagated to the recipient.",
+    )
+    send.add_argument(
+        "--reply-to", dest="reply_to", default=None,
+        help="Optional msg_id this message replies to.",
+    )
+    send.add_argument(
+        "--ttl", dest="ttl_seconds", type=int, default=300,
+        help="Server-side TTL in seconds for offline delivery (default 300).",
+    )
+
+    inbox = sub.add_parser(
+        "inbox",
+        help="List recent inbox messages.",
+        description="GET /v1/inbox via the local Connector.",
+    )
+    inbox.add_argument(
+        "--since", dest="since", default=None,
+        help="Return only messages newer than this msg_id.",
+    )
+    inbox.add_argument(
+        "--limit", dest="limit", type=int, default=50,
+        help="Maximum messages to return (default 50).",
+    )
+    inbox.add_argument(
+        "--format", dest="format", choices=("text", "json"), default="text",
+        help="text (compact table, default) or json (raw response).",
+    )
+
+    sub.add_parser(
+        "health",
+        help="Check the local Connector daemon is reachable.",
+        description="GET /v1/ambassador/health via the local Connector.",
+    )
+
+    return parser
+
+
+def _cmd_cullis_send(args: argparse.Namespace) -> int:
+    if args.payload_json is not None:
+        import json as _json
+        try:
+            payload: dict = _json.loads(args.payload_json)
+        except _json.JSONDecodeError as exc:
+            raise _CullisCLIError(f"--payload-json is not valid JSON: {exc}")
+        if not isinstance(payload, dict):
+            raise _CullisCLIError("--payload-json must decode to a JSON object")
+    else:
+        payload = {"text": args.content}
+
+    body: dict = {
+        "recipient_id": args.to,
+        "payload": payload,
+        "ttl_seconds": int(args.ttl_seconds),
+    }
+    if args.correlation_id:
+        body["correlation_id"] = args.correlation_id
+    if args.reply_to:
+        body["reply_to"] = args.reply_to
+
+    result = _http_request(args, "POST", "/v1/inbox/send", json_body=body)
+    import json as _json
+    print(_json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_cullis_inbox(args: argparse.Namespace) -> int:
+    params: dict = {"limit": int(args.limit)}
+    if args.since:
+        params["since"] = args.since
+    result = _http_request(args, "GET", "/v1/inbox", params=params)
+
+    if args.format == "json":
+        import json as _json
+        print(_json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    # Mastio + Ambassador wrap the rows under ``messages``. Tolerate the
+    # bare-list shape too in case a future Ambassador version drops the
+    # wrapper.
+    messages = result.get("messages")
+    if messages is None and isinstance(result.get("data"), list):
+        messages = result["data"]
+    if messages is None:
+        messages = []
+    if not messages:
+        print("(inbox empty)")
+        return 0
+
+    header = f"{'MSG_ID':<24}  {'SENDER':<28}  PAYLOAD"
+    print(header)
+    print("-" * len(header))
+    for m in messages:
+        msg_id = str(m.get("msg_id") or m.get("id") or "?")[:23]
+        sender = str(m.get("sender_id") or m.get("sender_agent_id") or "?")[:27]
+        payload = m.get("payload")
+        if isinstance(payload, dict):
+            preview = payload.get("text") or payload
+        else:
+            preview = payload
+        preview_str = str(preview)
+        if len(preview_str) > 60:
+            preview_str = preview_str[:57] + "..."
+        print(f"{msg_id:<24}  {sender:<28}  {preview_str}")
+    return 0
+
+
+def _cmd_cullis_health(args: argparse.Namespace) -> int:
+    result = _http_request(args, "GET", "/v1/ambassador/health")
+    profile = getattr(args, "profile", None) or "default"
+    agent = result.get("agent_id") or "(unbound)"
+    site = result.get("site_url") or "(unset)"
+    print(
+        f"Cullis Connector OK at {args.connector_url} "
+        f"(profile={profile}, agent={agent}, site={site})"
+    )
+    return 0
+
+
+def cullis_main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the ``cullis`` console script."""
+    parser = _cullis_build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
+
+    try:
+        if args.command == "send":
+            return _cmd_cullis_send(args)
+        if args.command == "inbox":
+            return _cmd_cullis_inbox(args)
+        if args.command == "health":
+            return _cmd_cullis_health(args)
+    except _CullisCLIError as exc:
+        print(f"cullis: {exc}", file=sys.stderr)
+        return 1
+    # argparse with ``required=True`` on the subparsers prevents this
+    # branch in practice, but keep an explicit fallback so the type
+    # checker can prove the function returns an int.
+    parser.print_help(sys.stderr)
+    return 2
