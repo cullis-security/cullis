@@ -59,6 +59,9 @@ spiffe = [
 
 [project.scripts]
 cullis-connector = "cullis_connector.cli:main"
+# Thin agent-targeted alias for send/inbox/health. Talks HTTP to the
+# loopback Ambassador on the Connector daemon — no SDK or crypto here.
+cullis = "cullis_connector.cli:cullis_main"
 cullis-proxy = "mcp_proxy.cli:main"
 
 [tool.hatch.build.targets.wheel]

@@ -291,6 +291,42 @@ separate rollout step.)
 
 ---
 
+## CLI alias `cullis`
+
+Shipped alongside `cullis-connector`. `cullis` is a thin command-line
+shortcut for the most common agent-targeted operations: send a
+one-shot message, list your inbox, check that the local daemon is up.
+It talks HTTP to the Connector daemon on `127.0.0.1:7777` — no
+crypto, no SDK, no direct call to the Mastio — so it works exactly
+where `cullis-connector dashboard` (or `serve`) is already running.
+
+```bash
+# Send a plaintext message
+cullis send --to chipfactory::mario --content "lavoro finito"
+
+# Or send a structured payload
+cullis send --to chipfactory::mario --payload-json '{"intent":"ping"}'
+
+# List recent inbox messages
+cullis inbox --limit 10
+
+# Check the daemon is reachable
+cullis health
+```
+
+**Token lookup.** Every command authenticates with the loopback
+Bearer token the Ambassador wrote at first start. Lookup order:
+`--token-file <path>` > `$CULLIS_BEARER_TOKEN_FILE` > the active
+profile's `<config_dir>/local.token` (resolved exactly like
+`cullis-connector --profile <name>`). If none of those land on an
+existing file, `cullis` prints how to start the daemon and exits
+with code 1 — so a missing daemon never silently degrades.
+
+**Out of scope for v1.** Agent discovery, sender-side cross-org
+delivery, and ack/archive shortcuts are not wired here yet; they
+need Broker-side routes that don't exist in this revision. Use the
+MCP tools (next section) for those flows in the meantime.
+
 ## Talking to other agents
 
 Once enrolled, the connector exposes a small set of natural-language

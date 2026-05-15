@@ -120,6 +120,9 @@ Changelog = "https://github.com/cullis-security/cullis/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cullis-connector = "cullis_connector.cli:main"
+# Thin agent-targeted alias for send/inbox/health. Talks HTTP to the
+# loopback Ambassador on the Connector daemon — no SDK or crypto here.
+cullis = "cullis_connector.cli:cullis_main"
 
 # Hatchling defaults to consulting VCS (.gitignore) when selecting files.
 # That breaks us: `packaging/pypi/cullis_connector/` is intentionally
