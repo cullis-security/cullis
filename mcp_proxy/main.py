@@ -963,6 +963,26 @@ _log.info(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# X-Cullis-* request header strip (P1.3)
+#
+# Mastio derives trust state from the DPoP token + verified principal cert,
+# never from incoming X-Cullis-* headers. The strip makes that contract
+# explicit at the request boundary so a future refactor that accidentally
+# reads ``request.headers["X-Cullis-Trust"]`` can't be tricked into trusting
+# a forged value. Registered last so Starlette's LIFO order runs it FIRST
+# on every inbound request — strip happens before any other middleware /
+# handler observes the headers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from mcp_proxy.middleware.strip_x_cullis_headers import (
+    StripXCullisHeadersMiddleware,
+)
+
+app.add_middleware(StripXCullisHeadersMiddleware)
+_log.info("X-Cullis-* incoming header strip middleware registered (P1.3)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Routers
 # ─────────────────────────────────────────────────────────────────────────────
 
