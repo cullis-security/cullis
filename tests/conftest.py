@@ -296,6 +296,7 @@ async def seed_court_agent(
     capabilities: list[str] | None = None,
     metadata: dict | None = None,
     description: str = "",
+    session_factory=None,
 ) -> None:
     """Direct-DB replacement for the legacy ``POST /v1/registry/agents``.
 
@@ -309,16 +310,24 @@ async def seed_court_agent(
     /v1/registry/orgs``) — this helper does not validate that, because
     neither does ``register_agent()``.
 
-    Reads ``app.db.database.AsyncSessionLocal`` at call time so postgres
-    integration tests (which mutate the sessionmaker via the
-    ``setup_pg_db`` fixture to redirect to a pg_engine) see their agent
-    on the same DB the router queries. Pre-fix: agent landed on SQLite,
-    router queried postgres, 404 on bindings.
+    ``session_factory`` is the explicit opt-in for tests that wire their
+    own engine. Default ``None`` keeps the SQLite ``TestSessionLocal``
+    that all 31+ caller files have been using since #202. Postgres
+    integration tests pass ``session_factory=PgSession`` to land the
+    agent on the same engine the router queries via the
+    ``setup_pg_db`` dependency override. A previous runtime ``getattr``
+    on ``app.db.database.AsyncSessionLocal`` would have worked for the
+    postgres path but introduced a subtle coupling: any unrelated
+    fixture that mutates the module-level sessionmaker (lifespan
+    re-init, plugin overrides, etc.) would have silently rerouted the
+    seed away from ``TestSessionLocal`` and the agent insert would
+    land on a tables-less engine — a real CI fail seen on PR #736
+    first push (``test_oneshot_policy_rules`` ``no such table:
+    agents``). Explicit opt-in avoids the implicit dispatch.
     """
     from app.registry.store import register_agent
-    import app.db.database as _db_module
 
-    _SessionLocal = getattr(_db_module, "AsyncSessionLocal", None) or TestSessionLocal
+    _SessionLocal = session_factory or TestSessionLocal
 
     async with _SessionLocal() as session:
         await register_agent(
@@ -340,6 +349,7 @@ def seed_court_agent_sync(
     capabilities: list[str] | None = None,
     metadata: dict | None = None,
     description: str = "",
+    session_factory=None,
 ) -> None:
     """Sync wrapper around ``seed_court_agent`` for the handful of tests
     built on starlette's ``TestClient`` (``test_ws.py``, ``test_m3_*``)
@@ -355,5 +365,6 @@ def seed_court_agent_sync(
             capabilities=capabilities,
             metadata=metadata,
             description=description,
+            session_factory=session_factory,
         ),
     )

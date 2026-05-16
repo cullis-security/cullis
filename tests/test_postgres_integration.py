@@ -145,6 +145,7 @@ async def _setup_agent(
         org_id=org_id,
         display_name=agent_id,
         capabilities=['order.read', 'order.write'],
+        session_factory=PgSession,
     )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read", "order.write"]},
