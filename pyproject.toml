@@ -56,6 +56,13 @@ desktop = [
 spiffe = [
     "spiffe>=0.2.0",
 ]
+# ADR-032 F3 Phase 1: Linux TPM 2.0 hardware attestation. Optional so
+# core test runs and Connector installs without a TPM keep using the soft
+# keystore fallback. Requires kernel resource manager at /dev/tpmrm0
+# (Linux >= 4.12) or a swtpm socket pointed at by TCTI env vars.
+tpm = [
+    "tpm2-pytss>=2.0",
+]
 
 [project.scripts]
 cullis-connector = "cullis_connector.cli:main"

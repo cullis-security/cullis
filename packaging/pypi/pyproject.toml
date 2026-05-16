@@ -110,6 +110,14 @@ dev = [
     "ruff>=0.4",
     "build>=1.0",
 ]
+# ADR-032 F3 Phase 1: Linux TPM 2.0 hardware attestation. Optional so a
+# Connector install on Windows / macOS / a vTPM-less Linux box keeps
+# working with the soft keystore fallback. Requires kernel resource
+# manager at /dev/tpmrm0 (provided by Linux >= 4.12) or a swtpm socket
+# pointed at by TCTI env vars; see imp/c2-f3-linux-tpm-spike-prompt.md.
+tpm = [
+    "tpm2-pytss>=2.0",
+]
 
 [project.urls]
 Homepage = "https://cullis.io"

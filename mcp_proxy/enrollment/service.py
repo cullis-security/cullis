@@ -226,6 +226,10 @@ async def start_enrollment(
     device_info: str | None,
     dpop_jwk: dict | None = None,
     pop_signature: str | None = None,
+    attestation_nonce_id: str | None = None,
+    tpm_quote_b64: str | None = None,
+    tpm_manufacturer: str | None = None,
+    tpm_ek_cert_present: bool = False,
 ) -> StartedEnrollment:
     """Create a new pending enrollment.
 
@@ -274,6 +278,17 @@ async def start_enrollment(
             fingerprint,
         )
 
+    # ADR-032 F3 Phase 1: verify the optional TPM attestation half.
+    # Failures here are user-facing 400s; absence is silent (Connector
+    # without a TPM keeps enrolling at the lower effective tier).
+    attestation_json = await _verify_tpm_attestation(
+        pubkey_pem=pubkey_pem,
+        attestation_nonce_id=attestation_nonce_id,
+        tpm_quote_b64=tpm_quote_b64,
+        manufacturer=tpm_manufacturer,
+        ek_cert_present=tpm_ek_cert_present,
+    )
+
     session_id = secrets.token_urlsafe(24)
     now = _now()
     expires_at = now + ENROLLMENT_TTL
@@ -283,11 +298,13 @@ async def start_enrollment(
             """INSERT INTO pending_enrollments (
                 session_id, pubkey_pem, pubkey_fingerprint,
                 requester_name, requester_email, reason, device_info,
-                status, created_at, expires_at, dpop_jkt
+                status, created_at, expires_at, dpop_jkt,
+                device_attestation_json
             ) VALUES (
                 :sid, :pk, :fp,
                 :name, :email, :reason, :device,
-                'pending', :created, :expires, :dpop_jkt
+                'pending', :created, :expires, :dpop_jkt,
+                :dev_attest
             )"""
         ),
         {
@@ -301,9 +318,100 @@ async def start_enrollment(
             "created": _iso(now),
             "expires": _iso(expires_at),
             "dpop_jkt": dpop_jkt,
+            "dev_attest": attestation_json,
         },
     )
+
+    if attestation_json:
+        # Audit the verified hardware claim at enrollment time; the F6
+        # audit migration will extend ``audit_log`` with first-class
+        # columns; until then the JSON detail captures the same payload.
+        await conn.execute(
+            text(
+                """INSERT INTO audit_log
+                   (timestamp, agent_id, action, status, detail)
+                   VALUES (:ts, :aid, 'device_attestation.verified', 'success', :detail)"""
+            ),
+            {
+                "ts": _iso(now),
+                "aid": f"pending::{session_id}",
+                "detail": attestation_json,
+            },
+        )
+
     return StartedEnrollment(session_id=session_id, expires_at=expires_at)
+
+
+async def _verify_tpm_attestation(
+    *,
+    pubkey_pem: str,
+    attestation_nonce_id: str | None,
+    tpm_quote_b64: str | None,
+    manufacturer: str | None,
+    ek_cert_present: bool,
+) -> str | None:
+    """Verify the TPM quote and return the claim JSON, or ``None`` if no
+    quote was submitted.
+
+    Raises :class:`EnrollmentError` (400) when the Connector ships a
+    quote without a nonce id, when the nonce has already been consumed
+    or expired, or when the cryptographic verification fails. A missing
+    quote is silent: the agent enrolls at the lower effective tier.
+    """
+    if not tpm_quote_b64 and not attestation_nonce_id:
+        return None
+    if bool(tpm_quote_b64) ^ bool(attestation_nonce_id):
+        raise EnrollmentError(
+            "tpm_quote_b64 and attestation_nonce_id must both be supplied"
+            " (or both omitted)",
+            http_status=400,
+        )
+
+    import base64 as _b64
+    import json as _json
+
+    from mcp_proxy.attestation import (
+        TpmQuoteVerificationError,
+        consume_nonce,
+        verify_tpm_quote,
+    )
+
+    nonce_bytes = await consume_nonce(attestation_nonce_id or "")
+    if nonce_bytes is None:
+        raise EnrollmentError(
+            "attestation nonce expired or already consumed", http_status=400,
+        )
+
+    try:
+        quote_blob = _b64.urlsafe_b64decode(
+            (tpm_quote_b64 or "") + "=" * (-len(tpm_quote_b64 or "") % 4),
+        )
+    except Exception as exc:
+        raise EnrollmentError(
+            f"tpm_quote_b64 is not valid base64url: {exc}", http_status=400,
+        ) from exc
+
+    try:
+        valid, claim = verify_tpm_quote(
+            quote_blob,
+            pubkey_pem,
+            nonce_bytes,
+            manufacturer=manufacturer,
+            ek_cert_present=ek_cert_present,
+        )
+    except TpmQuoteVerificationError as exc:
+        raise EnrollmentError(
+            f"tpm_quote verification failed: {exc}", http_status=400,
+        ) from exc
+
+    if not valid:
+        raise EnrollmentError(
+            "tpm_quote signature or nonce verification failed",
+            http_status=400,
+        )
+
+    claim["verified_at"] = _iso(_now())
+    return _json.dumps(claim, separators=(",", ":"), sort_keys=True)
 
 
 async def approve(
@@ -397,6 +505,12 @@ async def approve(
         f"{agent_manager.org_id}/{name_part}"
     )
 
+    # ADR-032 F3: the verified hardware claim from start_enrollment lives
+    # on ``pending_enrollments.device_attestation_json``. F2's
+    # ``stamp_attestation_on_enrollment`` (below) is the writer for
+    # ``internal_agents.last_attestation`` and will pick up the hardware
+    # half once F5 merges the two halves. Keeping the claim only on the
+    # pending row for the F3 spike avoids fighting F2 over the agent row.
     if existing.first() is None:
         # ADR-010 D1 left ``federated`` opt-in (admin flips manually) so
         # an org could onboard local-only agents without leaking them

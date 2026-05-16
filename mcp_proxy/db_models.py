@@ -76,6 +76,11 @@ class InternalAgent(Base):
     # Nullable=False + default ``both`` keeps the permissive shape for
     # rows written during the grace period before enforcement lands.
     reach = Column(String, nullable=False, server_default="both")
+    # ADR-032 attestation column ``last_attestation`` is added by
+    # migration 0035_mdm_device_state (F2 Intune spike). The F3 hardware
+    # claim is merged with the F2 MDM half by the enrollment hook and
+    # written there too; not declared on the ORM model because the
+    # writers use raw SQL via ``conn.execute(text(...))``.
 
 
 class AuditLogEntry(Base):
@@ -192,6 +197,11 @@ class PendingEnrollment(Base):
 
     # Rejected
     rejection_reason = Column(Text, nullable=True)
+
+    # ADR-032 F3: hardware attestation claim (JSON). Populated when the
+    # Connector ships a verified ``tpm_quote`` at start_enrollment time;
+    # carried to ``internal_agents.device_attestation_json`` on approve.
+    device_attestation_json = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_pending_enrollments_status", "status"),
