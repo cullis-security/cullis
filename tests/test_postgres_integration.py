@@ -109,25 +109,50 @@ async def pg_client():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
+async def _setup_agent(
+    client: AsyncClient, agent_id: str, org_id: str
+) -> tuple[str, DPoPHelper]:
+    """Setup helper: create org, upload CA, seed court agent, create binding.
+
+    Returns ``(access_token, dpop_helper)``. The helper holds the JWK the
+    token is bound to (cnf.jkt), so callers must build per-request DPoP
+    proofs via ``dpop.headers(method, path, token)`` instead of plain
+    ``Authorization: Bearer`` (rejected by ``app/auth/jwt.py:204-210``).
+
+    Asserts status_code on every HTTP step so a future regression on any
+    of these endpoints surfaces here with the actual status + body
+    instead of a distant ``KeyError`` on the binding response shape (the
+    2026-05-16 postgres drift investigation took 2h to root-cause for
+    exactly this reason).
+    """
     org_secret = org_id + "-secret"
-    await client.post("/v1/registry/orgs", json={
+    resp = await client.post("/v1/registry/orgs", json={
         "org_id": org_id, "display_name": org_id, "secret": org_secret,
     }, headers=ADMIN_HEADERS)
+    assert resp.status_code in (200, 201), (
+        f"orgs create failed: {resp.status_code} {resp.text!r}"
+    )
     ca_pem = get_org_ca_pem(org_id)
-    await client.post(f"/v1/registry/orgs/{org_id}/certificate",
+    resp = await client.post(f"/v1/registry/orgs/{org_id}/certificate",
         json={"ca_certificate": ca_pem},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    assert resp.status_code in (200, 201), (
+        f"cert upload failed: {resp.status_code} {resp.text!r}"
     )
     await seed_court_agent(
         agent_id=agent_id,
         org_id=org_id,
         display_name=agent_id,
         capabilities=['order.read', 'order.write'],
+        session_factory=PgSession,
     )
     resp = await client.post("/v1/registry/bindings",
         json={"org_id": org_id, "agent_id": agent_id, "scope": ["order.read", "order.write"]},
         headers={"x-org-id": org_id, "x-org-secret": org_secret},
+    )
+    assert resp.status_code in (200, 201), (
+        f"binding create failed: {resp.status_code} {resp.text!r}"
     )
     binding_id = resp.json()["id"]
     await client.post(f"/v1/registry/bindings/{binding_id}/approve",
@@ -141,7 +166,8 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
     }, headers={"x-org-id": org_id, "x-org-secret": org_secret})
 
     dpop = DPoPHelper()
-    return await dpop.get_token(client, agent_id, org_id)
+    token = await dpop.get_token(client, agent_id, org_id)
+    return token, dpop
 
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -149,21 +175,22 @@ async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str) -> str:
 @pytest.mark.asyncio
 async def test_pg_session_and_signed_messages(pg_client):
     """Active session + signed messages persisted on Postgres and retrieved after restart."""
-    token_a = await _setup_agent(pg_client, "pg-org-a::agent", "pg-org-a")
-    token_b = await _setup_agent(pg_client, "pg-org-b::agent", "pg-org-b")
+    token_a, dpop_a = await _setup_agent(pg_client, "pg-org-a::agent", "pg-org-a")
+    token_b, dpop_b = await _setup_agent(pg_client, "pg-org-b::agent", "pg-org-b")
 
     # Create session
     resp = await pg_client.post("/v1/broker/sessions", json={
         "target_agent_id": "pg-org-b::agent",
         "target_org_id": "pg-org-b",
         "requested_capabilities": ["order.read"],
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers=dpop_a.headers("POST", "/v1/broker/sessions", token_a))
     assert resp.status_code == 201, resp.text
     session_id = resp.json()["session_id"]
 
     # Accept
-    resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/accept",
-                                headers={"Authorization": f"Bearer {token_b}"})
+    accept_path = f"/v1/broker/sessions/{session_id}/accept"
+    resp = await pg_client.post(accept_path,
+                                headers=dpop_b.headers("POST", accept_path, token_b))
     assert resp.status_code == 200, resp.text
 
     # Send 3 signed messages
@@ -173,16 +200,17 @@ async def test_pg_session_and_signed_messages(pg_client):
         {"type": "confirm", "ref": "PO-42"},
     ]
     nonces = [str(uuid.uuid4()) for _ in payloads]
+    messages_path = f"/v1/broker/sessions/{session_id}/messages"
     for payload, nonce in zip(payloads, nonces):
         sig, _ts = sign_message("pg-org-a::agent", "pg-org-a", session_id, "pg-org-a::agent", nonce, payload)
-        resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
+        resp = await pg_client.post(messages_path, json={
             "session_id": session_id,
             "sender_agent_id": "pg-org-a::agent",
             "payload": payload,
             "nonce": nonce,
             "timestamp": _ts,
             "signature": sig,
-        }, headers={"Authorization": f"Bearer {token_a}"})
+        }, headers=dpop_a.headers("POST", messages_path, token_a))
         assert resp.status_code == 202, resp.text
 
     # Verify that records are on Postgres (session opened and closed within the test)
@@ -204,16 +232,16 @@ async def test_pg_session_and_signed_messages(pg_client):
 
     # Session still active
     resp = await pg_client.get("/v1/broker/sessions",
-                               headers={"Authorization": f"Bearer {token_a}"})
+                               headers=dpop_a.headers("GET", "/v1/broker/sessions", token_a))
     sessions = resp.json()
     match = next((s for s in sessions if s["session_id"] == session_id), None)
     assert match is not None
     assert match["status"] == "active"
 
     # Messages retrievable with signatures
-    resp = await pg_client.get(f"/v1/broker/sessions/{session_id}/messages",
+    resp = await pg_client.get(messages_path,
                                params={"after": -1},
-                               headers={"Authorization": f"Bearer {token_b}"})
+                               headers=dpop_b.headers("GET", messages_path, token_b))
     assert resp.status_code == 200
     msgs = resp.json()
     assert len(msgs) == 3
@@ -224,25 +252,27 @@ async def test_pg_session_and_signed_messages(pg_client):
 @pytest.mark.asyncio
 async def test_pg_nonce_replay_blocked(pg_client):
     """Replay of the same nonce must be blocked even after restart on Postgres."""
-    token_a = await _setup_agent(pg_client, "pg-replay-a::agent", "pg-replay-a")
-    token_b = await _setup_agent(pg_client, "pg-replay-b::agent", "pg-replay-b")
+    token_a, dpop_a = await _setup_agent(pg_client, "pg-replay-a::agent", "pg-replay-a")
+    token_b, dpop_b = await _setup_agent(pg_client, "pg-replay-b::agent", "pg-replay-b")
 
     resp = await pg_client.post("/v1/broker/sessions", json={
         "target_agent_id": "pg-replay-b::agent",
         "target_org_id": "pg-replay-b",
         "requested_capabilities": [],
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers=dpop_a.headers("POST", "/v1/broker/sessions", token_a))
     session_id = resp.json()["session_id"]
-    await pg_client.post(f"/v1/broker/sessions/{session_id}/accept",
-                         headers={"Authorization": f"Bearer {token_b}"})
+    accept_path = f"/v1/broker/sessions/{session_id}/accept"
+    await pg_client.post(accept_path,
+                         headers=dpop_b.headers("POST", accept_path, token_b))
 
+    messages_path = f"/v1/broker/sessions/{session_id}/messages"
     nonce = str(uuid.uuid4())
     payload = {"msg": "primo"}
     sig, _ts = sign_message("pg-replay-a::agent", "pg-replay-a", session_id, "pg-replay-a::agent", nonce, payload)
-    await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
+    await pg_client.post(messages_path, json={
         "session_id": session_id, "sender_agent_id": "pg-replay-a::agent",
         "payload": payload, "nonce": nonce, "timestamp": _ts, "signature": sig,
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers=dpop_a.headers("POST", messages_path, token_a))
 
     # Restart
     session_store._sessions.clear()
@@ -252,8 +282,8 @@ async def test_pg_nonce_replay_blocked(pg_client):
     # Replay — must be blocked
     payload2 = {"msg": "replay"}
     sig2, _ts2 = sign_message("pg-replay-a::agent", "pg-replay-a", session_id, "pg-replay-a::agent", nonce, payload2)
-    resp = await pg_client.post(f"/v1/broker/sessions/{session_id}/messages", json={
+    resp = await pg_client.post(messages_path, json={
         "session_id": session_id, "sender_agent_id": "pg-replay-a::agent",
         "payload": payload2, "nonce": nonce, "timestamp": _ts2, "signature": sig2,
-    }, headers={"Authorization": f"Bearer {token_a}"})
+    }, headers=dpop_a.headers("POST", messages_path, token_a))
     assert resp.status_code == 409
