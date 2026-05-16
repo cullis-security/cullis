@@ -101,3 +101,36 @@ For multi-Mastio deployments, run per-Mastio (each Mastio holds its
 own chain) and persist the verification verdicts in a tamper-evident
 external store (Court audit replication, S3 Object Lock, or your SIEM
 of choice).
+
+### Operating the batched chain under DB latency / outage
+
+The in-memory `_pending` queue (see `BatchedAuditChain` in
+`mcp_proxy/audit_chain.py`) has no hard ceiling on its size. Under
+normal operation the size + time flush triggers drain it within
+1 second. Under a database stall (slow disk, Postgres failover,
+connection pool saturation), `_pending` can grow to
+`RPS × stall_seconds` rows. At Tier 2 sustained throughput
+(10 000 RPS) a 10-second stall accumulates ~100 000 row dicts in
+memory (~50-100 MB).
+
+Recommended operator response:
+
+- Monitor `BatchedAuditChain.pending_count` via your APM / OTel
+  layer. Set an alert when it exceeds a multiple of
+  `audit_chain_batch_size` (e.g. 10× = 1 000 pending under the
+  default).
+- If the queue persists above alert threshold for more than 30s,
+  the database is the root cause — investigate engine health, do
+  not throttle the API layer (rows queued in `_pending` are
+  guaranteed-best-effort, dropping them via API throttling is
+  strictly worse than queuing them).
+- For pathological DB outages where memory pressure becomes the
+  failure mode (rare on production-class instances), `audit_chain_disabled=true`
+  can be flipped hot via a config reload + Mastio restart. This
+  reverts to the legacy per-row path which surfaces DB stalls as
+  5xx on the calling request (fail-deny=true semantics), trading
+  audit completeness for backpressure on the API.
+
+A future release may add `audit_chain_max_pending` as a hard
+ceiling with a typed exception ramping into the synchronous fail-
+deny path, so operators don't have to hot-flip the disabled gate.

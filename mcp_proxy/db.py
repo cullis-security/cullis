@@ -423,9 +423,8 @@ async def log_audit(
             })
             return
         except AuditChainExhausted as exc:
-            from mcp_proxy.config import get_settings
             try:
-                fail_deny = get_settings().audit_fail_deny
+                fail_deny = _get_settings_for_audit().audit_fail_deny
             except Exception:  # pragma: no cover — defensive
                 fail_deny = True
             if fail_deny:
