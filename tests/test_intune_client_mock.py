@@ -6,8 +6,6 @@ test is hermetic; no real network calls.
 """
 from __future__ import annotations
 
-import json
-
 import httpx
 import pytest
 
