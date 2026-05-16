@@ -476,6 +476,16 @@ class ProxySettings(BaseSettings):
     # actually drifted in the upstream.
     attestation_stale_threshold_seconds: int = 900
 
+    # ADR-032 F6 — stale-watcher daemon. When enabled, a background
+    # task scans ``internal_agents.last_attestation`` once per minute
+    # and emits a ``device_attestation`` audit row of subtype
+    # ``stale`` the first time an agent crosses the staleness
+    # threshold. Dedupe uses ``internal_agents.last_stale_event_at``
+    # so the same agent does not flood the chain on every tick.
+    # Default on; turn off in tests / single-shot scripts.
+    attestation_stale_watcher_enabled: bool = True
+    attestation_stale_watcher_interval_seconds: int = 60
+
     # Docker compose ``${VAR:-}`` substitutes to the empty string when
     # the operator has not set the var in proxy.env. Pydantic v2's bool
     # parser rejects "" with ``bool_parsing`` ValidationError, which

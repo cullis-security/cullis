@@ -2,15 +2,22 @@
 
 Lifecycle owned by ``mcp_proxy.main.lifespan``. Wakes every
 ``MCP_PROXY_MDM_INTUNE_POLL_INTERVAL_SECONDS`` (default 600), fetches
-the managed-device delta, and upserts the projected rows into
-``mdm_device_state``.
+the managed-device delta, runs the compliance reconciler (F6) +
+upserts the projected rows into ``mdm_device_state``.
 
-Failure handling: any :class:`IntuneGraphError` (transport, auth,
-throttle) is logged + backed off via exponential delay capped at 5
-minutes. The cache stays warm with the prior poll's data; consumers
-of the cache (enrollment hook in F2, policy gate in F5) treat
-``last_seen_at`` as the freshness signal and downgrade the
-``effective_tier`` when stale.
+Failure handling layers:
+
+* Per-iteration: :class:`IntuneGraphError` and any other exception
+  trip the F2 exponential backoff (30→60→120→300→300s).
+* Across iterations: a three-state circuit breaker (F6,
+  :mod:`mcp_proxy.mdm.circuit_breaker`) flips to OPEN after a
+  configurable streak of failures and stops the loop from
+  spamming Graph during a sustained outage. The CLOSED→OPEN
+  transition emits a one-shot ``mdm_polling_degraded`` audit row.
+
+The cache stays warm with the prior poll's data; consumers (F2
+enrollment hook, F5 policy gate) treat ``last_seen_at`` as the
+freshness signal and downgrade ``effective_tier`` when stale.
 """
 from __future__ import annotations
 
@@ -23,18 +30,33 @@ from typing import Any
 from sqlalchemy import text
 
 from mcp_proxy._lifespan_log import emit_lifespan_log
+from mcp_proxy.attestation.audit_events import emit_polling_degraded
 from mcp_proxy.db import get_db
+from mcp_proxy.mdm.circuit_breaker import (
+    CircuitBreaker,
+    sleep_until_cooldown_done,
+)
+from mcp_proxy.mdm.compliance_change import (
+    ReconcileSummary,
+    reconcile_devices_and_revoke,
+)
 from mcp_proxy.mdm.intune import (
     IntuneClient,
     IntuneGraphError,
     project_device_row,
+)
+from mcp_proxy.telemetry_metrics import (
+    MDM_DEVICES_SEEN,
+    MDM_POLL_DURATION,
+    MDM_POLL_TOTAL,
 )
 
 _log = logging.getLogger("mcp_proxy.mdm.poller")
 
 # Backoff schedule on consecutive errors. Reset to 0 on the first
 # successful poll. Capped at 300s so a long outage settles at 5 min
-# rather than crawling toward the polling interval.
+# rather than crawling toward the polling interval. The circuit
+# breaker (F6) wraps this for the >5-failure path.
 _BACKOFF_SECONDS = (30, 60, 120, 300, 300)
 
 
@@ -134,6 +156,34 @@ async def upsert_device_rows(
     return touched
 
 
+async def _reconcile_compliance_changes(
+    devices: list[dict[str, Any]],
+    *,
+    mdm: str,
+    now: datetime,
+) -> ReconcileSummary:
+    """Run F6 reconcile against the PRE-upsert cache state.
+
+    Opens its own connection so the upsert call (a separate
+    ``get_db`` context) sees a consistent prior view. Tolerant of any
+    error: a buggy reconciler must not break the cache-keeping job.
+    """
+    try:
+        async with get_db() as conn:
+            return await reconcile_devices_and_revoke(
+                conn,
+                fresh_devices=devices,
+                mdm=mdm,
+                now=now,
+            )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        _log.exception(
+            "MDM compliance reconcile failed (cache + revocations skipped "
+            "this tick): %r", exc,
+        )
+        return ReconcileSummary()
+
+
 async def _persist_delta_link(value: str | None) -> None:
     """Persist the Graph deltaLink between poll cycles.
 
@@ -178,12 +228,25 @@ async def intune_poll_once(
 ) -> tuple[int, str | None]:
     """One end-to-end poll cycle. Returns ``(rows_upserted, next_delta)``.
 
+    Ordering:
+
+    1. Fetch the Graph delta page(s).
+    2. Reconcile against the PRE-upsert cache so the reconciler can
+       observe the prior compliance value.
+    3. Upsert the cache (a single ``get_db`` round so the dialect
+       branch lives in one place).
+    4. Persist the deltaLink for the next round.
+
     Extracted from the loop so tests can drive a single iteration
     against a mocked client without orchestrating timers.
     """
+    now = now or datetime.now(timezone.utc)
     delta_link = await _load_delta_link()
     devices, next_delta = await client.fetch_managed_devices_delta(delta_link)
+    await _reconcile_compliance_changes(devices, mdm="intune", now=now)
     touched = await upsert_device_rows(devices, mdm="intune", now=now)
+    if touched:
+        MDM_DEVICES_SEEN.labels(mdm="intune").inc(touched)
     if next_delta:
         try:
             await _persist_delta_link(next_delta)
@@ -214,6 +277,9 @@ async def intune_poll_loop(
         tenant_id=tenant_id, client_id=client_id, client_secret=client_secret,
     )
     backoff_idx = 0
+    breaker = CircuitBreaker(mdm="intune")
+    last_exc_status: int | None = None
+    last_exc_message: str | None = None
 
     emit_lifespan_log(
         level="INFO",
@@ -226,14 +292,28 @@ async def intune_poll_loop(
 
     try:
         while not stop_event.is_set():
+            if not breaker.should_poll():
+                # OPEN with cooldown remaining — sleep until either
+                # cooldown elapses or shutdown is requested. The next
+                # iteration's should_poll() flips to HALF_OPEN.
+                await sleep_until_cooldown_done(breaker, stop_event)
+                continue
+
             started = datetime.now(timezone.utc)
+            poll_started_monotonic = asyncio.get_event_loop().time()
             try:
                 touched, _ = await intune_poll_once(client, now=started)
                 lag = (datetime.now(timezone.utc) - started).total_seconds()
                 _log.info(
-                    "Intune delta fetch: %d devices upserted (lag_s=%.1f)",
-                    touched, lag,
+                    "Intune delta fetch: %d devices upserted (lag_s=%.1f, "
+                    "circuit=%s)",
+                    touched, lag, breaker.state,
                 )
+                MDM_POLL_DURATION.labels(mdm="intune").observe(lag)
+                MDM_POLL_TOTAL.labels(mdm="intune", result="success").inc()
+                breaker.record_success()
+                last_exc_status = None
+                last_exc_message = None
                 backoff_idx = 0
                 wait_s = interval_seconds
             except IntuneGraphError as exc:
@@ -241,17 +321,44 @@ async def intune_poll_loop(
                 # is already sanitised by IntuneGraphError.__init__.
                 wait_s = _BACKOFF_SECONDS[min(backoff_idx, len(_BACKOFF_SECONDS) - 1)]
                 backoff_idx += 1
-                _log.warning(
-                    "Intune polling error (status=%d) — backing off %ds: %s",
-                    exc.status, wait_s, exc.message,
+                MDM_POLL_TOTAL.labels(mdm="intune", result="failure").inc()
+                MDM_POLL_DURATION.labels(mdm="intune").observe(
+                    asyncio.get_event_loop().time() - poll_started_monotonic,
                 )
+                last_exc_status = exc.status
+                last_exc_message = exc.message
+                opened_edge = breaker.record_failure()
+                _log.warning(
+                    "Intune polling error (status=%d, consecutive=%d) — "
+                    "backing off %ds: %s",
+                    exc.status, breaker.consecutive_failures, wait_s,
+                    exc.message,
+                )
+                if opened_edge:
+                    await _emit_degraded_audit(
+                        breaker.consecutive_failures,
+                        last_exc_status, last_exc_message,
+                    )
             except Exception as exc:  # noqa: BLE001 — defensive last-resort
                 wait_s = _BACKOFF_SECONDS[min(backoff_idx, len(_BACKOFF_SECONDS) - 1)]
                 backoff_idx += 1
-                _log.exception(
-                    "Intune polling unexpected error — backing off %ds: %r",
-                    wait_s, exc,
+                MDM_POLL_TOTAL.labels(mdm="intune", result="failure").inc()
+                MDM_POLL_DURATION.labels(mdm="intune").observe(
+                    asyncio.get_event_loop().time() - poll_started_monotonic,
                 )
+                last_exc_status = 0
+                last_exc_message = f"{type(exc).__name__}: {exc}"
+                opened_edge = breaker.record_failure()
+                _log.exception(
+                    "Intune polling unexpected error (consecutive=%d) — "
+                    "backing off %ds: %r",
+                    breaker.consecutive_failures, wait_s, exc,
+                )
+                if opened_edge:
+                    await _emit_degraded_audit(
+                        breaker.consecutive_failures,
+                        last_exc_status, last_exc_message,
+                    )
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=wait_s)
@@ -264,4 +371,25 @@ async def intune_poll_loop(
             level="INFO",
             logger="mcp_proxy.mdm.poller",
             message="Intune polling loop stopped",
+        )
+
+
+async def _emit_degraded_audit(
+    consecutive_failures: int,
+    last_status: int | None,
+    last_message: str | None,
+) -> None:
+    """One-shot helper. Tolerant of audit-emit failure so the loop
+    keeps running even when the audit chain itself is wedged.
+    """
+    try:
+        await emit_polling_degraded(
+            mdm="intune",
+            consecutive_failures=consecutive_failures,
+            last_error_status=last_status,
+            last_error_message=last_message,
+        )
+    except Exception as exc:  # noqa: BLE001 — never let audit break polling
+        _log.warning(
+            "Failed to emit mdm_polling_degraded audit row: %s", exc,
         )
