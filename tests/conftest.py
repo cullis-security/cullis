@@ -28,6 +28,17 @@ os.environ["ALLOWED_ORIGINS"] = ""             # disable CORS in tests
 os.environ.setdefault("ADMIN_SECRET", "test-secret-not-default")
 os.environ["SKIP_ALEMBIC"] = "1"
 
+# F0.4 — keep ``log_audit`` synchronous in the test suite. The batched
+# audit chain (ADR-033) is exercised explicitly by
+# ``tests/test_audit_chain_batched.py``; every other audit test
+# (h4 chain, dpop_jkt, fail-deny, append-only) was written against
+# the legacy per-row semantics — SELECT immediately after log_audit
+# expects the row on disk. ``batch_size=1`` flushes on every append
+# so the batched code path is still exercised but behaves
+# synchronously, preserving backwards compat for the existing suite.
+os.environ.setdefault("MCP_PROXY_AUDIT_CHAIN_BATCH_SIZE", "1")
+os.environ.setdefault("MCP_PROXY_AUDIT_CHAIN_FLUSH_INTERVAL_S", "60.0")
+
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, patch
