@@ -185,7 +185,9 @@ Return `{"decision": "allow"}` or `{"decision": "deny", "reason": "..."}`.
 
 ## Security checklist
 
-- [ ] Org CA private key stored in HSM/KMS, never on disk
+- [ ] Org CA private key stored in HSM/KMS, never on disk (see
+  [`azure-keyvault-setup/`](./azure-keyvault-setup/) for Azure Key Vault,
+  ADR-031 for HashiCorp Vault)
 - [ ] Agent private keys injected at runtime, not in container images
 - [ ] PDP webhook runs inside your network (not exposed to internet)
 - [ ] PDP webhook validates the request comes from the known broker IP
