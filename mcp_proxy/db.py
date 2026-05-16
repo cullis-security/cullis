@@ -1471,6 +1471,12 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
     # Migration 0014 (F-B-11 Phase 2) — same permissiveness.
     if "dpop_jkt" in row.keys():
         out["dpop_jkt"] = row["dpop_jkt"]
+    # F2 #746 migration 0035 — device-attestation claim JSON. Surfaces
+    # for the F5 tier-gate path (``mcp_proxy/policy/tier_eval.py``).
+    # NULL when no claim recorded yet; the tier resolver treats that
+    # as "untrusted".
+    if "last_attestation" in row.keys():
+        out["last_attestation"] = row["last_attestation"]
     return out
 
 

@@ -21,6 +21,23 @@ class PolicyDecision:
     allowed: bool
     reason: str
     policy_id: str | None = None
+    # ADR-032 Decision E / F5 — device-attestation tier metadata.
+    # All three default to ``None`` so existing call sites that don't
+    # set them keep their wire format unchanged. The fields surface
+    # via the audit row + the API response so a CISO running a forensic
+    # query can answer "which device tier was authoritative at the
+    # moment of this deny?" without re-resolving the claim later.
+    effective_tier: str | None = None
+    required_tier: str | None = None
+    # Short stable token for downstream UX / metrics labelling. The
+    # canonical values:
+    #   * ``insufficient_tier``       — device tier below capability requirement
+    #   * ``capability_not_granted``  — principal lacks the capability scope
+    #   * ``binding_missing``         — typed principal without MCP-resource binding
+    #   * ``policy_match_deny``       — explicit deny rule fired
+    # Future denies adding a new bucket should extend this list and the
+    # dashboard's filter dropdown together.
+    denied_reason_code: str | None = None
 
 
 class PolicyEngine:

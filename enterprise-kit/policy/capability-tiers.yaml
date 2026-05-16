@@ -1,0 +1,83 @@
+# ADR-032 Decision E / F5 — capability → minimum tier matrix.
+#
+# Each entry maps a capability name (or wildcard) to the lowest
+# device-attestation tier that's allowed to invoke it. The Mastio
+# proxy recomputes the principal's effective tier server-side from
+# ``internal_agents.last_attestation`` on every call (the Connector's
+# claim is advisory; tampering can only lower the value, never raise
+# it) and refuses the call with ``denied_reason_code=insufficient_tier``
+# when the principal's tier ranks below the capability's minimum.
+#
+# Tier ordering (low → high, schema-doc sez. 2):
+#   untrusted < byod_isolated < byod_attested < managed < managed_attested
+#
+# Wildcard match: a capability name ending in ``.*`` matches any
+# capability with that prefix (one-level glob). More specific
+# entries always win — ``admin.read`` overrides ``admin.*``. Exact
+# names are looked up first.
+#
+# Migration path: capabilities not listed default to
+# ``default_min_tier`` below. Customers can roll out tier enforcement
+# gradually by leaving the default at ``untrusted`` until every
+# fleet device emits a claim, then raising the default to
+# ``byod_isolated`` once the long tail of legacy clients has been
+# replaced.
+#
+# Schema reference: imp/attestation-claim-schema.md sez. 2.
+
+version: "1.0"
+
+# Default minimum tier for capabilities not listed below.
+# Pilot deployments keep this at ``untrusted`` to avoid surprising
+# legacy fleets; raise it once the device-attestation rollout is
+# complete.
+default_min_tier: untrusted
+
+capabilities:
+  # ── untrusted (max permissive) ─────────────────────────────────
+  # Diagnostic / health surfaces that customer support tooling
+  # exercises before a device has any claim attached. Keeping these
+  # at ``untrusted`` lets a fresh-out-of-the-box device probe
+  # connectivity without false-positive denials.
+  mcp.read_public:
+    min_tier: untrusted
+    description: "Public information, no sensitive data"
+  mcp.echo:
+    min_tier: untrusted
+    description: "Diagnostic / health"
+
+  # ── byod_attested (hardware proof, BYOD) ───────────────────────
+  # Internal-only data: source code, design docs, internal
+  # wikis. Requires hardware-backed strength (TPM 2.0 / Secure
+  # Enclave) so a soft-only laptop cannot exfiltrate via a stolen
+  # session token.
+  mcp.read_internal_docs:
+    min_tier: byod_attested
+    description: "Internal company documentation"
+  mcp.code_review:
+    min_tier: byod_attested
+    description: "Source code access"
+
+  # ── managed (MDM-managed compliant) ────────────────────────────
+  # Customer data + financial reads. Requires MDM enrollment +
+  # compliant posture so a remote-wipe path exists if the device
+  # is lost. Hardware attestation is not yet required at this
+  # tier (some legacy fleets predate TPM 2.0).
+  mcp.read_customer_db:
+    min_tier: managed
+    description: "Customer database read"
+  mcp.financial_read:
+    min_tier: managed
+    description: "Financial data read"
+
+  # ── managed_attested (MDM + hardware) ──────────────────────────
+  # Writable financial + administrative operations. The "money
+  # moves" tier — both the central-IT posture (MDM compliant)
+  # AND the hardware proof (TPM-attested) need to line up before
+  # we honour the call.
+  mcp.transfer_money:
+    min_tier: managed_attested
+    description: "Outbound financial transaction"
+  "admin.*":
+    min_tier: managed_attested
+    description: "Admin operations (wildcard match)"
