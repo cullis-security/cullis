@@ -231,6 +231,26 @@ async def test_adr032_allowlist_keeps_session_headers(client):
 
 
 @pytest.mark.asyncio
+async def test_adr032_r2_allowlist_keeps_device_attestation(client):
+    """ADR-032 Layer 2 R2 — Connector propagates the device-posture
+    envelope via ``X-Cullis-Device-Attestation``. It must reach the
+    policy / audit layer untouched (verification of the claim is F5,
+    this middleware is the wire-side prerequisite). Sibling
+    ``X-Cullis-*`` headers continue to strip.
+    """
+    resp = await client.get(
+        "/echo",
+        headers={
+            "X-Cullis-Device-Attestation": "eyJtZG0iOiJpbnR1bmUifQ",
+            "X-Cullis-Trust": "spoofed",
+        },
+    )
+    seen = {k.lower(): v for k, v in resp.json()["headers"]}
+    assert seen.get("x-cullis-device-attestation") == "eyJtZG0iOiJpbnR1bmUifQ"
+    assert "x-cullis-trust" not in seen
+
+
+@pytest.mark.asyncio
 async def test_no_x_cullis_no_changes(client):
     """A request with zero X-Cullis-* headers must traverse the
     middleware without scope copy or log event."""

@@ -318,6 +318,36 @@ class CullisClient(_AiGatewayMixin, _AuthMixin, _DiscoveryMixin, _EnrollmentMixi
         # available.
         self._ca_chain_path: "Path | None" = None
 
+        # ADR-032 Layer 2 — Connector user-session attribution.
+        # Carries the opaque ``user_sessions.session_id`` minted by
+        # the Mastio's /v1/principals/connector-login endpoint plus
+        # the bound user principal_id. When set, ``proxy_headers``
+        # injects ``X-Cullis-Session-Token`` + ``X-Cullis-On-Behalf-Of-User``
+        # on every egress request so the proxy can stamp
+        # ``audit_log.on_behalf_of_user_id``.
+        #
+        # Stored as a single tuple so attach / detach is an atomic
+        # attribute assignment under the GIL; readers in
+        # ``proxy_headers`` (hot path, no lock) see either the old
+        # value or the new value but never a torn half-update.
+        # ``_user_session_lock`` serialises *writers* so two threads
+        # calling ``attach_user_session`` concurrently can't
+        # interleave their state mutations.
+        import threading as _threading
+        self._user_session: "tuple[str, str] | None" = None
+        self._user_session_lock = _threading.Lock()
+
+        # ADR-032 Layer 2 R2 — device attestation claim allowlist slot.
+        # Populated in F2 (Intune) / F3 (Linux TPM) workstreams. Stored
+        # as the raw claim dict; ``proxy_headers`` JSON-serialises +
+        # base64url-nopad encodes on every egress call. Shares the
+        # writer lock with ``_user_session`` because both are part of
+        # the same "Connector identity envelope" and a single
+        # ``cullis-connector login`` invocation typically sets them
+        # together. Reader is lock-free (single attribute read under
+        # the GIL) for the same hot-path reason.
+        self._device_attestation: "dict | None" = None
+
     def __enter__(self) -> CullisClient:
         return self
 
@@ -389,6 +419,14 @@ class CullisClient(_AiGatewayMixin, _AuthMixin, _DiscoveryMixin, _EnrollmentMixi
         the last server nonce we saw. Missing method/url on a DPoP-enabled
         client returns just ``Content-Type`` — the cert at the TLS
         handshake still authenticates the call.
+
+        ADR-032 Layer 2 — when :meth:`attach_user_session` has bound a
+        Connector OIDC session, ``X-Cullis-Session-Token`` +
+        ``X-Cullis-On-Behalf-Of-User`` ride along so the proxy's
+        contextvar wiring populates ``audit_log.on_behalf_of_user_id``.
+        Read is lock-free: ``self._user_session`` is a tuple assigned
+        atomically under the GIL, so a writer never exposes a torn
+        half-update to the request loop.
         """
         headers = {
             "Content-Type": "application/json",
@@ -401,7 +439,80 @@ class CullisClient(_AiGatewayMixin, _AuthMixin, _DiscoveryMixin, _EnrollmentMixi
                 nonce=self._egress_dpop_nonce,
             )
             headers["DPoP"] = proof
+        session = getattr(self, "_user_session", None)
+        if session is not None:
+            session_token, principal_id = session
+            headers["X-Cullis-Session-Token"] = session_token
+            headers["X-Cullis-On-Behalf-Of-User"] = principal_id
+        attestation = getattr(self, "_device_attestation", None)
+        if attestation is not None:
+            import base64 as _base64
+            import json as _json
+            payload = _json.dumps(
+                attestation, separators=(",", ":"),
+            ).encode("utf-8")
+            headers["X-Cullis-Device-Attestation"] = (
+                _base64.urlsafe_b64encode(payload)
+                .rstrip(b"=").decode("ascii")
+            )
         return headers
+
+    def attach_user_session(
+        self,
+        session_token: str,
+        principal_id: str,
+    ) -> None:
+        """Bind a Connector OIDC user session for downstream egress calls.
+
+        After this call every ``proxy_headers()`` invocation carries the
+        two ADR-032 headers and the proxy's :func:`maybe_stamp_user_session`
+        accepts them. Idempotent: a second call with the same values is a
+        no-op; a call with different values overwrites the binding.
+        Thread-safe via :attr:`_user_session_lock` — two writers cannot
+        observe a torn intermediate state.
+        """
+        if not session_token or not principal_id:
+            raise ValueError(
+                "attach_user_session requires both session_token and "
+                "principal_id (got empty value)",
+            )
+        with self._user_session_lock:
+            self._user_session = (session_token, principal_id)
+
+    def detach_user_session(self) -> None:
+        """Drop the bound user session. Idempotent — calling on an
+        already-detached client is a no-op.
+        """
+        with self._user_session_lock:
+            self._user_session = None
+
+    def get_user_session(self) -> "tuple[str, str] | None":
+        """Return the bound ``(session_token, principal_id)`` tuple, or
+        ``None`` when no session is attached. Useful for diagnostics +
+        the ``cullis-connector whoami`` short-circuit.
+        """
+        return self._user_session
+
+    def attach_device_attestation(self, claim: "dict | None") -> None:
+        """Bind a device-attestation claim for downstream egress.
+
+        When set, every :meth:`proxy_headers` call emits the claim as
+        ``X-Cullis-Device-Attestation: base64url(JSON.dumps(claim))``
+        per ``imp/attestation-claim-schema.md`` sez. 3. Passing
+        ``None`` detaches the claim (e.g. after MDM polling reports
+        ``non_compliant`` and the Connector chooses to fall back to
+        anonymous-device mode rather than send a stale claim).
+
+        Only an allowlist + passthrough in R2 — the Mastio
+        verifies + recomputes ``effective_tier`` in F5. R2's job is to
+        ship the wire envelope so the F2 / F3 producers can fill it.
+        """
+        with self._user_session_lock:
+            self._device_attestation = claim
+
+    def get_device_attestation(self) -> "dict | None":
+        """Return the bound device-attestation claim, or ``None``."""
+        return self._device_attestation
 
     def _egress_http(
         self,

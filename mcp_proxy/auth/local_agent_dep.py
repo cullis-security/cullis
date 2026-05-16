@@ -135,6 +135,16 @@ async def _enforce_local_token_dpop_binding(
     from mcp_proxy.auth.dpop_context import set_dpop_jkt
     set_dpop_jkt(proof_jkt)
 
+    # ADR-032 Layer 2 — graceful stamp of the per-request "on behalf of
+    # user" contextvar when the Connector adds X-Cullis-Session-Token +
+    # X-Cullis-On-Behalf-Of-User headers. Mirrors the wire-up in
+    # ``dependencies.py`` (Bearer-DPoP) and ``dpop_client_cert.py``
+    # (cert+DPoP); closes the third audit-producing auth path.
+    from mcp_proxy.auth.user_session import maybe_stamp_user_session
+    await maybe_stamp_user_session(
+        request, caller_agent_id=payload.agent_id,
+    )
+
 
 async def _is_known_local_kid(token: str, keystore) -> bool:
     """Pre-check: the token's ``kid`` matches a keystore row that is
