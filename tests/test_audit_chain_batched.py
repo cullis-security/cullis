@@ -230,3 +230,81 @@ async def test_batch_size_1_is_per_row_equivalent(proxy_app):
 
     ok, broken, reason = await verify_audit_chain()
     assert ok is True, f"chain broken at {broken}: {reason}"
+
+
+# ── Gate 7: log_audit() routes via the singleton when registered ──
+
+
+@pytest.mark.asyncio
+async def test_log_audit_routes_via_singleton(proxy_app):
+    """Round 2 integration: after the lifespan registers a
+    BatchedAuditChain, calling log_audit() queues into the singleton
+    (rows are NOT immediately on disk if the size threshold hasn't
+    been reached), and a forced flush drains them with the hash
+    chain intact."""
+    from mcp_proxy.audit_chain import (
+        BatchedAuditChain,
+        get_batched_chain,
+        set_batched_chain,
+        shutdown_singleton,
+    )
+    from mcp_proxy.db import log_audit, verify_audit_chain
+
+    previous = get_batched_chain()
+    chain = BatchedAuditChain(batch_size=100, flush_interval_s=60.0)
+    set_batched_chain(chain)
+    try:
+        await log_audit(agent_id="alice", action="t.invoke", status="ok",
+                        detail="routed-0")
+        await log_audit(agent_id="alice", action="t.invoke", status="ok",
+                        detail="routed-1")
+
+        # Routed via the singleton — rows are still in memory.
+        assert chain.pending_count == 2
+        assert await _count_chain_rows() == 0
+
+        await chain.flush_now()
+        assert await _count_chain_rows() == 2
+        ok, broken, reason = await verify_audit_chain()
+        assert ok is True, f"chain broken at {broken}: {reason}"
+    finally:
+        await shutdown_singleton()
+        # Restore whatever the lifespan had (typically None in this
+        # fixture — the lifespan default is fine to re-pin).
+        set_batched_chain(previous)
+
+
+# ── Gate 8: opt-out via settings.audit_chain_disabled ──
+
+
+@pytest.mark.asyncio
+async def test_disabled_flag_keeps_per_row_path(proxy_app, monkeypatch):
+    """With ``MCP_PROXY_AUDIT_CHAIN_DISABLED=true`` the log_audit()
+    call falls back to the legacy per-row path even if a singleton
+    happens to be registered. Required so compliance customers that
+    pair fail-deny=True with per-row durability aren't silently
+    routed through the fail-open batched path."""
+    from mcp_proxy.audit_chain import (
+        BatchedAuditChain,
+        get_batched_chain,
+        set_batched_chain,
+    )
+    from mcp_proxy.config import get_settings
+    from mcp_proxy.db import log_audit
+
+    monkeypatch.setenv("MCP_PROXY_AUDIT_CHAIN_DISABLED", "true")
+    get_settings.cache_clear()
+
+    previous = get_batched_chain()
+    chain = BatchedAuditChain(batch_size=100, flush_interval_s=60.0)
+    set_batched_chain(chain)
+    try:
+        await log_audit(agent_id="alice", action="t.invoke", status="ok",
+                        detail="legacy-0")
+        # Opt-out: row landed via the legacy path, never queued.
+        assert chain.pending_count == 0
+        assert await _count_chain_rows() == 1
+    finally:
+        set_batched_chain(previous)
+        monkeypatch.delenv("MCP_PROXY_AUDIT_CHAIN_DISABLED", raising=False)
+        get_settings.cache_clear()

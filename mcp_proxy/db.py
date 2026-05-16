@@ -393,6 +393,60 @@ async def log_audit(
         dpop_jkt = current_dpop_jkt()
 
     ts = datetime.now(timezone.utc).isoformat()
+
+    # F0.4 / ADR-033 — route through the batched audit chain when the
+    # singleton is registered AND the operator hasn't opted out. The
+    # legacy per-row path stays the default until the lifespan has
+    # finished startup, so this is also safe to call from migration
+    # code, tests that bypass the lifespan, and the alembic env.
+    try:
+        from mcp_proxy.audit_chain import get_batched_chain
+        from mcp_proxy.config import get_settings as _get_settings_for_audit
+        _chain = get_batched_chain()
+        _chain_disabled = _get_settings_for_audit().audit_chain_disabled
+    except Exception:  # pragma: no cover — defensive: never break audit on config errors
+        _chain = None
+        _chain_disabled = True
+    if _chain is not None and not _chain_disabled:
+        from mcp_proxy.audit_chain import AuditChainExhausted
+        try:
+            await _chain.append({
+                "timestamp": ts,
+                "agent_id": agent_id,
+                "action": action,
+                "tool_name": tool_name,
+                "status": status,
+                "detail": detail,
+                "request_id": request_id,
+                "duration_ms": duration_ms,
+                "dpop_jkt": dpop_jkt,
+            })
+            return
+        except AuditChainExhausted as exc:
+            from mcp_proxy.config import get_settings
+            try:
+                fail_deny = get_settings().audit_fail_deny
+            except Exception:  # pragma: no cover — defensive
+                fail_deny = True
+            if fail_deny:
+                # Preserve legacy semantics: surface as RuntimeError
+                # so the calling request becomes a 5xx and never
+                # returns success without a matching audit row.
+                raise RuntimeError(
+                    "log_audit: could not append after "
+                    f"{_AUDIT_CHAIN_MAX_RETRIES} retries (chain_seq "
+                    "UNIQUE conflict). Confirm the audit_log schema "
+                    "or look for a stuck worker."
+                ) from exc
+            _log.critical(
+                "log_audit: %s. MCP_PROXY_AUDIT_FAIL_DENY=false: "
+                "returning to caller without persisting the audit "
+                "row. agent_id=%s action=%s tool_name=%s status=%s "
+                "request_id=%s",
+                exc, agent_id, action, tool_name, status, request_id,
+            )
+            return
+
     async with _audit_chain_lock:
         for _attempt in range(_AUDIT_CHAIN_MAX_RETRIES):
             async with get_db() as conn:

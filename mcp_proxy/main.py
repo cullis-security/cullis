@@ -143,6 +143,23 @@ async def lifespan(app: FastAPI):
     # 2. Initialize database
     await init_db(settings.database_url)
 
+    # 2.F0.4 — start the batched audit chain (ADR-033 Tier 2 unlock).
+    # Routes ``log_audit`` writes through an in-memory queue with size
+    # and time flush triggers, trading per-row immutability proof for
+    # per-batch (~1s). No-op when ``MCP_PROXY_AUDIT_CHAIN_DISABLED=true``.
+    # Started AFTER init_db (the periodic flush task needs the engine)
+    # and BEFORE the JWKS / nonce / observability init so any audit
+    # writes emitted during the rest of startup land via the batched
+    # path consistently.
+    try:
+        from mcp_proxy.audit_chain import build_and_start_from_settings
+        await build_and_start_from_settings()
+    except Exception as exc:  # never block lifespan on the audit chain
+        _log.warning(
+            "Batched audit chain failed to start (falling back to per-row "
+            "legacy log_audit path): %s", exc,
+        )
+
     # 2a. First-boot scripted admin password seed. No-op when the var is
     # unset OR when proxy_config.admin_password_hash already exists.
     # Used by packaging/mastio-bundle/deploy.sh so a fresh tarball can
@@ -659,6 +676,15 @@ async def lifespan(app: FastAPI):
     # they can flush state (audit watermarks, SAML sessions) while
     # engine + redis are still up.
     await _get_plugin_registry().run_shutdown(app)
+
+    # F0.4 — drain the batched audit chain BEFORE dispose_db: rows
+    # queued in memory still need a live engine to land on disk.
+    # Idempotent + always safe to call (no-op when singleton absent).
+    try:
+        from mcp_proxy.audit_chain import shutdown_singleton
+        await shutdown_singleton()
+    except Exception as exc:  # noqa: BLE001 — never block shutdown on audit drain
+        _log.warning("Batched audit chain shutdown raised: %s", exc)
 
     # Cleanup — stop the latency tracker first so the background probe
     # doesn't race with engine dispose.

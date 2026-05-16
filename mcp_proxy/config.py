@@ -302,6 +302,29 @@ class ProxySettings(BaseSettings):
     #           proxy section, Repudiation row.
     audit_fail_deny: bool = True
 
+    # F0.4 / ADR-033 batched audit chain — Tier 2 throughput unlock.
+    # The legacy per-row chain (log_audit acquires an asyncio.Lock,
+    # SELECT MAX, INSERT, fsync inside the lock) is the dominant
+    # bottleneck above ~200 RPS sustained. The batched chain coalesces
+    # N rows under a single head fetch + INSERT, trading per-row
+    # immutability proof for per-batch (~1s at sustained Tier 2).
+    #
+    #   audit_chain_batch_size       — rows per flush burst (size trigger)
+    #   audit_chain_flush_interval_s — wall-clock cap between flushes
+    #                                  (time trigger, drains low-RPS queues)
+    #   audit_chain_disabled         — emergency opt-out; routes log_audit
+    #                                  via the legacy per-row path (same
+    #                                  semantics as batch_size=1 but skips
+    #                                  the queue + background task spawn
+    #                                  entirely). Compliance customers that
+    #                                  insist on per-row durability under
+    #                                  fail-deny=True must keep this true.
+    #
+    # See enterprise-kit/compliance-posture.md for the trade-off matrix.
+    audit_chain_batch_size: int = 100
+    audit_chain_flush_interval_s: float = 1.0
+    audit_chain_disabled: bool = False
+
     # Audit L1-H1 / Ultra U-DD-1: in production the DPoP JTI store and the
     # login-challenge nonce store both refuse to fall back to in-memory
     # when Redis is unavailable, because a multi-worker deploy without a

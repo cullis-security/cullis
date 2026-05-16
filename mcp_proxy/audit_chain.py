@@ -34,14 +34,23 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from mcp_proxy.db import (
-    _AUDIT_CHAIN_MAX_RETRIES,
-    _audit_chain_head,
-    compute_audit_row_hash,
-    get_db,
-)
+# Module is imported as ``_db`` (not symbol-by-symbol) so test
+# monkeypatches against ``mcp_proxy.db.get_db`` /
+# ``mcp_proxy.db._audit_chain_head`` /
+# ``mcp_proxy.db._AUDIT_CHAIN_MAX_RETRIES`` propagate into the
+# batched flush path. Pinning the symbols at import time would freeze
+# pre-patched references and silently bypass the fail-deny tests.
+from mcp_proxy import db as _db  # noqa: F401 — used dynamically below
 
 _log = logging.getLogger("mcp_proxy.audit_chain")
+
+
+class AuditChainExhausted(RuntimeError):
+    """Raised when ``_flush_locked`` exhausts its retry budget on
+    UNIQUE(chain_seq) collisions. Surfaces only on the synchronous
+    flush path (``append()`` hitting the size threshold) so callers
+    operating under ``audit_fail_deny=True`` propagate a 5xx to the
+    end client — same semantics the legacy ``log_audit`` provides."""
 
 
 _AUDIT_INSERT_SQL = text(
@@ -112,22 +121,30 @@ class BatchedAuditChain:
         ``status``, ``detail``, ``request_id``, ``duration_ms``,
         ``dpop_jkt``. Required keys: ``timestamp``, ``agent_id``,
         ``action``, ``status``. Optional keys default to ``None``.
+
+        Synchronous flush failures bubble as ``AuditChainExhausted`` so
+        a caller running under ``audit_fail_deny=True`` can surface a
+        5xx instead of silently dropping the row.
         """
         async with self._lock:
             self._pending.append(row)
             if len(self._pending) >= self._batch_size:
-                await self._flush_locked()
+                await self._flush_locked(propagate=True)
 
-    async def flush_now(self) -> int:
+    async def flush_now(self, *, propagate: bool = False) -> int:
         """Force a flush of any pending rows; return rows written.
 
         Public entrypoint for shutdown drains and tests. Idempotent —
         zero pending rows returns 0 without touching the database.
+        ``propagate=False`` (default) keeps shutdown / periodic-task
+        callers safe: a UNIQUE-conflict exhaustion is logged and the
+        rows dropped, the daemon stays up. Tests that want to assert
+        on the failure pass ``propagate=True``.
         """
         async with self._lock:
-            return await self._flush_locked()
+            return await self._flush_locked(propagate=propagate)
 
-    async def _flush_locked(self) -> int:
+    async def _flush_locked(self, *, propagate: bool = False) -> int:
         """Drain ``self._pending`` and persist with the chain hash.
 
         Caller MUST hold ``self._lock``. Returns the number of rows
@@ -147,15 +164,20 @@ class BatchedAuditChain:
         batch = self._pending
         self._pending = []
 
-        for _attempt in range(_AUDIT_CHAIN_MAX_RETRIES):
+        # Re-read symbols on every flush so test monkeypatches against
+        # mcp_proxy.db propagate (the legacy log_audit path resolves
+        # the same way; we mirror that semantics).
+        max_retries = _db._AUDIT_CHAIN_MAX_RETRIES
+
+        for _attempt in range(max_retries):
             try:
-                async with get_db() as conn:
-                    last_seq, prev_hash = await _audit_chain_head(conn)
+                async with _db.get_db() as conn:
+                    last_seq, prev_hash = await _db._audit_chain_head(conn)
                     insert_params: list[dict[str, Any]] = []
                     running_prev = prev_hash
                     for i, row in enumerate(batch):
                         chain_seq = last_seq + i + 1
-                        row_hash = compute_audit_row_hash(
+                        row_hash = _db.compute_audit_row_hash(
                             chain_seq=chain_seq,
                             timestamp=row["timestamp"],
                             agent_id=row["agent_id"],
@@ -191,12 +213,25 @@ class BatchedAuditChain:
                 # the head and rebuild the batch hashes from scratch.
                 continue
 
+        msg = (
+            f"BatchedAuditChain: could not append after {max_retries} "
+            "retries (chain_seq UNIQUE conflict). Confirm the audit_log "
+            "schema or look for a stuck worker."
+        )
+        if propagate:
+            # The synchronous append() path bubbles the error so the
+            # caller (log_audit) can apply ``audit_fail_deny``.
+            raise AuditChainExhausted(msg)
+        # Background-flush path (periodic loop, shutdown drain): the
+        # caller can't surface a 5xx anyway, so we log critical and
+        # drop the rows. Operators that need fail-deny semantics on
+        # background flushes should set audit_chain_disabled=true and
+        # fall back to the legacy per-row path.
         _log.critical(
-            "BatchedAuditChain: dropped %d row(s) after %d retries on "
-            "UNIQUE(chain_seq) conflict; another worker may be stuck. "
-            "First row: agent_id=%s action=%s status=%s",
+            "%s. Dropped %d row(s) on background flush; "
+            "first row agent_id=%s action=%s status=%s",
+            msg,
             len(batch),
-            _AUDIT_CHAIN_MAX_RETRIES,
             batch[0].get("agent_id"),
             batch[0].get("action"),
             batch[0].get("status"),
@@ -255,3 +290,61 @@ class BatchedAuditChain:
                     )
         except asyncio.CancelledError:
             raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Process-wide singleton — wired by the Mastio lifespan in mcp_proxy/main.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INSTANCE: BatchedAuditChain | None = None
+
+
+def get_batched_chain() -> BatchedAuditChain | None:
+    """Return the active singleton, or ``None`` if the lifespan hasn't
+    registered one yet (tests bypassing the lifespan, alembic env,
+    code paths that run before startup completes)."""
+    return _INSTANCE
+
+
+def set_batched_chain(instance: BatchedAuditChain | None) -> None:
+    """Register the singleton. Called twice per Mastio lifespan:
+    once at startup with a fresh instance, once at shutdown with
+    ``None`` so subsequent ``log_audit()`` calls fall back to the
+    legacy per-row path until a new lifespan registers a new one."""
+    global _INSTANCE
+    _INSTANCE = instance
+
+
+async def build_and_start_from_settings() -> BatchedAuditChain | None:
+    """Construct + start the singleton from the active Settings.
+
+    Returns the newly registered instance, or ``None`` when the
+    operator set ``MCP_PROXY_AUDIT_CHAIN_DISABLED=true`` (in which
+    case no instance is registered and ``log_audit`` keeps using
+    the legacy path). Idempotent: a second call replaces the
+    previous singleton after stopping it.
+    """
+    from mcp_proxy.config import get_settings
+
+    settings = get_settings()
+    if settings.audit_chain_disabled:
+        await shutdown_singleton()
+        return None
+
+    await shutdown_singleton()
+    chain = BatchedAuditChain(
+        batch_size=settings.audit_chain_batch_size,
+        flush_interval_s=settings.audit_chain_flush_interval_s,
+    )
+    await chain.start()
+    set_batched_chain(chain)
+    return chain
+
+
+async def shutdown_singleton() -> None:
+    """Stop + drain the active singleton (if any). Idempotent."""
+    global _INSTANCE
+    chain = _INSTANCE
+    _INSTANCE = None
+    if chain is not None:
+        await chain.stop()
