@@ -164,8 +164,11 @@ async def test_oidc_start_redirects_to_idp_with_pkce(proxy_app):
     await set_config("oidc_issuer_url", "https://idp.example.com")
     await set_config("oidc_client_id", "cullis-proxy")
 
+    # Protocol-level helpers moved to ``cullis_sdk.oidc`` (ADR-032 Layer 2
+    # shared module). The Mastio dashboard re-exports them; mocking on the
+    # shared module is the correct seam now.
     with patch(
-        "mcp_proxy.dashboard.oidc._fetch_discovery",
+        "cullis_sdk.oidc._fetch_discovery",
         new=AsyncMock(return_value={
             "authorization_endpoint": "https://idp.example.com/authorize",
             "token_endpoint": "https://idp.example.com/token",

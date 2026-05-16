@@ -179,6 +179,30 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     from mcp_proxy.auth.dpop_context import set_dpop_jkt
     set_dpop_jkt(proof_jkt)
 
+    # ADR-032 Layer 2 — best-effort. If the Connector caller carries a
+    # valid user session in X-Cullis-Session-Token + X-Cullis-On-Behalf-Of-User
+    # headers, stamp the per-request "on behalf of user" contextvar so
+    # ``audit_log.on_behalf_of_user_id`` populates. Absent / invalid
+    # session is silently logged and does NOT block the request — the
+    # agent identity stays the primary credential.
+    #
+    # Thread the verified cert thumbprint (registered + pinned at the
+    # ``get_agent_from_client_cert`` step above) into the verifier so
+    # the docstring-claimed "session bound to a different device"
+    # check actually runs — closes the dead pinning gap.
+    from mcp_proxy.auth.user_session import maybe_stamp_user_session
+    caller_thumb: str | None = None
+    if agent.cert_pem:
+        from mcp_proxy.auth.client_cert import _pem_der_digest
+        digest = _pem_der_digest(agent.cert_pem)
+        if digest is not None:
+            caller_thumb = digest.hex()
+    await maybe_stamp_user_session(
+        request,
+        caller_agent_id=agent.agent_id,
+        caller_cert_thumbprint=caller_thumb,
+    )
+
     _log.debug(
         "Egress mTLS+DPoP accepted (agent=%s, jkt=%s, mode=%s, bound=%s)",
         agent.agent_id, proof_jkt, mode, bool(stored_jkt),

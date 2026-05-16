@@ -118,5 +118,11 @@ async def _get_authenticated_agent_dpop(request: Request) -> TokenPayload:
     from mcp_proxy.auth.dpop_context import set_dpop_jkt
     set_dpop_jkt(jkt)
 
+    # ADR-032 Layer 2 — graceful stamp of the per-request "on behalf of
+    # user" contextvar when the Connector adds X-Cullis-Session-Token +
+    # X-Cullis-On-Behalf-Of-User headers. See ``user_session`` module.
+    from mcp_proxy.auth.user_session import maybe_stamp_user_session
+    await maybe_stamp_user_session(request, caller_agent_id=payload.agent_id)
+
     _log.debug("Authenticated agent: %s (org=%s)", payload.agent_id, payload.org)
     return payload

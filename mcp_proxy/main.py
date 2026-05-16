@@ -1380,6 +1380,14 @@ app.include_router(federation_public_key_router)
 from mcp_proxy.registry.user_principals_router import router as principals_router
 app.include_router(principals_router)
 
+# ADR-032 Layer 2 — POST /v1/principals/connector-login binds a user
+# identity (via OIDC) to the calling Connector and mints a session
+# token. DELETE on the same path revokes the session. The audit log
+# downstream stamps ``on_behalf_of_user_id`` whenever a Connector
+# carries the session headers on a subsequent egress / MCP call.
+from mcp_proxy.registry.connector_login_router import router as connector_login_router
+app.include_router(connector_login_router)
+
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these
 # paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.
