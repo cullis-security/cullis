@@ -59,6 +59,7 @@ def enroll(
     request_timeout_s: float = 10.0,
     max_wait_s: int = 30 * 60,
     poll_sink=sys.stderr,
+    enable_hw_attestation: bool = True,
 ) -> IdentityBundle:
     """Full device-code enrollment, blocking until admin decides or TTL expires.
 
@@ -80,6 +81,19 @@ def enroll(
     private_key = generate_keypair()
     pubkey_pem = public_key_to_pem(private_key.public_key()).decode()
 
+    # ADR-032 F3: best-effort TPM 2.0 attestation. detect_best_keystore
+    # returns a soft keystore when the optional ``tpm2-pytss`` dep is
+    # absent or no TPM device is reachable; the enrollment then carries
+    # no attestation half and Mastio assigns the lower effective tier.
+    attestation = _maybe_collect_tpm_attestation(
+        site_url=site_url,
+        pubkey_pem=pubkey_pem,
+        verify_tls=verify_tls,
+        timeout_s=request_timeout_s,
+        enabled=enable_hw_attestation,
+        sink=poll_sink,
+    )
+
     # ADR-014 PR-C: the cert the Mastio signs at approval is the
     # agent's credential — no api_key is minted on either side.
 
@@ -100,6 +114,7 @@ def enroll(
         verify_tls=verify_tls,
         timeout_s=request_timeout_s,
         private_key=private_key,
+        attestation=attestation,
     )
     session_id = start_resp["session_id"]
     enroll_url = start_resp["enroll_url"]
@@ -222,8 +237,9 @@ def _start(
     timeout_s: float,
     dpop_jwk: dict | None = None,
     private_key=None,
+    attestation: "_AttestationBundle | None" = None,
 ) -> dict[str, Any]:
-    body = {
+    body: dict[str, Any] = {
         "pubkey_pem": pubkey_pem,
         "requester_name": requester.name,
         "requester_email": requester.email,
@@ -250,6 +266,13 @@ def _start(
         body["dpop_jwk"] = dpop_jwk
     if private_key is not None:
         body["pop_signature"] = _build_pop_signature(private_key, pubkey_pem)
+
+    if attestation is not None:
+        body["attestation_nonce_id"] = attestation.nonce_id
+        body["tpm_quote_b64"] = attestation.quote_b64
+        if attestation.manufacturer:
+            body["tpm_manufacturer"] = attestation.manufacturer
+        body["tpm_ek_cert_present"] = attestation.ek_cert_present
 
     try:
         response = httpx.post(
@@ -395,6 +418,106 @@ def cert_fingerprint(cert: x509.Certificate) -> str:
     """SHA-256 of the cert DER, 64-char hex. Used for operator verification."""
     import hashlib
     return hashlib.sha256(cert.public_bytes(encoding=_DER)).hexdigest()
+
+
+# ── ADR-032 F3: hardware attestation helpers ───────────────────────────
+
+
+@dataclass
+class _AttestationBundle:
+    nonce_id: str
+    quote_b64: str
+    manufacturer: str | None
+    ek_cert_present: bool
+
+
+def _maybe_collect_tpm_attestation(
+    *,
+    site_url: str,
+    pubkey_pem: str,
+    verify_tls: bool | str,
+    timeout_s: float,
+    enabled: bool,
+    sink,
+) -> _AttestationBundle | None:
+    """Best-effort: detect a hardware keystore, request a nonce, quote it.
+
+    Returns ``None`` on any failure; the enrollment then proceeds with
+    the soft path. This is intentionally NOT a fatal gate: Mastio refuses
+    ``_attested`` capability when the claim is absent, so the security
+    boundary lives server-side (memoria
+    ``feedback_h4_convergent_pattern_fallback_insecure_default``).
+    """
+    if not enabled:
+        return None
+
+    import base64 as _b64
+
+    try:
+        from cullis_connector.keystore import detect_best_keystore
+        keystore = detect_best_keystore(prefer_hardware=True)
+    except Exception as exc:
+        _log.info("keystore_detect_failed", extra={"err": str(exc)})
+        return None
+
+    claim = keystore.attestation_claim()
+    if claim is None:
+        # Soft keystore: nothing to attest.
+        return None
+
+    quote_fn = getattr(keystore, "generate_aik_quote", None)
+    if quote_fn is None:
+        return None
+
+    try:
+        nonce_resp = httpx.get(
+            f"{site_url}/v1/enrollment/attestation-nonce",
+            verify=verify_tls,
+            timeout=timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        _log.info("attestation_nonce_unreachable", extra={"err": str(exc)})
+        return None
+    if nonce_resp.status_code != 200:
+        _log.info(
+            "attestation_nonce_status_not_ok",
+            extra={"status": nonce_resp.status_code},
+        )
+        return None
+
+    payload = nonce_resp.json()
+    nonce_id = payload.get("nonce_id")
+    nonce_b64 = payload.get("nonce_b64")
+    if not nonce_id or not nonce_b64:
+        return None
+    try:
+        nonce_bytes = _b64.urlsafe_b64decode(
+            nonce_b64 + "=" * (-len(nonce_b64) % 4),
+        )
+    except Exception:
+        return None
+
+    try:
+        quote_blob = quote_fn(nonce_bytes)
+    except Exception as exc:
+        _log.info("tpm_quote_failed", extra={"err": str(exc)})
+        return None
+
+    quote_b64 = _b64.urlsafe_b64encode(quote_blob).rstrip(b"=").decode()
+    ek_cert_present = claim.strength == "hw_attested"
+
+    print(
+        f"  ✓ TPM attestation bundled (strength={claim.strength}, "
+        f"manufacturer={claim.manufacturer or 'unknown'})",
+        file=sink,
+        flush=True,
+    )
+    return _AttestationBundle(
+        nonce_id=str(nonce_id),
+        quote_b64=quote_b64,
+        manufacturer=claim.manufacturer,
+        ek_cert_present=ek_cert_present,
+    )
 
 
 # local alias to avoid a circular-looking import in the helper above

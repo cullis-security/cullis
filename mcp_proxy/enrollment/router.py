@@ -24,6 +24,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 
+from mcp_proxy.attestation import issue_nonce
 from mcp_proxy.auth.rate_limit import get_agent_rate_limiter
 from mcp_proxy.dashboard.session import (
     ProxyDashboardSession,
@@ -125,6 +126,13 @@ async def start_enrollment(
                 device_info=payload.device_info,
                 dpop_jwk=payload.dpop_jwk,
                 pop_signature=payload.pop_signature,
+                # ADR-032 F3: optional TPM attestation half. When the
+                # Connector omits these the service path is identical to
+                # the pre-F3 behaviour (soft keystore, no claim).
+                attestation_nonce_id=payload.attestation_nonce_id,
+                tpm_quote_b64=payload.tpm_quote_b64,
+                tpm_manufacturer=payload.tpm_manufacturer,
+                tpm_ek_cert_present=payload.tpm_ek_cert_present,
             )
     except service.EnrollmentError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
@@ -204,6 +212,32 @@ def _verify_enrollment_proof(
         return False
     except Exception:
         return False
+
+
+# ADR-032 F3: attestation nonce mint endpoint (anonymous, rate-limited).
+# Issued before ``POST /v1/enrollment/start`` so the Connector can bind a
+# fresh TPM quote to a server-controlled challenge. The pair (nonce_id,
+# nonce_b64) is consumed when start_enrollment verifies the quote.
+_ATTESTATION_NONCE_PER_MINUTE = 30
+
+
+@router.get("/v1/enrollment/attestation-nonce")
+async def attestation_nonce(request: Request) -> dict[str, object]:
+    client_ip = _client_ip(request)
+    if not await get_agent_rate_limiter().check(
+        f"ip:{client_ip}:enroll.attestation_nonce",
+        _ATTESTATION_NONCE_PER_MINUTE,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="attestation nonce rate limit exceeded",
+        )
+    issued = await issue_nonce()
+    return {
+        "nonce_id": issued.nonce_id,
+        "nonce_b64": issued.nonce_b64,
+        "expires_at_epoch": issued.expires_at_epoch,
+    }
 
 
 @router.get(

@@ -67,6 +67,50 @@ class EnrollmentStartRequest(BaseModel):
             " a follow-up release."
         ),
     )
+    # ── ADR-032 F3: TPM attestation (optional) ────────────────────────
+    attestation_nonce_id: str | None = Field(
+        None,
+        max_length=128,
+        description=(
+            "Opaque identifier of the server-issued nonce the Connector"
+            " consumed when generating ``tpm_quote_b64``. Returned by"
+            " ``GET /v1/enrollment/attestation-nonce``. Required iff"
+            " ``tpm_quote_b64`` is set."
+        ),
+    )
+    tpm_quote_b64: str | None = Field(
+        None,
+        max_length=16384,
+        description=(
+            "ADR-032 F3 Phase 1: base64url AIK quote envelope produced"
+            " by the Linux TPM keystore (see"
+            " ``cullis_connector.keystore.tpm_linux``). Optional. When"
+            " present, the server verifies the quote against"
+            " ``pubkey_pem`` + the nonce identified by"
+            " ``attestation_nonce_id`` and, on success, persists the"
+            " hardware-side claim ({hardware, strength, manufacturer})"
+            " for the eventual ``effective_tier`` recomputation."
+        ),
+    )
+    tpm_manufacturer: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Self-declared TPM EK manufacturer (Infineon / ST / etc)."
+            " Cross-checked against ``TPM_MANUFACTURER_WHITELIST`` on"
+            " the server; an unknown vendor downgrades ``strength`` to"
+            " ``hw_isolated`` (Phase 1 EK CA chain deferred per Q8)."
+        ),
+    )
+    tpm_ek_cert_present: bool = Field(
+        False,
+        description=(
+            "Whether the Connector found an EK certificate in NV index"
+            " 0x01C00002. Used together with ``tpm_manufacturer`` to"
+            " gate ``hw_attested`` strength. swtpm / vTPM environments"
+            " typically report ``False`` and stay at ``hw_isolated``."
+        ),
+    )
 
 
 class EnrollmentStartResponse(BaseModel):
