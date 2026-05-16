@@ -560,6 +560,31 @@ async def approve(
             canonical_id, _get_settings().auto_baseline_binding, capabilities,
         )
 
+    # ADR-032 Layer 1 (F2 spike) — best-effort device attestation
+    # stamp. Looks up the MDM cache by the hints the Connector left
+    # in ``device_info``, builds the canonical claim (schema sez. 1),
+    # writes it onto ``internal_agents.last_attestation``, and emits
+    # an audit row of subtype ``verified``. Failure is non-fatal —
+    # enrollment completes either way; the claim absence simply means
+    # the agent operates at ``effective_tier=untrusted`` until the
+    # next enrolment or an admin attestation refresh.
+    try:
+        from mcp_proxy.attestation.enrollment_hook import (
+            stamp_attestation_on_enrollment,
+        )
+        await stamp_attestation_on_enrollment(
+            conn,
+            agent_id=canonical_id,
+            device_info=record.get("device_info"),
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — never block enrollment on attestation
+        import logging as _logging
+        _logging.getLogger("mcp_proxy.enrollment").warning(
+            "device_attestation stamp failed for %s (continuing): %s",
+            canonical_id, exc,
+        )
+
     return await get_record(conn, session_id)
 
 
