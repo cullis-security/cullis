@@ -27,6 +27,8 @@ no cross-Connector revoke from an unrelated device.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 import secrets
@@ -34,6 +36,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 from mcp_proxy.auth.dependencies import get_authenticated_agent
 from mcp_proxy.config import get_settings
@@ -82,24 +87,88 @@ class ConnectorLoginResponse(BaseModel):
     expires_at: datetime
 
 
-def _slug_from_sso(subject: str, fallback_name: str | None) -> str:
+def _identity_hash_suffix(idp_issuer: str, sso_subject: str) -> str:
+    """Stable 8-hex disambiguator for the (issuer, subject) pair.
+
+    Without this, two users with the same local-part across different
+    IdPs (``alice@acme.com`` from the corporate IdP vs
+    ``alice@external.com`` from a B2B partner federated into the same
+    org) would slug to the *same* principal_id, and the upsert would
+    silently rebind the principal to whichever caller logged in last
+    — a cross-IdP identity-takeover primitive. Hashing the canonical
+    pair makes the suffix deterministic across re-logins (the same
+    user always lands on the same principal_id) while keeping the
+    pair distinct from the next user with the same local-part.
+
+    The hash input is normalised (lowercase + stripped) so trivial
+    formatting differences from the IdP don't fork the suffix.
+    """
+    canonical = f"{idp_issuer.strip().lower()}|{sso_subject.strip()}".encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()[:8]
+
+
+def _slug_from_sso(
+    subject: str,
+    fallback_name: str | None,
+    *,
+    idp_issuer: str,
+) -> str:
     """Derive a stable user_name slug from the SSO subject.
 
-    Email-shaped subjects (``alice@example.com``) become ``alice``;
-    UUIDs / opaque subs stay verbatim modulo the slug regex. The
-    fallback display_name is used only when both transforms collapse
-    to empty — extremely unlikely in practice.
+    Format: ``<base>-<hash8>`` where ``<base>`` is the readable
+    local-part of the subject (or a fallback) and ``<hash8>`` is the
+    deterministic ``_identity_hash_suffix`` of the ``(idp_issuer, subject)``
+    pair. The suffix is what makes the slug collision-safe across IdPs;
+    the readable prefix is purely cosmetic (dashboard display).
+
+    Email-shaped subjects (``alice@example.com``) keep ``alice`` as the
+    prefix; UUIDs / opaque subs stay verbatim modulo the slug regex.
+    The fallback display_name is consulted only when both transforms
+    collapse to empty.
     """
     base = subject.split("@", 1)[0].lower()
     base = _USER_NAME_SLUG_RE.sub("-", base).strip("-")
-    if base:
-        return base[:64]
-    if fallback_name:
-        slug = _USER_NAME_SLUG_RE.sub("-", fallback_name.lower()).strip("-")
-        if slug:
-            return slug[:64]
-    # Last-resort opaque suffix so we never write an empty user_name.
-    return f"user-{secrets.token_hex(4)}"
+    if not base and fallback_name:
+        base = _USER_NAME_SLUG_RE.sub("-", fallback_name.lower()).strip("-")
+    if not base:
+        base = "user"
+    # Trim the readable prefix so the total stays well under the 64-char
+    # local-part budget even with the 9 extra chars from "-<hash8>".
+    base = base[:55]
+    suffix = _identity_hash_suffix(idp_issuer, subject)
+    return f"{base}-{suffix}"
+
+
+def _derive_caller_cert_thumbprint(request) -> str | None:
+    """SHA-256 hex of the caller's TLS client cert, or None when nginx
+    didn't forward one.
+
+    Mirrors ``mcp_proxy.auth.client_cert.get_agent_from_client_cert``:
+    nginx escapes the leaf PEM into the ``X-SSL-Client-Cert`` header
+    when ``ssl_verify_client on`` accepted the handshake, and sets
+    ``X-SSL-Client-Verify=SUCCESS`` next to it. We only trust the
+    header when verify=SUCCESS so a request that bypassed nginx (or
+    that landed via a misconfigured location block without mTLS) can't
+    smuggle in a forged thumbprint.
+
+    Returns ``None`` for dev / test deployments behind plain HTTP —
+    the caller falls back to the body-supplied thumbprint there.
+    """
+    from mcp_proxy.auth.client_cert import _decode_escaped_pem
+
+    if request.headers.get("X-SSL-Client-Verify") != "SUCCESS":
+        return None
+    escaped_pem = request.headers.get("X-SSL-Client-Cert") or ""
+    if not escaped_pem:
+        return None
+    try:
+        pem = _decode_escaped_pem(escaped_pem)
+        cert = x509.load_pem_x509_certificate(pem.encode("utf-8"))
+    except (ValueError, AttributeError):
+        return None
+    return hashlib.sha256(
+        cert.public_bytes(serialization.Encoding.DER),
+    ).hexdigest()
 
 
 def _resolve_ttl_seconds() -> int:
@@ -128,7 +197,41 @@ async def connector_login(
     token: TokenPayload = Depends(get_authenticated_agent),
 ) -> ConnectorLoginResponse:
     """Bind a user identity to the calling Connector and mint a session."""
-    user_name = _slug_from_sso(body.user_subject_sso, body.display_name)
+    # MEDIUM C2 — derive the device thumbprint server-side from the
+    # nginx-forwarded client cert and refuse a body that disagrees.
+    # Without this gate a caller authenticated with cert A could bind a
+    # session to thumbprint B (which they don't hold), defeating the
+    # ``maybe_stamp_user_session`` pinning step downstream. When nginx
+    # is not forwarding a cert (dev / test without mTLS) the body
+    # value is accepted as-is.
+    server_thumbprint = _derive_caller_cert_thumbprint(request)
+    if server_thumbprint is not None:
+        if not hmac.compare_digest(
+            server_thumbprint.lower(), body.device_cert_thumbprint.lower(),
+        ):
+            _log.warning(
+                "connector-login: device_cert_thumbprint mismatch "
+                "(agent=%s body_prefix=%s server_prefix=%s)",
+                token.agent_id,
+                body.device_cert_thumbprint[:16],
+                server_thumbprint[:16],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "device_cert_thumbprint does not match the TLS "
+                    "client cert presented at the handshake"
+                ),
+            )
+        bound_thumbprint = server_thumbprint
+    else:
+        bound_thumbprint = body.device_cert_thumbprint
+
+    user_name = _slug_from_sso(
+        body.user_subject_sso,
+        body.display_name,
+        idp_issuer=body.idp_issuer,
+    )
     principal_id = f"{token.org}::user::{user_name}"
 
     # Upsert the user row so the dashboard "Users" tab + future audit
@@ -162,7 +265,7 @@ async def connector_login(
         await create_user_session(
             session_id=session_id,
             principal_id=principal_id,
-            agent_cert_thumbprint=body.device_cert_thumbprint,
+            agent_cert_thumbprint=bound_thumbprint,
             sso_subject=body.user_subject_sso,
             idp_issuer=body.idp_issuer,
             display_name=body.display_name,

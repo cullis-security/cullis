@@ -185,9 +185,22 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     # ``audit_log.on_behalf_of_user_id`` populates. Absent / invalid
     # session is silently logged and does NOT block the request — the
     # agent identity stays the primary credential.
+    #
+    # Thread the verified cert thumbprint (registered + pinned at the
+    # ``get_agent_from_client_cert`` step above) into the verifier so
+    # the docstring-claimed "session bound to a different device"
+    # check actually runs — closes the dead pinning gap.
     from mcp_proxy.auth.user_session import maybe_stamp_user_session
+    caller_thumb: str | None = None
+    if agent.cert_pem:
+        from mcp_proxy.auth.client_cert import _pem_der_digest
+        digest = _pem_der_digest(agent.cert_pem)
+        if digest is not None:
+            caller_thumb = digest.hex()
     await maybe_stamp_user_session(
-        request, caller_agent_id=agent.agent_id,
+        request,
+        caller_agent_id=agent.agent_id,
+        caller_cert_thumbprint=caller_thumb,
     )
 
     _log.debug(
