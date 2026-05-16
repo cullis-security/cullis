@@ -4,8 +4,10 @@ Bug #8 from the 2026-05-09 AI-as-customer dogfood: a customer that
 runs ``cullis-mastio:0.3.1`` and curls ``/health`` sees
 ``{"status":"ok","version":"0.1.0"}``. ``0.1.0`` was a literal in
 ``mcp_proxy/main.py`` that nobody bumped after mastio-v0.3.0 cut.
-The fix swaps the literal for ``_MASTIO_VERSION``, which is read
-from ``CULLIS_MASTIO_VERSION`` and falls back to ``dev``.
+The fix routes ``/health`` through ``_mastio_version()`` which reads
+``CULLIS_MASTIO_VERSION`` at call time (was an import-time constant,
+caused 6+ flake reruns due to cross-file env mutation), falling
+back to ``dev`` for source-checkout runs.
 ``release-mastio.yml`` passes ``--build-arg VERSION=<tag>`` so the
 running image labels and ``/health`` agree.
 """
@@ -14,34 +16,29 @@ from __future__ import annotations
 import pytest
 
 
-@pytest.mark.serial
-@pytest.mark.xdist_group(name="serial_state_mutators")
-def test_mastio_version_defaults_to_dev_in_source_checkout():
+def test_mastio_version_defaults_to_dev_in_source_checkout(monkeypatch):
     """Without CULLIS_MASTIO_VERSION env (the default for a source
-    checkout / pytest run), ``_MASTIO_VERSION`` is ``dev`` so ops cannot
-    confuse a dev process with a tagged release.
+    checkout / pytest run), ``_mastio_version()`` returns ``dev`` so
+    ops cannot confuse a dev process with a tagged release.
 
-    Marked serial: ``mcp_proxy.main._MASTIO_VERSION`` is a module-level
-    constant resolved at first import. Any test in another file that
-    sets ``CULLIS_MASTIO_VERSION`` env + re-imports the module
-    (intentionally or by side-effect) parks a non-``dev`` value that
-    this test then sees. 6 reruns across PRs #720 / #722 / #723 / #727
-    / #728 / #730 traced to this pattern. The xdist_group marker is a
-    forward-looking pin for when the suite migrates to
-    ``--dist=loadgroup``; today it still lets ``pytest -m serial`` run
-    this test in isolation.
-    """
+    The function reads env at call time, so this assertion is
+    deterministic regardless of what other tests in the suite set on
+    ``CULLIS_MASTIO_VERSION`` before importing ``mcp_proxy.main``.
+    The explicit ``delenv`` guards against an operator-set value
+    leaking into the test process (CI runners, dev shells with the
+    var exported)."""
     import mcp_proxy.main as _m
-    assert _m._MASTIO_VERSION == "dev"
+    monkeypatch.delenv("CULLIS_MASTIO_VERSION", raising=False)
+    assert _m._mastio_version() == "dev"
 
 
 @pytest.mark.asyncio
 async def test_mastio_health_surfaces_module_version(monkeypatch):
-    """The ``/health`` handler reads ``_MASTIO_VERSION`` at call time
-    (not a baked literal), so a release image with VERSION=1.2.3 baked
-    in surfaces that exact value."""
+    """The ``/health`` handler calls ``_mastio_version()`` so a release
+    image with VERSION=1.2.3 baked in (and thus
+    ``CULLIS_MASTIO_VERSION=1.2.3``) surfaces that exact value."""
     import mcp_proxy.main as _m
-    monkeypatch.setattr(_m, "_MASTIO_VERSION", "1.2.3")
+    monkeypatch.setenv("CULLIS_MASTIO_VERSION", "1.2.3")
 
     class _Req:
         class _App:
