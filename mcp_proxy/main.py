@@ -480,6 +480,47 @@ async def lifespan(app: FastAPI):
         app.state.local_sweeper_stop = stop_event
         app.state.local_sweeper_task = sweeper_task
 
+    # ADR-032 Layer 1 (F2 spike) — Intune polling task. Gated on
+    # MCP_PROXY_MDM_INTUNE_ENABLED + credential triple so a half-
+    # configured deployment fails loud at startup instead of polling
+    # silently with empty values. Scope is the inventory cache only;
+    # the policy hook (F5) and revocation push (F6) ride on top of
+    # the same cache once shipped.
+    if settings.mdm_intune_enabled:
+        missing = [
+            name for name, value in (
+                ("MCP_PROXY_MDM_INTUNE_TENANT_ID", settings.mdm_intune_tenant_id),
+                ("MCP_PROXY_MDM_INTUNE_CLIENT_ID", settings.mdm_intune_client_id),
+                ("MCP_PROXY_MDM_INTUNE_CLIENT_SECRET", settings.mdm_intune_client_secret),
+            ) if not value
+        ]
+        if missing:
+            emit_lifespan_log(
+                level="WARNING",
+                logger="mcp_proxy.mdm.poller",
+                message=(
+                    "Intune polling enabled but required env missing: "
+                    f"{', '.join(missing)}. Not starting polling loop."
+                ),
+            )
+        else:
+            from mcp_proxy.mdm import intune_poll_loop
+            mdm_stop = asyncio.Event()
+            mdm_task = asyncio.create_task(
+                intune_poll_loop(
+                    tenant_id=settings.mdm_intune_tenant_id,
+                    client_id=settings.mdm_intune_client_id,
+                    client_secret=settings.mdm_intune_client_secret,
+                    interval_seconds=max(
+                        60, settings.mdm_intune_poll_interval_seconds,
+                    ),
+                    stop_event=mdm_stop,
+                ),
+                name="mdm_intune_poller",
+            )
+            app.state.mdm_intune_stop = mdm_stop
+            app.state.mdm_intune_task = mdm_task
+
     # Phase 4c — federation SSE subscriber. Wires the Phase 4b cache
     # to the live broker stream. Off by default; flip via
     # PROXY_FEDERATION_SYNC=true. The auth surface (DPoP / mTLS / SPIFFE)
@@ -717,6 +758,25 @@ async def lifespan(app: FastAPI):
                 delattr(app.state, attr_name)
             except AttributeError:
                 pass
+
+    # ADR-032 Layer 1 — stop the Intune poller. Mirrors the local
+    # sweeper teardown shape (set stop_event, wait with timeout,
+    # cancel on timeout, tolerate the xdist cross-loop ValueError).
+    mdm_stop = getattr(app.state, "mdm_intune_stop", None)
+    mdm_task = getattr(app.state, "mdm_intune_task", None)
+    if mdm_stop is not None:
+        mdm_stop.set()
+    if mdm_task is not None:
+        try:
+            await asyncio.wait_for(mdm_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            mdm_task.cancel()
+            try:
+                await mdm_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug("mdm intune poller teardown loop mismatch (xdist): %s", exc)
 
     stop_event = getattr(app.state, "local_sweeper_stop", None)
     sweeper_task = getattr(app.state, "local_sweeper_task", None)

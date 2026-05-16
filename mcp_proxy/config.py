@@ -450,6 +450,32 @@ class ProxySettings(BaseSettings):
     frontdesk_ambassador_url: str = ""
     frontdesk_admin_secret: str = ""
 
+    # ADR-032 Layer 1 (F2 spike) — Intune device attestation polling.
+    # ``mdm_intune_enabled=false`` keeps the polling task off so
+    # customers who haven't completed the Entra app registration
+    # don't see lifespan warnings on every start. The tenant /
+    # client / secret triple is the customer's app registration
+    # (see ``enterprise-kit/intune-setup.md``). Empty values are
+    # tolerated so the field can be wired through the bundle's
+    # compose ``environment:`` block without crashing when the
+    # operator hasn't filled them in yet.
+    mdm_intune_enabled: bool = False
+    mdm_intune_tenant_id: str = ""
+    mdm_intune_client_id: str = ""
+    mdm_intune_client_secret: str = ""
+    # Microsoft documents Intune compliance state freshness on the
+    # order of 5-15 minutes; polling faster does not produce fresher
+    # data and only increases throttling risk. The bound of 60s is
+    # defensive for tests that want a tight loop.
+    mdm_intune_poll_interval_seconds: int = 600
+
+    # Stale window after which a cached device's compliance is
+    # downgraded to ``unknown`` (schema sez. 5). Default 900s = 15
+    # minutes, matching the upper bound of Intune's freshness window
+    # so we don't keep treating a device as compliant while it has
+    # actually drifted in the upstream.
+    attestation_stale_threshold_seconds: int = 900
+
     # Docker compose ``${VAR:-}`` substitutes to the empty string when
     # the operator has not set the var in proxy.env. Pydantic v2's bool
     # parser rejects "" with ``bool_parsing`` ValidationError, which
@@ -464,6 +490,7 @@ class ProxySettings(BaseSettings):
         "tool_pdp_enabled",
         "force_local_password",
         "local_auth_enabled",
+        "mdm_intune_enabled",
         mode="before",
     )
     @classmethod
