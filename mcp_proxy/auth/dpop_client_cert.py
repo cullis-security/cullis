@@ -179,6 +179,17 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     from mcp_proxy.auth.dpop_context import set_dpop_jkt
     set_dpop_jkt(proof_jkt)
 
+    # ADR-032 Layer 2 — best-effort. If the Connector caller carries a
+    # valid user session in X-Cullis-Session-Token + X-Cullis-On-Behalf-Of-User
+    # headers, stamp the per-request "on behalf of user" contextvar so
+    # ``audit_log.on_behalf_of_user_id`` populates. Absent / invalid
+    # session is silently logged and does NOT block the request — the
+    # agent identity stays the primary credential.
+    from mcp_proxy.auth.user_session import maybe_stamp_user_session
+    await maybe_stamp_user_session(
+        request, caller_agent_id=agent.agent_id,
+    )
+
     _log.debug(
         "Egress mTLS+DPoP accepted (agent=%s, jkt=%s, mode=%s, bound=%s)",
         agent.agent_id, proof_jkt, mode, bool(stored_jkt),

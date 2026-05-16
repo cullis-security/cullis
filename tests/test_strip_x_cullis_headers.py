@@ -209,6 +209,28 @@ async def test_log_fires_under_opt_in(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_adr032_allowlist_keeps_session_headers(client):
+    """ADR-032 Layer 2 — the Connector legitimately propagates user
+    identity via X-Cullis-Session-Token + X-Cullis-On-Behalf-Of-User.
+    These two names are on the middleware allowlist; everything else
+    in the ``X-Cullis-*`` family still strips.
+    """
+    resp = await client.get(
+        "/echo",
+        headers={
+            "X-Cullis-Session-Token": "sess-token-abc",
+            "X-Cullis-On-Behalf-Of-User": "acme::user::alice",
+            # Negative control: a sibling X-Cullis-* still drops.
+            "X-Cullis-Trust": "spoofed",
+        },
+    )
+    seen = {k.lower(): v for k, v in resp.json()["headers"]}
+    assert seen.get("x-cullis-session-token") == "sess-token-abc"
+    assert seen.get("x-cullis-on-behalf-of-user") == "acme::user::alice"
+    assert "x-cullis-trust" not in seen
+
+
+@pytest.mark.asyncio
 async def test_no_x_cullis_no_changes(client):
     """A request with zero X-Cullis-* headers must traverse the
     middleware without scope copy or log event."""

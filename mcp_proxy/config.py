@@ -384,6 +384,11 @@ class ProxySettings(BaseSettings):
     #     the existing token TTL has fully expired.
     local_token_require_dpop: bool = False
 
+    # ADR-032 Layer 2 — Connector OIDC login session TTL in seconds.
+    # Default 1h aligns with ADR-032 decision D (banking-grade idle).
+    # Operators tune via ``MCP_PROXY_USER_SESSION_TTL_SECONDS``.
+    user_session_ttl_seconds: int = 3600
+
     # ADR-017 native AI gateway on Mastio. When the Mastio runs litellm
     # in-process (default: ``litellm_embedded``), every chat completion
     # is dispatched without a Court round trip. Set ``backend=portkey``

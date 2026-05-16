@@ -269,6 +269,68 @@ def _build_parser() -> argparse.ArgumentParser:
              "Use in scripts: TOKEN=$(cullis-connector show-token --quiet)",
     )
 
+    # ADR-032 Layer 2 — Connector OIDC login. Opens a local OIDC flow,
+    # binds the resulting user identity to the enrolled Connector via
+    # the Mastio's /v1/principals/connector-login endpoint, and persists
+    # the session to ``<config_dir>/oidc_session.json``.
+    login = subparsers.add_parser(
+        "login",
+        help="Bind a user identity (via OIDC SSO) on top of the enrolled "
+             "Connector agent.",
+    )
+    _add_shared_args(login)
+    login.add_argument(
+        "--idp",
+        dest="idp_issuer",
+        help="Override the OIDC issuer URL (otherwise read from the "
+             "Mastio's proxy_config / a local config.yaml override).",
+    )
+    login.add_argument(
+        "--client-id",
+        dest="oidc_client_id",
+        help="OIDC client_id for this Connector. Required when --idp is "
+             "passed and no Mastio-side config is reachable.",
+    )
+    login.add_argument(
+        "--client-secret",
+        dest="oidc_client_secret",
+        default=None,
+        help="Optional OIDC client_secret. PKCE alone is enough for "
+             "public-client IdPs; pass this only when the IdP rejects "
+             "anonymous token exchanges.",
+    )
+    login.add_argument(
+        "--callback-port",
+        dest="callback_port",
+        type=int,
+        default=None,
+        help="Bind a specific loopback port for the OIDC redirect_uri. "
+             "Default: ask the OS for a free port (avoids the 7777 "
+             "dashboard collision).",
+    )
+    login.add_argument(
+        "--no-open-browser",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Print the authorization URL instead of opening it in a "
+             "browser (headless / SSH scenarios).",
+    )
+
+    logout = subparsers.add_parser(
+        "logout",
+        help="Revoke the bound user identity on the Mastio and remove "
+             "the local session row.",
+    )
+    _add_shared_args(logout)
+
+    whoami = subparsers.add_parser(
+        "whoami",
+        help="Report which user identity (if any) the Connector is "
+             "currently bound to.",
+    )
+    _add_shared_args(whoami)
+
     return parser
 
 
@@ -281,6 +343,9 @@ _KNOWN_SUBCOMMANDS = frozenset({
     "desktop",
     "doctor",
     "show-token",
+    "login",
+    "logout",
+    "whoami",
 })
 
 # Shared flags are parsed by the subparser that owns the chosen command.
@@ -724,6 +789,117 @@ def _cmd_desktop(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return run_desktop_app(cfg, host=host, port=port)
 
 
+def _cmd_login(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    """ADR-032 Layer 2 — bind a user identity via OIDC."""
+    if not has_identity(cfg.config_dir):
+        _log.error(
+            "Cannot login as a user: this Connector is not enrolled yet. "
+            "Run `cullis-connector enroll --requester-name ... "
+            "--requester-email ...` first."
+        )
+        return 2
+
+    try:
+        identity = load_identity(cfg.config_dir)
+    except IdentityNotFound as exc:
+        _log.error("Identity load failed: %s", exc)
+        return 2
+
+    site_url = cfg.site_url or identity.metadata.site_url
+    if not site_url:
+        _log.error(
+            "Cannot login without a Site URL (pass --site-url, set "
+            "CULLIS_SITE_URL, or re-enroll so metadata.site_url is filled)."
+        )
+        return 2
+
+    issuer_url = getattr(args, "idp_issuer", None)
+    client_id = getattr(args, "oidc_client_id", None)
+    if not issuer_url or not client_id:
+        _log.error(
+            "OIDC login requires --idp <issuer-url> and --client-id <client>. "
+            "Mastio-side defaults will be wired in a follow-up — pass them "
+            "explicitly for now."
+        )
+        return 2
+
+    from cullis_connector.login import LoginError, perform_login
+
+    try:
+        session = perform_login(
+            config_dir=cfg.config_dir,
+            identity=identity,
+            site_url=site_url,
+            verify_tls=cfg.verify_tls,
+            issuer_url=issuer_url,
+            client_id=client_id,
+            client_secret=getattr(args, "oidc_client_secret", None),
+            callback_port=getattr(args, "callback_port", None),
+            open_browser=getattr(args, "open_browser", True),
+        )
+    except LoginError as exc:
+        _log.error("login failed: %s", exc)
+        return 1
+
+    print(  # noqa: T201
+        f"Logged in as {session.display_name or session.sso_subject} "
+        f"@ {session.idp_issuer}"
+    )
+    print(  # noqa: T201
+        f"Session expires at {session.expires_at.isoformat(timespec='seconds')}"
+    )
+    return 0
+
+
+def _cmd_logout(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    """ADR-032 Layer 2 — revoke the bound user identity."""
+    from cullis_connector.login import perform_logout
+    from cullis_connector.identity.oidc_session import load_session
+
+    try:
+        identity = load_identity(cfg.config_dir) if has_identity(cfg.config_dir) else None
+    except IdentityNotFound:
+        identity = None
+    site_url = cfg.site_url or (identity.metadata.site_url if identity else "")
+
+    existing = load_session(cfg.config_dir)
+    if existing is None:
+        print("No active session to log out of.")  # noqa: T201
+        return 0
+
+    if not site_url:
+        # Still allow a local-only logout so the user can clear stale
+        # state even if their Site URL is misconfigured.
+        from cullis_connector.identity.oidc_session import delete_session
+        delete_session(cfg.config_dir)
+        print(  # noqa: T201
+            "Local session cleared (no Site URL available — server-side "
+            "revoke skipped)."
+        )
+        return 0
+
+    removed = perform_logout(
+        config_dir=cfg.config_dir,
+        site_url=site_url,
+        verify_tls=cfg.verify_tls,
+    )
+    if removed:
+        print(  # noqa: T201
+            f"Logged out from {existing.display_name or existing.sso_subject}"
+        )
+    else:
+        print("No session row removed.")  # noqa: T201
+    return 0
+
+
+def _cmd_whoami(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
+    """ADR-032 Layer 2 — print the bound user identity status."""
+    from cullis_connector.login import describe_session
+
+    print(describe_session(cfg.config_dir))  # noqa: T201
+    return 0
+
+
 def _cmd_show_token(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     """Print the loopback Ambassador Bearer token.
 
@@ -819,6 +995,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_doctor(cfg, args)
     if command == "show-token":
         return _cmd_show_token(cfg, args)
+    if command == "login":
+        return _cmd_login(cfg, args)
+    if command == "logout":
+        return _cmd_logout(cfg, args)
+    if command == "whoami":
+        return _cmd_whoami(cfg, args)
     return _cmd_serve(cfg)
 
 
