@@ -1414,6 +1414,16 @@ app.include_router(principals_router)
 from mcp_proxy.registry.connector_login_router import router as connector_login_router
 app.include_router(connector_login_router)
 
+# ADR-025 Phase 5 / F4 R3 — local-auth attribution sibling of
+# /v1/principals/connector-login. The Connector posts here after
+# verifying bcrypt against its local users.db; this endpoint mints
+# the user_sessions row without touching a password (per migration
+# 0028_revert_user_password: Mastio is not the password store).
+from mcp_proxy.registry.connector_login_local_attribution_router import (
+    router as connector_login_local_attribution_router,
+)
+app.include_router(connector_login_local_attribution_router)
+
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these
 # paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.

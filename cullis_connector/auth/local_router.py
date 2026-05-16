@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -34,10 +36,16 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from cullis_connector.ambassador.shared.wire import bootstrap_cookie_secret
+from cullis_connector.identity.oidc_session import OidcSession, save_session
 from cullis_connector.identity.cert_session_map import (
     delete_binding,
     derive_session_id,
     record_binding,
+)
+from cullis_connector.identity.audit import (
+    log_lockout_trigger,
+    log_login_attempt,
+    log_password_change,
 )
 from cullis_connector.identity.csr_flow import (
     LocalProvisioningError,
@@ -51,8 +59,15 @@ from cullis_connector.identity.local_session import (
     issue_local_cookie,
     parse_local_cookie,
 )
+from cullis_connector.identity.lockout import (
+    is_locked,
+    record_failure,
+    record_success,
+)
 from cullis_connector.identity.users import (
     MIN_PASSWORD_LENGTH,
+    count_users,
+    create_user,
     get_user_by_name,
     mark_password_changed,
     set_password_hash,
@@ -70,39 +85,91 @@ _templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 router = APIRouter(tags=["auth", "local"])
 
 
-# ── Phase 4 stubs ────────────────────────────────────────────────────────
+# ── Phase 4 wire-up (ADR-025 Phase 5, F4 R3) ─────────────────────────────
 #
-# Wired to the real lockout + audit modules in a follow-up PR after
-# Phase 4 (cullis_connector/identity/lockout.py + audit.py) lands. For
-# Phase 2 these are intentional no-ops that emit a single warning so
-# the call-sites stay shaped correctly and follow-up only edits the
-# helper bodies.
+# Replaces the Phase-2 stubs that no-op'd lockout + audit accounting.
+# Both helpers live in ``cullis_connector.identity`` and share state
+# with the rest of the local-auth stack (admin disable, audit query,
+# Frontdesk dashboard).
+#
+# The helpers below intentionally collapse every failure path to a log
+# breadcrumb rather than re-raising. A login flow that 500s because the
+# audit DB hiccupped is worse than a login flow that succeeds but
+# leaves a faint trace — the audit log is observability, not a gate.
 
 
-def _check_lockout(ip: str, user_name: str) -> bool:
-    """Return ``True`` if the (ip, user_name) pair is currently locked.
+def _now_epoch() -> float:
+    """Wall-clock epoch seconds. Wrapped so tests can monkey-patch."""
+    return time.time()
 
-    Phase-2 stub — never locked. Wired to lockout/audit in follow-up PR
-    after Phase 4 lands.
+
+async def _check_lockout(ip: str) -> float | None:
+    """Return the unlock-time epoch when ``ip`` is locked, else ``None``.
+
+    Wraps :func:`cullis_connector.identity.lockout.is_locked` so the
+    call site stays terse and the stub-shape (`async` with a single ip
+    arg) is unchanged from the Phase-2 placeholder.
     """
-    return False
+    try:
+        return await is_locked(ip)
+    except Exception as exc:  # noqa: BLE001 — fail-open on lockout I/O
+        _log.warning("lockout probe failed for ip=%s: %s", ip, exc)
+        return None
 
 
-def _record_login_attempt(
-    ip: str, user_name: str, success: bool,
+async def _record_login_attempt(
+    config_dir: Path,
+    *,
+    ip: str,
+    user_name: str | None,
+    success: bool,
+    reason: str = "",
 ) -> None:
-    """Record a login attempt for lockout + audit accounting.
+    """Audit one login attempt + update the lockout counter.
 
-    Phase-2 stub — no-op. Wired to lockout/audit in follow-up PR after
-    Phase 4 lands.
+    On success: ``log_login_attempt(status='ok')`` + ``record_success``
+    so the IP's failure run resets. On failure: ``log_login_attempt(
+    status='fail')`` + ``record_failure``; when the lockout threshold
+    trips we also emit ``log_lockout_trigger`` so a reviewer can
+    correlate the 429 wave back to the offending IP.
     """
-    # Single debug line only — never log the password and never log a
-    # full audit event from the stub (so the follow-up PR's audit
-    # writer is the only place rows are emitted).
-    _log.debug(
-        "login attempt (stub) ip=%s user_name=%s success=%s",
-        ip, user_name, success,
-    )
+    status_str = "ok" if success else "fail"
+    try:
+        await log_login_attempt(
+            config_dir,
+            ip=ip,
+            user_name=user_name,
+            status=status_str,
+            reason=reason,
+        )
+    except Exception as exc:  # noqa: BLE001 — audit best-effort
+        _log.warning(
+            "audit write failed user_name=%s ip=%s success=%s: %s",
+            user_name, ip, success, exc,
+        )
+
+    try:
+        if success:
+            await record_success(ip)
+        else:
+            _count, unlock_at = await record_failure(ip, user_name)
+            if unlock_at is not None:
+                try:
+                    await log_lockout_trigger(
+                        config_dir,
+                        ip=ip,
+                        locked_until=unlock_at,
+                        user_name=user_name,
+                    )
+                except Exception as exc:  # noqa: BLE001 — audit best-effort
+                    _log.warning(
+                        "lockout audit write failed ip=%s: %s", ip, exc,
+                    )
+    except Exception as exc:  # noqa: BLE001 — lockout state I/O failure
+        _log.warning(
+            "lockout counter update failed ip=%s success=%s: %s",
+            ip, success, exc,
+        )
 
 
 # ── Request / response models ────────────────────────────────────────────
@@ -132,6 +199,14 @@ class LoginResponse(BaseModel):
     #                local-mode boot bailed out). Login still works,
     #                /v1/* is gated upstream.
     provisioning: str = "skipped"
+    # ADR-025 Phase 5 / F4 R3 — Mastio attribution call result for the
+    # user_sessions row that lets downstream audit pick up
+    # ``on_behalf_of_user_id``. Same three states as ``provisioning``;
+    # the two calls are independent because the cert + the session row
+    # serve different layers (transport vs audit), and one can succeed
+    # while the other fails (e.g. cert cache hit + Mastio attribution
+    # endpoint hiccup).
+    attribution: str = "skipped"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -157,6 +232,25 @@ class RuntimeInfoResponse(BaseModel):
     auth_mode: str
     login_url: str
     require_change_password_url: str
+    # ADR-025 Phase 5 / F4 R3 — flips to True when ``users.db`` is empty
+    # on a Connector desktop install so the SPA renders the owner-setup
+    # form instead of the login form. Probe is intentionally on the
+    # public ``/api/auth/runtime-info`` endpoint so the bootstrap can
+    # decide before it has any cookie.
+    setup_required: bool = False
+    setup_url: str = "/api/auth/first-run-setup"
+
+
+class FirstRunSetupRequest(BaseModel):
+    """Body for ``POST /api/auth/first-run-setup``.
+
+    Same validation envelope as ``LoginRequest`` so the SPA can reuse
+    its existing field-error renderer. ``display_name`` is optional.
+    """
+
+    user_name: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=4096)
+    display_name: str = Field(default="", max_length=255)
 
 
 class ReprovisionResponse(BaseModel):
@@ -382,6 +476,76 @@ async def _bind_login_cert(
     return "ok", None
 
 
+async def _bind_mastio_user_session(
+    request: Request,
+    *,
+    user_name: str,
+    display_name: str | None,
+    device_thumbprint: str,
+) -> tuple[str, str | None]:
+    """Call the Mastio attribution endpoint and persist the returned session.
+
+    ADR-025 Phase 5 / F4 R3. Returns ``(status, detail)`` where status
+    is one of:
+
+      - ``"ok"``       — session minted + persisted under
+                         ``<config_dir>/oidc_session.json`` so the
+                         downstream MCP envelope layer (R2) picks up
+                         ``X-Cullis-Session-Token`` automatically.
+      - ``"deferred"`` — Mastio refused / unreachable. The user login
+                         is still considered successful; subsequent
+                         MCP traffic falls back to agent-only audit
+                         attribution until the next login retry.
+      - ``"skipped"``  — no Mastio CSR transport on this app (pre-
+                         enrollment dashboard, dev mode).
+
+    All exceptions collapse to ``deferred`` so a Mastio outage cannot
+    take down the dashboard login.
+    """
+    transport = getattr(request.app.state, "local_csr_transport", None)
+    if transport is None or not device_thumbprint:
+        return "skipped", None
+
+    try:
+        user_id, session_token, expires_at = await transport.attribute_local_login(
+            local_subject=user_name,
+            display_name=display_name,
+            device_cert_thumbprint=device_thumbprint,
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade, don't crash login
+        _log.warning(
+            "Mastio local-login attribution failed user_name=%s: %s",
+            user_name, exc,
+        )
+        return "deferred", str(exc)
+
+    try:
+        save_session(
+            _config_dir(request),
+            OidcSession(
+                user_id=user_id,
+                session_token=session_token,
+                sso_subject=f"local:{user_name}",
+                idp_issuer="local",
+                display_name=display_name,
+                expires_at=expires_at,
+                device_thumbprint=device_thumbprint,
+                source="local",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — persistence best-effort
+        _log.warning(
+            "Mastio attribution session persist failed user_name=%s: %s",
+            user_name, exc,
+        )
+        # The session is still valid in-memory on the Mastio; we just
+        # won't auto-attach on Connector restart. Treat as ok for the
+        # current process so the user isn't bounced.
+        return "ok", None
+
+    return "ok", None
+
+
 def _cert_thumbprint(cert_pem: str) -> str:
     """SHA-256 hex of the cert DER. Lazily import cryptography so a
     test that monkey-patches the provisioner does not pull
@@ -438,27 +602,48 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
     user_names off the response code or message.
     """
     ip = _client_ip(request)
-    if _check_lockout(ip, body.user_name):
-        # Phase-4 stub — never returns True today. Real implementation
-        # surfaces 429 with a Retry-After header.
-        _record_login_attempt(ip, body.user_name, success=False)
+    config_dir = _config_dir(request)
+    locked_until = await _check_lockout(ip)
+    if locked_until is not None:
+        # 429 with Retry-After lets a well-behaved client back off
+        # without re-probing the password endpoint on a tight loop.
+        retry_after = max(1, int(locked_until - _now_epoch()))
+        await _record_login_attempt(
+            config_dir,
+            ip=ip,
+            user_name=body.user_name,
+            success=False,
+            reason="locked",
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="too many login attempts",
+            headers={"Retry-After": str(retry_after)},
         )
 
-    config_dir = _config_dir(request)
     async with get_users_session(config_dir) as session:
         user = await get_user_by_name(session, body.user_name)
         if user is None or user.disabled:
-            _record_login_attempt(ip, body.user_name, success=False)
+            await _record_login_attempt(
+                config_dir,
+                ip=ip,
+                user_name=body.user_name,
+                success=False,
+                reason="unknown_or_disabled",
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid credentials",
             )
         ok = await verify_password(session, body.user_name, body.password)
     if not ok:
-        _record_login_attempt(ip, body.user_name, success=False)
+        await _record_login_attempt(
+            config_dir,
+            ip=ip,
+            user_name=body.user_name,
+            success=False,
+            reason="bad_password",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid credentials",
@@ -483,9 +668,32 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
         # that's about to be replaced.
         provisioning = "skipped"
         provisioning_detail: str | None = None
+        attribution_status: str = "skipped"
     else:
         provisioning, provisioning_detail = await _bind_login_cert(
             request, payload,
+        )
+        # ADR-025 Phase 5 / F4 R3 — alongside the CSR, ask Mastio to
+        # mint a ``user_sessions`` row attributing future MCP calls
+        # from this Connector to the user_name we just authenticated.
+        # Best-effort: a Mastio outage degrades to "deferred" and the
+        # cert middleware can still serve ``/v1/*`` (the audit row
+        # just won't carry ``on_behalf_of_user_id`` until next login).
+        device_thumbprint = ""
+        try:
+            from cullis_connector.identity.store import load_identity
+            bundle = load_identity(_config_dir(request))
+            if bundle.cert_pem:
+                device_thumbprint = _cert_thumbprint(bundle.cert_pem)
+        except Exception as exc:  # noqa: BLE001 — pre-enrollment ok
+            _log.debug(
+                "F4 R3: no device cert thumbprint resolvable yet: %s", exc,
+            )
+        attribution_status, _attribution_detail = await _bind_mastio_user_session(
+            request,
+            user_name=payload.user_name,
+            display_name=user.display_name,
+            device_thumbprint=device_thumbprint,
         )
 
     body_out = LoginResponse(
@@ -494,6 +702,7 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
         principal_name=payload.principal_name,
         exp=payload.exp,
         provisioning=provisioning,
+        attribution=attribution_status,
     )
     response = JSONResponse(body_out.model_dump())
     if provisioning == "deferred":
@@ -506,7 +715,13 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
                 _sanitize_header_value(provisioning_detail)
             )
     _set_cookie(response, cookie_value)
-    _record_login_attempt(ip, body.user_name, success=True)
+    await _record_login_attempt(
+        config_dir,
+        ip=ip,
+        user_name=body.user_name,
+        success=True,
+        reason=provisioning,
+    )
     # Never log the password — only the username + result.
     _log.info(
         "local login ok user_name=%s must_change=%s provisioning=%s",
@@ -590,6 +805,18 @@ async def change_password(
         # ``set_password_hash`` semantics drift in future. Currently
         # already cleared via ``must_change=False``.
         await mark_password_changed(session, payload.user_name)
+
+    # F4 R3 — emit a pw.change audit row. Never carries the password
+    # value (only the user_name); a Connector compromise that gains
+    # SQL write still cannot rewrite it because the audit table has
+    # a RAISE FAIL trigger on UPDATE/DELETE.
+    try:
+        await log_password_change(config_dir, user_name=payload.user_name)
+    except Exception as exc:  # noqa: BLE001 — audit best-effort
+        _log.warning(
+            "pw.change audit write failed user_name=%s: %s",
+            payload.user_name, exc,
+        )
 
     new_payload = build_payload(
         user_name=payload.user_name,
@@ -701,21 +928,109 @@ async def whoami_local(request: Request) -> WhoamiLocalResponse:
 
 
 @router.get("/api/auth/runtime-info", response_model=RuntimeInfoResponse)
-async def runtime_info() -> RuntimeInfoResponse:
+async def runtime_info(request: Request) -> RuntimeInfoResponse:
     """Public hint for the SPA bootstrap: which login flow to render.
 
     Intentionally no-auth so the SPA can fetch this before it has any
-    cookie. Returns only public-safe metadata (URL paths, mode name).
+    cookie. Returns only public-safe metadata (URL paths, mode name,
+    setup state).
+
+    ``setup_required`` is a public boolean — knowing whether a fresh
+    Connector install has zero users does not leak anything an attacker
+    couldn't infer from observing 401-on-every-login. Treating the DB
+    probe as a hard failure would force the SPA to render an unusable
+    page, so a probe error falls back to ``False`` and the SPA shows
+    the regular login (a missing user surfaces as the usual 401).
     """
     # Hardcoded "local" because this router is only mounted in
     # local mode by ``build_app``. Callers in shared/oidc mode get
     # 404 from FastAPI (no router mounted) — the SPA detects this and
     # falls back to the SSO bootstrap path.
+    setup_required = False
+    try:
+        config_dir = _config_dir(request)
+        async with get_users_session(config_dir) as session:
+            setup_required = await count_users(session) == 0
+    except Exception as exc:  # noqa: BLE001 — probe must not 500
+        _log.warning("runtime-info: users.db probe failed: %s", exc)
     return RuntimeInfoResponse(
         auth_mode="local",
         login_url="/login",
         require_change_password_url="/change-password",
+        setup_required=setup_required,
     )
+
+
+@router.post("/api/auth/first-run-setup", response_model=LoginResponse)
+async def first_run_setup(
+    body: FirstRunSetupRequest, request: Request,
+) -> JSONResponse:
+    """ADR-025 Phase 5 / F4 R3 — create the owner user on a fresh install.
+
+    Only succeeds when ``users.db`` is empty. The new account is
+    created with ``must_change_password=False`` because the operator
+    just picked the password interactively — forcing them through a
+    second change form on the next request would be hostile UX. The
+    response shape mirrors :class:`LoginResponse` so the SPA can reuse
+    its post-login handler.
+
+    Refuses with 409 once any user exists. That keeps the endpoint
+    safe to leave mounted in production: a leaked URL cannot be used
+    to mint an admin on a long-running Connector.
+
+    No lockout / audit on the setup path itself — there is no prior
+    state to brute-force against, and the audit table is created on
+    the first login attempt downstream.
+    """
+    config_dir = _config_dir(request)
+    async with get_users_session(config_dir) as session:
+        if await count_users(session) != 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="setup already completed",
+            )
+        try:
+            user = await create_user(
+                session,
+                name=body.user_name,
+                password=body.password,
+                must_change=False,
+                display_name=body.display_name,
+            )
+        except ValueError as exc:
+            # password/username rule failure — surface verbatim so the
+            # SPA can render a useful field error.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            )
+
+    payload = build_payload(
+        user_name=user.user_name,
+        must_change_password=False,
+    )
+    secret = _cookie_secret(request)
+    cookie_value = issue_local_cookie(payload, secret)
+
+    body_out = LoginResponse(
+        ok=True,
+        must_change_password=False,
+        principal_name=payload.principal_name,
+        exp=payload.exp,
+        # Setup deliberately does NOT mint a CSR or attribute the
+        # session on Mastio: the Connector may not yet have its agent
+        # cert when the wizard runs, and even when it does, deferring
+        # provisioning to the next user-initiated request keeps the
+        # blast radius of a Mastio outage contained to the next
+        # request rather than the setup itself.
+        provisioning="skipped",
+    )
+    response = JSONResponse(body_out.model_dump(), status_code=201)
+    _set_cookie(response, cookie_value)
+    _log.info(
+        "first-run setup completed user_name=%s", user.user_name,
+    )
+    return response
 
 
 __all__ = [

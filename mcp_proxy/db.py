@@ -2045,6 +2045,71 @@ async def revoke_user_session(session_id: str) -> bool:
     return (result.rowcount or 0) > 0
 
 
+async def upsert_local_user_principal_local(
+    *,
+    principal_id: str,
+    user_name: str,
+    display_name: str | None,
+) -> None:
+    """Insert or update a local-auth user principal (ADR-025 Phase 5 / F4 R3).
+
+    Counterpart to :func:`upsert_local_user_principal_sso` for users
+    that authenticate against the Connector's local ``users.db`` rather
+    than via an external IdP. The two columns ``sso_subject`` and
+    ``idp_issuer`` are intentionally left at NULL — that absence is the
+    on-row marker that says "this principal was provisioned via the
+    local-auth path". Pre-existing rows (e.g. a principal that was
+    first seen via SSO and is now also reachable via local-auth on the
+    same Connector) keep their SSO metadata untouched; only the
+    display_name + last_active_at refresh.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    async with get_db() as conn:
+        existing = (await conn.execute(
+            text(
+                "SELECT principal_id FROM local_user_principals "
+                "WHERE principal_id = :pid"
+            ),
+            {"pid": principal_id},
+        )).first()
+        if existing is None:
+            await conn.execute(
+                text(
+                    """INSERT INTO local_user_principals (
+                           principal_id, user_name, display_name,
+                           reach, surface, cert_thumbprint,
+                           created_at, last_active_at,
+                           sso_subject, idp_issuer
+                       ) VALUES (
+                           :pid, :user_name, :display_name,
+                           'intra', 'connector', NULL,
+                           :ts, :ts,
+                           NULL, NULL
+                       )"""
+                ),
+                {
+                    "pid": principal_id,
+                    "user_name": user_name,
+                    "display_name": display_name,
+                    "ts": ts,
+                },
+            )
+        else:
+            await conn.execute(
+                text(
+                    """UPDATE local_user_principals
+                          SET display_name = COALESCE(:display_name, display_name),
+                              last_active_at = :ts
+                        WHERE principal_id = :pid"""
+                ),
+                {
+                    "pid": principal_id,
+                    "display_name": display_name,
+                    "ts": ts,
+                },
+            )
+
+
 async def upsert_local_user_principal_sso(
     *,
     principal_id: str,

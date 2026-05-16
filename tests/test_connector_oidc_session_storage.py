@@ -86,3 +86,71 @@ def test_is_expired_past_expiry():
 def test_is_expired_far_future():
     s = _session(expires_at=datetime.now(timezone.utc) + timedelta(hours=1))
     assert s.is_expired() is False
+
+
+# ── ADR-025 Phase 5 / F4 R3: source field ────────────────────────────────
+
+
+def test_source_defaults_to_sso_for_backward_compat():
+    """R1 callers construct OidcSession without ``source`` — the
+    default must keep them on the SSO path so existing call-sites
+    don't silently flip behaviour."""
+    s = _session()
+    assert s.source == "sso"
+
+
+def test_save_and_load_round_trip_with_local_source(tmp_path):
+    save_session(tmp_path, _session(source="local"))
+    loaded = load_session(tmp_path)
+    assert loaded is not None
+    assert loaded.source == "local"
+
+
+def test_load_legacy_file_without_source_field(tmp_path):
+    """A R1 oidc_session.json on disk (pre-source-field) must still
+    load — that's the upgrade path for a Connector that was logged in
+    via SSO before the upgrade and continues to use the same session."""
+    import json
+    path = tmp_path / "oidc_session.json"
+    legacy_payload = {
+        "user_id": "acme::user::alice",
+        "session_token": "legacy-token",
+        "sso_subject": "alice@acme.com",
+        "idp_issuer": "https://idp.example.com",
+        "display_name": "Alice",
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+        "device_thumbprint": "a" * 64,
+        # no "source" key — pre-R3 file.
+    }
+    path.write_text(json.dumps(legacy_payload))
+    loaded = load_session(tmp_path)
+    assert loaded is not None
+    assert loaded.source == "sso"
+
+
+def test_load_rejects_unknown_source_value_safely(tmp_path):
+    """Defence-in-depth: a tampered file with ``source: "admin"``
+    must NOT silently grant any new privileges. The dataclass restricts
+    to ``Literal["sso", "local"]`` — anything else falls back to sso so
+    a forged file cannot opt into a future "trusted" tier without an
+    explicit code change."""
+    import json
+    path = tmp_path / "oidc_session.json"
+    tampered = {
+        "user_id": "acme::user::alice",
+        "session_token": "x",
+        "sso_subject": "alice@acme.com",
+        "idp_issuer": "https://idp.example.com",
+        "display_name": None,
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        ).isoformat(),
+        "device_thumbprint": "a" * 64,
+        "source": "admin-omg",
+    }
+    path.write_text(json.dumps(tampered))
+    loaded = load_session(tmp_path)
+    assert loaded is not None
+    assert loaded.source == "sso"

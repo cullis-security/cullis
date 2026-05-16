@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import bcrypt
-from sqlalchemy import Index, Integer, String, select
+from sqlalchemy import Index, Integer, String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -307,3 +307,18 @@ async def reset_password(
     return await set_password_hash(
         session, name, new_password, must_change=True,
     )
+
+
+async def count_users(session: AsyncSession) -> int:
+    """Return the total number of rows in ``local_users``.
+
+    Used by the ADR-025 Phase 5 first-run wizard (F4 R3): a fresh
+    Connector desktop install has an empty ``users.db`` and the SPA
+    needs a zero-cost probe to decide between rendering the login
+    form and the owner-setup form. Counts both enabled and disabled
+    rows so a disabled-out-of-band first user does not accidentally
+    re-trigger the wizard.
+    """
+    stmt = select(func.count()).select_from(LocalUser)
+    result = await session.execute(stmt)
+    return int(result.scalar_one() or 0)
