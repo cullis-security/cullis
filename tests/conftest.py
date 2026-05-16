@@ -308,10 +308,19 @@ async def seed_court_agent(
     Callers must already have created the owning org (``POST
     /v1/registry/orgs``) — this helper does not validate that, because
     neither does ``register_agent()``.
+
+    Reads ``app.db.database.AsyncSessionLocal`` at call time so postgres
+    integration tests (which mutate the sessionmaker via the
+    ``setup_pg_db`` fixture to redirect to a pg_engine) see their agent
+    on the same DB the router queries. Pre-fix: agent landed on SQLite,
+    router queried postgres, 404 on bindings.
     """
     from app.registry.store import register_agent
+    import app.db.database as _db_module
 
-    async with TestSessionLocal() as session:
+    _SessionLocal = getattr(_db_module, "AsyncSessionLocal", None) or TestSessionLocal
+
+    async with _SessionLocal() as session:
         await register_agent(
             session,
             agent_id=agent_id,
