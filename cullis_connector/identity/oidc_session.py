@@ -1,10 +1,16 @@
-"""Local persistence of the Connector's OIDC user session (ADR-032 Layer 2).
+"""Local persistence of the Connector's user session (ADR-032 Layer 2).
 
-After a successful ``cullis-connector login`` the Mastio mints a session
-token bound to the Connector's enrolled agent identity + the OIDC user
-identity. The Connector keeps a single JSON row per profile under:
+After a successful ``cullis-connector login`` (SSO path) OR a successful
+local-auth login through the Connector's dashboard (ADR-025 Phase 5 /
+F4 R3 path), the Mastio mints a session token bound to the Connector's
+enrolled agent identity + the user identity. The Connector keeps a
+single JSON row per profile under:
 
     ~/.cullis/<profile>/oidc_session.json   (chmod 600)
+
+The filename is kept as ``oidc_session.json`` for backward compat with
+R1 deployments; the file now carries a ``source`` field so both SSO
+and local-auth sessions share the same persistence + load path.
 
 The MCP envelope propagation layer reads this file on every outbound
 call to add ``X-Cullis-Session-Token`` + ``X-Cullis-On-Behalf-Of-User``
@@ -22,15 +28,27 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 _log = logging.getLogger("cullis_connector.identity.oidc_session")
 
 OIDC_SESSION_FILENAME = "oidc_session.json"
 
 
+SessionSource = Literal["sso", "local"]
+
+
 @dataclass(frozen=True)
 class OidcSession:
-    """In-memory view of the persisted Connector OIDC session."""
+    """In-memory view of the persisted Connector user session.
+
+    The dataclass name is kept as ``OidcSession`` for backward compat
+    with R1 import sites; the ``source`` field distinguishes SSO and
+    local-auth sessions. When ``source == "local"`` the
+    ``sso_subject`` field carries the local username (prefixed
+    ``local:<user_name>`` by the Mastio attribution endpoint) and
+    ``idp_issuer`` is the literal ``"local"``.
+    """
 
     user_id: str
     session_token: str
@@ -39,6 +57,7 @@ class OidcSession:
     display_name: str | None
     expires_at: datetime
     device_thumbprint: str
+    source: SessionSource = "sso"
 
     def is_expired(self, *, now: datetime | None = None) -> bool:
         now = now or datetime.now(timezone.utc)
@@ -53,6 +72,7 @@ class OidcSession:
             "display_name": self.display_name,
             "expires_at": self.expires_at.astimezone(timezone.utc).isoformat(),
             "device_thumbprint": self.device_thumbprint,
+            "source": self.source,
         }
 
     @classmethod
@@ -61,6 +81,10 @@ class OidcSession:
         exp = datetime.fromisoformat(raw_exp)
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
+        # Backward compat: R1 files don't carry ``source``. Default to
+        # ``"sso"`` so a legacy oidc_session.json still loads.
+        raw_source = data.get("source", "sso")
+        source: SessionSource = "local" if raw_source == "local" else "sso"
         return cls(
             user_id=str(data["user_id"]),
             session_token=str(data["session_token"]),
@@ -69,6 +93,7 @@ class OidcSession:
             display_name=data.get("display_name"),
             expires_at=exp,
             device_thumbprint=str(data["device_thumbprint"]),
+            source=source,
         )
 
 

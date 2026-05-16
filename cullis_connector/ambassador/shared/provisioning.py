@@ -231,6 +231,94 @@ class SdkMastioCsrTransport:
             ) from exc
         return _parse_csr_response(body)
 
+    def _post_local_attribution_sync(
+        self,
+        *,
+        local_subject: str,
+        display_name: str | None,
+        device_cert_thumbprint: str,
+    ) -> dict:
+        client = self._get()
+        body = {
+            "local_subject": local_subject,
+            "display_name": display_name,
+            "device_cert_thumbprint": device_cert_thumbprint,
+            "auth_mode": "local",
+        }
+        resp = client._authed_request(
+            "POST",
+            "/v1/principals/connector-login-local-attribution",
+            json=body,
+        )
+        if resp.status_code == 401:
+            self._invalidate()
+            client = self._get()
+            resp = client._authed_request(
+                "POST",
+                "/v1/principals/connector-login-local-attribution",
+                json=body,
+            )
+        if resp.status_code != 201:
+            raise MastioCsrError(
+                f"Mastio /v1/principals/connector-login-local-attribution "
+                f"returned {resp.status_code}: {resp.text[:512]}",
+            )
+        return resp.json()
+
+    async def attribute_local_login(
+        self,
+        *,
+        local_subject: str,
+        display_name: str | None,
+        device_cert_thumbprint: str,
+    ) -> tuple[str, str, datetime]:
+        """Bind a local-auth user identity to the calling Connector.
+
+        ADR-025 Phase 5 / F4 R3 — companion to :meth:`sign_csr`. The
+        Connector has already verified bcrypt against its local
+        ``users.db``; this call asks the Mastio to mint a
+        ``user_sessions`` row pinned to the calling device cert so
+        downstream audit rows pick up ``on_behalf_of_user_id`` for the
+        user.
+
+        Returns ``(user_id, session_token, expires_at)``. Raises
+        :class:`MastioCsrError` on failure so the caller can collapse
+        a transient outage into a "deferred attribution" banner rather
+        than rolling back the password verification.
+        """
+        try:
+            body = await asyncio.to_thread(
+                self._post_local_attribution_sync,
+                local_subject=local_subject,
+                display_name=display_name,
+                device_cert_thumbprint=device_cert_thumbprint,
+            )
+        except MastioCsrError:
+            raise
+        except Exception as exc:
+            raise MastioCsrError(
+                f"transport failure calling Mastio "
+                f"/v1/principals/connector-login-local-attribution: {exc}",
+            ) from exc
+        try:
+            user_id = str(body["user_id"])
+            session_token = str(body["session_token"])
+            expires_at_iso = body["expires_at"]
+        except (KeyError, TypeError) as exc:
+            raise MastioCsrError(
+                f"Mastio attribution response missing fields: {body!r}",
+            ) from exc
+        try:
+            expires_at = datetime.fromisoformat(
+                expires_at_iso.replace("Z", "+00:00"),
+            )
+        except (AttributeError, ValueError) as exc:
+            raise MastioCsrError(
+                f"Mastio attribution response invalid expires_at: "
+                f"{expires_at_iso!r}",
+            ) from exc
+        return user_id, session_token, expires_at
+
 
 def _parse_csr_response(body: dict) -> tuple[str, datetime]:
     """Decode the JSON body of /v1/principals/csr into (cert_pem, not_after)."""

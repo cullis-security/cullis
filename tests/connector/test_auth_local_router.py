@@ -482,3 +482,167 @@ def test_login_deferred_provisioning_header_does_not_crash_uvicorn(
     assert "\r" not in raw_detail
     # Truncation honoured to keep header well under 2 KB
     assert len(raw_detail) <= 256
+
+
+# ── ADR-025 Phase 5 / F4 R3 — first-run wizard ──────────────────────────
+
+
+def test_runtime_info_setup_required_true_when_users_empty(client):
+    """A fresh Connector with no users.db rows surfaces setup_required."""
+    r = client.get("/api/auth/runtime-info")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["setup_required"] is True
+    assert body["setup_url"] == "/api/auth/first-run-setup"
+
+
+def test_runtime_info_setup_required_false_after_first_user(client):
+    """As soon as any user exists the wizard is no longer needed."""
+    _create_user(
+        client, user_name="alice", password="longpassword", must_change=False,
+    )
+    r = client.get("/api/auth/runtime-info")
+    assert r.status_code == 200, r.text
+    assert r.json()["setup_required"] is False
+
+
+def test_first_run_setup_creates_owner_user_and_issues_cookie(client):
+    r = client.post(
+        "/api/auth/first-run-setup",
+        json={
+            "user_name": "owner",
+            "password": "longpassword",
+            "display_name": "Owner User",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["must_change_password"] is False
+    assert body["provisioning"] == "skipped"
+    # Cookie was issued so the operator lands on the dashboard right
+    # after setup without a second password prompt.
+    cookie_names = {c.name for c in client.cookies.jar}
+    assert LOCAL_SESSION_COOKIE_NAME in cookie_names
+    secret = _cookie_secret(client)
+    raw_cookie = client.cookies.get(LOCAL_SESSION_COOKIE_NAME)
+    payload = parse_local_cookie(raw_cookie, secret)
+    assert payload is not None
+    assert payload.user_name == "owner"
+    assert payload.must_change_password is False
+
+
+def test_first_run_setup_refused_with_409_when_user_already_exists(client):
+    _create_user(
+        client, user_name="alice", password="longpassword", must_change=False,
+    )
+    r = client.post(
+        "/api/auth/first-run-setup",
+        json={"user_name": "second", "password": "longpassword"},
+    )
+    assert r.status_code == 409, r.text
+    assert "setup already completed" in r.text
+
+
+def test_first_run_setup_password_too_short_returns_400_or_422(client):
+    r = client.post(
+        "/api/auth/first-run-setup",
+        json={"user_name": "owner", "password": "short"},
+    )
+    # Pydantic min_length=8 raises 422 before the handler runs.
+    assert r.status_code in {400, 422}, r.text
+
+
+def test_first_run_setup_invalid_username_rejected(client):
+    """user_name regex rejects spaces / control bytes via create_user."""
+    r = client.post(
+        "/api/auth/first-run-setup",
+        json={
+            "user_name": "bad user!",
+            "password": "longpassword",
+        },
+    )
+    assert r.status_code in {400, 422}, r.text
+
+
+def test_first_run_setup_then_login_succeeds(client):
+    """End-to-end: setup → cookie → logout → login with same creds."""
+    r = client.post(
+        "/api/auth/first-run-setup",
+        json={"user_name": "owner", "password": "longpassword"},
+    )
+    assert r.status_code == 201, r.text
+    # Drop the cookie so we exercise the real login path next.
+    client.post("/api/auth/logout")
+    r = client.post(
+        "/api/auth/login",
+        json={"user_name": "owner", "password": "longpassword"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["must_change_password"] is False
+
+
+# ── ADR-025 Phase 5 / F4 R3 — login → Mastio attribution chain ─────────
+
+
+def test_login_invokes_mastio_attribution_helper(client, monkeypatch):
+    """Login success path calls ``_bind_mastio_user_session`` so the
+    Connector posts a user_login_attribution to Mastio after bcrypt
+    verify. Helper is monkey-patched to avoid spinning a real Mastio.
+    """
+    from cullis_connector.auth import local_router as _lr
+
+    seen: dict[str, object] = {}
+
+    async def fake_bind_login_cert(request, payload):  # noqa: ARG001
+        return "skipped", None
+
+    async def fake_bind_mastio(
+        request, *, user_name, display_name, device_thumbprint,
+    ):  # noqa: ARG001
+        seen["user_name"] = user_name
+        seen["display_name"] = display_name
+        seen["device_thumbprint"] = device_thumbprint
+        return "ok", None
+
+    monkeypatch.setattr(_lr, "_bind_login_cert", fake_bind_login_cert)
+    monkeypatch.setattr(_lr, "_bind_mastio_user_session", fake_bind_mastio)
+
+    _create_user(
+        client, user_name="alice", password="longpassword", must_change=False,
+    )
+    r = client.post(
+        "/api/auth/login",
+        json={"user_name": "alice", "password": "longpassword"},
+    )
+    assert r.status_code == 200, r.text
+    assert seen.get("user_name") == "alice"
+    # No enrolled cert in this test fixture, so the helper gets the
+    # empty thumbprint and (in the real helper) returns "skipped".
+    assert "device_thumbprint" in seen
+
+
+def test_login_skips_attribution_when_must_change(client, monkeypatch):
+    """First-login (must_change=True) skips both CSR + attribution so
+    the cert + user session are bound to the post-change state.
+    """
+    from cullis_connector.auth import local_router as _lr
+
+    invoked: list[str] = []
+
+    async def fake_bind_mastio(request, **kwargs):  # noqa: ARG001
+        invoked.append("called")
+        return "ok", None
+
+    monkeypatch.setattr(_lr, "_bind_mastio_user_session", fake_bind_mastio)
+
+    _create_user(
+        client, user_name="bob", password="longpassword", must_change=True,
+    )
+    r = client.post(
+        "/api/auth/login",
+        json={"user_name": "bob", "password": "longpassword"},
+    )
+    assert r.status_code == 200, r.text
+    assert invoked == [], "attribution must not run while must_change=True"
+    assert r.json()["must_change_password"] is True
