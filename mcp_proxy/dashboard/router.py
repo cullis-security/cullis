@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from starlette.responses import RedirectResponse
 
 from mcp_proxy.dashboard.session import (
@@ -3007,6 +3007,33 @@ async def enrollments_page(request: Request):
     ))
 
 
+def _enroll_error_response(
+    request: Request,
+    message: str,
+    *,
+    status_code: int = 400,
+) -> Response:
+    """Content-negotiated error response for dashboard enrollment form handlers.
+
+    Browsers (`Accept: text/html...`) keep the 303 redirect + flash error so
+    the form page re-renders with the message inline. CLI/script callers
+    (curl default `*/*`, `application/json`, fetch JS) get a structured
+    `400` with `{"detail": <message>}` instead of a 303 they would silently
+    follow into a 200 page with the real error buried in the query string.
+    """
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        from urllib.parse import quote
+        return RedirectResponse(
+            url=f"/proxy/enrollments?error={quote(message)}",
+            status_code=303,
+        )
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": message},
+    )
+
+
 @router.post("/enrollments/{session_id}/approve")
 async def enrollments_approve(request: Request, session_id: str):
     """Form-based approve handler. Calls the service and redirects back."""
@@ -3025,10 +3052,7 @@ async def enrollments_approve(request: Request, session_id: str):
     groups_raw = str(form.get("groups", "")).strip()
 
     if not agent_id:
-        return RedirectResponse(
-            url="/proxy/enrollments?error=agent_id+is+required",
-            status_code=303,
-        )
+        return _enroll_error_response(request, "agent_id is required")
 
     capabilities = [c.strip() for c in capabilities_raw.split(",") if c.strip()]
     groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
@@ -3066,11 +3090,7 @@ async def enrollments_approve(request: Request, session_id: str):
                 agent_manager=agent_manager,
             )
     except _enrollment_service.EnrollmentError as exc:
-        from urllib.parse import quote
-        return RedirectResponse(
-            url=f"/proxy/enrollments?error={quote(str(exc))}",
-            status_code=303,
-        )
+        return _enroll_error_response(request, str(exc))
 
     _log.info(
         "enrollment_approved via dashboard: session=%s agent=%s admin=%s",
@@ -3099,10 +3119,7 @@ async def enrollments_reject(request: Request, session_id: str):
     form = await request.form()
     reason = str(form.get("reason", "")).strip()
     if not reason:
-        return RedirectResponse(
-            url="/proxy/enrollments?error=Rejection+reason+is+required",
-            status_code=303,
-        )
+        return _enroll_error_response(request, "Rejection reason is required")
 
     try:
         async with _get_db() as conn:
@@ -3113,11 +3130,7 @@ async def enrollments_reject(request: Request, session_id: str):
                 admin_name=session.role or "admin",
             )
     except _enrollment_service.EnrollmentError as exc:
-        from urllib.parse import quote
-        return RedirectResponse(
-            url=f"/proxy/enrollments?error={quote(str(exc))}",
-            status_code=303,
-        )
+        return _enroll_error_response(request, str(exc))
 
     _log.info(
         "enrollment_rejected via dashboard: session=%s admin=%s",

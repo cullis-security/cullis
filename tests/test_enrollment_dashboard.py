@@ -239,6 +239,7 @@ async def test_approve_missing_agent_id_redirects_with_error(proxy_app):
     resp = await client.post(
         f"/proxy/enrollments/{session_id}/approve",
         data={"csrf_token": csrf, "agent_id": ""},
+        headers={"Accept": "text/html,application/xhtml+xml"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -284,6 +285,7 @@ async def test_reject_missing_reason_redirects_with_error(proxy_app):
     resp = await client.post(
         f"/proxy/enrollments/{session_id}/reject",
         data={"csrf_token": csrf, "reason": ""},
+        headers={"Accept": "text/html,application/xhtml+xml"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
