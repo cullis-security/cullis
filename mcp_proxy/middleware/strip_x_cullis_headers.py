@@ -47,14 +47,21 @@ _log = logging.getLogger("mcp_proxy")
 _PREFIX = b"x-cullis-"
 
 # ADR-032 Layer 2 — the Connector legitimately propagates user identity
-# via X-Cullis-Session-Token + X-Cullis-On-Behalf-Of-User. These two are
-# the only client → proxy ``X-Cullis-*`` headers the Mastio reads from
-# an inbound request; every other ``X-Cullis-*`` stays stripped so the
-# blanket defence ("no handler trusts a forged trust header") still
+# via X-Cullis-Session-Token + X-Cullis-On-Behalf-Of-User and (R2) the
+# device-posture envelope via X-Cullis-Device-Attestation. These three
+# are the only client → proxy ``X-Cullis-*`` headers the Mastio reads
+# from an inbound request; every other ``X-Cullis-*`` stays stripped so
+# the blanket defence ("no handler trusts a forged trust header") still
 # holds for the rest of the namespace.
+#
+# R2 NOTE: the Mastio passes the attestation header through to the
+# policy / audit layer untouched. Verification of the claim (manufacturer
+# whitelist, stale-window, effective_tier recompute) lands in F5; this
+# allowlist is the wire-side prerequisite.
 _ALLOWLIST: frozenset[bytes] = frozenset({
     b"x-cullis-session-token",
     b"x-cullis-on-behalf-of-user",
+    b"x-cullis-device-attestation",
 })
 
 

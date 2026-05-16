@@ -499,6 +499,40 @@ def _cmd_serve(cfg: ConnectorConfig) -> int:
                 "regardless.",
                 login_exc,
             )
+
+        # ADR-032 Layer 2 — if the operator ran ``cullis-connector login``
+        # the JSON session file under config_dir carries a valid Mastio
+        # session. Attach it to the SDK so every egress call carries
+        # ``X-Cullis-Session-Token`` + ``X-Cullis-On-Behalf-Of-User`` and
+        # audit rows pick up the user attribution downstream. An expired
+        # or missing session is silently ignored (anonymous-agent mode).
+        try:
+            from cullis_connector.identity.oidc_session import load_session
+
+            oidc_session = load_session(cfg.config_dir)
+            if oidc_session is None:
+                _log.debug("no OIDC user session on disk — agent-only mode")
+            elif oidc_session.is_expired():
+                _log.warning(
+                    "OIDC user session expired at %s — run "
+                    "`cullis-connector login` to bind a fresh one. "
+                    "Continuing in agent-only mode.",
+                    oidc_session.expires_at.isoformat(),
+                )
+            else:
+                client.attach_user_session(
+                    oidc_session.session_token, oidc_session.user_id,
+                )
+                _log.info(
+                    "attached OIDC user session for %s (expires %s)",
+                    oidc_session.user_id,
+                    oidc_session.expires_at.isoformat(timespec="seconds"),
+                )
+        except Exception as oidc_exc:  # noqa: BLE001
+            _log.warning(
+                "OIDC user-session attach failed (%s) — continuing in "
+                "agent-only mode.", oidc_exc,
+            )
     except Exception as exc:
         _log.error(
             "Failed to initialize CullisClient from %s: %s. "
