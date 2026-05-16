@@ -1,11 +1,52 @@
 # Changelog
 
-All notable changes to `cullis-connector` are documented in this file.
+Notable changes to the Cullis components released out of this
+monorepo. Each component has its own release cadence and tag prefix:
+`connector-vX.Y.Z` for the Connector, `mastio-vX.Y.Z` for the Mastio
+(both open-core and enterprise bundles), `court-vX.Y.Z` for the Court.
+Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-The connector follows its own release cadence, independent from the
-broker and proxy components of the Cullis monorepo. Connector releases
-are tagged `connector-vX.Y.Z`.
+The `release-*.yml` workflows extract the section for the released
+version from this file via `awk` matching `## [v<version>]`; bodies
+flow until the next `## ` heading.
+
+## [v0.4.4] — Mastio multi-worker default — 2026-05-16
+
+First Mastio release that uses this file for release notes (the
+component had no dedicated changelog before; release notes were
+generated from the boilerplate in `release-mastio.yml`).
+
+### Performance
+
+- **Multi-worker uvicorn enabled by default in both bundles** (`mastio-bundle`
+  and `mastio-enterprise-bundle`): the compose `command:` for the
+  `mcp-proxy` service now passes `--workers ${MASTIO_WORKERS:-4}` on
+  top of the existing `--proxy-headers --forwarded-allow-ips '*'`.
+  Operators override the count via `MASTIO_WORKERS` in `proxy.env`.
+- A.1b stress test (May 2026, internal) confirmed multi-worker
+  ship-safe on the default SQLite WAL: 0 audit-chain integrity
+  errors in 472k concurrent audit rows across 4 worker processes.
+  The `_AUDIT_CHAIN_MAX_RETRIES=5` path in `mcp_proxy/db.py` handles
+  cross-process concurrency transparently via the
+  `UNIQUE(chain_seq)` constraint + retry.
+- Throughput uplift +25–240% RPS on Tier 1 scenarios (50–500
+  concurrent agents). The mint endpoint p99 latency dropped ~100x
+  (3399ms → 25ms aggregate).
+
+### Notes
+
+- **DPoP replay protection** stays per-worker by default. For
+  cross-worker enforcement (recommended for any deploy that
+  publishes to the public internet), point the Mastio at Redis via
+  `MCP_PROXY_REDIS_URL`. Existing config, now relevant for
+  multi-worker deploys.
+- **Tier 2+ throughput** (sustained >500 RPS under p99 1s) requires
+  the batched audit chain landing in Mastio v0.5 (ADR-033, separate
+  roadmap). This release does not change the audit-chain shape.
+- **Helm chart and Dockerfile are unchanged.** The bundle compose
+  files are the only surface that ships a multi-worker default;
+  Helm operators who want the same behaviour set
+  `proxy.args[]` accordingly in their `values.yaml`.
 
 ## [v0.4.4] — 2026-05-12
 

@@ -68,6 +68,37 @@ CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh
 
 `latest` is fine for a quick try; pin to a specific tag in production.
 
+## Workers (uvicorn concurrency)
+
+Mastio v0.4.4 ships with multi-worker uvicorn enabled by default (4
+workers). For VMs with more or fewer logical cores, override the count
+via `proxy.env`:
+
+```bash
+echo 'MASTIO_WORKERS=8' >> proxy.env
+./deploy.sh --pull
+```
+
+A.1b stress test (May 2026) confirmed multi-worker ship-safe on the
+default SQLite WAL: 0 audit-chain integrity errors in 472k concurrent
+audit rows across 4 worker processes. Throughput uplift +25–240% on
+Tier 1 scenarios (50–500 concurrent agents) vs single-worker baseline;
+the mint endpoint p99 latency dropped ~100x.
+
+Replay protection: the DPoP JTI store is per-worker by default, so a
+replayed proof reaching a different worker is not detected within the
+1-minute TTL window. To enforce cross-worker replay protection, point
+the Mastio at Redis:
+
+```bash
+echo 'MCP_PROXY_REDIS_URL=redis://your-redis-host:6379/0' >> proxy.env
+./deploy.sh --pull
+```
+
+For sustained Tier 2 throughput (>500 RPS under p99 1s), additional
+architectural improvements (batched audit chain, ADR-033) are landing
+in Mastio v0.5 on a separate roadmap.
+
 ## Modes
 
 | Command | Effect |
