@@ -55,6 +55,27 @@ services:
         condition: service_completed_successfully
     expose:
       - "9100"
+    # v0.4.4 — multi-worker uvicorn default (4 workers). Re-declares the
+    # Dockerfile CMD because docker compose ``command:`` replaces, not
+    # appends. ``MASTIO_WORKERS`` overrides the worker count for VMs
+    # with more / fewer cores than the 4-CPU resource ceiling below.
+    # A.1b stress test confirmed multi-worker ship-safe on SQLite WAL:
+    # 0 IntegrityError in 472k concurrent audit rows, the per-worker
+    # JTI store keeps replay protection within each worker process.
+    # Cross-worker replay enforcement requires the Redis JTI store
+    # (set ``MCP_PROXY_REDIS_URL`` to enable).
+    command:
+      - uvicorn
+      - mcp_proxy.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9100"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --workers
+      - ${MASTIO_WORKERS:-4}
     environment:
       MCP_PROXY_VERSION:           ${CULLIS_MASTIO_VERSION:-unknown}
       MCP_PROXY_ENVIRONMENT:       ${MCP_PROXY_ENVIRONMENT:-development}

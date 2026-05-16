@@ -84,6 +84,29 @@ The first boot generates the Org CA and (if `MCP_PROXY_KMS_BACKEND` is
 not `local`) writes the Org CA private key to the configured KMS
 (Vault, AWS Secrets Manager, Azure Key Vault, or GCP Secret Manager).
 
+## Workers (uvicorn concurrency)
+
+Enterprise v0.4.4 ships with multi-worker uvicorn enabled by default
+(4 workers). For VMs with more or fewer logical cores, override the
+count via `proxy.env`:
+
+```bash
+echo 'MASTIO_WORKERS=8' >> proxy.env
+./deploy.sh --pull
+```
+
+A.1b stress test (May 2026) confirmed multi-worker ship-safe on the
+default SQLite WAL: 0 audit-chain integrity errors in 472k concurrent
+audit rows across 4 worker processes. Throughput uplift +25–240% on
+Tier 1 scenarios (50–500 concurrent agents) vs single-worker baseline;
+the mint endpoint p99 latency dropped ~100x.
+
+Replay protection: the DPoP JTI store is per-worker by default. For
+cross-worker replay enforcement, point the Mastio at Redis via
+`MCP_PROXY_REDIS_URL` (existing config, now relevant for multi-worker
+deploys). For sustained Tier 2 throughput (>500 RPS under p99 1s),
+batched audit chain (ADR-033) lands in Mastio v0.5.
+
 ## Upgrading
 
 ```bash
