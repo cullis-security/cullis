@@ -128,6 +128,54 @@ python scripts/stress/_auth_smoke.py
 (~8 MB at 5000 agents) — **gitignored**, carries per-agent PKCS8
 PEMs for the leaf cert + DPoP keypair. Never commit it.
 
+#### Postgres bulk inject helper
+
+`_bulk_inject_pg.py` is the Postgres counterpart of `_bulk_inject.py`
+for Mastio deployments where `MCP_PROXY_DATABASE_URL` points at
+Postgres (asyncpg DSN). Same in-container streaming pattern as
+the SQLite payload, but talks to the Mastio's Postgres backend via
+asyncpg (already pinned in the Mastio image — no extra deps).
+
+When to reach for it:
+
+- A Mastio bundle has been re-pointed at Postgres for an A.1b-style
+  multi-worker + Postgres backend benchmark.
+- Any future stress scenario that needs N pre-enrolled agents inside
+  a Postgres-backed Mastio without going through the device-code
+  enrollment HTTP path.
+
+Schema-aware differences from the SQLite payload: `federated_at` is
+`TIMESTAMPTZ` on Postgres (passes a Python `datetime`), `is_active`
+is `INTEGER`, `federated` is `BOOLEAN`. The payload uses
+`ON CONFLICT (agent_id) DO UPDATE` for idempotency, so re-runs
+overwrite `cert_pem` / `dpop_jkt` / `enrolled_at` while preserving
+admin-managed columns.
+
+Run it the same way as the SQLite variant — the orchestrator stays
+the SSH+docker-exec stream-via-stdin pattern:
+
+```bash
+# Assumes Postgres container is reachable from inside the Mastio
+# container at the hostname `postgres:5432` (set via docker
+# --network-alias postgres at deploy time).
+ssh cullis@192.168.122.170 'docker exec -i \
+    -e N_AGENTS=5000 -e PREFIX=stress -e WIPE_PREFIX=1 \
+    -e TRUST_DOMAIN=cullis.local -e AGENT_CAPABILITIES= \
+    cullis-mastio-mcp-proxy-1 python -' \
+        < scripts/stress/_bulk_inject_pg.py \
+        > scripts/stress/stress_agents.json
+```
+
+Override `DSN` env if the asyncpg connection string differs from the
+default `postgres://cullis_proxy:cullis_proxy_dev@postgres:5432/
+proxy_a` (e.g. a different superuser, or a Postgres on a non-default
+network alias).
+
+The harness keeps a single `stress_agents.json` shape across both
+helpers, so the k6 scenario and `_auth_smoke.py` work unchanged
+against a Postgres-backed Mastio. Only the bulk-inject payload
+differs.
+
 ### Run
 
 ```bash
