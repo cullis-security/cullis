@@ -118,3 +118,8 @@ packaging/frontdesk-bundle/tls/
 # k6 stress test artefacts (transient summary dumps next to the scripts).
 scripts/stress/summary*.json
 scripts/stress/soak-summary*.json
+scripts/stress/stress_agents.json
+scripts/stress/intra-org-results*.json
+scripts/stress/intra-org-results.ndjson
+scripts/stress/intra-org-summary*.json
+scripts/stress/*.log
