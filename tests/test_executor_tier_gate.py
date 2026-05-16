@@ -59,7 +59,7 @@ def _register_tool() -> AsyncMock:
 
 def _agent(scope: list[str] | None = None) -> TokenPayload:
     return TokenPayload(
-        sub=f"spiffe://cullis.test/acme::daniele",
+        sub="spiffe://cullis.test/acme::daniele",
         agent_id="acme::daniele",
         org="acme",
         exp=9_999_999_999,

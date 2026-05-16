@@ -13,7 +13,6 @@ import pytest
 from mcp_proxy.policy.tier_matrix import (
     DEFAULT_MATRIX_PATH,
     TIER_ORDER,
-    TierMatrix,
     load_default_tier_matrix,
     load_tier_matrix,
     tier_meets_requirement,
