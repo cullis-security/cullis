@@ -36,8 +36,14 @@ _log = logging.getLogger("mcp_proxy")
 # ``--build-arg VERSION=...`` (release-mastio.yml passes the tag-derived
 # version, e.g. ``0.3.2``). Falls back to ``dev`` for source-checkout runs
 # so curl on a developer laptop yields ``"version":"dev"`` rather than a
-# stale literal that drifts from the running tag.
-_MASTIO_VERSION = os.environ.get("CULLIS_MASTIO_VERSION", "dev")
+# stale literal that drifts from the running tag. Resolved at call time
+# so tests mutating ``CULLIS_MASTIO_VERSION`` cannot park a stale value
+# via import-time evaluation (caused 6+ flake reruns pre-PR #734).
+def _mastio_version() -> str:
+    """Read CULLIS_MASTIO_VERSION at call time so tests that mutate
+    env do not park a stale value via import-time resolution. Falls
+    back to 'dev' for source-checkout / pytest runs."""
+    return os.environ.get("CULLIS_MASTIO_VERSION", "dev")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # JWKS client reference (set during lifespan)
@@ -1511,7 +1517,7 @@ async def health(request: Request):
         underneath. Stdlib-verifier cross-org federation silently
         401s; remediation is ``POST /pki/rotate-ca``.
     """
-    body: dict = {"status": "ok", "version": _MASTIO_VERSION}
+    body: dict = {"status": "ok", "version": _mastio_version()}
     warnings: list[str] = []
     agent_mgr = getattr(request.app.state, "agent_manager", None)
     if agent_mgr is not None and getattr(
