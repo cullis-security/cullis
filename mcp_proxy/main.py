@@ -521,6 +521,27 @@ async def lifespan(app: FastAPI):
             app.state.mdm_intune_stop = mdm_stop
             app.state.mdm_intune_task = mdm_task
 
+    # ADR-032 F6 — stale-watcher daemon. Decoupled from the polling
+    # loop so customers running without an MDM integration still get
+    # the staleness signal (e.g. on F3 BYOD claims that have aged
+    # past the threshold). Cheap to run: one SELECT per minute over
+    # ``internal_agents`` filtered to rows with a non-NULL claim.
+    if settings.attestation_stale_watcher_enabled:
+        from mcp_proxy.mdm.stale_watcher import stale_watcher_loop
+        stale_stop = asyncio.Event()
+        stale_task = asyncio.create_task(
+            stale_watcher_loop(
+                interval_seconds=max(
+                    5, settings.attestation_stale_watcher_interval_seconds,
+                ),
+                threshold_seconds=settings.attestation_stale_threshold_seconds,
+                stop_event=stale_stop,
+            ),
+            name="attestation_stale_watcher",
+        )
+        app.state.attestation_stale_stop = stale_stop
+        app.state.attestation_stale_task = stale_task
+
     # Phase 4c — federation SSE subscriber. Wires the Phase 4b cache
     # to the live broker stream. Off by default; flip via
     # PROXY_FEDERATION_SYNC=true. The auth surface (DPoP / mTLS / SPIFFE)
@@ -777,6 +798,26 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("mdm intune poller teardown loop mismatch (xdist): %s", exc)
+
+    # ADR-032 F6 — stop the stale-watcher.
+    stale_stop = getattr(app.state, "attestation_stale_stop", None)
+    stale_task = getattr(app.state, "attestation_stale_task", None)
+    if stale_stop is not None:
+        stale_stop.set()
+    if stale_task is not None:
+        try:
+            await asyncio.wait_for(stale_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            stale_task.cancel()
+            try:
+                await stale_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug(
+                "attestation stale-watcher teardown loop mismatch (xdist): %s",
+                exc,
+            )
 
     stop_event = getattr(app.state, "local_sweeper_stop", None)
     sweeper_task = getattr(app.state, "local_sweeper_task", None)
