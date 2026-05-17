@@ -215,6 +215,70 @@ async def test_revoke_is_idempotent_when_called_twice(db_engine):
 
 
 @pytest.mark.asyncio
+async def test_persistent_noncompliant_does_not_re_emit_audit(db_engine):
+    """A no-op revoke must NOT re-stamp last_attestation or re-emit audit.
+
+    Edge case: ``previous_compliance == 'compliant'`` in the cache but
+    the cert was already revoked (e.g. operator pushed the revocation
+    manually between poll ticks). The reconciler then calls
+    ``revoke_agent_cert`` which returns ``transitioned=False`` for the
+    second pass. Pre-fix the attestation update + audit emission ran
+    anyway → audit row per agent per poll tick on persistent
+    non_compliant devices (#749 follow-up #2).
+    """
+    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    await upsert_device_rows([_graph_device(compliance="compliant")], now=now)
+    await create_agent(
+        agent_id="acme::agent-noop",
+        display_name="agent-noop",
+        capabilities=[],
+        cert_pem="dummy",
+    )
+    await _bind_agent_to_device("acme::agent-noop", "d1", "compliant")
+
+    # First reconcile: real transition → 1 audit row, agent revoked.
+    first = await _reconcile([_graph_device(compliance="noncompliant")], now=now)
+    assert first.revocations == 1
+
+    async with get_db() as conn:
+        first_rows = (await conn.execute(
+            text(
+                "SELECT count(*) FROM audit_log "
+                "WHERE agent_id = :a AND action = 'device_attestation'"
+            ),
+            {"a": "acme::agent-noop"},
+        )).scalar_one()
+    assert first_rows == 1
+
+    # Force the cache back to 'compliant' so the diff logic re-runs the
+    # noncompliant branch on the next call, but the cert is already
+    # revoked → revoke_agent_cert returns transitioned=False.
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                "UPDATE mdm_device_state SET compliance = 'compliant' "
+                "WHERE mdm = 'intune' AND device_id = 'd1'"
+            ),
+        )
+
+    second = await _reconcile(
+        [_graph_device(compliance="noncompliant")], now=now,
+    )
+    assert second.transitions == 1  # diff still observes the flip
+    assert second.revocations == 0  # but no actual cert transition
+
+    async with get_db() as conn:
+        second_rows = (await conn.execute(
+            text(
+                "SELECT count(*) FROM audit_log "
+                "WHERE agent_id = :a AND action = 'device_attestation'"
+            ),
+            {"a": "acme::agent-noop"},
+        )).scalar_one()
+    assert second_rows == 1  # no second 'revoked' audit row emitted
+
+
+@pytest.mark.asyncio
 async def test_unknown_transition_does_not_revoke(db_engine):
     now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
     await upsert_device_rows([_graph_device(compliance="compliant")], now=now)

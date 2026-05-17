@@ -273,20 +273,27 @@ async def reconcile_devices_and_revoke(
                     conn=conn,
                     now=now,
                 )
-                await _update_agent_attestation(
-                    conn, agent["agent_id"], fresh_claim,
-                )
-                await log_device_attestation_change(
-                    conn,
-                    agent_id=agent["agent_id"],
-                    event_subtype="revoked",
-                    device_attestation=fresh_claim["device_attestation"],
-                    effective_tier=fresh_claim["effective_tier"],
-                    previous_compliance=previous_compliance,
-                    trigger="polling",
-                    now=now,
-                )
+                # Gate attestation update + audit emission on
+                # ``transitioned`` so a persistently non_compliant
+                # device doesn't re-stamp the agent claim or emit a
+                # redundant ``revoked`` audit row on every poll tick
+                # (#749 follow-up). ``revoke_agent_cert`` stays
+                # outside the guard: it is idempotent and its own
+                # metric/audit are already gated on transition.
                 if transitioned:
+                    await _update_agent_attestation(
+                        conn, agent["agent_id"], fresh_claim,
+                    )
+                    await log_device_attestation_change(
+                        conn,
+                        agent_id=agent["agent_id"],
+                        event_subtype="revoked",
+                        device_attestation=fresh_claim["device_attestation"],
+                        effective_tier=fresh_claim["effective_tier"],
+                        previous_compliance=previous_compliance,
+                        trigger="polling",
+                        now=now,
+                    )
                     summary.revocations += 1
                     revoked_agent_ids.append(agent["agent_id"])
             change = ComplianceChange(
