@@ -331,6 +331,45 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_shared_args(whoami)
 
+    # P3 MAJOR-1 — direct users.db administration for in-container or
+    # on-host recovery. Bypasses the X-Admin-Secret HTTP path (useful
+    # on hardened Frontdesk bundles where exporting the secret is
+    # awkward, and on Connector standalone where no admin secret is
+    # provisioned by default). Today only ``reset-password`` is wired;
+    # future siblings (list, disable, enable) plug into the same
+    # subparser tree.
+    users = subparsers.add_parser(
+        "users",
+        help="Manage local users (admin path, no HTTP required).",
+        description=(
+            "Direct local users.db management for in-container or "
+            "on-host administration. Does NOT require X-Admin-Secret "
+            "since it operates on the SQLite file directly. Intended "
+            "for use via `docker exec` on the Frontdesk Connector "
+            "container, or directly on the host for Connector standalone."
+        ),
+    )
+    users_sub = users.add_subparsers(dest="users_command")
+
+    reset_pwd = users_sub.add_parser(
+        "reset-password",
+        help="Reset a local user's password and force a change on next login.",
+    )
+    _add_shared_args(reset_pwd)
+    reset_pwd.add_argument(
+        "user_name",
+        help="The user name (case-insensitive) whose password to reset.",
+    )
+    reset_pwd.add_argument(
+        "--new-password",
+        dest="new_password",
+        default=None,
+        help=(
+            "New password to set. If omitted, a 16-char URL-safe random "
+            "password is generated and printed to stdout."
+        ),
+    )
+
     return parser
 
 
@@ -346,6 +385,7 @@ _KNOWN_SUBCOMMANDS = frozenset({
     "login",
     "logout",
     "whoami",
+    "users",
 })
 
 # Shared flags are parsed by the subparser that owns the chosen command.
@@ -967,6 +1007,65 @@ def _cmd_show_token(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_users_reset_password(
+    cfg: ConnectorConfig, args: argparse.Namespace,
+) -> int:
+    """Reset a user's password via direct users.db access.
+
+    Bypasses X-Admin-Secret HTTP path: useful for ``docker exec`` on
+    the Frontdesk bundle host (P3 MAJOR-1 operability gap, audit in
+    ``imp/p3-operability-audit.md``) and on Connector standalone
+    desktop where no admin secret is provisioned by default.
+    """
+    import asyncio
+    import secrets
+
+    new_pwd = args.new_password
+    pwd_generated = False
+    if not new_pwd:
+        # token_urlsafe(12) yields ~16 URL-safe ASCII characters, which
+        # comfortably clears the MIN_PASSWORD_LENGTH=8 floor in
+        # ``identity/users.py`` while staying short enough to paste.
+        new_pwd = secrets.token_urlsafe(12)
+        pwd_generated = True
+
+    async def _run() -> bool:
+        from cullis_connector.identity import get_users_session
+        from cullis_connector.identity.users import reset_password
+
+        async with get_users_session(cfg.config_dir) as session:
+            return await reset_password(session, args.user_name, new_pwd)
+
+    try:
+        ok = asyncio.run(_run())
+    except ValueError as exc:
+        # ``set_password_hash`` raises on weak / non-string passwords.
+        # An explicit ``--new-password`` below MIN_PASSWORD_LENGTH is
+        # the only realistic trigger (generated paths use 16 chars).
+        print(f"Cannot reset password: {exc}", file=sys.stderr)
+        return 2
+
+    if not ok:
+        print(
+            f"User {args.user_name!r} not found in users.db",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Password reset for user {args.user_name!r}.")
+    if pwd_generated:
+        # Password goes to stdout only — never to the structured log
+        # (the _log object writes to stderr at INFO above).
+        print(f"Temporary password: {new_pwd}")
+        print(
+            "Share this once via secure channel. "
+            "Must be changed at next login."
+        )
+    else:
+        print("User must change password at next login.")
+    return 0
+
+
 def _cmd_doctor(cfg: ConnectorConfig, args: argparse.Namespace) -> int:
     """Audit IDE MCP configs for stale Cullis entries (Finding #8)."""
     from cullis_connector.doctor import has_problems, scan
@@ -1035,6 +1134,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_logout(cfg, args)
     if command == "whoami":
         return _cmd_whoami(cfg, args)
+    if command == "users":
+        if getattr(args, "users_command", None) == "reset-password":
+            return _cmd_users_reset_password(cfg, args)
+        # No (or unknown) sub-sub command — surface a usage hint, since
+        # argparse on an empty users-subcommand otherwise prints the
+        # global usage without the sub-sub options.
+        print(
+            "Use: cullis-connector users reset-password <user_name>",
+            file=sys.stderr,
+        )
+        return 2
     return _cmd_serve(cfg)
 
 
