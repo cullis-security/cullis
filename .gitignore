@@ -39,6 +39,7 @@ vault/vault-keys.json
 
 # MCP Proxy local data
 mcp_proxy.db
+mcp_proxy.db.*.lock
 proxy.env
 proxy-*.env
 .keys/

@@ -489,18 +489,27 @@ async def lifespan(app: FastAPI):
     # nothing to sweep). Also explicitly skippable via
     # PROXY_LOCAL_SWEEPER_DISABLED=1 for deterministic tests.
     if settings.intra_org_routing and os.environ.get("PROXY_LOCAL_SWEEPER_DISABLED") != "1":
+        from mcp_proxy.lifespan import get_leader
         from mcp_proxy.local.sweeper import sweeper_loop as _local_sweeper_loop
-        stop_event = asyncio.Event()
-        sweeper_task = asyncio.create_task(
-            _local_sweeper_loop(
-                local_store,
-                app.state.local_ws_manager,
-                stop_event=stop_event,
-            ),
-            name="local_sweeper",
-        )
-        app.state.local_sweeper_stop = stop_event
-        app.state.local_sweeper_task = sweeper_task
+        sweeper_leader = get_leader("local_sweeper")
+        if await sweeper_leader.acquire():
+            stop_event = asyncio.Event()
+            sweeper_task = asyncio.create_task(
+                _local_sweeper_loop(
+                    local_store,
+                    app.state.local_ws_manager,
+                    stop_event=stop_event,
+                ),
+                name="local_sweeper",
+            )
+            app.state.local_sweeper_stop = stop_event
+            app.state.local_sweeper_task = sweeper_task
+            app.state.local_sweeper_leader = sweeper_leader
+            _log.info("local_sweeper: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "local_sweeper: another worker holds the leader lock — skipping"
+            )
 
     # ADR-032 Layer 1 (F2 spike) — Intune polling task. Gated on
     # MCP_PROXY_MDM_INTUNE_ENABLED + credential triple so a half-
@@ -526,22 +535,36 @@ async def lifespan(app: FastAPI):
                 ),
             )
         else:
+            from mcp_proxy.lifespan import get_leader
             from mcp_proxy.mdm import intune_poll_loop
-            mdm_stop = asyncio.Event()
-            mdm_task = asyncio.create_task(
-                intune_poll_loop(
-                    tenant_id=settings.mdm_intune_tenant_id,
-                    client_id=settings.mdm_intune_client_id,
-                    client_secret=settings.mdm_intune_client_secret,
-                    interval_seconds=max(
-                        60, settings.mdm_intune_poll_interval_seconds,
+            mdm_leader = get_leader("mdm_intune_poller")
+            if await mdm_leader.acquire():
+                mdm_stop = asyncio.Event()
+                mdm_task = asyncio.create_task(
+                    intune_poll_loop(
+                        tenant_id=settings.mdm_intune_tenant_id,
+                        client_id=settings.mdm_intune_client_id,
+                        client_secret=settings.mdm_intune_client_secret,
+                        interval_seconds=max(
+                            60, settings.mdm_intune_poll_interval_seconds,
+                        ),
+                        stop_event=mdm_stop,
                     ),
-                    stop_event=mdm_stop,
-                ),
-                name="mdm_intune_poller",
-            )
-            app.state.mdm_intune_stop = mdm_stop
-            app.state.mdm_intune_task = mdm_task
+                    name="mdm_intune_poller",
+                )
+                app.state.mdm_intune_stop = mdm_stop
+                app.state.mdm_intune_task = mdm_task
+                app.state.mdm_intune_leader = mdm_leader
+                _log.info("mdm_intune_poller: leader acquired, loop spawned")
+            else:
+                emit_lifespan_log(
+                    level="INFO",
+                    logger="mcp_proxy.mdm.poller",
+                    message=(
+                        "mdm_intune_poller: another worker holds the "
+                        "leader lock — skipping (Graph API quota saved)"
+                    ),
+                )
 
     # ADR-032 F6 — stale-watcher daemon. Decoupled from the polling
     # loop so customers running without an MDM integration still get
@@ -549,20 +572,30 @@ async def lifespan(app: FastAPI):
     # past the threshold). Cheap to run: one SELECT per minute over
     # ``internal_agents`` filtered to rows with a non-NULL claim.
     if settings.attestation_stale_watcher_enabled:
+        from mcp_proxy.lifespan import get_leader
         from mcp_proxy.mdm.stale_watcher import stale_watcher_loop
-        stale_stop = asyncio.Event()
-        stale_task = asyncio.create_task(
-            stale_watcher_loop(
-                interval_seconds=max(
-                    5, settings.attestation_stale_watcher_interval_seconds,
+        stale_leader = get_leader("attestation_stale_watcher")
+        if await stale_leader.acquire():
+            stale_stop = asyncio.Event()
+            stale_task = asyncio.create_task(
+                stale_watcher_loop(
+                    interval_seconds=max(
+                        5, settings.attestation_stale_watcher_interval_seconds,
+                    ),
+                    threshold_seconds=settings.attestation_stale_threshold_seconds,
+                    stop_event=stale_stop,
                 ),
-                threshold_seconds=settings.attestation_stale_threshold_seconds,
-                stop_event=stale_stop,
-            ),
-            name="attestation_stale_watcher",
-        )
-        app.state.attestation_stale_stop = stale_stop
-        app.state.attestation_stale_task = stale_task
+                name="attestation_stale_watcher",
+            )
+            app.state.attestation_stale_stop = stale_stop
+            app.state.attestation_stale_task = stale_task
+            app.state.attestation_stale_leader = stale_leader
+            _log.info("attestation_stale_watcher: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "attestation_stale_watcher: another worker holds the "
+                "leader lock — skipping"
+            )
 
     # Phase 4c — federation SSE subscriber. Wires the Phase 4b cache
     # to the live broker stream. Off by default; flip via
@@ -820,6 +853,12 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("mdm intune poller teardown loop mismatch (xdist): %s", exc)
+    mdm_leader = getattr(app.state, "mdm_intune_leader", None)
+    if mdm_leader is not None:
+        try:
+            await mdm_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("mdm_intune_poller leader release failed: %s", exc)
 
     # ADR-032 F6 — stop the stale-watcher.
     stale_stop = getattr(app.state, "attestation_stale_stop", None)
@@ -840,6 +879,12 @@ async def lifespan(app: FastAPI):
                 "attestation stale-watcher teardown loop mismatch (xdist): %s",
                 exc,
             )
+    stale_leader = getattr(app.state, "attestation_stale_leader", None)
+    if stale_leader is not None:
+        try:
+            await stale_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("attestation_stale_watcher leader release failed: %s", exc)
 
     stop_event = getattr(app.state, "local_sweeper_stop", None)
     sweeper_task = getattr(app.state, "local_sweeper_task", None)
@@ -863,6 +908,12 @@ async def lifespan(app: FastAPI):
             # on every subsequent asyncio test. Tolerate it here — the
             # task will be GC'd at process exit.
             _log.debug("local sweeper teardown loop mismatch (xdist): %s", exc)
+    sweeper_leader = getattr(app.state, "local_sweeper_leader", None)
+    if sweeper_leader is not None:
+        try:
+            await sweeper_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("local_sweeper leader release failed: %s", exc)
 
     sub_stop = getattr(app.state, "federation_subscriber_stop", None)
     sub_task = getattr(app.state, "federation_subscriber_task", None)
