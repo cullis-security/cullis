@@ -27,9 +27,6 @@ import pathlib
 import shutil
 import stat
 import subprocess
-import textwrap
-
-import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUNDLE_SRC = REPO_ROOT / "packaging" / "mastio-bundle"
