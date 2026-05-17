@@ -16,9 +16,15 @@
 #   ./generate-frontdesk-env.sh --force      # Overwrite existing frontdesk.env
 #
 # Environment variables (used by --prod, optional elsewhere):
-#   CULLIS_FRONTDESK_ORG_ID           — org slug, e.g. ``acme``
-#   CULLIS_FRONTDESK_TRUST_DOMAIN     — SPIFFE TD, e.g. ``acme.prod``
-#   CULLIS_FRONTDESK_CA_BUNDLE_HOST   — host path to Mastio CA chain PEM
+#   CULLIS_FRONTDESK_ORG_ID           org slug, e.g. ``acme``
+#   CULLIS_FRONTDESK_TRUST_DOMAIN     SPIFFE TD, e.g. ``acme.prod``
+#   CULLIS_FRONTDESK_CA_BUNDLE_HOST   host path to Mastio CA chain PEM
+#
+# Optional version + URL overrides (honored in every mode, P3 MINOR-D):
+#   CONNECTOR_VERSION                 cullis-connector image tag
+#   CHAT_VERSION                      cullis-chat-frontdesk image tag
+#   CULLIS_FRONTDESK_MASTIO_URL       Mastio CSR endpoint URL
+#   CULLIS_SITE_URL                   Connector site_url (Mastio reverse proxy)
 #
 set -euo pipefail
 
@@ -189,6 +195,59 @@ cp "$SCRIPT_DIR/frontdesk.env.example" "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_ORG_ID=.*|CULLIS_FRONTDESK_ORG_ID=${ORG_ID}|"               "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_TRUST_DOMAIN=.*|CULLIS_FRONTDESK_TRUST_DOMAIN=${TRUST_DOMAIN}|" "$OUT"
 sed -i "s|^CULLIS_FRONTDESK_CA_BUNDLE_HOST=.*|CULLIS_FRONTDESK_CA_BUNDLE_HOST=${CA_BUNDLE}|" "$OUT"
+
+# ── env-var overrides for vars that ship COMMENTED in the example ────
+#
+# P3 MINOR-D (dogfood tabula rasa, 2026-05-17): customer admins doing
+# version pinning via CI / Ansible expect
+#
+#   CONNECTOR_VERSION=0.4.5 ./deploy.sh ...
+#
+# to land 0.4.5 into the running bundle. Pre-fix, the env var was
+# silently dropped: ``docker compose --env-file frontdesk.env`` only
+# reads values from the file (parent-shell env is NOT consulted for
+# ``${VAR:-default}`` substitutions), so the operator's intent never
+# reached the image: tag. Same trap as MINOR-F (#772) for
+# MCP_PROXY_PROXY_PUBLIC_URL on the Mastio side.
+#
+# Fix mirrors the #772 strip-and-append pattern: for each var that
+# ships COMMENTED in the example (no plain sed substitution would land
+# an uncommented value), resolve the invoker env var with a sane
+# default, strip any pre-existing line (commented or not), and append
+# the resolved value. Idempotent on rerun (--force).
+#
+# Defaults track the comments shipped in frontdesk.env.example so an
+# operator reading the generated env file sees the same values they
+# would have seen in the template.
+CONNECTOR_VERSION_VALUE="${CONNECTOR_VERSION:-0.4.6}"
+CHAT_VERSION_VALUE="${CHAT_VERSION:-0.4.1}"
+# The two Mastio URL fields ship commented in the example because the
+# right value depends on the deploy topology. Leave them empty when
+# unset so the downstream ``${VAR:-}`` fallback in docker-compose.yml
+# applies — first-boot wizard mode (CULLIS_SITE_URL empty) and
+# host.docker.internal probing for CULLIS_FRONTDESK_MASTIO_URL both
+# depend on the variable being unset rather than carrying a stale
+# default.
+CULLIS_FRONTDESK_MASTIO_URL_VALUE="${CULLIS_FRONTDESK_MASTIO_URL:-}"
+CULLIS_SITE_URL_VALUE="${CULLIS_SITE_URL:-}"
+
+_strip_and_append() {
+    # Usage: _strip_and_append VAR_NAME VALUE
+    # Skips the append when VALUE is empty so commented-out vars stay
+    # commented (preserves the in-template documentation).
+    local var="$1" value="$2"
+    sed -i.bak "/^#*[[:space:]]*${var}=/d" "$OUT"
+    rm -f "${OUT}.bak"
+    if [[ -n "$value" ]]; then
+        echo "${var}=${value}" >> "$OUT"
+    fi
+}
+
+_strip_and_append CONNECTOR_VERSION             "$CONNECTOR_VERSION_VALUE"
+_strip_and_append CHAT_VERSION                  "$CHAT_VERSION_VALUE"
+_strip_and_append CULLIS_FRONTDESK_MASTIO_URL   "$CULLIS_FRONTDESK_MASTIO_URL_VALUE"
+_strip_and_append CULLIS_SITE_URL               "$CULLIS_SITE_URL_VALUE"
+
 # The example file does not ship the secret line (we mint per-deploy); append.
 echo "CULLIS_CONNECTOR_ADMIN_SECRET=${ADMIN_SECRET}" >> "$OUT"
 
@@ -197,5 +256,7 @@ echo ""
 echo -e "  ${BOLD}CULLIS_FRONTDESK_ORG_ID${RESET}          ${GRAY}${ORG_ID}${RESET}"
 echo -e "  ${BOLD}CULLIS_FRONTDESK_TRUST_DOMAIN${RESET}    ${GRAY}${TRUST_DOMAIN}${RESET}"
 echo -e "  ${BOLD}CULLIS_FRONTDESK_CA_BUNDLE_HOST${RESET}  ${GRAY}${CA_BUNDLE}${RESET}"
+echo -e "  ${BOLD}CONNECTOR_VERSION${RESET}                ${GRAY}${CONNECTOR_VERSION_VALUE}${RESET}"
+echo -e "  ${BOLD}CHAT_VERSION${RESET}                     ${GRAY}${CHAT_VERSION_VALUE}${RESET}"
 echo -e "  ${BOLD}CULLIS_CONNECTOR_ADMIN_SECRET${RESET}    ${GRAY}${ADMIN_SECRET:0:8}…${RESET} (provision users via X-Admin-Secret)"
 echo ""
