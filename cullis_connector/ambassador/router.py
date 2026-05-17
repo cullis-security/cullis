@@ -72,16 +72,44 @@ def _build_user_client(request: Request, cred: Any):
             503, "Ambassador site_url unknown — cannot build per-user client",
         )
     from cullis_sdk import CullisClient
-    import os as _os_timeout
+    import os as _os
     try:
-        _req_timeout = float(_os_timeout.environ.get("CULLIS_REQUEST_TIMEOUT_S", "10"))
+        _req_timeout = float(_os.environ.get("CULLIS_REQUEST_TIMEOUT_S", "10"))
     except ValueError:
         _req_timeout = 10.0
+
+    # Defence-in-depth for headless Frontdesk auto-enroll: surface the
+    # operator-pinned Org CA bundle to the per-user CullisClient so its
+    # TLS verify against the Mastio's self-signed cert succeeds even if
+    # the profile-level ``ca-chain.pem`` is missing (the bundle skips
+    # the manual ``/setup/pin-ca`` step). Pre-fix the factory defaulted
+    # to httpx's system CA store, which never carries the Org Root and
+    # every ``/v1/principals/csr`` call collapsed to
+    # ``provisioning="deferred"`` with ``CERTIFICATE_VERIFY_FAILED``.
+    # Same env precedence as ``config.verify_arg_for``.
+    _ca_chain_pem: str | None = None
+    _ca_path = (
+        _os.environ.get("CULLIS_FRONTDESK_CA_BUNDLE")
+        or _os.environ.get("SSL_CERT_FILE")
+        or _os.environ.get("REQUESTS_CA_BUNDLE")
+        or ""
+    ).strip()
+    if _ca_path and _os.path.exists(_ca_path):
+        try:
+            with open(_ca_path, "r", encoding="utf-8") as _f:
+                _ca_chain_pem = _f.read()
+        except OSError as _exc:
+            _log.warning(
+                "could not read CA bundle at %s: %s — TLS verify may fail",
+                _ca_path, _exc,
+            )
+
     client = CullisClient.from_user_principal_pem(
         site_url,
         principal_id=cred.principal_id,
         cert_pem=cred.cert_pem,
         key_pem=cred.key_pem,
+        ca_chain_pem=_ca_chain_pem,
         timeout=_req_timeout,
     )
     client.login_via_proxy_with_local_key()
