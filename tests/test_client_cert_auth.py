@@ -548,3 +548,84 @@ async def test_typed_workload_principal_unknown_rejected(proxy_app):
         await get_agent_from_client_cert(request)
     assert exc_info.value.status_code == 401
     assert "unknown" in exc_info.value.detail.lower()
+
+
+# ── Diagnostic helper unit tests ─────────────────────────────────────
+
+
+def test_strip_log_controls_escapes_cr_lf_drops_nul():
+    """Defence-in-depth for log-line spoofing: any CR / LF / NUL
+    sneaking through the cert SAN into a downstream plain-text log
+    sink must be neutralised before emission. Locks the exact
+    transformation so future tweaks (e.g. wider sanitisation) stay
+    intentional."""
+    from mcp_proxy.auth.client_cert import _strip_log_controls
+
+    raw = "spiffe://td/org/user/alice\r\nfake_field=evil\x00trailing"
+    assert _strip_log_controls(raw) == (
+        "spiffe://td/org/user/alice\\r\\nfake_field=eviltrailing"
+    )
+    # Idempotent on already-clean input.
+    clean = "spiffe://td/org/user/bob"
+    assert _strip_log_controls(clean) == clean
+    # Empty + "?" sentinel round-trip unchanged.
+    assert _strip_log_controls("") == ""
+    assert _strip_log_controls("?") == "?"
+
+
+def test_cert_first_spiffe_returns_non_spiffe_uri_unchanged():
+    """Docstring contract: the helper returns the FIRST URI in the
+    cert's SAN regardless of scheme — operators want to SEE a
+    wrong-scheme URI (``https://...``) rather than ``"?"`` so they
+    can spot a cert that was issued under the wrong identity model."""
+    from mcp_proxy.auth.client_cert import _cert_first_spiffe
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "weird"),
+        ]))
+        .issuer_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "weird"),
+        ]))
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(
+            x509.SubjectAlternativeName([
+                x509.UniformResourceIdentifier("https://attacker.example/"),
+            ]),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+
+    assert _cert_first_spiffe(cert) == "https://attacker.example/"
+
+
+def test_cert_first_spiffe_no_san_returns_sentinel():
+    """A cert without a SAN extension returns ``"?"`` so the log line
+    stays structurally constant — downstream regex parsers can rely
+    on the field always being present."""
+    from mcp_proxy.auth.client_cert import _cert_first_spiffe
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "no-san"),
+        ]))
+        .issuer_name(x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, "no-san"),
+        ]))
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    assert _cert_first_spiffe(cert) == "?"

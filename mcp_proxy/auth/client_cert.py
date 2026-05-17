@@ -218,12 +218,25 @@ def _cert_serial_hex(cert: x509.Certificate) -> str:
 
 
 def _cert_first_spiffe(cert: x509.Certificate) -> str:
-    """Return the first SPIFFE URI in the cert's SAN, or ``"?"``.
+    """Return the first SAN URI in the cert (kept name for blame
+    history), or ``"?"`` when no URI SAN is present.
 
-    Used only in warning logs — :func:`_identity_from_cert` already
-    surfaces the parsed identity; this helper hands back the raw URI
-    so an operator can see whether the cert is missing the SAN
-    altogether or carrying an unexpected one.
+    Despite the legacy name this helper does NOT filter on the
+    ``spiffe://`` scheme — it returns the first
+    :class:`x509.UniformResourceIdentifier` value in the SAN regardless
+    of scheme. That is deliberate: when the diagnostic fires
+    (``client_cert.py`` pubkey-pin warnings) the operator wants to see
+    a wrong-scheme URI such as ``https://attacker.example`` rather
+    than ``"?"``. The :func:`_identity_from_cert` flow is the one that
+    enforces SPIFFE structure.
+
+    CR / LF / NUL in the returned value are escaped before logging so a
+    cert with an attacker-controlled SAN cannot inject extra newlines
+    into structured-log ingestion (Datadog / Sentry / Loki). nginx
+    validates the cert chain but does not sanitize SAN content, and
+    while most JSON-encoded loggers escape control chars defensively,
+    this strip is a low-cost belt-and-braces against any future
+    plain-text log sink.
     """
     try:
         san_ext = cert.extensions.get_extension_for_class(
@@ -232,12 +245,28 @@ def _cert_first_spiffe(cert: x509.Certificate) -> str:
         for uri in san_ext.value.get_values_for_type(
             x509.UniformResourceIdentifier,
         ):
-            return str(uri)
+            return _strip_log_controls(str(uri))
     except x509.ExtensionNotFound:
         pass
     except Exception:  # noqa: BLE001 — diagnostic only
         pass
     return "?"
+
+
+def _strip_log_controls(value: str) -> str:
+    """Escape control characters that could break structured log lines.
+
+    Used by :func:`_cert_first_spiffe`. Replaces CR / LF with their
+    escaped two-character form so a single log line stays single, and
+    drops NUL bytes outright (they terminate strings in some log
+    consumers and cannot be escaped safely).
+    """
+    return (
+        value
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\x00", "")
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
