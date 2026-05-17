@@ -16,7 +16,8 @@
 #
 # Modes:
 #   (default)                   standalone enterprise Mastio
-#   --down                      stop + remove containers
+#   --down                      stop + remove containers (keeps bind dirs)
+#   --down -v                   stop + wipe bind dirs (data/, nginx-certs/)
 #   --pull                      re-pull image
 #   --upgrade-bundle <version>  snapshot user state to ./backups/, bump
 #                               CULLIS_MASTIO_VERSION in proxy.env, pull
@@ -58,12 +59,18 @@ source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
 MODE="up"
 PULL=0
 UPGRADE_BUNDLE_TO=""
+# ``--down -v`` (alias ``--volumes`` / ``--wipe-data``) mirrors
+# ``docker compose down --volumes`` semantics for bind dirs: after
+# stopping containers, wipe ./data and ./nginx-certs via a transient
+# root busybox. Default ``--down`` preserves state (P3 MINOR-H).
+WIPE_VOLUMES=0
 # Manual loop because --upgrade-bundle consumes the next positional
 # arg; the original ``for arg in "$@"`` cannot shift mid-iteration.
 while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
         --down)  MODE="down"; shift ;;
+        -v|--volumes|--wipe-data) WIPE_VOLUMES=1; shift ;;
         --pull)  PULL=1; shift ;;
         --upgrade-bundle)
             shift
@@ -106,6 +113,14 @@ if [[ "$MODE" == "down" ]]; then
     step "stopping cullis-mastio-enterprise stack"
     docker compose --env-file proxy.env down
     ok "stack stopped"
+    if [[ $WIPE_VOLUMES -eq 1 ]]; then
+        step "wiping bind dirs (data/, nginx-certs/)"
+        warn "Destructive: every Connector enrolled against the current Org CA"
+        warn "will fail TLS verify on /v1/principals/csr after the next bring-up."
+        _data_dir="$(_data_dir_host)"
+        _nginx_certs_dir="$(_nginx_certs_dir_host)"
+        _wipe_bind_dirs "$_data_dir" "$_nginx_certs_dir"
+    fi
     exit 0
 fi
 

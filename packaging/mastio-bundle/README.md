@@ -107,7 +107,46 @@ in Mastio v0.5 on a separate roadmap.
 | `./deploy.sh --shared-broker` | Federated. Joins an existing Court's docker network. |
 | `./deploy.sh --prod` | Production safety: fails fast on insecure defaults. Requires `proxy.env` pre-provisioned. |
 | `./deploy.sh --pull` | Force re-pull the image before starting. |
-| `./deploy.sh --down` | Stop and remove containers. |
+| `./deploy.sh --down` | Stop and remove containers. Bind dirs (`./data`, `./nginx-certs`, `./certs`) are preserved. |
+| `./deploy.sh --down -v` | Stop, remove containers, AND wipe bind dirs. Resets state to a brand-new install. |
+
+## Reset everything (`--down -v`)
+
+`./deploy.sh --down -v` (aliases: `--volumes`, `--wipe-data`) stops the
+stack and then wipes the contents of `./data`, `./nginx-certs`, and
+`./certs`. The wipe runs as root inside a transient `busybox` so the
+0600 files owned by uid 10001 (`mcp_proxy.db`, `mastio-server.key`)
+are actually removed, no `sudo rm -rf` on the host required. `proxy.env`,
+the bundle scripts, and `./backups/` are NOT touched.
+
+The flag mirrors `docker compose down --volumes` semantics for the
+bind dirs: by default `--down` is conservative and leaves state
+intact so a restart picks up the same Org CA and enrolled Connectors;
+`-v` opts into a full reset.
+
+Three use cases:
+
+1. **Fresh setup after a botched bring-up**: first `./deploy.sh`
+   ran against a wrong `MCP_PROXY_PROXY_PUBLIC_URL` or a bad SAN,
+   half-wrote the SQLite DB, and now the Mastio refuses to start
+   clean. `./deploy.sh --down -v` clears the slate; the next
+   `./deploy.sh` mints a fresh Org CA against the corrected env.
+2. **Troubleshooting Org CA / cert weirdness**: agents fail TLS
+   verify with no obvious diagnostic, or `mastio-server.key`
+   permissions drift. Wipe + re-deploy is faster than `docker
+   inspect` archaeology when you have only one or two agents
+   enrolled and re-enrollment is cheap.
+3. **Decommissioning**: moving the bundle off this host (or off
+   this dev laptop entirely). `--down -v` removes every byte of
+   state the bundle wrote; `rm -rf <bundle-dir>` after that is
+   safe even on a shared box.
+
+**Destructive.** Every Connector enrolled against the current Org
+CA will fail TLS verify on `/v1/principals/csr` after the next
+bring-up: the new Mastio derives a fresh CA and `org_id`. Use
+`./deploy.sh --upgrade-bundle <version>` (which auto-backs-up to
+`./backups/pre-upgrade-<ts>/`) for any flow where you want to
+preserve enrolled agents.
 
 ## Production proxy.env
 

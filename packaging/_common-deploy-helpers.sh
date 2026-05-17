@@ -92,3 +92,67 @@ _backup_user_state() {
     ok "Backup written to ${backup_dir#$SCRIPT_DIR/}"
     BACKUP_DIR="$backup_dir"
 }
+
+# Wipe contents of bind-mount dirs after ``compose down``. Mirror of
+# ``docker compose down --volumes`` semantics for the named volumes,
+# extended to the host bind dirs the bundles use after ADR-030. Each
+# arg is an absolute host path; the dir itself is kept (the operator
+# expects ``./data/`` to still exist as a placeholder, just empty),
+# only its contents are removed.
+#
+# Runs as root inside a transient busybox so 0600 files owned by uid
+# 10001 (mcp_proxy.db, mastio-server.key, connector identity material)
+# are actually removable. The invoking host user can't ``rm -rf`` them
+# directly after the init-permissions service has chown'd everything
+# to the runtime uid (feedback_busybox_root_for_bind_dir_post_init_perms).
+#
+# Idempotent: missing or empty dirs are a no-op. Never touches files
+# outside the supplied paths (proxy.env, frontdesk.env,
+# docker-compose.yml are explicitly NOT in scope). The caller is responsible
+# for confirming ``compose down`` ran first; wiping an active bind
+# mount under a running container is a recipe for sqlite WAL corruption.
+_wipe_bind_dirs() {
+    local any_wiped=0 dir mount_args=() rm_paths=()
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not available, cannot wipe bind dirs"
+        return 1
+    fi
+    # Build the docker mount list + the in-container paths to wipe.
+    # Each host dir is mounted at /wipe<N>; we only wipe contents
+    # (``/wipe<N>/.`` glob) so the dir itself survives.
+    local idx=0
+    for dir in "$@"; do
+        [[ -n "$dir" ]] || continue
+        [[ -d "$dir" ]] || continue
+        # Empty dir → skip both the mount and the rm to keep the
+        # docker argv short on a fresh-install down.
+        if ! compgen -G "$dir/*" >/dev/null 2>&1 \
+                && ! compgen -G "$dir/.[!.]*" >/dev/null 2>&1 \
+                && ! compgen -G "$dir/..?*" >/dev/null 2>&1; then
+            continue
+        fi
+        mount_args+=( -v "$dir:/wipe$idx" )
+        rm_paths+=( "/wipe$idx" )
+        any_wiped=1
+        idx=$((idx + 1))
+    done
+    if [[ $any_wiped -eq 0 ]]; then
+        ok "Bind dirs already empty, nothing to wipe"
+        return 0
+    fi
+    # Use ``find -mindepth 1 -delete`` instead of ``rm -rf /wipe*/*``
+    # so dotfiles (e.g. SQLite WAL/SHM ``-journal``, ``.cullis``
+    # identity stash) are caught too. ``-mindepth 1`` protects the
+    # mount root itself, matching the "keep the dir, wipe contents"
+    # contract above.
+    local find_cmd=""
+    for p in "${rm_paths[@]}"; do
+        find_cmd+="find $p -mindepth 1 -delete 2>/dev/null; "
+    done
+    docker run --rm --user 0:0 "${mount_args[@]}" busybox:stable \
+        sh -c "$find_cmd true" >/dev/null
+    for dir in "$@"; do
+        [[ -n "$dir" && -d "$dir" ]] || continue
+        ok "Wiped ${dir#$SCRIPT_DIR/}/"
+    done
+}

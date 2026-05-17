@@ -201,9 +201,48 @@ For oauth2-proxy specifically, the upstream config `--pass-user-headers=true` is
 ## Tear down
 
 ```bash
-./deploy.sh --down             # stop containers, keep connector_data
-docker compose --env-file frontdesk.env down -v   # also wipe connector_data (forces re-enrollment)
+./deploy.sh --down             # stop containers, keep connector_data/ + tls/
+./deploy.sh --down -v          # stop AND wipe connector_data/ + tls/ (reset everything)
 ```
+
+### Reset everything (`--down -v`)
+
+`./deploy.sh --down -v` (aliases: `--volumes`, `--wipe-data`) stops
+the stack and then wipes the contents of `connector_data/` (the
+Connector's enrolled identity, profile material, users.db) and
+`tls/` (the self-signed sidecar cert minted by `mint-tls-cert.sh`).
+The wipe runs as root inside a transient `busybox` so files owned
+by uid 10001 are actually removed, no `sudo rm -rf` on the host
+required. `frontdesk.env`, the bundle scripts, and any
+`frontdesk.env.bak-*` backups are NOT touched.
+
+The flag mirrors `docker compose down --volumes` semantics for the
+bind dirs: by default `--down` keeps the Connector enrolled so a
+restart picks up the same identity; `-v` opts into a full reset
+and the next `./deploy.sh` walks through the device-code enrollment
+one-shot again.
+
+Three use cases:
+
+1. **Fresh setup after a botched first run**: wrong `--site` URL,
+   wrong org, or an admin approved the pending row in the wrong
+   Mastio. `./deploy.sh --down -v` clears `connector_data/`; the
+   next `./deploy.sh` re-runs enrollment cleanly.
+2. **Troubleshooting TLS sidecar issues**: the self-signed cert
+   in `tls/` got pinned in a browser keychain with stale SANs,
+   or `mint-tls-cert.sh` wrote a partial cert. Wipe + redeploy
+   regenerates it from the current `FRONTDESK_TLS_SAN` env.
+3. **Decommissioning**: moving the bundle to a different Mastio
+   or a different host. `--down -v` removes the Connector
+   identity so it can't accidentally reach back at the old
+   Mastio on the next restart.
+
+**Destructive.** The Connector's private key + cert are gone. The
+old enrollment row in the Mastio dashboard stays around (revoke it
+manually if the move is permanent). Local users in `connector_data/
+users.db` are also wiped; recreate them via the `X-Admin-Secret`
+flow shown in the deploy summary, or use the Mastio dashboard's
+Create User flow if the sibling bundle bridge is wired.
 
 ## Lost admin secret recovery
 

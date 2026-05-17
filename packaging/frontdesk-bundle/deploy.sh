@@ -12,7 +12,8 @@
 # Modes (combinable):
 #   (default)         dev: generate frontdesk.env from --defaults if missing
 #   --prod            fail-fast on insecure defaults, requires frontdesk.env
-#   --down            stop + remove containers
+#   --down            stop + remove containers (keeps connector_data/, tls/)
+#   --down -v         stop + wipe bind dirs (connector_data/, tls/)
 #   --pull            re-pull images (otherwise pulled on first up)
 #
 # Enrollment (device-code flow — there is no pre-minted invite token in
@@ -69,6 +70,12 @@ else
     die "docker compose is not installed"
 fi
 
+# Source shared bind-dir helpers (P3 MINOR-H, _wipe_bind_dirs for
+# --down -v). Same helper file the Mastio bundles use; sourced here so
+# the busybox-root wipe pattern stays consistent across bundles.
+# shellcheck source=../_common-deploy-helpers.sh
+source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+
 print_help() {
     cat <<EOF
 Usage: $0 [OPTIONS]
@@ -81,7 +88,19 @@ Options:
                               run the device-code enrollment one-shot
   --prod                      Production: fail-fast on insecure defaults,
                               frontdesk.env must exist with real values
-  --down                      Stop and remove containers
+  --down                      Stop and remove containers. Bind dirs
+                              (connector_data/, tls/) are preserved.
+  -v, --volumes, --wipe-data  Modifier for --down. After containers are
+                              stopped, wipe contents of connector_data/
+                              (Connector identity) and tls/ (sidecar
+                              cert) via a transient root busybox so
+                              files owned by uid 10001 are actually
+                              removed. frontdesk.env, scripts, and
+                              .bak backups are NOT touched. Destructive:
+                              the next ./deploy.sh forces a fresh
+                              device-code enrollment against the Mastio.
+                              Mirrors ``docker compose down --volumes``
+                              semantics for bind mounts.
   --pull                      Force-pull the images before starting
   --rotate-admin-secret       Mint a fresh CULLIS_CONNECTOR_ADMIN_SECRET,
                               rewrite frontdesk.env atomically (timestamped
@@ -142,6 +161,12 @@ CLI_REQUESTER_NAME=""
 CLI_SITE_URL=""
 SKIP_ENROLL=0
 NO_WIZARD=0
+# ``--down -v`` (alias ``--volumes`` / ``--wipe-data``) mirrors
+# ``docker compose down --volumes`` semantics for bind dirs: after
+# containers stop, wipe connector_data/ + tls/. frontdesk.env and
+# scripts are NOT touched. Default ``--down`` keeps state intact so
+# re-deploying does not force re-enrollment (P3 MINOR-H).
+WIPE_VOLUMES=0
 # #655 / ADR-024 — built-in TLS sidecar. Defaults to ON (env value
 # resolves to "enabled" when nothing is set), customer-real out-of-
 # box HTTPS on :8443 with a self-signed cert. --no-tls / --tls flags
@@ -155,6 +180,7 @@ while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
         --down)             ACTION="down"; shift ;;
+        -v|--volumes|--wipe-data) WIPE_VOLUMES=1; shift ;;
         --pull)             FORCE_PULL=1; shift ;;
         --rotate-admin-secret) ACTION="rotate-admin-secret"; shift ;;
         --prod)             MODE="production"; shift ;;
@@ -196,6 +222,23 @@ if [[ "$ACTION" == "down" ]]; then
     $COMPOSE --env-file frontdesk.env --profile tls down 2>/dev/null \
         || $COMPOSE --profile tls down
     ok "Frontdesk stopped"
+    if [[ $WIPE_VOLUMES -eq 1 ]]; then
+        step "Wiping bind dirs (connector_data/, tls/)"
+        warn "Destructive: the Connector identity is gone, the next bring-up"
+        warn "must re-enroll against the Mastio (fresh device-code flow)."
+        # Resolve CONNECTOR_DATA_DIR from frontdesk.env if present,
+        # otherwise fall back to the compose default ``./connector_data``.
+        # ``_load_env`` is defined later in the script, after this branch
+        # exits, duplicate the grep inline rather than reorder the file.
+        _conn_data="./connector_data"
+        if [[ -f "$SCRIPT_DIR/frontdesk.env" ]]; then
+            _cd="$(grep -E '^CONNECTOR_DATA_DIR=' "$SCRIPT_DIR/frontdesk.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            _conn_data="${_cd:-./connector_data}"
+        fi
+        [[ "$_conn_data" = /* ]] || _conn_data="$SCRIPT_DIR/${_conn_data#./}"
+        _tls_dir="$SCRIPT_DIR/tls"
+        _wipe_bind_dirs "$_conn_data" "$_tls_dir"
+    fi
     exit 0
 fi
 
