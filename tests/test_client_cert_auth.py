@@ -381,6 +381,131 @@ async def test_typed_user_principal_pubkey_mismatch_rejected(proxy_app):
     assert "pubkey" in exc_info.value.detail.lower() or "bound" in exc_info.value.detail.lower()
 
 
+def _capture_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Patch ``mcp_proxy.auth.client_cert._log.warning`` and return the
+    captured rendered messages.
+
+    The ``mcp_proxy`` logger sets ``propagate=False`` (see
+    ``feedback_mcp_proxy_logger_caplog`` in personal memory), so
+    ``caplog`` never sees its records under pytest's default setup.
+    Patching the module-level ``_log.warning`` is the established
+    workaround across the rest of the test suite.
+    """
+    captured: list[str] = []
+    from mcp_proxy.auth import client_cert as _client_cert_mod
+
+    def _record(fmt: str, *args, **kwargs):  # noqa: ANN001
+        try:
+            captured.append(fmt % args if args else fmt)
+        except (TypeError, ValueError):
+            captured.append(fmt)
+
+    monkeypatch.setattr(_client_cert_mod._log, "warning", _record)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_pubkey_pin_mismatch_warning_carries_diagnostic_fields(
+    proxy_app, monkeypatch,
+):
+    """Diagnostic regression guard for L3b.
+
+    When the cert pubkey SPKI hash does not match the stored TOFU pin,
+    the ``WARNING`` log must carry enough forensic detail to identify
+    which cert was presented and which pin it failed against — without
+    requiring an in-container ``pdb`` session on the next dogfood. The
+    fields we lock in:
+
+      * ``principal=``: which typed principal the cert claims.
+      * ``presented_spki_sha256=``: full SHA-256 hex of the presented
+        cert's SubjectPublicKeyInfo DER.
+      * ``stored_spki_sha256=``: full SHA-256 hex of the pin row.
+      * ``cert_serial=``: lowercase hex of the cert's serial number
+        (cross-ref against ``/v1/principals/csr`` audit).
+      * ``cert_san=``: first SPIFFE URI in the cert's SAN.
+
+    Removing or renaming any of these fields breaks customer-path
+    incident response. If a future change really must rename one,
+    update this assert AND the corresponding ``imp/`` runbook entry.
+    """
+    from cryptography import x509
+
+    captured = _capture_warnings(monkeypatch)
+
+    legit_cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::ceo")
+    await _provision_typed_principal(
+        "acme::user::ceo", cert_pem=legit_cert_pem,
+    )
+    attacker_cert_pem, _ = mint_agent_cert(
+        org_id="acme", agent_name="user::ceo",
+    )
+    attacker_cert = x509.load_pem_x509_certificate(
+        attacker_cert_pem.encode("utf-8"),
+    )
+    expected_serial_hex = f"{attacker_cert.serial_number:x}"
+
+    headers = mtls_headers(attacker_cert_pem)
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException):
+        await get_agent_from_client_cert(request)
+
+    mismatch_msgs = [m for m in captured if "pubkey pin mismatch" in m]
+    assert mismatch_msgs, (
+        "expected a WARNING containing 'pubkey pin mismatch' so operators "
+        "can grep the customer-path 401 in the next dogfood"
+    )
+    msg = mismatch_msgs[-1]
+    assert "principal=acme::user::ceo" in msg
+    assert "presented_spki_sha256=" in msg
+    assert "stored_spki_sha256=" in msg
+    # Different keypairs → different SPKI hashes. The full hashes appear
+    # in the message — assert they're DISTINCT to lock in that we log
+    # both sides (not e.g. presented twice).
+    presented = msg.split("presented_spki_sha256=", 1)[1].split(" ", 1)[0]
+    stored = msg.split("stored_spki_sha256=", 1)[1].split(" ", 1)[0]
+    assert len(presented) == 64 and len(stored) == 64
+    assert presented != stored
+    assert f"cert_serial={expected_serial_hex}" in msg
+    assert "cert_san=spiffe://" in msg
+
+
+@pytest.mark.asyncio
+async def test_pubkey_pin_unset_warning_carries_diagnostic_fields(
+    proxy_app, monkeypatch,
+):
+    """Sibling regression guard — the "no pin" warning is the other
+    arm of the diagnostic. An admin pre-created the principal row but
+    no /v1/principals/csr has been signed; the WARNING needs to name
+    that explicitly so the operator knows which retry to make."""
+    captured = _capture_warnings(monkeypatch)
+
+    cert_pem, _ = mint_agent_cert(org_id="acme", agent_name="user::pending")
+    await _provision_typed_principal(
+        "acme::user::pending", pubkey_thumbprint=None,
+    )
+    headers = mtls_headers(cert_pem)
+    request = _request_with_headers(headers)
+    request.client = MagicMock()
+    request.client.host = "127.0.0.1"
+
+    from fastapi import HTTPException
+    from mcp_proxy.auth.client_cert import get_agent_from_client_cert
+    with pytest.raises(HTTPException):
+        await get_agent_from_client_cert(request)
+
+    no_pin_msgs = [m for m in captured if "has no pubkey pin" in m]
+    assert no_pin_msgs
+    msg = no_pin_msgs[-1]
+    assert "principal=acme::user::pending" in msg
+    assert "cert_serial=" in msg
+    assert "cert_san=spiffe://" in msg
+
+
 @pytest.mark.asyncio
 async def test_typed_workload_principal_pubkey_pinned_authenticates(proxy_app):
     """Happy path workload — same contract as the user case via

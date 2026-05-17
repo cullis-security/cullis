@@ -204,6 +204,42 @@ def _pem_der_digest(pem: str) -> bytes | None:
         return None
 
 
+def _cert_serial_hex(cert: x509.Certificate) -> str:
+    """Return the cert's serial as lowercase hex, or ``"?"`` if unreadable.
+
+    Used only in warning logs for forensic correlation against the
+    ``/v1/principals/csr`` audit row that minted the cert — the serial
+    is a public identifier present in every X.509 leaf.
+    """
+    try:
+        return f"{cert.serial_number:x}"
+    except Exception:  # noqa: BLE001 — diagnostic only
+        return "?"
+
+
+def _cert_first_spiffe(cert: x509.Certificate) -> str:
+    """Return the first SPIFFE URI in the cert's SAN, or ``"?"``.
+
+    Used only in warning logs — :func:`_identity_from_cert` already
+    surfaces the parsed identity; this helper hands back the raw URI
+    so an operator can see whether the cert is missing the SAN
+    altogether or carrying an unexpected one.
+    """
+    try:
+        san_ext = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName,
+        )
+        for uri in san_ext.value.get_values_for_type(
+            x509.UniformResourceIdentifier,
+        ):
+            return str(uri)
+    except x509.ExtensionNotFound:
+        pass
+    except Exception:  # noqa: BLE001 — diagnostic only
+        pass
+    return "?"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FastAPI dependency
 # ─────────────────────────────────────────────────────────────────────────────
@@ -331,8 +367,13 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             # pin against. Refuse rather than admit on the strength of
             # the cert chain alone, otherwise CRIT-1 is back in play.
             _log.warning(
-                "client cert auth: typed principal has no pubkey pin: %s",
+                "client cert auth: typed principal has no pubkey pin: "
+                "principal=%s cert_serial=%s cert_san=%s — admin "
+                "pre-created the row but no /v1/principals/csr has been "
+                "signed yet for this principal.",
                 canonical_id,
+                _cert_serial_hex(cert),
+                _cert_first_spiffe(cert),
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -341,10 +382,26 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
         from mcp_proxy.registry.principals_csr import pubkey_thumbprint_sha256
         presented_pubkey = pubkey_thumbprint_sha256(cert.public_key())
         if not hmac.compare_digest(presented_pubkey, stored_pubkey):
+            # Both values are SHA-256 hex of the SubjectPublicKeyInfo DER
+            # — public identifiers, not secrets — log them in full so an
+            # operator can correlate against the on-disk Connector key
+            # (``cullis_connector/ambassador/shared/keystore.py``: hash
+            # the PEM at ``<config_dir>/user_keys/<sha256(principal_id)>.key.pem``
+            # and compare). Also log the cert serial + SPIFFE SAN so the
+            # mismatched cert can be traced back to the specific
+            # ``/v1/principals/csr`` mint it came from.
             _log.warning(
-                "client cert pubkey pin mismatch for %s — presented cert "
-                "is not bound to this principal's TOFU pubkey.",
+                "client cert pubkey pin mismatch: principal=%s "
+                "presented_spki_sha256=%s stored_spki_sha256=%s "
+                "cert_serial=%s cert_san=%s — presented cert is not "
+                "bound to this principal's TOFU pubkey. Compare "
+                "presented_spki_sha256 against "
+                "sha256(SPKI(<config_dir>/user_keys/sha256(principal_id))).",
                 canonical_id,
+                presented_pubkey,
+                stored_pubkey,
+                _cert_serial_hex(cert),
+                _cert_first_spiffe(cert),
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
