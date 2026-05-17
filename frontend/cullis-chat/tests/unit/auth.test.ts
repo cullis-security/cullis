@@ -284,6 +284,22 @@ describe('fetchRuntimeInfo', () => {
     const info = await fetchRuntimeInfo();
     expect(info?.auth_mode).toBe('local');
   });
+
+  it('exposes support_email when the Connector reports it (P3 MAJOR-1-rest)', async () => {
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async () => mockResponse({
+        status: 200,
+        body: {
+          auth_mode: 'local',
+          login_url: '/login',
+          require_change_password_url: '/change-password',
+          support_email: 'it-support@acme.com',
+        },
+      }),
+    );
+    const info = await fetchRuntimeInfo();
+    expect(info?.support_email).toBe('it-support@acme.com');
+  });
 });
 
 // ── admin endpoints ───────────────────────────────────────────────────

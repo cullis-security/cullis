@@ -504,6 +504,28 @@ body::after {
 
 .btn-row-end { justify-content: flex-end; }
 
+/* --- Forgot-password affordance (P3 MAJOR-1-rest) --------------------- */
+.form-footer { margin-top: 16px; text-align: center; font-size: 12px; }
+.link-muted {
+  color: var(--text-muted, #8b94a7); text-decoration: underline; text-underline-offset: 2px;
+}
+.link-muted:hover { color: var(--accent, #6aa8ff); }
+.forgot-panel {
+  margin-top: 18px; padding: 16px 18px;
+  background: var(--panel-bg, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 8px); font-size: 13px; line-height: 1.5;
+}
+.forgot-panel[hidden] { display: none; }
+.forgot-panel-title { font-size: 14px; margin: 0 0 10px 0; }
+.forgot-panel-hint { color: var(--text-muted, #8b94a7); font-size: 12px; }
+.forgot-panel-code {
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px;
+  padding: 10px 12px; background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm); white-space: pre-wrap;
+  word-break: break-word; overflow-x: auto;
+}
+
 /* --- Alert / banner --------------------------------------------------- */
 
 .alert {
