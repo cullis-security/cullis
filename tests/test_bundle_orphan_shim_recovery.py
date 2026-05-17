@@ -277,9 +277,23 @@ def test_cleanup_orphan_shims_no_docker_available_is_noop(tmp_path):
     deploy.sh runs with ``set -e`` and an unguarded exit would abort
     the whole bring-up on hosts without docker installed (e.g. a
     dry-run from a CI lint job)."""
+    import shutil
+    # Resolve bash to an ABSOLUTE path BEFORE filtering PATH below.
+    # On Ubuntu CI runners docker lives in /usr/bin/, which also
+    # carries bash; filtering "any dir containing docker" out of PATH
+    # would strip bash too and subprocess.run(["bash", ...]) would
+    # FileNotFoundError. Pass the absolute path so the subprocess
+    # doesn't need PATH lookup.
+    bash_abs = shutil.which("bash") or "/bin/bash"
+    assert pathlib.Path(bash_abs).exists(), (
+        f"test pre-condition failed: cannot locate bash at {bash_abs}"
+    )
+
     # Build a PATH with NO docker binary on it. Find the minimal
-    # system dirs that provide bash + find + grep so the script can
-    # actually run, then strip out anything providing docker.
+    # system dirs that provide find + grep + busybox so the script can
+    # still run, then strip out anything providing docker. We pass
+    # bash as an absolute path to subprocess.run (above) so PATH
+    # filtering does not break the harness itself.
     real_path = os.environ.get("PATH", "")
     filtered_dirs = [
         d for d in real_path.split(os.pathsep)
@@ -293,7 +307,7 @@ def test_cleanup_orphan_shims_no_docker_available_is_noop(tmp_path):
     env["PATH"] = os.pathsep.join([str(stub), *filtered_dirs])
     # Sanity check: docker must truly not resolve on this PATH.
     which = subprocess.run(
-        ["bash", "-c", "command -v docker"],
+        [bash_abs, "-c", "command -v docker"],
         env=env, capture_output=True, text=True, timeout=10,
     )
     assert which.returncode != 0, (
@@ -313,7 +327,7 @@ _cleanup_orphan_shims "cullis-mastio"
 echo "after-cleanup-ok"
 """
     result = subprocess.run(
-        ["bash", "-c", script],
+        [bash_abs, "-c", script],
         env=env,
         capture_output=True,
         text=True,
