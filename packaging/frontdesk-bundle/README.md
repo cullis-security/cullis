@@ -158,6 +158,35 @@ If both rows show the same principal, the `X-Forwarded-User` header is not reach
 | Both users land as `unknown@frontdesk.dev` | nginx is not seeing the `?user=` query (it only triggers on the cookie-mint path). Open in incognito so each tab starts cookie-less. |
 | 502 from nginx | Connector cannot reach the Mastio. Check enrollment is good (`docker compose exec connector cullis-connector doctor`). |
 
+## Lost end-user password recovery
+
+Un employee non riesce ad accedere alla SPA Frontdesk perché ha perso
+la password. L'IT manager può resettarla senza fermare il bundle e
+senza esportare l'`X-Admin-Secret`:
+
+```bash
+# Frontdesk container (no X-Admin-Secret needed):
+docker exec -it cullis-frontdesk-connector \
+  cullis-connector users reset-password alice
+```
+
+L'output stampa una password temporanea generata (16 char URL-safe).
+Comunicala all'employee via canale sicuro. Al prossimo login alice
+sarà forzata a cambiarla.
+
+Per impostare un valore esplicito invece di generarlo:
+
+```bash
+docker exec -it cullis-frontdesk-connector \
+  cullis-connector users reset-password alice \
+  --new-password "TempPass2026!"
+```
+
+Il comando opera direttamente su `users.db` dentro il container — non
+richiede `CULLIS_CONNECTOR_ADMIN_SECRET` e non passa per la rete, per
+cui resta utilizzabile anche su deploy hardenati che non espongono
+l'admin secret all'host.
+
 ## Production: replace nginx with oauth2-proxy + IDP
 
 `nginx/default.conf` is dev-grade. The contracts the rest of the bundle relies on are exactly two:

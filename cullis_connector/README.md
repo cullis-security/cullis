@@ -454,6 +454,34 @@ cullis-connector --config-dir ~/.cullis-orgB serve
   user bin directory is probably missing; add `python -m site --user-base`
   + `/bin` to `$PATH`, or install in a venv.
 
+## Lost end-user password recovery
+
+Un employee non riesce ad accedere alla SPA Frontdesk perché ha perso
+la password. L'IT manager può resettarla senza fermare il bundle e
+senza esportare l'`X-Admin-Secret`:
+
+```bash
+# Frontdesk container (no X-Admin-Secret needed):
+docker exec -it cullis-frontdesk-connector \
+  cullis-connector users reset-password alice
+```
+
+L'output stampa una password temporanea generata (16 char URL-safe).
+Comunicala all'employee via canale sicuro. Al prossimo login alice
+sarà forzata a cambiarla.
+
+Per impostare un valore esplicito invece di generarlo:
+
+```bash
+docker exec -it cullis-frontdesk-connector \
+  cullis-connector users reset-password alice \
+  --new-password "TempPass2026!"
+```
+
+Sul Connector standalone (desktop / dev install) usa lo stesso comando
+senza `docker exec` — opera direttamente su `~/.cullis/.../users.db`
+e non richiede admin secret.
+
 ---
 
 ## License
