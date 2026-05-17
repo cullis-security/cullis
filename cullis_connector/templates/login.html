@@ -46,10 +46,50 @@
             </button>
         </div>
     </form>
+
+    {# Forgot-password affordance (P3 MAJOR-1-rest). Panel content
+       branches on CULLIS_FRONTDESK_SUPPORT_EMAIL. #}
+    <p class="form-footer">
+        <a href="#" id="forgot-password-link" class="link-muted">Forgot password?</a>
+    </p>
+    <div id="forgot-password-panel" class="forgot-panel" hidden>
+        <h2 class="forgot-panel-title">Reset your password</h2>
+        {% if support_email %}
+        <p>Your account password is managed by your IT administrator. Send a short note and they will reset it for you.</p>
+        <p>
+            <a id="forgot-password-mailto" class="btn btn-secondary"
+               href="mailto:{{ support_email }}?subject={{ ('Password reset request' + (' - ' + user_name_hint if user_name_hint else '')) | urlencode }}&body={{ ('Hi,\n\nI cannot sign in to the Cullis Frontdesk workspace and would like my password reset.\n\nUsername: ' + (user_name_hint or '(please fill in)') + '\nConnector profile: frontdesk\nBrowser URL: (paste from the address bar)\n\nThanks.') | urlencode }}">Email IT support</a>
+        </p>
+        <p class="forgot-panel-hint">Or contact <a href="mailto:{{ support_email }}">{{ support_email }}</a> directly.</p>
+        {% else %}
+        <p>Contact your local IT administrator to reset your password. They can run the following on the Frontdesk host without taking the bundle offline:</p>
+        <pre class="forgot-panel-code"><code>docker exec -it cullis-frontdesk-connector \
+  cullis-connector users reset-password {{ user_name_hint or '&lt;your-username&gt;' }}</code></pre>
+        <p class="forgot-panel-hint">The IT admin can pre-configure a support contact by setting <code>CULLIS_FRONTDESK_SUPPORT_EMAIL</code> in the bundle's <code>frontdesk.env</code>.</p>
+        {% endif %}
+        <p><button type="button" id="forgot-password-close" class="btn btn-secondary">Close</button></p>
+    </div>
 </div>
 
 <script>
 (function() {
+    var fpLink = document.getElementById('forgot-password-link');
+    var fpPanel = document.getElementById('forgot-password-panel');
+    var fpClose = document.getElementById('forgot-password-close');
+    if (fpLink && fpPanel) {
+        fpLink.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            fpPanel.hidden = false;
+            var first = fpPanel.querySelector('a, button');
+            if (first) { first.focus(); }
+        });
+    }
+    if (fpClose && fpPanel) {
+        fpClose.addEventListener('click', function() {
+            fpPanel.hidden = true;
+            if (fpLink) { fpLink.focus(); }
+        });
+    }
     var form = document.getElementById('login-form');
     if (!form) { return; }
     form.addEventListener('submit', function(ev) {

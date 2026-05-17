@@ -385,6 +385,90 @@ def test_login_page_renders(client):
     assert "Sign in" in r.text
 
 
+# ── P3 MAJOR-1-rest: "Forgot password?" affordance ──────────────────────
+
+
+def _client_with_env(connector_config, monkeypatch, **extra: str) -> TestClient:
+    """Build a TestClient with optional extra env entries (e.g. the
+    support-email env var). Mirrors the ``client`` fixture wiring."""
+    monkeypatch.setenv("CULLIS_CONNECTOR_ADMIN_SECRET", ADMIN_SECRET)
+    monkeypatch.setenv("AUTH_MODE", "local")
+    monkeypatch.setenv("CULLIS_CONNECTOR_DEV", "1")
+    for k, v in extra.items():
+        monkeypatch.setenv(k, v)
+    app = build_app(connector_config)
+    tc = TestClient(app)
+    tc.headers["Origin"] = "http://testserver"
+    return tc
+
+
+def test_login_page_renders_forgot_password_cli_fallback(client):
+    """No CULLIS_FRONTDESK_SUPPORT_EMAIL → CLI hint variant rendered."""
+    r = client.get("/login")
+    assert r.status_code == 200
+    assert 'id="forgot-password-link"' in r.text
+    assert "Forgot password?" in r.text
+    assert "users reset-password" in r.text
+    assert "CULLIS_FRONTDESK_SUPPORT_EMAIL" in r.text
+    assert 'href="mailto:' not in r.text
+
+
+def test_login_page_renders_mailto_when_support_email_set(
+    connector_config, monkeypatch,
+):
+    """With env set, mailto button replaces the CLI hint."""
+    tc = _client_with_env(
+        connector_config, monkeypatch,
+        CULLIS_FRONTDESK_SUPPORT_EMAIL="it-support@acme.com",
+    )
+    r = tc.get("/login")
+    assert r.status_code == 200
+    assert "mailto:it-support@acme.com" in r.text
+    assert "users reset-password" not in r.text
+
+
+def test_login_page_user_name_query_is_url_escaped_in_mailto(
+    connector_config, monkeypatch,
+):
+    """``?user_name=`` reflected into mailto subject after url-encode,
+    blocks HTML break-out + mailto CR/LF header injection (RFC 6068)."""
+    tc = _client_with_env(
+        connector_config, monkeypatch,
+        CULLIS_FRONTDESK_SUPPORT_EMAIL="it@acme.com",
+    )
+    r = tc.get("/login?user_name=a%3Cb%26c%0Ax")
+    assert r.status_code == 200
+    assert "<b&c" not in r.text
+    href = r.text.split('href="mailto:', 1)[1].split('"', 1)[0]
+    assert "\n" not in href and "\r" not in href
+
+
+def test_login_page_user_name_hint_capped(connector_config, monkeypatch):
+    """Huge ``?user_name=`` is truncated before reaching the template."""
+    tc = _client_with_env(connector_config, monkeypatch)
+    r = tc.get("/login", params={"user_name": "a" * 500})
+    assert r.status_code == 200
+    assert ("a" * 200) not in r.text
+
+
+def test_runtime_info_exposes_support_email(connector_config, monkeypatch):
+    """The SPA reads support_email from /api/auth/runtime-info."""
+    tc = _client_with_env(
+        connector_config, monkeypatch,
+        CULLIS_FRONTDESK_SUPPORT_EMAIL="it-support@acme.com",
+    )
+    r = tc.get("/api/auth/runtime-info")
+    assert r.status_code == 200
+    assert r.json()["support_email"] == "it-support@acme.com"
+
+
+def test_runtime_info_support_email_empty_when_unset(client):
+    """Default support_email is empty string → SPA branches to CLI hint."""
+    r = client.get("/api/auth/runtime-info")
+    assert r.status_code == 200
+    assert r.json().get("support_email", "") == ""
+
+
 def test_change_password_page_renders(client):
     r = client.get("/change-password")
     assert r.status_code == 200

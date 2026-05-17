@@ -137,6 +137,11 @@ services:
       # covers the bridge networks docker hands out (172.16.0.0/12).
       CULLIS_TRUSTED_PROXIES: ${CULLIS_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}
       CULLIS_FRONTDESK_COOKIE_TTL_S: ${CULLIS_FRONTDESK_COOKIE_TTL_S:-3600}
+      # P3 MAJOR-1-rest — IT-support email surfaced behind the "Forgot
+      # password?" link on the login page. Empty by default, in which
+      # case the link renders a CLI-hint fallback for the IT admin
+      # instead of a mailto button for the employee.
+      CULLIS_FRONTDESK_SUPPORT_EMAIL: ${CULLIS_FRONTDESK_SUPPORT_EMAIL:-}
       # Where Mastio's CSR endpoint lives. Falls back to site_url when empty.
       CULLIS_FRONTDESK_MASTIO_URL: ${CULLIS_FRONTDESK_MASTIO_URL:-}
       CULLIS_SITE_URL: ${CULLIS_SITE_URL:-}

@@ -160,9 +160,39 @@ If both rows show the same principal, the `X-Forwarded-User` header is not reach
 
 ## Lost end-user password recovery
 
-Un employee non riesce ad accedere alla SPA Frontdesk perché ha perso
-la password. L'IT manager può resettarla senza fermare il bundle e
-senza esportare l'`X-Admin-Secret`:
+When an employee cannot sign in to the Frontdesk SPA because they have
+lost their password, two complementary paths exist: an employee-facing
+self-serve affordance on the login page, and an IT-admin CLI on the
+host.
+
+### Self-serve link on the login page (employee)
+
+The Frontdesk login page renders a "Forgot password?" link below the
+Sign in button. Clicking it opens an in-page panel that either:
+
+- offers a one-click `mailto:` link pre-filled with the username and
+  bundle context (when `CULLIS_FRONTDESK_SUPPORT_EMAIL` is set in
+  `frontdesk.env`), so the employee can email IT support in two
+  clicks; or
+- shows the IT admin's `docker exec` command as a copy/paste hint
+  (when the env var is unset), so a colleague forwarding the message
+  to IT can paste the exact command.
+
+To enable the mailto variant, set in `frontdesk.env`:
+
+```text
+CULLIS_FRONTDESK_SUPPORT_EMAIL=it-support@acme.com
+```
+
+and run `./deploy.sh` again (or `docker compose --env-file
+frontdesk.env up -d --force-recreate connector`). The value is only
+ever rendered as a `mailto:` href, so it is safe to set even when the
+bundle is reached over the public internet.
+
+### CLI reset (IT admin)
+
+The IT manager can reset a password without taking the bundle offline
+and without exporting `X-Admin-Secret`:
 
 ```bash
 # Frontdesk container (no X-Admin-Secret needed):
@@ -170,11 +200,11 @@ docker exec -it cullis-frontdesk-connector \
   cullis-connector users reset-password alice
 ```
 
-L'output stampa una password temporanea generata (16 char URL-safe).
-Comunicala all'employee via canale sicuro. Al prossimo login alice
-sarà forzata a cambiarla.
+The output prints a generated temporary password (16 URL-safe chars).
+Share it with the employee over a secure channel. On the next sign-in
+alice is forced to change it.
 
-Per impostare un valore esplicito invece di generarlo:
+To set an explicit value instead of generating one:
 
 ```bash
 docker exec -it cullis-frontdesk-connector \
@@ -182,10 +212,10 @@ docker exec -it cullis-frontdesk-connector \
   --new-password "TempPass2026!"
 ```
 
-Il comando opera direttamente su `users.db` dentro il container — non
-richiede `CULLIS_CONNECTOR_ADMIN_SECRET` e non passa per la rete, per
-cui resta utilizzabile anche su deploy hardenati che non espongono
-l'admin secret all'host.
+The command writes directly to `users.db` inside the container, does
+not require `CULLIS_CONNECTOR_ADMIN_SECRET`, and never traverses the
+network. It therefore stays usable on hardened deployments that do
+not expose the admin secret to the host.
 
 ## Production: replace nginx with oauth2-proxy + IDP
 

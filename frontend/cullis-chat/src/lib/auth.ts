@@ -68,6 +68,20 @@ export interface RuntimeInfo {
   auth_mode: 'local' | 'oidc' | string;
   login_url: string;
   require_change_password_url: string;
+  /**
+   * Optional setup-state hint used by the SPA bootstrap. Defaults to
+   * ``false`` on responses from older Connectors that did not return
+   * the field.
+   */
+  setup_required?: boolean;
+  setup_url?: string;
+  /**
+   * P3 MAJOR-1-rest — IT-support email behind the "Forgot password?"
+   * affordance. Empty string when the bundle operator has not set
+   * ``CULLIS_FRONTDESK_SUPPORT_EMAIL``; the LoginForm then renders a
+   * CLI-hint fallback instead of a mailto link.
+   */
+  support_email?: string;
 }
 
 /**

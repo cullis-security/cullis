@@ -239,6 +239,15 @@ class RuntimeInfoResponse(BaseModel):
     # decide before it has any cookie.
     setup_required: bool = False
     setup_url: str = "/api/auth/first-run-setup"
+    # P3 MAJOR-1-rest — IT-support email surfaced behind the
+    # "Forgot password?" affordance on the SPA login form. Empty
+    # string when ``CULLIS_FRONTDESK_SUPPORT_EMAIL`` is unset; the
+    # SPA then renders a CLI-hint fallback instead of a mailto link.
+    # No-auth is fine: this is the same kind of public hint as
+    # ``login_url`` (any visitor of the login page already sees the
+    # configured email rendered into a mailto by the server-side
+    # template).
+    support_email: str = ""
 
 
 class FirstRunSetupRequest(BaseModel):
@@ -617,9 +626,24 @@ def _cert_thumbprint(cert_pem: str) -> str:
 # ── Server-side fallback HTML ────────────────────────────────────────────
 
 
+# Cap on ``?user_name=`` echoed into the mailto subject — mirrors
+# ``LoginRequest`` so an attacker-controlled query cannot bloat the
+# rendered href. Jinja autoescape handles HTML; ``urlencode`` handles
+# CR/LF mailto-header-injection.
+_FORGOT_USER_NAME_MAX_LEN = 64
+
+
+def _support_email(env: dict[str, str] | None = None) -> str:
+    """``CULLIS_FRONTDESK_SUPPORT_EMAIL`` or empty string when unset."""
+    src = env if env is not None else os.environ
+    return (src.get("CULLIS_FRONTDESK_SUPPORT_EMAIL", "") or "").strip()
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request) -> Response:
     """Plain HTML form for non-SPA clients + ops debug."""
+    raw = request.query_params.get("user_name", "")
+    user_name_hint = raw.strip()[:_FORGOT_USER_NAME_MAX_LEN]
     return _templates.TemplateResponse(
         request,
         "login.html",
@@ -627,6 +651,8 @@ async def login_page(request: Request) -> Response:
             "connector_status": "offline",
             "connector_status_label": "Sign in",
             "error": None,
+            "support_email": _support_email(),
+            "user_name_hint": user_name_hint,
         },
     )
 
@@ -1031,6 +1057,7 @@ async def runtime_info(request: Request) -> RuntimeInfoResponse:
         login_url="/login",
         require_change_password_url="/change-password",
         setup_required=setup_required,
+        support_email=_support_email(),
     )
 
 

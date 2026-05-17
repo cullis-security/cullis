@@ -245,6 +245,35 @@
   line-height: 1.5;
 }
 
+/* ── "Forgot password?" affordance (P3 MAJOR-1-rest) ───────────────── */
+.auth-link {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.auth-link:hover { color: var(--text-primary); }
+.auth-button-secondary {
+  background: var(--bg-elevated); color: var(--text-primary);
+  box-shadow: none; border: 1px solid var(--border-medium);
+}
+.auth-button-secondary:hover:not(:disabled) {
+  background: var(--bg-card-hover); border-color: var(--border-strong);
+}
+.auth-forgot-panel {
+  margin-top: 1rem; padding: 1rem 1.1rem;
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--border-medium, rgba(255, 255, 255, 0.08));
+  border-radius: 6px; font-family: var(--font-mono);
+  font-size: 0.78rem; line-height: 1.55;
+}
+.auth-forgot-title { font-size: 0.9rem; margin: 0 0 0.6rem 0; color: var(--text-primary); }
+.auth-forgot-hint { color: var(--text-tertiary); font-size: 0.72rem; }
+.auth-forgot-code {
+  font-family: var(--font-mono); font-size: 0.72rem;
+  padding: 0.55rem 0.7rem; background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px; white-space: pre-wrap;
+  word-break: break-word; overflow-x: auto;
+}
+
 /* ── password strength bar ────────────────────────────────────────── */
 
 .pw-strength {

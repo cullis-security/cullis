@@ -388,6 +388,7 @@ Tweaks via env on the dashboard process:
 |--------------------------------------|---------|----------------------------------------------------|
 | `CULLIS_CONNECTOR_NOTIFICATIONS=off` | `on`    | Disables the poller entirely (no popups, no badge) |
 | `CULLIS_CONNECTOR_POLL_S=30`         | `10`    | Poll interval, in seconds                          |
+| `CULLIS_FRONTDESK_SUPPORT_EMAIL`     | unset   | When set, the "Forgot password?" link on the login page renders a `mailto:` button pointing at this address (with the username pre-filled). When unset, the same link shows a CLI hint for the IT admin instead. Frontdesk bundle only. |
 
 Native notifications need the `dashboard` extra (which now pulls in
 `plyer`):
