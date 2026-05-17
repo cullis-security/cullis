@@ -70,6 +70,40 @@ _log = logging.getLogger("mcp_proxy")
 # we re-check.
 _VERIFY_SUCCESS = "SUCCESS"
 
+# P3 MAJOR-C — structured 401 detail bodies. Mirrors the
+# ``denied_reason_code`` token vocabulary from PR #751: SDK consumers,
+# dashboard banners, and admins reading raw 401 bodies all dispatch on
+# the stable ``reason`` token instead of substring-matching prose.
+# Only public-by-design fields (cert SAN, configured org_id) are
+# echoed back; cert PEM bytes / pubkey thumbprints / DB pins stay in
+# the warning log. See ``feedback_sqlalchemy_exc_leaks_bound_params``
+# for the controlled-disclosure principle.
+_REASON_CERT_NOT_VERIFIED = "client_cert_not_verified"
+_REASON_CERT_HEADER_MISSING = "client_cert_header_missing"
+_REASON_CERT_INVALID_PEM = "client_cert_invalid_pem"
+_REASON_CERT_NO_IDENTITY = "client_cert_no_parseable_identity"
+_REASON_ORG_MISMATCH = "client_cert_org_mismatch"
+_REASON_AGENT_UNKNOWN = "agent_unknown_or_inactive"
+_REASON_AGENT_PIN_UNAVAILABLE = "agent_cert_pin_unavailable"
+_REASON_CERT_PIN_MISMATCH = "client_cert_pin_mismatch"
+_REASON_TYPED_PRINCIPAL_UNKNOWN = "typed_principal_unknown"
+_REASON_TYPED_PRINCIPAL_NOT_ENROLLED = "typed_principal_not_yet_enrolled"
+_REASON_TYPED_PUBKEY_NOT_BOUND = "client_cert_pubkey_not_bound_to_principal"
+
+# Single docs anchor across all hints — one doc rewrite moves all
+# error messages without code churn.
+_DOCS_ANCHOR = "https://docs.cullis.io/runbook/mastio-mtls-auth"
+
+
+def _err(reason: str, hint: str, **extra: str) -> dict[str, str]:
+    """Build the structured ``HTTPException.detail`` body. Body shape:
+    ``{reason, hint, docs, **extra}``. ``extra`` is per-call-site
+    public context (expected_org, presented_org, principal_id, ...).
+    """
+    body: dict[str, str] = {"reason": reason, "hint": hint, "docs": _DOCS_ANCHOR}
+    body.update(extra)
+    return body
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PEM extraction + identity parsing
@@ -152,9 +186,11 @@ def _identity_from_cert(cert: x509.Certificate) -> tuple[str, str]:
          that pre-date the SAN URI extension. Same parsing rules as
          the canonical agent_id.
 
-    Raises 401 if neither yields a usable identity. The error
-    deliberately doesn't echo the cert bytes back — keeps the dep
-    diagnostic-quiet for would-be enumerators.
+    Raises 401 if neither yields a usable identity. The error body
+    includes the cert's first SAN URI + serial (both public-by-design
+    identifiers on every X.509 leaf) so an operator can match the
+    rejected cert against the ``/v1/principals/csr`` audit row, but
+    never echoes the cert DER / pubkey thumbprint / DB internals.
     """
     try:
         san_ext = cert.extensions.get_extension_for_class(
@@ -177,7 +213,13 @@ def _identity_from_cert(cert: x509.Certificate) -> tuple[str, str]:
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="client cert has no parseable SPIFFE SAN or CN identity",
+        detail=_err(
+            _REASON_CERT_NO_IDENTITY,
+            "Cert has no SPIFFE URI SAN and no '<org>::<agent>' CN; "
+            "re-mint via the Connector enroll wizard or /v1/principals/csr.",
+            cert_san=_cert_first_spiffe(cert),
+            cert_serial=_cert_serial_hex(cert),
+        ),
     )
 
 
@@ -309,14 +351,24 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
         # gate. Fail closed.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="client cert not verified",
+            detail=_err(
+                _REASON_CERT_NOT_VERIFIED,
+                "nginx did not stamp X-SSL-Client-Verify=SUCCESS — "
+                "request bypassed the mTLS sidecar or the cert chain "
+                "failed validation; check the Mastio nginx access log.",
+                presented_verify=_strip_log_controls(verify) or "<empty>",
+            ),
         )
 
     escaped_pem = request.headers.get("X-SSL-Client-Cert") or ""
     if not escaped_pem:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="client cert header missing",
+            detail=_err(
+                _REASON_CERT_HEADER_MISSING,
+                "X-SSL-Client-Cert header is empty — request reached "
+                "mcp-proxy without traversing the mTLS sidecar.",
+            ),
         )
 
     pem = _decode_escaped_pem(escaped_pem)
@@ -325,7 +377,12 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="client cert is not valid PEM",
+            detail=_err(
+                _REASON_CERT_INVALID_PEM,
+                "X-SSL-Client-Cert payload is not a valid X.509 PEM — "
+                "check the nginx ``proxy_set_header $ssl_client_escaped_cert``"
+                " directive.",
+            ),
         )
 
     org_id_from_cert, agent_name = _identity_from_cert(cert)
@@ -342,7 +399,16 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="client cert org mismatch",
+            detail=_err(
+                _REASON_ORG_MISMATCH,
+                "The Connector cert was issued by a different Mastio "
+                "Org. Re-run the enroll wizard against the Mastio whose "
+                "org_id matches ``expected_org``, or correct "
+                "``MCP_PROXY_ORG_ID`` if the Mastio config drifted.",
+                expected_org=expected_org,
+                presented_org=org_id_from_cert,
+                agent_name=agent_name,
+            ),
         )
 
     canonical_id = f"{org_id_from_cert}::{agent_name}"
@@ -388,7 +454,15 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"{kind} principal unknown",
+                detail=_err(
+                    _REASON_TYPED_PRINCIPAL_UNKNOWN,
+                    f"No row exists for ``{canonical_id}`` in "
+                    f"``local_{kind}_principals``; pre-create via "
+                    f"``POST /v1/admin/{kind}s`` (admin dashboard) "
+                    "before the first /v1/principals/csr.",
+                    principal_id=canonical_id,
+                    principal_kind=kind,
+                ),
             )
         if stored_pubkey is None:
             # Row exists (e.g. admin pre-created via /v1/admin/users)
@@ -406,7 +480,15 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"{kind} principal not yet enrolled",
+                detail=_err(
+                    _REASON_TYPED_PRINCIPAL_NOT_ENROLLED,
+                    f"Principal ``{canonical_id}`` exists but no CSR has "
+                    "been signed yet (no pubkey to pin against); have "
+                    "the end-user complete the Connector enroll flow "
+                    "before retrying.",
+                    principal_id=canonical_id,
+                    principal_kind=kind,
+                ),
             )
         from mcp_proxy.registry.principals_csr import pubkey_thumbprint_sha256
         presented_pubkey = pubkey_thumbprint_sha256(cert.public_key())
@@ -434,7 +516,18 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="client cert pubkey not bound to principal",
+                detail=_err(
+                    _REASON_TYPED_PUBKEY_NOT_BOUND,
+                    "Cert's SPKI SHA-256 does not match the TOFU pin "
+                    f"stored for ``{canonical_id}``. Rotate the pin via "
+                    "the admin dashboard if the key rotation was "
+                    "legitimate; otherwise treat as a forged-cert "
+                    "incident.",
+                    principal_id=canonical_id,
+                    principal_kind=kind,
+                    cert_serial=_cert_serial_hex(cert),
+                    cert_san=_cert_first_spiffe(cert),
+                ),
             )
         agent_data = None
     else:
@@ -446,7 +539,13 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="agent unknown or inactive",
+                detail=_err(
+                    _REASON_AGENT_UNKNOWN,
+                    "No active ``internal_agents`` row for "
+                    f"``{canonical_id}``; re-enroll via the Connector "
+                    "or re-activate from the admin dashboard.",
+                    agent_id=canonical_id,
+                ),
             )
 
         # Pin the presented cert against the stored one. A renewal that
@@ -462,7 +561,13 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="agent cert pin unavailable",
+                detail=_err(
+                    _REASON_AGENT_PIN_UNAVAILABLE,
+                    f"Stored ``cert_pem`` for ``{canonical_id}`` is "
+                    "unparseable; inspect the row and re-issue the "
+                    "cert if the PEM is truncated.",
+                    agent_id=canonical_id,
+                ),
             )
         if not hmac.compare_digest(_cert_der_digest(cert), stored_digest):
             _log.warning(
@@ -472,7 +577,17 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="client cert does not match the registered identity",
+                detail=_err(
+                    _REASON_CERT_PIN_MISMATCH,
+                    "Presented cert's DER digest does not match the "
+                    f"one stored for ``{canonical_id}`` (likely a stale "
+                    "cert post-rotation); re-enroll the Connector, or "
+                    "treat as forged if the caller insists their cert "
+                    "is current.",
+                    agent_id=canonical_id,
+                    cert_serial=_cert_serial_hex(cert),
+                    cert_san=_cert_first_spiffe(cert),
+                ),
             )
 
     settings = get_settings()
