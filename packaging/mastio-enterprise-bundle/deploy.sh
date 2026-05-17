@@ -15,14 +15,18 @@
 #     PAT issued at deal close.
 #
 # Modes:
-#   (default)         standalone enterprise Mastio
-#   --down            stop + remove containers
-#   --pull            re-pull image
+#   (default)                   standalone enterprise Mastio
+#   --down                      stop + remove containers
+#   --pull                      re-pull image
+#   --upgrade-bundle <version>  snapshot user state to ./backups/, bump
+#                               CULLIS_MASTIO_VERSION in proxy.env, pull
+#                               the new image, restart with --wait
 #
 # Usage:
 #   ./deploy.sh
 #   CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh
 #   ./deploy.sh --down
+#   ./deploy.sh --upgrade-bundle 0.4.5
 #
 set -euo pipefail
 
@@ -45,14 +49,37 @@ err()  { echo -e "  ${RED}✗${RESET}  $1"; }
 die()  { err "$1"; exit 1; }
 step() { echo -e "\n${BOLD}── $1 ──${RESET}"; }
 
+# Source shared backup helpers (same file the open-core mastio-bundle
+# uses, so the two bundles cannot drift on backup semantics). MAJOR-5
+# of imp/p3-operability-audit.md.
+# shellcheck source=../_common-deploy-helpers.sh
+source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+
 MODE="up"
 PULL=0
-for arg in "$@"; do
+UPGRADE_BUNDLE_TO=""
+# Manual loop because --upgrade-bundle consumes the next positional
+# arg; the original ``for arg in "$@"`` cannot shift mid-iteration.
+while [[ $# -gt 0 ]]; do
+    arg="$1"
     case "$arg" in
-        --down)  MODE="down" ;;
-        --pull)  PULL=1 ;;
+        --down)  MODE="down"; shift ;;
+        --pull)  PULL=1; shift ;;
+        --upgrade-bundle)
+            shift
+            [[ $# -gt 0 && "$1" != --* ]] || die "--upgrade-bundle requires a version (e.g. --upgrade-bundle 0.4.5)"
+            UPGRADE_BUNDLE_TO="$1"
+            MODE="upgrade_bundle"
+            shift
+            ;;
+        --upgrade-bundle=*)
+            UPGRADE_BUNDLE_TO="${arg#--upgrade-bundle=}"
+            [[ -n "$UPGRADE_BUNDLE_TO" ]] || die "--upgrade-bundle= requires a value"
+            MODE="upgrade_bundle"
+            shift
+            ;;
         -h|--help)
-            sed -n '2,30p' "$0" | sed 's/^# \?//'
+            sed -n '2,35p' "$SCRIPT_DIR/deploy.sh" | sed 's/^# \?//'
             exit 0
             ;;
         *) die "unknown arg: $arg (use --help)" ;;
@@ -79,6 +106,87 @@ if [[ "$MODE" == "down" ]]; then
     step "stopping cullis-mastio-enterprise stack"
     docker compose --env-file proxy.env down
     ok "stack stopped"
+    exit 0
+fi
+
+# ── upgrade-bundle (image-only, pre-upgrade backup) ─────────────────────────
+# Customer-facing recovery target: every Mastio Enterprise upgrade lands
+# a timestamped snapshot of proxy.env + ./data + ./nginx-certs under
+# ./backups/pre-upgrade-<version>-<ts>/ BEFORE the new image is pulled.
+# Operator can ``cp -a`` it back on the spot if the new release misbehaves
+# (or use ./restore.sh for a full GPG-encrypted off-host copy, see
+# backup.sh — that path is for compliance archives, not in-place
+# rollbacks).
+#
+# Mirrors the open-core ``--upgrade-bundle`` pattern but stops short of
+# downloading a tarball — the enterprise bundle's scripts ship with the
+# private image release, not a public GitHub tarball, so an image-only
+# bump is the right operation. memoria
+# feedback_bundle_upgrade_must_use_deploy_sh.md: never invoke compose
+# plain, always --wait and route through deploy.sh so
+# COMPOSE_PROJECT_NAME and env-file stay aligned.
+if [[ "$MODE" == "upgrade_bundle" ]]; then
+    step "upgrading cullis-mastio-enterprise bundle to ${UPGRADE_BUNDLE_TO}"
+
+    # Version safety: same regex as mcp_proxy.dashboard.update_check
+    # _TAG_SAFE_RE (PR #668). Refuses anything that could land as a
+    # shell metacharacter in the compose / pull argv.
+    if [[ ! "$UPGRADE_BUNDLE_TO" =~ ^[A-Za-z0-9.\-]+$ ]]; then
+        die "refusing version with unsafe characters: ${UPGRADE_BUNDLE_TO} (allowed: A-Z a-z 0-9 . -)"
+    fi
+
+    # 1. Snapshot user state. Helper writes to ./backups/<label>-<ts>/
+    # and chowns the copy back to the invoking user (busybox-root
+    # pattern preserves 0600 mcp_proxy.db + mastio-server.key reads).
+    _backup_user_state "pre-upgrade-${UPGRADE_BUNDLE_TO}"
+
+    # 2. Pin the new version in proxy.env so this run AND every future
+    # ./deploy.sh see the new tag without re-sourcing. Idempotent: any
+    # pre-existing CULLIS_MASTIO_VERSION line is dropped first.
+    sed -i.bak "/^#*[[:space:]]*CULLIS_MASTIO_VERSION=/d" "$SCRIPT_DIR/proxy.env"
+    rm -f "$SCRIPT_DIR/proxy.env.bak"
+    echo "CULLIS_MASTIO_VERSION=${UPGRADE_BUNDLE_TO}" >> "$SCRIPT_DIR/proxy.env"
+    export CULLIS_MASTIO_VERSION="$UPGRADE_BUNDLE_TO"
+    ok "proxy.env: CULLIS_MASTIO_VERSION=${UPGRADE_BUNDLE_TO}"
+
+    # 3. Down the stack BEFORE pulling — running containers do not pick
+    # up a new image and force-recreating live would leave an open
+    # SQLite WAL on /data mid-restart. Use the env-file flag so
+    # COMPOSE_PROJECT_NAME inherits correctly even if a stale shell
+    # forgot the export.
+    step "stopping current stack"
+    docker compose --env-file proxy.env down || warn "down returned non-zero — continuing (may already be stopped)"
+
+    # 4. Pull the new image. Fails fast if the PAT is unauthorized
+    # for the new tag.
+    step "pulling ${UPGRADE_BUNDLE_TO}"
+    if ! docker compose --env-file proxy.env pull; then
+        err "pull failed — restore proxy.env from backup: ${BACKUP_DIR}/proxy.env"
+        die "aborting upgrade"
+    fi
+
+    # 5. Up with --wait so we block until the healthcheck passes (memoria
+    # feedback_frontdesk_deploy_force_recreate_mcp_proxy_race).
+    step "starting ${UPGRADE_BUNDLE_TO}"
+    docker compose --env-file proxy.env up -d --wait
+
+    echo
+    echo -e "${GREEN}${BOLD}Cullis Mastio Enterprise upgraded to ${UPGRADE_BUNDLE_TO}.${RESET}"
+    echo
+    echo -e "  Pre-upgrade backup: ${BACKUP_DIR#$SCRIPT_DIR/}/"
+    echo -e "  Restore in case of regression:"
+    echo -e "    ./deploy.sh --down"
+    echo -e "    cp -a ${BACKUP_DIR#$SCRIPT_DIR/}/proxy.env ./proxy.env"
+    echo -e "    cp -a ${BACKUP_DIR#$SCRIPT_DIR/}/data/.        ./data/"
+    echo -e "    cp -a ${BACKUP_DIR#$SCRIPT_DIR/}/nginx-certs/. ./nginx-certs/"
+    echo -e "    CULLIS_MASTIO_VERSION=<previous-tag> ./deploy.sh"
+    echo
+    echo -e "  Or the GPG-encrypted off-host copy from ./backup.sh + ./restore.sh"
+    echo -e "  if you need a compliance-grade archive (different flow, slower)."
+    echo
+    echo -e "  Pre-upgrade snapshots are NOT auto-pruned. Remove confirmed-good"
+    echo -e "  ones with:  rm -rf backups/pre-upgrade-*"
+    echo
     exit 0
 fi
 

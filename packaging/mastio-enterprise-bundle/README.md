@@ -107,16 +107,68 @@ cross-worker replay enforcement, point the Mastio at Redis via
 deploys). For sustained Tier 2 throughput (>500 RPS under p99 1s),
 batched audit chain (ADR-033) lands in Mastio v0.5.
 
-## Upgrading
+## Upgrading the bundle
+
+Recommended: use the wrapped path. Snapshots `proxy.env` + `./data/` +
+`./nginx-certs/` to `./backups/pre-upgrade-<version>-<timestamp>/`
+**before** anything mutates, so an operator who hits a regression
+mid-upgrade has an obvious in-place restore target.
 
 ```bash
-# Edit proxy.env, bump CULLIS_MASTIO_VERSION to the new tag.
+./deploy.sh --upgrade-bundle 0.4.5
+```
+
+Effect:
+
+1. Snapshot of the bind-mount data (`proxy.env`, `./data/`, `./nginx-certs/`)
+   into `./backups/pre-upgrade-0.4.5-<UTC-ts>/`. Files with 0600 perms
+   (`mcp_proxy.db`, `mastio-server.key`) are copied through a root
+   `busybox:stable` sidecar then chown'd back to the invoking operator
+   — same pattern the open-core `mastio-bundle` uses, shared via
+   `packaging/_common-deploy-helpers.sh` so the two bundles cannot drift.
+2. `docker compose --env-file proxy.env down`
+   (project-scoped to `cullis-mastio-enterprise`).
+3. `CULLIS_MASTIO_VERSION` rewritten in `proxy.env`.
+4. `docker compose --env-file proxy.env pull` against the new tag (fails
+   fast if the GHCR PAT is unauthorized for the new release).
+5. `docker compose --env-file proxy.env up -d --wait` blocks until the
+   healthcheck passes — never returns "started" before the listener
+   binds (memoria `feedback_frontdesk_deploy_force_recreate_mcp_proxy_race`).
+
+Restore in case of regression:
+
+```bash
+./deploy.sh --down
+cp -a backups/pre-upgrade-0.4.5-<ts>/proxy.env       ./proxy.env
+cp -a backups/pre-upgrade-0.4.5-<ts>/data/.          ./data/
+cp -a backups/pre-upgrade-0.4.5-<ts>/nginx-certs/.   ./nginx-certs/
+CULLIS_MASTIO_VERSION=<previous-tag> ./deploy.sh
+```
+
+Pre-upgrade snapshots are **not** auto-pruned. Once the new release is
+proven stable, remove them by hand:
+
+```bash
+rm -rf backups/pre-upgrade-*
+```
+
+For a compliance-grade, GPG-encrypted, off-host archive (different shape,
+slower) use `./backup.sh` + `./restore.sh` instead — that pair is for
+disaster recovery and audit retention, not for in-place rollbacks.
+
+### Legacy image-only path
+
+The pre-`--upgrade-bundle` workflow still works, but skips the snapshot
+step:
+
+```bash
 sed -i 's/^CULLIS_MASTIO_VERSION=.*/CULLIS_MASTIO_VERSION=<new>/' proxy.env
 ./deploy.sh --pull
 ```
 
 Operator-side data (`./data/mcp_proxy.db`, `./nginx-certs/`,
-`./saml-keys/`) survives the image bump.
+`./saml-keys/`) survives the image bump in both flows. The wrapped path
+is the one to run in a regulated environment.
 
 ## Troubleshooting
 
