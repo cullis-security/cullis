@@ -192,6 +192,28 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.redis.pool import init_redis
     await init_redis(settings.redis_url)
 
+    # 2c. Cache the capability-tier matrix once at boot (ADR-032 F5
+    # follow-up #5). The executor's tier gate
+    # (``_resolve_tier_matrix`` in ``mcp_proxy/tools/executor.py``)
+    # reads ``app.state.tier_matrix`` on every tool call and falls
+    # back to ``load_default_tier_matrix()`` (disk YAML read) when
+    # absent. Without this stash every gated tool call re-parses
+    # ``enterprise-kit/policy/capability-tiers.yaml`` — wasted I/O at
+    # scale. Boot-time load caches the parsed matrix once; the gate
+    # then hits an in-memory attribute. A failure here intentionally
+    # does NOT abort startup: the per-call fallback remains, matching
+    # the permissive-default semantics the gate already implements.
+    try:
+        from mcp_proxy.policy.tier_matrix import load_default_tier_matrix
+        app.state.tier_matrix = load_default_tier_matrix()
+        _log.info("tier_matrix loaded at lifespan startup")
+    except Exception as exc:  # noqa: BLE001 — defensive, do not block boot
+        _log.warning(
+            "tier_matrix load failed at lifespan, falling back to "
+            "per-call disk read: %s", exc,
+        )
+        app.state.tier_matrix = None
+
     # 3. Initialize JWKS client (for external JWT validation)
     from mcp_proxy.auth.jwks_client import JWKSClient
     _jwks_client = JWKSClient(
