@@ -5,11 +5,17 @@ on:
     branches: [main]
     paths:
       - 'frontend/cullis-chat/**'
-      - '.github/workflows/cullis-chat.yml'
   pull_request:
     paths:
       - 'frontend/cullis-chat/**'
-      - '.github/workflows/cullis-chat.yml'
+# NOTE: ``.github/workflows/cullis-chat.yml`` deliberately NOT in the
+# path filter so editing the workflow itself does not trigger a
+# Playwright run. Self-hosted runner cannot ``--with-deps`` install
+# Chromium system libraries (needs sudo, runner has none). Until the
+# VM is pre-provisioned with the Playwright apt deps, the heavy e2e
+# step is skipped on workflow-only edits and only runs on real
+# frontend changes (where the operator can choose to pre-install).
+# Tracked as P3 admin follow-up.
 
 concurrency:
   group: cullis-chat-${{ github.ref }}

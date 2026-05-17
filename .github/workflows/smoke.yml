@@ -107,6 +107,15 @@ jobs:
         env:
           PKI_KEY_TYPE: ${{ matrix.key_type }}
           PROXY_DB: ${{ matrix.proxy_db }}
+          # Pin a unique docker compose project name per matrix entry
+          # + run id. Self-hosted runner has 3 agents that may execute
+          # smoke matrix entries in parallel on the SAME docker daemon,
+          # which races on container names, network names, and the
+          # Postgres state in compose.postgres.yml (PR #779 surfaced
+          # duplicate-key violations on ``ix_federation_events_org_seq``
+          # when rsa+ec+postgres entries ran simultaneously). The
+          # run id keeps successive CI runs isolated too.
+          COMPOSE_PROJECT_NAME: cullis-smoke-${{ matrix.key_type }}-${{ matrix.proxy_db }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           ${{ matrix.script }}
         # smoke.sh already dumps the last 100 lines of each critical

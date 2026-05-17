@@ -91,6 +91,13 @@ jobs:
         with:
           version: v0.26.0
           node_image: kindest/node:v1.31.4
+          # Unique cluster name per matrix entry + run id. Self-hosted
+          # runner has 3 agents that may run the matrix (cullis,
+          # cullis-mastio) in parallel on the SAME docker daemon. kind
+          # default cluster name "chart-testing" would collide; both
+          # entries would target the same control plane and fight on
+          # node names.
+          cluster_name: cullis-helm-${{ matrix.chart }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Build the chart's application image from source and load it into
       # the kind node. values.yaml defaults point at ghcr.io/... images
