@@ -172,6 +172,27 @@ is the one to run in a regulated environment.
 
 ## Troubleshooting
 
+### `not a directory: mount src=... dst=...` on `compose up`
+
+Symptom: `docker compose up` (or `./deploy.sh`) fails with `Error
+response from daemon: not a directory: mount src=..., dst=...`
+(bind-mount file→file mismatch).
+
+Cause: orphan container shim from a previous failed `compose up`
+(P3 MINOR-I). The previous attempt's container created the dst path
+as a *directory* (docker's default when the bind-mount target does
+not exist inside the image), then crashed. Every retry sees the
+file/dir type mismatch and refuses to mount.
+
+Fix: `./deploy.sh` now sweeps these shims before every `up`. If you
+hit the error from a manual `docker compose` invocation outside the
+wrapper, recover with:
+
+```bash
+docker rm -f $(docker ps -aq --filter "label=com.docker.compose.project=cullis-mastio-enterprise")
+./deploy.sh
+```
+
 ### Troubleshooting: tutti gli agent rispondono 401 dopo restart VM
 
 Sintomo: dopo `docker compose restart` o reboot VM, tutti i Connector ricevono 401

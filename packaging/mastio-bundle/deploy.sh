@@ -421,8 +421,15 @@ _cmd_upgrade_bundle() {
     # is bound).
     step "Pulling image + restarting"
     $COMPOSE $COMPOSE_FILES --env-file proxy.env pull
-    $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait \
-        || $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+    # Sweep orphan shims (P3 MINOR-I) before the up so a previously
+    # crashed container does not drift bind-mount dst paths into dirs.
+    _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+    if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait; then
+        if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d; then
+            _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+            exit 1
+        fi
+    fi
     ok "Stack restarted on ${version}"
 
     rm -f "$tarball_local"
@@ -808,8 +815,17 @@ fi
 CERT_DIR="${CULLIS_CERTS_DIR:-$SCRIPT_DIR/certs}"
 mkdir -p "$CERT_DIR"
 
+# Sweep orphan container shims left over from any previous failed
+# ``compose up`` (P3 MINOR-I). Filter on COMPOSE_PROJECT_NAME so we
+# only touch containers from this bundle's stack; sibling Frontdesk
+# / open-core / enterprise projects on the same host stay untouched.
+_cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+
 echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d${RESET}"
-$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d; then
+    _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+    exit 1
+fi
 ok "Containers started"
 
 # ── Wait for health ─────────────────────────────────────────────────────────

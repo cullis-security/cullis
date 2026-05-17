@@ -191,8 +191,14 @@ if [[ "$MODE" == "upgrade_bundle" ]]; then
 
     # 5. Up with --wait so we block until the healthcheck passes (memoria
     # feedback_frontdesk_deploy_force_recreate_mcp_proxy_race).
+    # Sweep orphan shims first (P3 MINOR-I) so a previously crashed
+    # container does not drift bind-mount dst paths into dirs.
     step "starting ${UPGRADE_BUNDLE_TO}"
-    docker compose --env-file proxy.env up -d --wait
+    _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+    if ! docker compose --env-file proxy.env up -d --wait; then
+        _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+        exit 1
+    fi
 
     echo
     echo -e "${GREEN}${BOLD}Cullis Mastio Enterprise upgraded to ${UPGRADE_BUNDLE_TO}.${RESET}"
@@ -257,7 +263,14 @@ step "bringing up cullis-mastio-enterprise"
 if [[ "$PULL" == "1" ]]; then
     docker compose --env-file proxy.env pull
 fi
-docker compose --env-file proxy.env up -d --wait
+# Sweep orphan shims left over from any previous failed ``compose up``
+# (P3 MINOR-I) before the primary up. Scoped to COMPOSE_PROJECT_NAME so
+# sibling open-core stacks are untouched.
+_cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+if ! docker compose --env-file proxy.env up -d --wait; then
+    _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+    exit 1
+fi
 ok "stack up"
 
 # ── post-up: plugin discovery report ────────────────────────────────────────
