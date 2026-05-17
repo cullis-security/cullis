@@ -122,6 +122,48 @@ PROXY_PUBLIC_URL=https://mastio.myorg.example.com \
 `MCP_PROXY_DASHBOARD_SIGNING_KEY` and refuses to run without
 `BROKER_URL` / `PROXY_PUBLIC_URL` env vars.
 
+## Database backend
+
+The default is SQLite at `./data/mcp_proxy.db`. A.1b stress test (May
+2026) confirmed SQLite WAL is ship-safe with 4 uvicorn workers — 0
+audit-chain integrity errors in 472k concurrent audit rows. For the
+Tier 2 throughput envelope (500+ concurrent agents under p99 1s), a
+hosted Postgres backend is on the roadmap.
+
+**Swapping `MCP_PROXY_DATABASE_URL` after first boot is NOT supported.**
+The Mastio derives its Org CA, `org_id`, and admin password hash from
+the active database on first boot (ADR-006). Pointing an already-
+enrolled Mastio at an empty Postgres causes the lifespan to mint a
+fresh Org CA — every Connector enrolled against the old CA will then
+fail TLS verification on `/v1/principals/csr` with no useful diagnostic
+on the client side.
+
+`./deploy.sh` refuses to start when it detects:
+
+  - `MCP_PROXY_DATABASE_URL` in `proxy.env` pointing at Postgres
+    (`postgresql+...`, `postgres://...`), AND
+  - a non-empty `./data/mcp_proxy.db` on the host bind mount.
+
+Pick one explicitly:
+
+  1. **Roll back to SQLite** (recommended for accidental swaps):
+     remove (or comment out) the Postgres line in `proxy.env` and
+     `./deploy.sh --pull`. Every previously enrolled Connector keeps
+     working.
+  2. **Wipe and re-enroll** (data-loss path): delete `./data/` and
+     `./nginx-certs/`, then `./deploy.sh`. The new Postgres-backed
+     Mastio mints a fresh Org CA; every agent must re-run the enroll
+     flow against the new CA.
+  3. **`--accept-data-loss`**: skip the guard. Same outcome as 2, but
+     the orphan SQLite file is left on disk for forensics. Use only
+     after backing up `./data/mcp_proxy.db` and confirming you have a
+     way to re-enroll every agent.
+
+A future bundle release will ship a `--migrate-db` flow that dumps the
+existing SQLite state and loads it into Postgres without re-deriving
+the Org CA. Until then, treat the SQLite → Postgres jump as
+"redeploy from scratch".
+
 ## What's in the bundle
 
 ```
