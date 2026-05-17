@@ -43,6 +43,7 @@ import os
 import pathlib
 import stat
 import subprocess
+import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 PKG_ROOT = REPO_ROOT / "packaging"
@@ -484,3 +485,98 @@ def test_readmes_document_not_a_directory_recovery():
         # The recovery command (or its key parts) must appear, so the
         # README is actionable rather than just descriptive.
         assert "docker rm -f" in txt, f"{readme}: missing recovery command"
+
+
+# ── Wiring regression: hint must fire on real compose-up failure ────────────
+
+
+def test_hint_wiring_captures_rc_before_if_negate(tmp_path):
+    """Regression guard for the BLOCKER caught in #778 release review.
+
+    Pre-fix the call sites looked like::
+
+        if ! $COMPOSE ... up -d; then
+            _hint_on_bind_mount_failure $? "$PROJECT"   # always 0
+            exit 1
+        fi
+
+    Bash rewrites $? to 0 inside the success branch of ``!``, so the
+    hint helper received 0 and early-returned: dead code in every
+    bundle. Unit tests on the helper alone could not catch this
+    because they passed a literal non-zero status. This test drives
+    a fake docker shim that fails the ``up`` step (exit 42), exercises
+    the same shape the bundle deploy.sh uses post-fix (capture $rc
+    BEFORE the ``if``), and asserts the hint banner reaches stderr.
+    """
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    log = tmp_path / "docker.log"
+    log.write_text("")
+    docker = stub / "docker"
+    docker.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            echo "$@" >> {log}
+            # docker compose ... up -d -> fail with 42 to simulate the
+            # bind-mount "not a directory" error from the wild.
+            for arg in "$@"; do
+                if [[ "$arg" == "up" ]]; then
+                    echo 'failed: not a directory: mount src=... dst=...' >&2
+                    exit 42
+                fi
+            done
+            # All other invocations (ps --filter, network ls, ...) succeed.
+            exit 0
+            """
+        )
+    )
+    docker.chmod(docker.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    helper = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "packaging" / "_common-deploy-helpers.sh"
+    )
+    runner = tmp_path / "runner.sh"
+    runner.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            set +e
+            # shellcheck source={helper}
+            source "{helper}"
+            export COMPOSE_PROJECT_NAME=fake-project
+            docker compose --env-file fake.env up -d --wait
+            _rc=$?
+            if [[ $_rc -ne 0 ]]; then
+                _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
+                exit 1
+            fi
+            exit 0
+            """
+        )
+    )
+    runner.chmod(runner.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    env = os.environ.copy()
+    env["PATH"] = f"{stub}:{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", str(runner)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 1, (
+        f"wrapper expected exit 1 from hint path, got {result.returncode}; "
+        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    # Hint banner must reach stderr. Pre-fix this assertion failed
+    # because $? was 0 inside the success branch of ``!`` and the
+    # helper early-returned without printing.
+    assert (
+        "orphan" in result.stderr
+        or "not a directory" in result.stderr
+        or "shim" in result.stderr
+    ), f"hint banner not emitted on rc=42; stderr={result.stderr!r}"
+    assert "docker rm -f" in result.stderr
+    assert "fake-project" in result.stderr

@@ -424,9 +424,18 @@ _cmd_upgrade_bundle() {
     # Sweep orphan shims (P3 MINOR-I) before the up so a previously
     # crashed container does not drift bind-mount dst paths into dirs.
     _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
-    if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait; then
-        if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d; then
-            _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+    # NOTE: capture $? BEFORE the `if`. Bash semantics: when `!` negates
+    # a command's exit status, $? inside the success branch is 0 (the
+    # `!` rewrote the status), so passing $? straight to the hint
+    # helper would always send 0 and early-return — the helper would
+    # never fire. P3 MINOR-I review caught this dead-code wiring.
+    $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait
+    _rc=$?
+    if [[ $_rc -ne 0 ]]; then
+        $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+        _rc=$?
+        if [[ $_rc -ne 0 ]]; then
+            _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
             exit 1
         fi
     fi
@@ -822,8 +831,12 @@ mkdir -p "$CERT_DIR"
 _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
 
 echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d${RESET}"
-if ! $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d; then
-    _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+# Capture exit BEFORE the if-else: `!` negation rewrites $? to 0 inside
+# the branch, which would make _hint_on_bind_mount_failure dead code.
+$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+_rc=$?
+if [[ $_rc -ne 0 ]]; then
+    _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
     exit 1
 fi
 ok "Containers started"

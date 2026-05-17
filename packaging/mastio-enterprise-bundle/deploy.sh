@@ -195,8 +195,13 @@ if [[ "$MODE" == "upgrade_bundle" ]]; then
     # container does not drift bind-mount dst paths into dirs.
     step "starting ${UPGRADE_BUNDLE_TO}"
     _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
-    if ! docker compose --env-file proxy.env up -d --wait; then
-        _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+    # Capture exit BEFORE the if: bash rewrites $? to 0 inside the
+    # success branch of `!`, which would dead-code the hint. MINOR-I
+    # review.
+    docker compose --env-file proxy.env up -d --wait
+    _rc=$?
+    if [[ $_rc -ne 0 ]]; then
+        _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
         exit 1
     fi
 
@@ -267,8 +272,12 @@ fi
 # (P3 MINOR-I) before the primary up. Scoped to COMPOSE_PROJECT_NAME so
 # sibling open-core stacks are untouched.
 _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
-if ! docker compose --env-file proxy.env up -d --wait; then
-    _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+# Capture exit BEFORE the if: bash rewrites $? to 0 inside the success
+# branch of `!`, which would dead-code the hint. MINOR-I review.
+docker compose --env-file proxy.env up -d --wait
+_rc=$?
+if [[ $_rc -ne 0 ]]; then
+    _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
     exit 1
 fi
 ok "stack up"

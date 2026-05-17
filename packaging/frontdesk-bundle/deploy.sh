@@ -745,8 +745,12 @@ fi
 _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
 
 echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env ${COMPOSE_PROFILE_FLAGS[*]} up -d${RESET}"
-if ! $COMPOSE --env-file frontdesk.env "${COMPOSE_PROFILE_FLAGS[@]}" up -d; then
-    _hint_on_bind_mount_failure $? "$COMPOSE_PROJECT_NAME"
+# Capture exit BEFORE the if-branch: `!` negation rewrites $? to 0 in
+# the success branch, dead-coding the hint helper. P3 MINOR-I review.
+$COMPOSE --env-file frontdesk.env "${COMPOSE_PROFILE_FLAGS[@]}" up -d
+_rc=$?
+if [[ $_rc -ne 0 ]]; then
+    _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
     exit 1
 fi
 ok "Containers started"
