@@ -197,7 +197,7 @@ Pick one explicitly:
      the orphan SQLite files (`mcp_proxy.db`, `mcp_proxy.db-wal`,
      `mcp_proxy.db-shm`) garbage-collected from `./data/` for you so
      the next `du -sh ./data` doesn't surface dead weight. Back up the
-     SQLite DB by hand first if you want a forensic copy — once the
+     SQLite DB by hand first if you want a forensic copy. Once the
      flag runs, the file is gone. Use only after confirming you have a
      way to re-enroll every agent.
 
