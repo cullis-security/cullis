@@ -76,6 +76,10 @@ jobs:
           cp packaging/mastio-enterprise-bundle/proxy.env.example   "${STAGING}/"
           cp packaging/mastio-enterprise-bundle/README.md           "${STAGING}/"
           cp -r packaging/mastio-enterprise-bundle/nginx            "${STAGING}/"
+          # Shared deploy helpers (busybox-root wipe, env loaders).
+          # deploy.sh sources this beside itself in the shipped tarball,
+          # not the source-tree relative ../ path.
+          cp packaging/_common-deploy-helpers.sh                    "${STAGING}/"
 
           chmod +x "${STAGING}/deploy.sh" "${STAGING}/backup.sh" "${STAGING}/restore.sh"
 
@@ -89,6 +93,7 @@ jobs:
               "restore.sh" \
               "proxy.env.example" \
               "README.md" \
+              "_common-deploy-helpers.sh" \
               "nginx/mastio/00-maps.conf" \
               "nginx/mastio/mastio.conf"; do
               if [ ! -f "${STAGING}/${f}" ]; then

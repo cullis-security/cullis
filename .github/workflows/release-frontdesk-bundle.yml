@@ -81,6 +81,11 @@ jobs:
           cp packaging/frontdesk-bundle/mint-tls-cert.sh            "${STAGING}/"
           cp -r packaging/frontdesk-bundle/nginx                    "${STAGING}/"
           cp -r packaging/frontdesk-bundle/nginx-tls                "${STAGING}/"
+          # Shared deploy helpers (busybox-root wipe, env loaders).
+          # deploy.sh sources this beside itself so the customer
+          # tarball must ship a sibling copy, not the source-tree
+          # relative path.
+          cp packaging/_common-deploy-helpers.sh                    "${STAGING}/"
 
           chmod +x "${STAGING}/deploy.sh" \
                    "${STAGING}/generate-frontdesk-env.sh" \
@@ -100,6 +105,7 @@ jobs:
               "mint-tls-cert.sh" \
               "frontdesk.env.example" \
               "README.md" \
+              "_common-deploy-helpers.sh" \
               "nginx/default.conf" \
               "nginx-tls/default.conf" \
               "nginx-tls/00-maps.conf"; do

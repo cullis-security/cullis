@@ -16,7 +16,8 @@
 #   (default)         standalone Mastio, private docker network
 #   --shared-broker   join the broker's docker network (Court must be up)
 #   --prod            fail-fast on insecure defaults + prod overlay
-#   --down            stop + remove containers
+#   --down            stop + remove containers (keeps bind dirs intact)
+#   --down -v         stop + wipe bind dirs (data/, nginx-certs/, certs/)
 #   --pull            re-pull image (otherwise pulled on first up)
 #
 # Examples:
@@ -89,8 +90,21 @@ _volume_full_name() {
 # Sourcing here, before any ADR-030 helper that references them, keeps
 # the call order intact and the diff against the pre-extraction layout
 # limited to a deletion + a single source line.
+#
+# Layout: in the source tree the helper lives at
+# ``packaging/_common-deploy-helpers.sh`` (parent of this bundle dir).
+# Release workflows cp it as a sibling so the shipped tarball can be
+# extracted standalone (``cullis-mastio-bundle/{deploy.sh,_common-
+# deploy-helpers.sh}``) without dragging the ``packaging/`` parent.
+# Prefer the sibling copy when present; fall back to the source-tree
+# relative path otherwise so dev shells (``./packaging/mastio-bundle/
+# deploy.sh``) keep working from a fresh git clone.
 # shellcheck source=../_common-deploy-helpers.sh
-source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+if [ -f "$SCRIPT_DIR/_common-deploy-helpers.sh" ]; then
+    source "$SCRIPT_DIR/_common-deploy-helpers.sh"
+else
+    source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+fi
 
 # mkdir + chown the host bind targets. The chown is the same operation
 # the init-permissions compose service runs at boot, just earlier so a
@@ -444,7 +458,20 @@ Options:
                               the Court compose project to be up.
   --prod                      Production: fail-fast on insecure defaults,
                               requires proxy.env pre-provisioned.
-  --down                      Stop and remove containers.
+  --down                      Stop and remove containers. Bind dirs
+                              (./data, ./nginx-certs, ./certs) are
+                              preserved by default.
+  -v, --volumes, --wipe-data  Modifier for --down. After containers are
+                              stopped, wipe contents of ./data,
+                              ./nginx-certs, ./certs via a transient
+                              root busybox so 0600 files owned by uid
+                              10001 (mcp_proxy.db, mastio-server.key)
+                              are actually removed. proxy.env, scripts,
+                              and ./backups are NOT touched. Destructive:
+                              the next ./deploy.sh mints a fresh Org CA;
+                              every previously enrolled Connector must
+                              re-enroll. Mirrors ``docker compose down
+                              --volumes`` semantics for bind mounts.
   --pull                      Force-pull the image before starting.
   --upgrade <version>         Image-only bump: pin CULLIS_MASTIO_VERSION
                               in proxy.env to <version>, pull the new
@@ -495,7 +522,8 @@ Examples:
   ./deploy.sh --upgrade 0.4.2                    # image-only bump
   ./deploy.sh --upgrade-bundle 0.4.2             # full bundle refresh
   ./deploy.sh --migrate-volumes                  # one-shot bind migration
-  ./deploy.sh --down                             # stop + remove
+  ./deploy.sh --down                             # stop + remove (keep state)
+  ./deploy.sh --down -v                          # stop + wipe bind dirs (reset)
 EOF
 }
 
@@ -507,6 +535,12 @@ UPGRADE_TO=""
 UPGRADE_BUNDLE_TO=""
 FROM_BANNER=0
 ACCEPT_DATA_LOSS=0
+# ``--down -v`` (alias ``--volumes`` / ``--wipe-data``) mirrors the
+# semantics of ``docker compose down --volumes`` for bind dirs: after
+# stopping containers, wipe the contents of ./data, ./nginx-certs,
+# ./certs so the next ``./deploy.sh`` boots a brand-new Mastio with a
+# fresh Org CA. Default ``--down`` keeps state intact (P3 MINOR-H).
+WIPE_VOLUMES=0
 # Manual loop because ``--upgrade <version>`` needs to consume the
 # next positional arg. Keeps the existing single-token flags working
 # without pulling in getopt.
@@ -514,6 +548,7 @@ while [[ $# -gt 0 ]]; do
     arg="$1"
     case "$arg" in
         --down)          ACTION="down"; shift ;;
+        -v|--volumes|--wipe-data) WIPE_VOLUMES=1; shift ;;
         --pull)          FORCE_PULL=1; shift ;;
         --prod)          MODE="production"; shift ;;
         --shared-broker) SHARED_BROKER=1; shift ;;
@@ -560,6 +595,15 @@ if [[ "$ACTION" == "down" ]]; then
     $COMPOSE $COMPOSE_FILES --env-file proxy.env down 2>/dev/null \
         || $COMPOSE $COMPOSE_FILES down
     ok "Mastio stopped"
+    if [[ $WIPE_VOLUMES -eq 1 ]]; then
+        step "Wiping bind dirs (data/, nginx-certs/, certs/)"
+        warn "Destructive: every Connector enrolled against the current Org CA"
+        warn "will fail TLS verify on /v1/principals/csr after the next bring-up."
+        _data_dir="$(_data_dir_host)"
+        _nginx_certs_dir="$(_nginx_certs_dir_host)"
+        _certs_dir="${CULLIS_CERTS_DIR:-$SCRIPT_DIR/certs}"
+        _wipe_bind_dirs "$_data_dir" "$_nginx_certs_dir" "$_certs_dir"
+    fi
     exit 0
 fi
 
