@@ -83,6 +83,15 @@ Options:
                               frontdesk.env must exist with real values
   --down                      Stop and remove containers
   --pull                      Force-pull the images before starting
+  --rotate-admin-secret       Mint a fresh CULLIS_CONNECTOR_ADMIN_SECRET,
+                              rewrite frontdesk.env atomically (timestamped
+                              backup kept on disk), restart only the
+                              Connector container (live Cullis Chat
+                              sessions are NOT disrupted), and re-wire
+                              the sibling Mastio bundle's
+                              MCP_PROXY_FRONTDESK_ADMIN_SECRET if present.
+                              Use when the admin secret is lost or
+                              suspected to be compromised.
   --tls                       Force the built-in TLS sidecar ON
                               (default; mints a self-signed cert in
                               ./tls/, terminates HTTPS on :8443)
@@ -147,6 +156,7 @@ while [[ $# -gt 0 ]]; do
     case "$arg" in
         --down)             ACTION="down"; shift ;;
         --pull)             FORCE_PULL=1; shift ;;
+        --rotate-admin-secret) ACTION="rotate-admin-secret"; shift ;;
         --prod)             MODE="production"; shift ;;
         --skip-enroll)      SKIP_ENROLL=1; shift ;;
         --no-wizard)        NO_WIZARD=1; shift ;;
@@ -186,6 +196,117 @@ if [[ "$ACTION" == "down" ]]; then
     $COMPOSE --env-file frontdesk.env --profile tls down 2>/dev/null \
         || $COMPOSE --profile tls down
     ok "Frontdesk stopped"
+    exit 0
+fi
+
+# ── Rotate admin secret ─────────────────────────────────────────────────────
+# Operator-facing recovery path for a lost or compromised
+# ``CULLIS_CONNECTOR_ADMIN_SECRET``. Mints a fresh secret via the shared
+# helper (``_lib-admin-secret.sh``), atomically rewrites frontdesk.env
+# (keeping a timestamped ``frontdesk.env.bak-…`` on disk), restarts only
+# the ``connector`` container with ``--wait`` so the new env is read
+# (compose ``restart`` does NOT re-read env files), and updates the
+# sibling Mastio bundle's ``MCP_PROXY_FRONTDESK_ADMIN_SECRET`` if the
+# bridge is wired (issue #644 pattern). The plain ``mcp-proxy`` +
+# ``cullis-chat`` services stay up so live Cullis Chat user sessions
+# are NOT disrupted by the rotation.
+if [[ "$ACTION" == "rotate-admin-secret" ]]; then
+    step "Rotating Connector admin secret"
+
+    [[ -f "$SCRIPT_DIR/frontdesk.env" ]] || die "frontdesk.env not found at $SCRIPT_DIR/frontdesk.env — run ./deploy.sh first to provision the bundle"
+
+    # shellcheck source=_lib-admin-secret.sh
+    source "$SCRIPT_DIR/_lib-admin-secret.sh"
+    NEW_SECRET="$(gen_admin_secret)"
+    [[ -n "$NEW_SECRET" ]] || die "gen_admin_secret produced an empty value — check $SCRIPT_DIR/_lib-admin-secret.sh"
+
+    BACKUP="$SCRIPT_DIR/frontdesk.env.bak-$(date +%Y%m%d-%H%M%S)"
+    cp "$SCRIPT_DIR/frontdesk.env" "$BACKUP"
+    ok "Backed up frontdesk.env → $(basename "$BACKUP")"
+
+    # Anchored regex so we never match a stray substring elsewhere in
+    # the file (e.g. a comment or a different var that happens to
+    # contain ``CULLIS_CONNECTOR_ADMIN_SECRET``). If no line existed
+    # yet (operator hand-edited it out), append one — generate-…sh
+    # appends rather than substitutes for the same reason.
+    if grep -qE '^CULLIS_CONNECTOR_ADMIN_SECRET=' "$SCRIPT_DIR/frontdesk.env"; then
+        sed -i "s|^CULLIS_CONNECTOR_ADMIN_SECRET=.*|CULLIS_CONNECTOR_ADMIN_SECRET=${NEW_SECRET}|" \
+            "$SCRIPT_DIR/frontdesk.env"
+    else
+        echo "CULLIS_CONNECTOR_ADMIN_SECRET=${NEW_SECRET}" >> "$SCRIPT_DIR/frontdesk.env"
+    fi
+    ok "Rewrote frontdesk.env with new admin secret"
+
+    echo ""
+    echo -e "  ${BOLD}New admin secret:${RESET} ${GRAY}${NEW_SECRET}${RESET}"
+    echo "  (save this to your password manager — the old secret is now invalid)"
+    echo ""
+
+    # Restart only the connector. mcp-proxy + cullis-chat keep serving
+    # live user sessions — the rotation is invisible to non-admin
+    # traffic. ``--wait`` blocks until the new container's healthcheck
+    # passes, otherwise the next admin call would race the listener.
+    # See feedback memory ``frontdesk_deploy_force_recreate_mcp_proxy_race``
+    # (PR #663) for the documented failure mode.
+    step "Restarting Connector with new env"
+    if $COMPOSE --env-file "$SCRIPT_DIR/frontdesk.env" up -d --wait --force-recreate connector; then
+        ok "Connector restarted, healthcheck passed"
+    else
+        warn "Connector restart did not converge — check ``$COMPOSE --env-file frontdesk.env logs connector``"
+        warn "Old secret is no longer in frontdesk.env. Backup: $(basename "$BACKUP")"
+        exit 1
+    fi
+
+    # ── Update sibling Mastio dashboard wiring if present ───────────────
+    # The ``up`` path (line ~610) writes
+    # ``MCP_PROXY_FRONTDESK_ADMIN_SECRET=<our secret>`` into the sibling
+    # Mastio bundle's proxy.env so the dashboard's Create/Reset/Delete
+    # user flows can hit our admin API. If that bridge is wired, the
+    # old secret on the Mastio side is now stale and every dashboard
+    # provisioning call would 403 against the rotated Connector. Patch
+    # it in place + force-recreate the Mastio mcp-proxy (compose
+    # ``restart`` does not re-read env files). Idempotent: if the
+    # bridge env vars aren't there, this block no-ops.
+    SIBLING_MASTIO_BUNDLE=""
+    for cand in "$SCRIPT_DIR/../cullis-mastio-bundle" "$SCRIPT_DIR/../mastio-bundle"; do
+        if [[ -f "$cand/proxy.env" ]]; then
+            SIBLING_MASTIO_BUNDLE="$(cd "$cand" && pwd)"
+            break
+        fi
+    done
+
+    if [[ -n "$SIBLING_MASTIO_BUNDLE" ]] && grep -qE '^MCP_PROXY_FRONTDESK_ADMIN_SECRET=' "$SIBLING_MASTIO_BUNDLE/proxy.env"; then
+        step "Updating sibling Mastio dashboard wiring"
+        sed -i "s|^MCP_PROXY_FRONTDESK_ADMIN_SECRET=.*|MCP_PROXY_FRONTDESK_ADMIN_SECRET=${NEW_SECRET}|" \
+            "$SIBLING_MASTIO_BUNDLE/proxy.env"
+        ok "Rewrote $SIBLING_MASTIO_BUNDLE/proxy.env"
+
+        MASTIO_PROXY_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=mcp-proxy' --format '{{.Names}}' | head -1)"
+        if [[ -n "$MASTIO_PROXY_CONTAINER" ]]; then
+            (
+                cd "$SIBLING_MASTIO_BUNDLE"
+                COMPOSE_PROJECT_NAME=cullis-mastio \
+                    $COMPOSE --env-file proxy.env up -d --wait --force-recreate mcp-proxy \
+                    >/dev/null 2>&1 \
+                    || warn "Could not force-recreate Mastio mcp-proxy — dashboard provisioning will keep using the OLD secret until the next Mastio restart"
+            )
+            ok "Mastio mcp-proxy reloaded with new admin secret"
+        else
+            warn "No running Mastio mcp-proxy detected — sibling proxy.env updated; restart Mastio when convenient"
+        fi
+    else
+        echo -e "  ${GRAY}No sibling Mastio dashboard bridge to update${RESET}"
+    fi
+
+    echo ""
+    echo -e "${GREEN}${BOLD}Admin secret rotated.${RESET}"
+    echo ""
+    echo "  Live Cullis Chat sessions: preserved (mcp-proxy / cullis-chat not restarted)."
+    echo "  Old secret: invalid (any in-flight X-Admin-Secret call with the old"
+    echo "  value will now return 403). Update your password manager + any CI"
+    echo "  jobs that scripted against the old value."
+    echo "  Backup of previous frontdesk.env: $(basename "$BACKUP")"
+    echo ""
     exit 0
 fi
 

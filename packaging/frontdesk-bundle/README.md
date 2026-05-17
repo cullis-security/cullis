@@ -176,6 +176,42 @@ For oauth2-proxy specifically, the upstream config `--pass-user-headers=true` is
 docker compose --env-file frontdesk.env down -v   # also wipe connector_data (forces re-enrollment)
 ```
 
+## Lost admin secret recovery
+
+If `CULLIS_CONNECTOR_ADMIN_SECRET` is lost or suspected to be compromised:
+
+```bash
+./deploy.sh --rotate-admin-secret
+```
+
+Effect:
+
+- Mints a fresh 48-char hex secret via the shared `_lib-admin-secret.sh`
+  helper (`openssl rand -hex 24`, with `/dev/urandom` fallback).
+- Rewrites `frontdesk.env` atomically with a timestamped backup on
+  disk (`frontdesk.env.bak-<YYYYMMDD-HHMMSS>`).
+- Prints the new secret to stdout (copy it into your password manager
+  immediately, it is not stored anywhere else).
+- Restarts only the `connector` container with `docker compose up -d
+  --wait --force-recreate connector`. The `mcp-proxy` + `cullis-chat`
+  containers stay up, so live Cullis Chat user sessions are **not**
+  disrupted.
+- If the sibling Mastio bundle's dashboard wiring is present
+  (`MCP_PROXY_FRONTDESK_ADMIN_SECRET` in `../cullis-mastio-bundle/proxy.env`,
+  issue #644 pattern), rewrites that file too and force-recreates the
+  Mastio `mcp-proxy` so the dashboard's Create / Reset / Delete user
+  flows keep working.
+
+After rotation the old secret is invalid: any in-flight `X-Admin-Secret`
+call using the old value returns 403. Update any CI jobs or scripts
+that scripted against the old value.
+
+Smoke test (no Docker required):
+
+```bash
+./test-rotate-admin-secret.sh
+```
+
 ## Threat model & exposure
 
 The Frontdesk bundle serves **plain HTTP** on `:80` inside the
