@@ -226,13 +226,30 @@ async def run(
     # scope can still get refused if their device's last
     # attestation shows ``soft_only`` strength.
     #
-    # The gate runs whenever the capability gate ran above
-    # (same ``capability_gate_applies`` guard) so we don't double-
-    # restrict typed callers on MCP-resource tools (those are
-    # authorised via the binding table at step 2b, which the F5
-    # follow-up will tier-gate separately when we wire the same
-    # check into ``has_active_binding``). Builtins + agent-typed
-    # MCP-resource calls run through here.
+    # **Agent-only by design (F5 follow-up #6).** The gate reads
+    # ``internal_agents.last_attestation`` via
+    # :func:`resolve_effective_tier`; that column exists by
+    # construction (migration 0035) because the Connector device IS
+    # the agent under ADR-014. Typed principals (``user`` /
+    # ``workload`` per ADR-020) do NOT have an ``internal_agents``
+    # row — a ``user::alice`` ``agent_id`` resolves to ``None`` in
+    # ``get_agent``, which collapses the tier to ``untrusted`` and
+    # would deny every tier-gated capability for every typed caller.
+    # That's a wrong default: user attestation is a separate path
+    # (ADR-021 multi-user KMS, Frontdesk SSO/IdP, Connector
+    # local-credentials), not a device claim on the agent row.
+    # Migration 0035's commit message documents this explicitly:
+    # "the attestation is a per-device claim ... a similar column
+    # on ``user_sessions``" is the planned home for shared-mode F4
+    # R2. Until that wire-up lands, typed principals are exempt.
+    #
+    # The gate runs whenever the capability gate ran above AND the
+    # principal is agent-typed. Builtins called by typed principals
+    # still get their capability check at step 2 — they just skip
+    # the device tier check that has no data source for them.
+    # MCP-resource calls by typed principals get the binding gate at
+    # step 2b, which the F5 follow-up will tier-gate separately when
+    # we wire the same check into ``has_active_binding``.
     #
     # Fail-closed on the resolver: if ``resolve_effective_tier``
     # crashes (DB outage, malformed JSON), the helper already
@@ -244,6 +261,7 @@ async def run(
         tier_matrix is not None
         and capability_gate_applies
         and tool_def.required_capability
+        and principal_type == "agent"
     ):
         try:
             effective_tier, attestation_claim = await resolve_effective_tier(
