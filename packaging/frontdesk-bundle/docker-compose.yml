@@ -273,12 +273,20 @@ services:
       - frontdesk_net
     restart: unless-stopped
     healthcheck:
+      # IPv4 literal on purpose: nginx:1.27-alpine ships musl libc, whose
+      # getaddrinfo prefers AAAA over A: ``localhost`` resolves to ``::1``
+      # first. Our ``listen 8443 ssl`` directive binds IPv4 only
+      # (``0.0.0.0:8443``), so a wget to ``localhost`` gets Connection
+      # refused on the IPv6 attempt and never falls back to IPv4 — the
+      # sidecar would serve traffic from the host fine but compose would
+      # report the container ``unhealthy`` for every probe (P3 MINOR-G).
+      # Same fix as the mastio-nginx sidecar above (PR #672 lineage).
       test:
         - CMD-SHELL
         - >-
           test -s /etc/nginx/certs/frontdesk-server.crt &&
           test -s /etc/nginx/certs/frontdesk-server.key &&
-          wget -q --no-check-certificate -O /dev/null https://localhost:8443/tls-health
+          wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8443/tls-health
       interval: 30s
       timeout: 5s
       retries: 3
