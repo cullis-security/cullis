@@ -357,6 +357,61 @@ def _clear_cookie(response: Response) -> None:
     )
 
 
+def _mint_ambassador_bearer_cookie(
+    response: Response, config_dir: Path,
+) -> None:
+    """Seed the ``cullis_session`` cookie with the Connector LOCAL_TOKEN.
+
+    Twin of ``_set_cookie`` for the Ambassador's bearer surface. In shared
+    mode the Ambassador's ``POST /api/session/init`` minted this cookie;
+    ADR-025 deprecated that endpoint but didn't replace the cookie-mint
+    behaviour, leaving ``/v1/chat/completions`` 401 on every SPA call
+    after a local-auth login. Best-effort: if the local token can't be
+    read (pre-enrollment, identity dir missing), we log and continue —
+    the rest of the login flow still succeeds, just the chat surface
+    will refuse until the next successful login after enrollment.
+    """
+    try:
+        from cullis_connector.ambassador.auth import (
+            LOCAL_SESSION_COOKIE as _AMBASSADOR_COOKIE_NAME,
+            ensure_local_token,
+        )
+        bearer = ensure_local_token(config_dir)
+    except Exception as exc:  # noqa: BLE001 — best effort, login still wins
+        _log.warning(
+            "could not mint Ambassador bearer cookie: %s", exc,
+        )
+        return
+    response.set_cookie(
+        _AMBASSADOR_COOKIE_NAME,
+        bearer,
+        max_age=LOCAL_SESSION_TTL_SEC,
+        httponly=True,
+        samesite="strict",
+        secure=_is_secure_cookie(),
+        path="/",
+    )
+
+
+def _clear_ambassador_bearer_cookie(response: Response) -> None:
+    """Mirror of :func:`_clear_cookie` for the Ambassador bearer cookie."""
+    try:
+        from cullis_connector.ambassador.auth import (
+            LOCAL_SESSION_COOKIE as _AMBASSADOR_COOKIE_NAME,
+        )
+    except Exception:  # noqa: BLE001 — best effort
+        return
+    response.set_cookie(
+        _AMBASSADOR_COOKIE_NAME,
+        value="",
+        max_age=0,
+        httponly=True,
+        samesite="strict",
+        secure=_is_secure_cookie(),
+        path="/",
+    )
+
+
 async def _require_local_session(request: Request) -> LocalSessionPayload:
     """FastAPI dep — return a valid session payload or raise 401.
 
@@ -715,6 +770,22 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
                 _sanitize_header_value(provisioning_detail)
             )
     _set_cookie(response, cookie_value)
+    # Mint the Ambassador bearer cookie alongside the local-auth session
+    # cookie. Pre-fix the SPA could log in (`cullis_local_session` set
+    # by the line above) but every call to `/v1/chat/completions` or
+    # `/v1/models` returned 401, because Ambassador's `require_bearer`
+    # only accepts `Authorization: Bearer <local-token>` or the cookie
+    # `cullis_session=<local-token>` — neither of which the local-auth
+    # login flow ever issued. In shared mode (legacy) `POST
+    # /api/session/init` minted that cookie; ADR-025 deprecated that
+    # endpoint without replacing the cookie-mint behaviour, so the chat
+    # surface broke silently. The bearer is identical on disk
+    # (`local.token`) regardless of auth mode, so we read it through
+    # `ensure_local_token` and seed the cookie here. The per-user
+    # identity for the audit row is still resolved by `cert_middleware`
+    # off `cullis_local_session`; this cookie is only "you reached the
+    # right Connector box".
+    _mint_ambassador_bearer_cookie(response, config_dir)
     await _record_login_attempt(
         config_dir,
         ip=ip,
@@ -758,6 +829,7 @@ async def logout(request: Request) -> JSONResponse:
                 )
     response = JSONResponse({"ok": True})
     _clear_cookie(response)
+    _clear_ambassador_bearer_cookie(response)
     return response
 
 
@@ -848,6 +920,7 @@ async def change_password(
                 _sanitize_header_value(provisioning_detail)
             )
     _set_cookie(response, cookie_value)
+    _mint_ambassador_bearer_cookie(response, _config_dir(request))
     _log.info(
         "local password changed user_name=%s provisioning=%s",
         payload.user_name, provisioning,
@@ -1027,6 +1100,7 @@ async def first_run_setup(
     )
     response = JSONResponse(body_out.model_dump(), status_code=201)
     _set_cookie(response, cookie_value)
+    _mint_ambassador_bearer_cookie(response, _config_dir(request))
     _log.info(
         "first-run setup completed user_name=%s", user.user_name,
     )
