@@ -198,6 +198,11 @@ jobs:
     environment:
       PKI_KEY_TYPE: << parameters.key_type >>
       PROXY_DB: << parameters.proxy_db >>
+      # CircleCI medium (2 CPUs) is slower than GH ubuntu-latest at the
+      # federation-publish + A2A-route + checker-decode chain. The default
+      # 20s poll window in smoke.sh tips over here; 60 attempts (~60s) is
+      # comfortable margin without bloating green-path duration.
+      SMOKE_CHECK_ATTEMPTS: "60"
     steps:
       - checkout
       - run:
@@ -390,6 +395,18 @@ jobs:
   # ─── Customer-path smoke (customer-path-smoke.yml) ──────────────────
   customer-path-smoke:
     executor: ubuntu-machine
+    environment:
+      # CircleCI medium machine = 2 CPUs. Bundle compose default ceilings
+      # (mcp-proxy cpus: 4.0, mastio-nginx cpus: 2.0) exceed the host on
+      # CI and docker daemon rejects the deploy with "range of CPUs is
+      # from 0.01 to 2.00, as there are only 2 CPUs available". The
+      # bundle compose was extended to read these env overrides so CI
+      # shrinks the cap without forking the file. Customer behavior
+      # unchanged.
+      MCP_PROXY_CPU_LIMIT: "1.5"
+      MCP_PROXY_MEM_LIMIT: "1g"
+      MASTIO_NGINX_CPU_LIMIT: "0.5"
+      MASTIO_NGINX_MEM_LIMIT: "128m"
     steps:
       - checkout
       - run:

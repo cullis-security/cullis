@@ -107,9 +107,13 @@ cmd_check() {
 
     # The checker's poll loop runs every 1s; sender may have just exited
     # and the message hasn't been decoded + stored yet. Retry for up to 20s
-    # before declaring failure.
+    # before declaring failure. CI runners with smaller resource classes
+    # (CircleCI medium = 2 CPUs) need a longer A2A delivery window because
+    # federation publish + cross-org route + checker decode runs slower
+    # per-step. Overridable via SMOKE_CHECK_ATTEMPTS; default 20 keeps the
+    # current behavior on GH Actions and developer laptops.
     local got="" actual=""
-    local attempts=20
+    local attempts="${SMOKE_CHECK_ATTEMPTS:-20}"
     for ((i=1; i<=attempts; i++)); do
         got="$(docker run --rm --network cullis-demo-net \
               -v demo_network_test-certs:/certs:ro \

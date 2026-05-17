@@ -202,9 +202,13 @@ services:
     # container schedulable even on a busy host.
     deploy:
       resources:
+        # Default ceilings sized for a ~1500 RPS / 8-core VPS. Overridable
+        # via env so CI runners with smaller resource classes (CircleCI
+        # medium = 2 CPUs) can shrink the cap without forking the compose
+        # file. Customer behavior unchanged when env is unset.
         limits:
-          cpus: "4.0"
-          memory: 2g
+          cpus: "${MCP_PROXY_CPU_LIMIT:-4.0}"
+          memory: "${MCP_PROXY_MEM_LIMIT:-2g}"
         reservations:
           cpus: "0.5"
           memory: 256m
@@ -238,9 +242,11 @@ services:
     # schedulable when the host is hot.
     deploy:
       resources:
+        # Same env-override pattern as mcp-proxy above so CI runs the
+        # nginx sidecar under the host's actual CPU budget.
         limits:
-          cpus: "2.0"
-          memory: 256m
+          cpus: "${MASTIO_NGINX_CPU_LIMIT:-2.0}"
+          memory: "${MASTIO_NGINX_MEM_LIMIT:-256m}"
         reservations:
           cpus: "0.25"
           memory: 32m
