@@ -244,6 +244,26 @@ TLS terminator into the bundle (the same pattern Mastio's
 ``mastio-nginx`` uses) is on the roadmap as ADR-024 — track that ADR
 draft for the design discussion.
 
+## Troubleshooting
+
+### Troubleshooting: tutti gli agent rispondono 401 dopo restart VM
+
+Sintomo: dopo `docker compose restart` o reboot VM, tutti i Connector ricevono 401
+"Invalid DPoP proof: htu mismatch". L'header `X-Cullis-Hint:
+htu_mismatch_check_proxy_public_url` è la firma diagnostica.
+
+Causa: il valore di `MCP_PROXY_PROXY_PUBLIC_URL` in `proxy.env` (o
+`frontdesk.env`) non coincide con l'URL che il Connector usa per
+raggiungere Mastio. DPoP RFC 9449 firma `htu` sul URL atteso.
+
+Diagnosi:
+  1. Verifica env: `grep MCP_PROXY_PROXY_PUBLIC_URL proxy.env`
+  2. Verifica URL Connector: `cullis-connector doctor`
+  3. Devono coincidere (incluso schema + porta).
+
+Fix: allinea `MCP_PROXY_PROXY_PUBLIC_URL` al valore corretto, esegui
+`./deploy.sh --pull` per restart pulito.
+
 ## Known limitations
 
 - **No autoscale.** Single Connector replica per bundle; the cookie secret lives on local disk so horizontal scale needs a shared secret store. Roadmap.

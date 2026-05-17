@@ -311,9 +311,34 @@ async def verify_dpop_proof(
         )
 
     # -- 10. htu
-    if _normalize_htu(claims.get("htu", "")) != _normalize_htu(htu):
+    expected_norm = _normalize_htu(htu)
+    got_norm = _normalize_htu(claims.get("htu", ""))
+    if got_norm != expected_norm:
+        # Server-side: log structured diagnostics so operators can correlate
+        # 401s with a wrong MCP_PROXY_PROXY_PUBLIC_URL (memory:
+        # feedback_proxy_env_public_url_vm). Do NOT log the jkt to keep
+        # client-key privacy invariant.
+        _log.warning(
+            "DPoP htu mismatch",
+            extra={
+                "expected_htu": expected_norm,
+                "got_htu": got_norm,
+                "hint": "htu_mismatch_check_proxy_public_url",
+            },
+        )
+        # Header is a stable machine-readable diagnostic token. Safe in prod:
+        # it does not leak the internal URL, but tells customer admins which
+        # config knob to inspect (MCP_PROXY_PROXY_PUBLIC_URL / frontdesk.env).
+        headers = {"X-Cullis-Hint": "htu_mismatch_check_proxy_public_url"}
+        if settings.environment == "production":
+            detail = "Invalid DPoP proof: htu mismatch"
+        else:
+            detail = (
+                f"Invalid DPoP proof: htu mismatch "
+                f"(expected={expected_norm!r}, got={got_norm!r})"
+            )
         raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED, "Invalid DPoP proof: htu mismatch"
+            status.HTTP_401_UNAUTHORIZED, detail, headers=headers
         )
 
     # -- 11. ath (access token hash)

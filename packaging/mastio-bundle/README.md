@@ -175,6 +175,24 @@ full values reference.
 | Agent fails with `getaddrinfo failed` / `Name or service not known` | The hostname you set as the public URL must resolve to the Mastio host's IP from the agent's machine. Three paths: (1) corporate DNS (e.g. Active Directory) — recommended; (2) public DNS A record if the Mastio is internet-reachable; (3) `/etc/hosts` line on each agent machine (`192.168.10.42  mastio.acme.local`) — okay for 2-3 employees, brittle past that. |
 | `Bind for 0.0.0.0:9443 failed: port is already allocated` | Another service on the host is using 9443 (Caddy / Traefik / nginx-proxy / a previous Mastio that didn't shut down cleanly). Override the host port in `proxy.env`: `MCP_PROXY_PORT=9444`. **Critical:** also update `MCP_PROXY_PROXY_PUBLIC_URL` to use the same port (e.g. `https://mastio.acme.local:9444`) — agents firma DPoP htu against that exact URL+port and a mismatch silently 401s. |
 
+### Troubleshooting: tutti gli agent rispondono 401 dopo restart VM
+
+Sintomo: dopo `docker compose restart` o reboot VM, tutti i Connector ricevono 401
+"Invalid DPoP proof: htu mismatch". L'header `X-Cullis-Hint:
+htu_mismatch_check_proxy_public_url` è la firma diagnostica.
+
+Causa: il valore di `MCP_PROXY_PROXY_PUBLIC_URL` in `proxy.env` (o
+`frontdesk.env`) non coincide con l'URL che il Connector usa per
+raggiungere Mastio. DPoP RFC 9449 firma `htu` sul URL atteso.
+
+Diagnosi:
+  1. Verifica env: `grep MCP_PROXY_PROXY_PUBLIC_URL proxy.env`
+  2. Verifica URL Connector: `cullis-connector doctor`
+  3. Devono coincidere (incluso schema + porta).
+
+Fix: allinea `MCP_PROXY_PROXY_PUBLIC_URL` al valore corretto, esegui
+`./deploy.sh --pull` per restart pulito.
+
 ## Updating
 
 **Recommended — full bundle refresh (ADR-030):**
