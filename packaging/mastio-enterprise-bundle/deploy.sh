@@ -53,8 +53,17 @@ step() { echo -e "\n${BOLD}── $1 ──${RESET}"; }
 # Source shared backup helpers (same file the open-core mastio-bundle
 # uses, so the two bundles cannot drift on backup semantics). MAJOR-5
 # of imp/p3-operability-audit.md.
+#
+# Layout: source tree has the helper at ``packaging/_common-deploy-
+# helpers.sh`` (parent of this bundle dir). Release workflow cp's it
+# as a sibling so the customer tarball can be extracted standalone.
+# Prefer the sibling copy; fall back to the source-tree relative path.
 # shellcheck source=../_common-deploy-helpers.sh
-source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+if [ -f "$SCRIPT_DIR/_common-deploy-helpers.sh" ]; then
+    source "$SCRIPT_DIR/_common-deploy-helpers.sh"
+else
+    source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+fi
 
 MODE="up"
 PULL=0

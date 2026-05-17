@@ -73,8 +73,18 @@ fi
 # Source shared bind-dir helpers (P3 MINOR-H, _wipe_bind_dirs for
 # --down -v). Same helper file the Mastio bundles use; sourced here so
 # the busybox-root wipe pattern stays consistent across bundles.
+#
+# Layout: source tree has the helper at ``packaging/_common-deploy-
+# helpers.sh`` (parent of this bundle dir). Release workflows cp it as
+# a sibling so the shipped customer tarball can be extracted standalone
+# without the ``packaging/`` parent. Prefer the sibling copy; fall back
+# to the source-tree relative path for dev shells.
 # shellcheck source=../_common-deploy-helpers.sh
-source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+if [ -f "$SCRIPT_DIR/_common-deploy-helpers.sh" ]; then
+    source "$SCRIPT_DIR/_common-deploy-helpers.sh"
+else
+    source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+fi
 
 print_help() {
     cat <<EOF

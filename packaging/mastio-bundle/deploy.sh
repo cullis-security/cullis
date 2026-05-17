@@ -90,8 +90,21 @@ _volume_full_name() {
 # Sourcing here, before any ADR-030 helper that references them, keeps
 # the call order intact and the diff against the pre-extraction layout
 # limited to a deletion + a single source line.
+#
+# Layout: in the source tree the helper lives at
+# ``packaging/_common-deploy-helpers.sh`` (parent of this bundle dir).
+# Release workflows cp it as a sibling so the shipped tarball can be
+# extracted standalone (``cullis-mastio-bundle/{deploy.sh,_common-
+# deploy-helpers.sh}``) without dragging the ``packaging/`` parent.
+# Prefer the sibling copy when present; fall back to the source-tree
+# relative path otherwise so dev shells (``./packaging/mastio-bundle/
+# deploy.sh``) keep working from a fresh git clone.
 # shellcheck source=../_common-deploy-helpers.sh
-source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+if [ -f "$SCRIPT_DIR/_common-deploy-helpers.sh" ]; then
+    source "$SCRIPT_DIR/_common-deploy-helpers.sh"
+else
+    source "$SCRIPT_DIR/../_common-deploy-helpers.sh"
+fi
 
 # mkdir + chown the host bind targets. The chown is the same operation
 # the init-permissions compose service runs at boot, just earlier so a

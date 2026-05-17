@@ -401,3 +401,174 @@ _wipe_bind_dirs "{bundle}/data" "{bundle}/nginx-certs"
     # Bystander files untouched.
     assert (bundle / "important.txt").read_text() == "keep me"
     assert (bundle / "proxy.env").exists()
+
+
+# ── customer-tarball layout (helper as sibling, no packaging/ parent) ────
+
+
+def _stage_mastio_customer_layout(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Stage the bundle the way the release tarball ships it: deploy.sh
+    and ``_common-deploy-helpers.sh`` are siblings inside a single
+    ``cullis-mastio-bundle/`` directory, with NO ``packaging/`` parent.
+
+    This replicates the customer host layout post ``tar xzf`` — the
+    layout the staging cp loop in ``.github/workflows/release-mastio.yml``
+    produces. The earlier source-tree fixture (``_stage_mastio``) keeps
+    helper at ``packaging/_common-deploy-helpers.sh`` (one level up),
+    which masked the fact that ``deploy.sh`` originally sourced via
+    ``$SCRIPT_DIR/../_common-deploy-helpers.sh`` and would fail at
+    runtime on the customer host (BLOCKER from #773 release review).
+    """
+    bundle = tmp_path / "cullis-mastio-bundle"
+    bundle.mkdir(parents=True)
+    shutil.copy2(MASTIO_SRC / "deploy.sh", bundle / "deploy.sh")
+    shutil.copy2(MASTIO_SRC / "docker-compose.yml", bundle / "docker-compose.yml")
+    shutil.copy2(COMMON_HELPERS, bundle / "_common-deploy-helpers.sh")
+    (bundle / "deploy.sh").chmod(0o755)
+    (bundle / "proxy.env").write_text(
+        "MCP_PROXY_PROXY_PUBLIC_URL=https://localhost:9443\n"
+    )
+    return bundle
+
+
+def test_mastio_customer_tarball_layout_down_v_works(tmp_path):
+    """Regression guard for #773 BLOCKER: on the customer host the
+    bundle is extracted standalone (no ``packaging/`` parent dir), so
+    ``deploy.sh`` must resolve ``_common-deploy-helpers.sh`` as a
+    sibling rather than via ``$SCRIPT_DIR/..``. Pre-fix the source
+    statement was ``$SCRIPT_DIR/../_common-deploy-helpers.sh`` only,
+    which broke every ``--down`` / ``--upgrade-bundle`` / ``--down -v``
+    invocation on the shipped tarball with ``source: No such file or
+    directory``."""
+    bundle = _stage_mastio_customer_layout(tmp_path)
+    _seed_dir_with_state(bundle / "data")
+    _seed_dir_with_state(bundle / "nginx-certs")
+
+    path_val, _, _ = _build_path(tmp_path)
+    env = os.environ.copy()
+    env["PATH"] = path_val
+    result = subprocess.run(
+        ["bash", str(bundle / "deploy.sh"), "--down", "-v"],
+        cwd=str(bundle),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    # The source statement worked from the sibling: helper functions
+    # were available, the wipe banner fired, and the bind dirs were
+    # cleaned. Pre-fix this branch failed at module load time.
+    combined = result.stdout + result.stderr
+    assert "Wiping bind dirs" in combined
+    assert list((bundle / "data").iterdir()) == []
+    assert list((bundle / "nginx-certs").iterdir()) == []
+
+
+def test_frontdesk_customer_tarball_layout_down_v_works(tmp_path):
+    """Same regression guard as the mastio test above, for the
+    frontdesk bundle: customer tarball has the helper as a sibling."""
+    bundle = tmp_path / "cullis-frontdesk-bundle"
+    bundle.mkdir(parents=True)
+    shutil.copy2(FRONTDESK_SRC / "deploy.sh", bundle / "deploy.sh")
+    shutil.copy2(FRONTDESK_SRC / "docker-compose.yml", bundle / "docker-compose.yml")
+    shutil.copy2(COMMON_HELPERS, bundle / "_common-deploy-helpers.sh")
+    (bundle / "deploy.sh").chmod(0o755)
+    (bundle / "frontdesk.env").write_text(
+        "CULLIS_FRONTDESK_ORG_ID=test\nCULLIS_FRONTDESK_TRUST_DOMAIN=test.local\n"
+    )
+    _seed_dir_with_state(bundle / "connector_data")
+    _seed_dir_with_state(bundle / "tls")
+
+    path_val, _, _ = _build_path(tmp_path)
+    env = os.environ.copy()
+    env["PATH"] = path_val
+    result = subprocess.run(
+        ["bash", str(bundle / "deploy.sh"), "--down", "-v"],
+        cwd=str(bundle),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    combined = result.stdout + result.stderr
+    assert "Wiping bind dirs" in combined
+    assert list((bundle / "connector_data").iterdir()) == []
+    assert list((bundle / "tls").iterdir()) == []
+
+
+def test_mastio_enterprise_customer_tarball_layout_down_v_works(tmp_path):
+    """Same regression guard for the enterprise bundle."""
+    bundle = tmp_path / "cullis-mastio-enterprise-bundle"
+    bundle.mkdir(parents=True)
+    shutil.copy2(ENTERPRISE_SRC / "deploy.sh", bundle / "deploy.sh")
+    shutil.copy2(ENTERPRISE_SRC / "docker-compose.yml", bundle / "docker-compose.yml")
+    shutil.copy2(COMMON_HELPERS, bundle / "_common-deploy-helpers.sh")
+    (bundle / "deploy.sh").chmod(0o755)
+    (bundle / "proxy.env").write_text(
+        "MCP_PROXY_PROXY_PUBLIC_URL=https://localhost:9443\n"
+    )
+    _seed_dir_with_state(bundle / "data")
+
+    path_val, _, _ = _build_path(tmp_path)
+    env = os.environ.copy()
+    env["PATH"] = path_val
+    result = subprocess.run(
+        ["bash", str(bundle / "deploy.sh"), "--down", "-v"],
+        cwd=str(bundle),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert list((bundle / "data").iterdir()) == []
+
+
+# ── busybox-root invariant (memoria feedback_busybox_root_for_bind_dir_post_init_perms) ──
+
+
+def test_wipe_invocation_passes_user_zero(tmp_path):
+    """The bind dirs are chmod 10001:10001 by ADR-030 init-permissions;
+    the host operator's uid (typically 1000) cannot rm them. The wipe
+    helper MUST therefore invoke busybox with ``--user 0:0`` to run as
+    root inside the container. A future refactor that drops the flag
+    would silently fail on a real customer host (idempotent test would
+    still pass with the local-uid shim) — so we assert directly on
+    the captured argv that the flag is present.
+
+    Note: the fake docker shim consumed ``--user 0:0`` previously
+    without asserting it, hiding any drift. This test closes that
+    gap."""
+    bundle = _stage_mastio(tmp_path)
+    _seed_dir_with_state(bundle / "data")
+    path_val, _, log = _build_path(tmp_path)
+    env = os.environ.copy()
+    env["PATH"] = path_val
+    result = subprocess.run(
+        ["bash", str(bundle / "deploy.sh"), "--down", "-v"],
+        cwd=str(bundle),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    docker_log = log.read_text()
+    # Pin: every wipe-shaped ``docker run`` invocation in the log must
+    # carry ``--user 0:0``. We grep for the run command containing
+    # busybox to skip unrelated docker compose calls.
+    wipe_invocations = [
+        line for line in docker_log.splitlines()
+        if "busybox" in line and line.startswith("run ")
+    ]
+    assert wipe_invocations, (
+        "expected at least one busybox wipe invocation, got: "
+        f"{docker_log!r}"
+    )
+    for inv in wipe_invocations:
+        assert "--user 0:0" in inv, (
+            "wipe invocation missing --user 0:0 (busybox-root "
+            f"invariant violated): {inv!r}"
+        )
