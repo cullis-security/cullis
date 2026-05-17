@@ -21,6 +21,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -122,6 +123,47 @@ def _detect_legacy_unstamped(sync_conn) -> bool:
     return bool(_LEGACY_TABLES & table_names)
 
 
+def _run_migrations_sync_under_flock(url: str, sqlite_path: str) -> None:
+    """Run ``_run_migrations_sync`` under an exclusive blocking flock.
+
+    SQLite multi-worker migration gate (Cluster A, Wave 2b). Pre-fix,
+    4 uvicorn workers all called ``alembic.command.upgrade("head")``
+    concurrently against the same SQLite file — race on
+    CREATE/DROP/ALTER (sqlite3 IntegrityError or SQLITE_BUSY).
+
+    The blocking lock is intentional: a non-leader worker MUST wait
+    for the leader to finish the upgrade, THEN re-enter the upgrade
+    call (which is idempotent and no-ops when the chain is already at
+    head). LOCK_NB would have the non-leaders skip → some worker
+    might serve traffic before the schema is current.
+
+    The lockfile lives next to the DB file at ``<db>.alembic.lock``
+    so a fresh container with empty bind mount starts clean. Kernel
+    releases the flock on worker exit even if SIGKILL'd.
+    """
+    import fcntl
+    from pathlib import Path
+
+    db_path = Path(sqlite_path)
+    lock_path = db_path.with_name(f"{db_path.name}.alembic.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+        except OSError:
+            pass  # diagnostic write, not load-bearing
+        _run_migrations_sync(url)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _run_migrations_sync(url: str) -> None:
     """Run alembic stamp (if needed) + upgrade head. Synchronous on purpose:
     invoked from a thread via asyncio.to_thread to avoid blocking the loop.
@@ -220,8 +262,17 @@ async def init_db(db_url: str) -> None:
     # race the same migration and fail mid-upgrade. Wrap the upgrade
     # in a Postgres session-level advisory lock keyed by a fixed
     # integer so only one worker runs the chain; others wait then
-    # no-op once head is reached. SQLite is single-writer by file,
-    # so the lock is skipped there.
+    # no-op once head is reached.
+    #
+    # SQLite gets the same treatment via ``fcntl.flock`` on a sidecar
+    # lockfile (Cluster A, Wave 2b). Pre-Wave-2b the SQLite path
+    # skipped the lock under the assumption that "SQLite is single-
+    # writer by file" — that's true for write transactions but NOT
+    # for ``alembic.command.upgrade`` which can race on
+    # CREATE/DROP/ALTER from 4 concurrent worker connections.
+    # See feedback_multiworker_uvicorn_systemic_gaps for the broader
+    # pattern. In-memory SQLite stays unlocked (single-process by
+    # definition).
     is_postgres = url.startswith("postgresql") or "+asyncpg" in url
     if is_postgres:
         lock_engine = create_async_engine(url, **_engine_kwargs(url))
@@ -240,9 +291,15 @@ async def init_db(db_url: str) -> None:
                     )
         finally:
             await lock_engine.dispose()
+    elif sqlite_path and sqlite_path != ":memory:":
+        # SQLite multi-worker migration gate: blocking flock on a
+        # sidecar lockfile. Blocking (not LOCK_NB) is correct here —
+        # the non-leader workers MUST wait for the leader to finish,
+        # then re-enter ``alembic.command.upgrade("head")`` which is
+        # idempotent and no-ops because the chain is already at head.
+        await asyncio.to_thread(_run_migrations_sync_under_flock, url, sqlite_path)
     else:
-        # Run alembic in a worker thread — alembic.command is synchronous
-        # and would block the event loop otherwise.
+        # In-memory SQLite (tests). Single-process by definition.
         await asyncio.to_thread(_run_migrations_sync, url)
 
     _engine = create_async_engine(url, echo=False, future=True)
