@@ -152,6 +152,11 @@ case "${1:-help}" in
       agent-b python /app/scenarios/mcp_call_local.py
     ;;
 
+  policy-granular)
+    _header "Scenario — ADR-029 tool-level PDP gate + cross-org federation"
+    exec ./scenarios/policy_granular_demo.sh
+    ;;
+
   guide)
     if command -v less >/dev/null 2>&1; then
       less -R GUIDE.md
