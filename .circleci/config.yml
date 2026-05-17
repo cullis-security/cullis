@@ -114,9 +114,17 @@ jobs:
           # tests/test_e2e.py is order-dependent (module-level _state shared
           # across step1..step10), excluded here and re-run as a single
           # block on shard 0.
+          # pytest.ini sets ``-n auto`` which pytest-xdist resolves against
+          # the cgroup *host* (~36 cores on CircleCI's underlying machine)
+          # rather than the 2-CPU container, spawning 36 workers and getting
+          # OOM-canceled mid-collection. Override with ``-n 2`` to match the
+          # resource_class. ``-o addopts=`` clears pytest.ini ``-n auto`` so
+          # there's no double ``-n`` collision.
           command: |
             GROUP=$((CIRCLE_NODE_INDEX + 1))
             pytest tests/ \
+                -o "addopts=" \
+                -m "not e2e" -n 2 --dist=loadfile \
                 --tb=short \
                 --ignore=tests/test_postgres_integration.py \
                 --ignore=tests/test_e2e.py \
@@ -126,7 +134,7 @@ jobs:
           name: Run tests/test_e2e.py (shard 0 only, order-dependent)
           command: |
             if [ "$CIRCLE_NODE_INDEX" = "0" ]; then
-              pytest tests/test_e2e.py --tb=short
+              pytest tests/test_e2e.py -o "addopts=" --tb=short
             else
               echo "test_e2e.py skipped on shard $CIRCLE_NODE_INDEX (pinned to shard 0)."
             fi
@@ -138,7 +146,7 @@ jobs:
           command: |
             if [ "$CIRCLE_NODE_INDEX" = "0" ]; then
               pytest tests/test_proxy_mastio_rotation_concurrency.py \
-                  --count=10 -n auto --dist=loadfile --tb=short -q
+                  --count=10 -n 2 --dist=loadfile --tb=short -q
             else
               echo "Concurrency gate skipped on shard $CIRCLE_NODE_INDEX (pinned to shard 0)."
             fi
@@ -198,11 +206,13 @@ jobs:
     environment:
       PKI_KEY_TYPE: << parameters.key_type >>
       PROXY_DB: << parameters.proxy_db >>
-      # CircleCI medium (2 CPUs) is slower than GH ubuntu-latest at the
-      # federation-publish + A2A-route + checker-decode chain. The default
-      # 20s poll window in smoke.sh tips over here; 60 attempts (~60s) is
-      # comfortable margin without bloating green-path duration.
-      SMOKE_CHECK_ATTEMPTS: "60"
+      # CircleCI medium (2 CPUs) is slower than GH ubuntu-latest (4 CPUs)
+      # at the federation-publish + A2A-route + checker-decode chain. 60
+      # attempts wasn't enough on the second dogfood run, bumping to 120
+      # (~120s) is conservative — A2A delivery on the bigger CI host
+      # typically completes in <10s, so even at half the throughput we're
+      # leaving 6x margin.
+      SMOKE_CHECK_ATTEMPTS: "120"
     steps:
       - checkout
       - run:

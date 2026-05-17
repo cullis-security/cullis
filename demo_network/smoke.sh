@@ -103,7 +103,7 @@ cmd_up() {
 cmd_check() {
     [[ -f "$NONCE_FILE" ]] || die "no nonce file — run '$0 up' first"
     local expected; expected="$(cat "$NONCE_FILE")"
-    say "demo_network: asserting checker received nonce=$expected"
+    say "demo_network: asserting checker received nonce=$expected (poll attempts=${SMOKE_CHECK_ATTEMPTS:-20})"
 
     # The checker's poll loop runs every 1s; sender may have just exited
     # and the message hasn't been decoded + stored yet. Retry for up to 20s
