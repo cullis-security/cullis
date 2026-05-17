@@ -137,14 +137,18 @@ case "$MODE" in
         ;;
     defaults)
         BROKER="${BROKER_URL:-http://broker:8000}"
-        # Empty by default → settings.py falls back to ``request.url`` for
-        # DPoP htu validation (auto-detect from the inbound Host header).
-        # Hardcoding ``localhost`` broke every non-localhost deploy
-        # (Docker, k8s, VM) because the agent's actual htu carried the
-        # service name / ingress hostname / VM IP. Operators who front
-        # the Mastio with a stable public hostname should still pass
-        # ``PROXY_PUBLIC_URL=https://mastio.example.com`` explicitly.
-        PUBLIC="${PROXY_PUBLIC_URL:-}"
+        # Default ``https://host.docker.internal:9443`` matches the
+        # docker-compose.yml fallback and the deploy.sh interactive
+        # prompt default. This is the same URL the interactive flow
+        # writes when the operator presses Enter at the public-URL
+        # prompt. Emitting it explicitly keeps ``--defaults`` self-
+        # contained for CI / Ansible / quick-laptop boot: the resulting
+        # proxy.env survives standalone (no extra deploy.sh post-fix)
+        # and the operator never hits 401 ``htu mismatch`` because the
+        # field was empty. Operators fronting the Mastio with a stable
+        # public hostname override via ``PROXY_PUBLIC_URL=...`` env or
+        # by editing proxy.env after generation.
+        PUBLIC="${PROXY_PUBLIC_URL:-https://host.docker.internal:9443}"
         JWKS="${BROKER%/}/.well-known/jwks.json"
         ENVIRONMENT="development"
         ;;
@@ -152,7 +156,14 @@ case "$MODE" in
         echo ""
         read -rp "  Broker URL [http://broker:8000]: " BROKER
         BROKER="${BROKER:-http://broker:8000}"
-        read -rp "  Proxy public URL [empty = auto-detect from Host header]: " PUBLIC
+        # Same default the deploy.sh interactive prompt offers (line ~611):
+        # covers host browser + sibling containers in the laptop / single
+        # VM scenario. Empty input → laptop default, never the empty
+        # string (MINOR-F: empty triggers 401 htu mismatch on every agent
+        # enrollment because the docker-compose ${VAR:-...} fallback does
+        # NOT apply uniformly across all consumers of proxy.env).
+        read -rp "  Proxy public URL [https://host.docker.internal:9443]: " PUBLIC
+        PUBLIC="${PUBLIC:-https://host.docker.internal:9443}"
         JWKS="${BROKER%/}/.well-known/jwks.json"
         ENVIRONMENT="development"
         ;;
@@ -164,7 +175,19 @@ sed -i "s|^MCP_PROXY_ADMIN_SECRET=.*|MCP_PROXY_ADMIN_SECRET=${ADMIN_SECRET}|"   
 sed -i "s|^MCP_PROXY_DASHBOARD_SIGNING_KEY=.*|MCP_PROXY_DASHBOARD_SIGNING_KEY=${SIGNING_KEY}|" "$OUT"
 sed -i "s|^MCP_PROXY_BROKER_URL=.*|MCP_PROXY_BROKER_URL=${BROKER}|"                  "$OUT"
 sed -i "s|^MCP_PROXY_BROKER_JWKS_URL=.*|MCP_PROXY_BROKER_JWKS_URL=${JWKS}|"          "$OUT"
-sed -i "s|^MCP_PROXY_PROXY_PUBLIC_URL=.*|MCP_PROXY_PROXY_PUBLIC_URL=${PUBLIC}|"      "$OUT"
+
+# MCP_PROXY_PROXY_PUBLIC_URL ships COMMENTED in proxy.env.example (the
+# example carries a placeholder production hostname so operators see
+# the shape, not a usable default). A plain sed-substitution on
+# ``^MCP_PROXY_PROXY_PUBLIC_URL=`` therefore silently no-ops and the
+# generated proxy.env ends up without an uncommented line, exactly
+# the dogfood breakage MINOR-F pins (CI / Ansible / laptop boot with
+# --defaults then ./deploy.sh up: every agent enrollment fails 401
+# htu mismatch). Strip any pre-existing line (commented or not) and
+# append the resolved value so the field always lands uncommented.
+sed -i.bak '/^#*[[:space:]]*MCP_PROXY_PROXY_PUBLIC_URL=/d' "$OUT"
+rm -f "${OUT}.bak"
+echo "MCP_PROXY_PROXY_PUBLIC_URL=${PUBLIC}" >> "$OUT"
 
 # ADR-030 — the bundle bind-mount paths default to ./data and ./nginx-certs.
 # proxy.env.example ships them already, so no sed required here. The block
