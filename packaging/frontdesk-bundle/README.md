@@ -123,10 +123,20 @@ The compose file pins sensible defaults via env vars:
 
 | Variable | Default | Image |
 |---|---|---|
-| `CONNECTOR_VERSION` | `0.4.0-rc1` | `ghcr.io/cullis-security/cullis-connector` |
-| `CHAT_VERSION`      | `0.1.0-rc1` | `ghcr.io/cullis-security/cullis-chat-frontdesk` |
+| `CONNECTOR_VERSION` | `0.4.6` | `ghcr.io/cullis-security/cullis-connector` |
+| `CHAT_VERSION`      | `0.4.1` | `ghcr.io/cullis-security/cullis-chat-frontdesk` |
 
 Pin both in production via `frontdesk.env` rather than relying on the defaults shipped with the bundle.
+
+`generate-frontdesk-env.sh` honors invoker-shell env vars in every mode (interactive, `--defaults`, `--prod`). Customer admins doing version pinning from CI / Ansible / a config-managed bash wrapper can preempt the file like so:
+
+```bash
+CONNECTOR_VERSION=0.4.5 CHAT_VERSION=0.4.0 ./deploy.sh --site https://mastio.acme.local:9443
+```
+
+The resulting `frontdesk.env` carries `CONNECTOR_VERSION=0.4.5` (not the hard-coded `0.4.6` default), and the next `docker compose up` picks the right tag. Same mechanism for `CULLIS_FRONTDESK_MASTIO_URL`, `CULLIS_SITE_URL`, `CULLIS_FRONTDESK_ORG_ID`, `CULLIS_FRONTDESK_TRUST_DOMAIN`, and `CULLIS_FRONTDESK_CA_BUNDLE_HOST`: invoker env wins over the in-template default. Re-runs are idempotent (no duplicate lines, no commented-out leftovers).
+
+Pre-fix the bundle silently ignored the invoker env vars because `docker compose --env-file frontdesk.env` only reads values from the file (parent shell env is NOT consulted for `${VAR:-default}` substitutions). Operators discovered the gap only when the wrong image tag landed in production. See P3 MINOR-D (#772 sibling, Mastio side).
 
 ## Smoke test (dev fake-SSO)
 
