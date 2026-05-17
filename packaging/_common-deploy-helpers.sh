@@ -218,3 +218,98 @@ _wipe_orphan_sqlite() {
         busybox:stable sh -c "rm -f${rm_args}" >/dev/null
     ok "Orphan SQLite files removed from ${data_dir#$SCRIPT_DIR/}/"
 }
+
+# P3 MINOR-I — sweep orphan container shims from a failed previous
+# ``compose up``.
+#
+# Failure mode this guards against (192.168.122.170 dogfood, 2026-05-17):
+#   1. Operator runs ``docker compose ... up`` with a bind-mounted config
+#      file whose dst path does not exist inside the image. Docker
+#      auto-creates dst as a DIRECTORY (default behaviour for missing
+#      bind-mount targets), the container starts, the service fails its
+#      health check or crashes parsing the directory-as-config.
+#   2. Operator fixes the upstream issue and retries ``compose up``.
+#      Docker now sees a residual stopped (or "created") container shim
+#      from the previous attempt. Recreate semantics try to reuse the
+#      filesystem layer with dst still a directory — but the src is a
+#      file. The mount path fails with::
+#
+#          not a directory: mount src=.../foo.conf, dst=/etc/.../foo.conf
+#
+#      Every subsequent retry hits the same error. The only manual fix
+#      is ``docker rm -f <project>-<service>-1`` so the next ``up``
+#      re-creates the container layer from scratch.
+#
+# Sweep all containers in this project that are not currently running,
+# BEFORE the primary ``compose up``. ``status=created`` covers the
+# "spawn-but-never-started" case (the shape that triggers the bind-mount
+# drift); ``status=exited`` covers fail-up containers that crashed
+# during startup. Running containers are NEVER touched — the compose
+# up logic itself decides whether to recreate them.
+#
+# Filter is anchored on ``label=com.docker.compose.project=$project`` so
+# we only ever touch containers compose itself labelled with our project
+# name. No global ``docker rm`` and no cross-bundle reach: a sibling
+# Mastio or Frontdesk stack on the same host stays untouched. Idempotent:
+# missing docker / no stale containers / unsupported filter all no-op.
+_cleanup_orphan_shims() {
+    local project="$1"
+    [[ -n "$project" ]] || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+    # ``docker ps -aq`` with multiple ``--filter status=`` flags is OR'd
+    # across the status values. The project label is AND'd against the
+    # status set, so the result is exactly: "containers in this project
+    # that are not currently running". 2>/dev/null swallows the "filter
+    # not supported" failure on ancient docker (pre-19.03) where the
+    # caller falls back to "no stale containers".
+    local stale
+    stale="$(docker ps -aq \
+        --filter "label=com.docker.compose.project=$project" \
+        --filter "status=created" \
+        --filter "status=exited" 2>/dev/null || true)"
+    if [[ -z "$stale" ]]; then
+        return 0
+    fi
+    # ``rm -f`` because a "created" container has no running process
+    # to SIGTERM but still needs the force flag to bypass the
+    # "container is not running" guard on older docker. ``$stale`` is
+    # whitespace-separated ids from ``docker ps -aq``; intentional
+    # word-split here.
+    # shellcheck disable=SC2086
+    docker rm -f $stale >/dev/null 2>&1 || true
+    warn "Removed orphan container shim(s) from previous failed ``compose up`` (P3 MINOR-I)"
+}
+
+# P3 MINOR-I — diagnostic hint after a failed ``compose up`` whose
+# error log might be the "not a directory" bind-mount drift the
+# orphan-shim sweep above is supposed to prevent. The preventive
+# ``_cleanup_orphan_shims`` covers the typical case (stale container
+# from previous bring-up), but a SECOND fail-up inside the same
+# invocation (e.g. config file still missing on disk → docker re-
+# creates dst as dir AGAIN inside the freshly-recreated container)
+# can still drift, and the operator deserves a pointer instead of
+# a cryptic error.
+#
+# Trap-friendly: pass the actual exit code from ``$?``; the hint
+# fires only on non-zero. Argument 2 is the project name so the
+# remediation command is concrete.
+_hint_on_bind_mount_failure() {
+    local exit_code="$1" project="${2:-<project-name>}"
+    if [[ "$exit_code" -eq 0 ]]; then
+        return 0
+    fi
+    cat >&2 <<EOF
+
+[hint] If the failure above mentions:
+           "not a directory: mount src=... dst=..."
+       this is the orphan container shim bug (P3 MINOR-I). A previous
+       failed ``docker compose up`` left a container whose bind-mount
+       dst was auto-created as a directory. Recover with:
+
+           docker rm -f \$(docker ps -aq \\
+               --filter "label=com.docker.compose.project=${project}")
+           ./deploy.sh
+
+       See README "Troubleshooting" → "not a directory: mount".
+EOF
+}

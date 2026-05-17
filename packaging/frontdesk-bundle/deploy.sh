@@ -739,8 +739,20 @@ if [[ $FORCE_PULL -eq 1 ]]; then
     ok "Images pulled"
 fi
 
+# Sweep orphan container shims left over from any previous failed
+# ``compose up`` (P3 MINOR-I). Scoped to COMPOSE_PROJECT_NAME so sibling
+# Mastio stacks on the same host stay untouched.
+_cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+
 echo -e "  ${GRAY}$COMPOSE --env-file frontdesk.env ${COMPOSE_PROFILE_FLAGS[*]} up -d${RESET}"
+# Capture exit BEFORE the if-branch: `!` negation rewrites $? to 0 in
+# the success branch, dead-coding the hint helper. P3 MINOR-I review.
 $COMPOSE --env-file frontdesk.env "${COMPOSE_PROFILE_FLAGS[@]}" up -d
+_rc=$?
+if [[ $_rc -ne 0 ]]; then
+    _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
+    exit 1
+fi
 ok "Containers started"
 
 # ── Attach sibling Mastio nginx to frontdesk_net ────────────────────────────

@@ -421,8 +421,24 @@ _cmd_upgrade_bundle() {
     # is bound).
     step "Pulling image + restarting"
     $COMPOSE $COMPOSE_FILES --env-file proxy.env pull
-    $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait \
-        || $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+    # Sweep orphan shims (P3 MINOR-I) before the up so a previously
+    # crashed container does not drift bind-mount dst paths into dirs.
+    _cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+    # NOTE: capture $? BEFORE the `if`. Bash semantics: when `!` negates
+    # a command's exit status, $? inside the success branch is 0 (the
+    # `!` rewrote the status), so passing $? straight to the hint
+    # helper would always send 0 and early-return — the helper would
+    # never fire. P3 MINOR-I review caught this dead-code wiring.
+    $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d --wait
+    _rc=$?
+    if [[ $_rc -ne 0 ]]; then
+        $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+        _rc=$?
+        if [[ $_rc -ne 0 ]]; then
+            _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
+            exit 1
+        fi
+    fi
     ok "Stack restarted on ${version}"
 
     rm -f "$tarball_local"
@@ -808,8 +824,21 @@ fi
 CERT_DIR="${CULLIS_CERTS_DIR:-$SCRIPT_DIR/certs}"
 mkdir -p "$CERT_DIR"
 
+# Sweep orphan container shims left over from any previous failed
+# ``compose up`` (P3 MINOR-I). Filter on COMPOSE_PROJECT_NAME so we
+# only touch containers from this bundle's stack; sibling Frontdesk
+# / open-core / enterprise projects on the same host stay untouched.
+_cleanup_orphan_shims "$COMPOSE_PROJECT_NAME"
+
 echo -e "  ${GRAY}$COMPOSE $COMPOSE_FILES --env-file proxy.env up -d${RESET}"
+# Capture exit BEFORE the if-else: `!` negation rewrites $? to 0 inside
+# the branch, which would make _hint_on_bind_mount_failure dead code.
 $COMPOSE $COMPOSE_FILES --env-file proxy.env up -d
+_rc=$?
+if [[ $_rc -ne 0 ]]; then
+    _hint_on_bind_mount_failure "$_rc" "$COMPOSE_PROJECT_NAME"
+    exit 1
+fi
 ok "Containers started"
 
 # ── Wait for health ─────────────────────────────────────────────────────────
