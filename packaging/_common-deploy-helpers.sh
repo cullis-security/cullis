@@ -156,3 +156,65 @@ _wipe_bind_dirs() {
         ok "Wiped ${dir#$SCRIPT_DIR/}/"
     done
 }
+
+# Surgical wipe of orphan SQLite files inside a bind-mount data dir.
+# Used by ``--accept-data-loss`` (P3 MINOR-E) after the MAJOR-A guard
+# has been bypassed: the operator has confirmed they accept losing
+# every enrolled Connector, so the 281 MB orphan ``mcp_proxy.db`` plus
+# the WAL / SHM sidecars are dead weight on disk and confuse later
+# ``du -sh ./data`` audits.
+#
+# Strict allowlist by exact filename — no glob, no recursion, no
+# ``rm -rf data/*``. We refuse to touch anything that isn't one of
+# the three SQLite artefacts the Mastio writes:
+#
+#   - mcp_proxy.db        the database file proper
+#   - mcp_proxy.db-wal    write-ahead log (present while WAL mode is
+#                         active, usually a few MB)
+#   - mcp_proxy.db-shm    shared memory file (small, ~32K, sometimes
+#                         left dangling after an unclean shutdown)
+#
+# Anything else in ``./data`` (operator-dropped notes, a future
+# ``connector_data.db`` from the Connector bundle, etc.) is preserved.
+# Idempotent: missing files are no-ops. Runs as root via busybox so
+# 0600 files owned by uid 10001 are actually removable, mirror of the
+# pattern documented at feedback_busybox_root_for_bind_dir_post_init_perms.
+_wipe_orphan_sqlite() {
+    local data_dir="$1"
+    [[ -n "$data_dir" ]] || return 0
+    [[ -d "$data_dir" ]] || return 0
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "docker not available, cannot wipe orphan SQLite files"
+        return 1
+    fi
+    # Build a human-readable inventory before the wipe so the log line
+    # makes the blast radius obvious: ``data/mcp_proxy.db (281M)``.
+    local name path size_h inventory=()
+    local found=()
+    for name in mcp_proxy.db mcp_proxy.db-wal mcp_proxy.db-shm; do
+        path="$data_dir/$name"
+        [[ -f "$path" ]] || continue
+        size_h="$(du -h "$path" 2>/dev/null | cut -f1)"
+        size_h="${size_h:-?}"
+        inventory+=("${path#$SCRIPT_DIR/} (${size_h})")
+        found+=("$name")
+    done
+    if [[ ${#found[@]} -eq 0 ]]; then
+        ok "No orphan SQLite files in ${data_dir#$SCRIPT_DIR/}/ (already clean)"
+        return 0
+    fi
+    warn "Wiping orphan SQLite files: ${inventory[*]}"
+    # Allowlist applied inside the container too: build the explicit
+    # ``rm`` argv from the same names we inventoried above so a wider
+    # mount cannot smuggle extra deletions. ``-f`` swallows the
+    # already-missing case (idempotent re-run).
+    local rm_args=""
+    for name in "${found[@]}"; do
+        rm_args+=" /data/${name}"
+    done
+    docker run --rm \
+        -v "$data_dir:/data" \
+        --user 0:0 \
+        busybox:stable sh -c "rm -f${rm_args}" >/dev/null
+    ok "Orphan SQLite files removed from ${data_dir#$SCRIPT_DIR/}/"
+}

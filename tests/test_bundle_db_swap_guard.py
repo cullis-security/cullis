@@ -232,6 +232,14 @@ def test_orphan_sqlite_with_postgres_url_and_accept_data_loss_proceeds(tmp_path)
     # makes it obvious the operator opted in.
     assert "--accept-data-loss" in combined
     assert "Connector" in combined or "TLS verification" in combined
+    # P3 MINOR-E: --accept-data-loss now ALSO garbage-collects the
+    # orphan SQLite file rather than leaving it on disk. The actual
+    # rm happens inside the busybox stub (which here is just an
+    # ``exit 0`` shim, so the host file persists for this test), but
+    # the log line announcing the wipe must fire so customers can
+    # audit-trail the GC behaviour. File-level GC is asserted in the
+    # MINOR-E suite (test_bundle_orphan_sqlite_gc.py).
+    assert "Wiping orphan SQLite" in combined or "orphan SQLite" in combined.lower()
 
 
 def test_orphan_sqlite_with_short_postgres_url_scheme(tmp_path):
