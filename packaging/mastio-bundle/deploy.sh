@@ -116,6 +116,79 @@ _ensure_data_dirs() {
     fi
 }
 
+# P3 MAJOR-A — refuse to start when an orphan SQLite DB is sitting
+# alongside a Postgres ``MCP_PROXY_DATABASE_URL``.
+#
+# Failure mode this guards against (192.168.122.170 dogfood, 2026-05-17):
+#   1. Operator boots Mastio with the default SQLite URL. The lifespan
+#      generates an Org CA, derives org_id from it, and writes both into
+#      ``./data/mcp_proxy.db``. Connectors enroll, their certs are
+#      signed by that CA.
+#   2. Operator edits ``proxy.env`` to point ``MCP_PROXY_DATABASE_URL``
+#      at a Postgres instance and ``./deploy.sh``s again.
+#   3. Mastio boots against an empty Postgres → ``load_org_ca_from_config``
+#      finds nothing → ``generate_org_ca(derive_org_id=True)`` happily
+#      mints a BRAND NEW Org CA + org_id (the intended standalone
+#      bootstrap path, ADR-006). ``nginx-certs/org-ca.crt`` is rewritten.
+#   4. Every previously enrolled Connector now presents a cert signed by
+#      the orphaned CA. ``/v1/principals/csr`` fails with an opaque TLS
+#      verify error. The old SQLite DB stays on disk, 281 MB of data
+#      the operator no longer realises they have.
+#
+# Swapping ``DATABASE_URL`` is not a supported migration path — the
+# bundle has no automatic Postgres dump-and-load. Refuse to start
+# loudly rather than silently invalidate every enrolled agent.
+_check_sqlite_orphan_vs_postgres() {
+    local db_url data_dir sqlite_path size
+    db_url="$(_load_env MCP_PROXY_DATABASE_URL)"
+    # Nothing in proxy.env → compose default (SQLite) wins, no risk.
+    [[ -n "$db_url" ]] || return 0
+    # Only worry when the operator is asking for Postgres. SQLite swaps
+    # (file path changes) are a different gotcha and out of scope here.
+    case "$db_url" in
+        postgres://*|postgresql://*|postgresql+*|postgres+*) ;;
+        *) return 0 ;;
+    esac
+
+    data_dir="$(_data_dir_host)"
+    sqlite_path="$data_dir/mcp_proxy.db"
+    [[ -f "$sqlite_path" ]] || return 0
+    size="$(wc -c <"$sqlite_path" 2>/dev/null | tr -d ' ')"
+    [[ -n "$size" && "$size" -gt 0 ]] || return 0
+
+    if [[ "${ACCEPT_DATA_LOSS:-0}" -eq 1 ]]; then
+        warn "--accept-data-loss: orphan SQLite DB at ${sqlite_path#$SCRIPT_DIR/} (${size} bytes) ignored."
+        warn "    Every Connector previously enrolled against the Org CA in that DB"
+        warn "    will fail TLS verification at /v1/principals/csr until re-enrolled."
+        warn "    The old SQLite file is left on disk — delete by hand once you have"
+        warn "    confirmed the new Postgres-backed Mastio boots cleanly."
+        return 0
+    fi
+
+    echo ""
+    err "Orphan SQLite database found at ${sqlite_path#$SCRIPT_DIR/} while"
+    err "MCP_PROXY_DATABASE_URL points at Postgres (${db_url%%\?*})."
+    err ""
+    err "Starting the Mastio now would silently generate a NEW Org CA from"
+    err "the empty Postgres database. Every Connector enrolled against the"
+    err "old CA (the one persisted in ${sqlite_path#$SCRIPT_DIR/}) would fail"
+    err "TLS verification on /v1/principals/csr — there is no automatic"
+    err "SQLite→Postgres migration in the bundle."
+    err ""
+    err "Pick one of:"
+    err "  1. Roll back: edit proxy.env, remove (or comment out) the Postgres"
+    err "     MCP_PROXY_DATABASE_URL line, then ``./deploy.sh --pull``. The"
+    err "     Mastio comes back up against the existing SQLite DB and every"
+    err "     previously enrolled Connector keeps working."
+    err "  2. Accept the loss: delete ${sqlite_path#$SCRIPT_DIR/} (and"
+    err "     ./nginx-certs/) by hand if you are SURE you can re-enroll every"
+    err "     agent, then re-run. The new Postgres-backed Mastio will mint a"
+    err "     fresh Org CA on first boot."
+    err "  3. Skip this check with --accept-data-loss (same outcome as 2, but"
+    err "     the orphan SQLite file is left on disk for forensics)."
+    die "Refusing to start — pick a path explicitly."
+}
+
 # Rewrite (or append) a single VAR=value line in proxy.env. Same sed
 # pattern as the legacy --upgrade flow, extracted so --upgrade-bundle
 # and any future caller share the same trailing-newline-safe behaviour.
@@ -229,6 +302,11 @@ _cmd_upgrade_bundle() {
     local version="$1" tarball_url tarball_local backup_dir
     _validate_version "$version"
     _assert_bundle_pwd
+
+    # Same guard as the main ``up`` path: refuse to refresh the bundle
+    # if the operator has half-swapped to Postgres but left an orphan
+    # SQLite DB on disk. MAJOR-A.
+    _check_sqlite_orphan_vs_postgres
 
     step "Upgrading Cullis Mastio bundle to ${version}"
 
@@ -392,6 +470,17 @@ Options:
                               named-volume migration during --upgrade-
                               bundle. Used by the dashboard's update
                               banner one-liner.
+  --accept-data-loss          Skip the SQLite-orphan-vs-Postgres guard
+                              that refuses to start when proxy.env asks
+                              for Postgres but ./data/mcp_proxy.db is
+                              non-empty (the bundle has no automatic
+                              SQLite → Postgres migration, so swapping
+                              MCP_PROXY_DATABASE_URL silently re-derives
+                              a fresh Org CA and invalidates every
+                              previously enrolled Connector). Pass this
+                              flag ONLY after you have backed up the
+                              SQLite DB and are ready to re-enroll every
+                              agent against the new Postgres-backed CA.
   --help, -h                  Show this help and exit.
 
 Environment:
@@ -417,6 +506,7 @@ FORCE_PULL=0
 UPGRADE_TO=""
 UPGRADE_BUNDLE_TO=""
 FROM_BANNER=0
+ACCEPT_DATA_LOSS=0
 # Manual loop because ``--upgrade <version>`` needs to consume the
 # next positional arg. Keeps the existing single-token flags working
 # without pulling in getopt.
@@ -455,6 +545,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --migrate-volumes) ACTION="migrate_volumes"; shift ;;
         --from-banner)     FROM_BANNER=1; shift ;;
+        --accept-data-loss) ACCEPT_DATA_LOSS=1; shift ;;
         --help|-h)       print_help; exit 0 ;;
         *) die "Unknown argument: $arg (use --help)" ;;
     esac
@@ -580,6 +671,20 @@ if [[ "$MODE" == "production" ]]; then
         die "Fix the issues above and rerun. Aborting before compose up."
     fi
     ok "proxy.env validated for production"
+fi
+
+# ── MAJOR-A guard — SQLite orphan vs Postgres MCP_PROXY_DATABASE_URL ───────
+# Runs after the proxy.env wizard / validation so _load_env sees the
+# operator-edited values, and before docker pull/up so a Connector
+# population isn't silently invalidated mid-boot.
+_check_sqlite_orphan_vs_postgres
+
+# Test-only hook: exit after pre-flight checks so the bundle's bash
+# test harness can assert the guard's exit code without booting docker.
+# Not part of the public CLI — undocumented on purpose.
+if [[ "${CULLIS_DEPLOY_EXIT_AFTER_CHECKS:-0}" -eq 1 ]]; then
+    ok "CULLIS_DEPLOY_EXIT_AFTER_CHECKS=1 — stopping before docker pull/up"
+    exit 0
 fi
 
 # ── --upgrade: pin the requested version into proxy.env ────────────────────
