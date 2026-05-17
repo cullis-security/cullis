@@ -11,7 +11,10 @@ version: 2.1
 #   dco.yml                 -> commit-signature check, zero docker / zero pytest
 #   release-*.yml           -> tag-triggered, native GHCR/PyPI publish path
 #
-# Resource class: medium ovunque (free tier).
+# Resource class: medium ovunque. Combinato con il toggle "Free and Open
+# Source" attivo su Project Settings -> Advanced (cullis-security/cullis e'
+# repo pubblico), il piano corrente sblocca 400k credit/mese gratuiti che
+# coprono ~80k build-min su Linux medium.
 # Note operative:
 #   - COMPOSE_PROJECT_NAME parametrizzato con CIRCLE_BUILD_NUM per evitare
 #     collisioni docker-network/nome-container quando piu' job girano in
