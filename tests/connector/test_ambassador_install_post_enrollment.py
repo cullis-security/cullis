@@ -339,7 +339,7 @@ def test_ensure_ambassador_installed_helper_is_idempotent(
 
 
 def test_ensure_ambassador_installed_swallows_install_errors(
-    fresh_app_pre_enrollment, cfg, monkeypatch, caplog,
+    fresh_app_pre_enrollment, cfg, monkeypatch,
 ):
     """Best-effort contract: an install failure (e.g. Mastio unreachable
     during ``ensure_local_token``) must NOT propagate. The enrollment
@@ -363,11 +363,20 @@ def test_ensure_ambassador_installed_swallows_install_errors(
         connector_web, "_maybe_install_ambassador", _raise,
     )
 
-    import logging as _logging
-    with caplog.at_level(
-        _logging.WARNING, logger="cullis_connector.web",
-    ):
-        result = _ensure_ambassador_installed(fresh_app_pre_enrollment)
+    # ``cullis_connector`` sets ``propagate=False`` (see
+    # ``cullis_connector/_logging.py:50``) so caplog — which attaches
+    # to the root logger by default — never sees these warnings. Patch
+    # the module-level logger's ``warning`` directly; same pattern as
+    # ``feedback_mcp_proxy_logger_caplog`` (mcp_proxy has the identical
+    # propagate=False contract).
+    captured: list[str] = []
+
+    def _capture(msg, *args, **kwargs):
+        captured.append(msg % args if args else msg)
+
+    monkeypatch.setattr(connector_web._log, "warning", _capture)
+
+    result = _ensure_ambassador_installed(fresh_app_pre_enrollment)
 
     assert result is False
     assert (
@@ -375,6 +384,6 @@ def test_ensure_ambassador_installed_swallows_install_errors(
         is None
     )
     assert any(
-        "post-enrollment Ambassador install failed" in rec.message
-        for rec in caplog.records
-    ), [r.message for r in caplog.records]
+        "post-enrollment Ambassador install failed" in line
+        for line in captured
+    ), captured
