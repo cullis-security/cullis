@@ -23,10 +23,27 @@ A profile directory holds:
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger("cullis_connector.config")
+
+# Trust-anchor env vars consulted by :func:`_resolve_env_ca_path` and,
+# indirectly, :func:`verify_arg_for` + :func:`_load_env_ca_pem`. Cullis-
+# specific name first so a deploy that intentionally splits the
+# Connector's trust anchor from the ambient Python ecosystem CA can do
+# it; the two standard names follow as ecosystem-compatible fallbacks.
+# Keeping the list in a module constant prevents drift between the two
+# callsites (config-level ``verify_arg_for`` and per-request defence-
+# in-depth in ``ambassador/router.py::_build_user_client``).
+_ENV_CA_BUNDLE_NAMES: tuple[str, ...] = (
+    "CULLIS_FRONTDESK_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+)
 
 # Optional dependency: PyYAML. Connector ships with it but degrades gracefully
 # if a user installs without it.
@@ -134,6 +151,38 @@ class ConnectorConfig:
         return verify_arg_for(self.verify_tls, self.ca_chain_path)
 
 
+def _resolve_env_ca_path() -> str | None:
+    """Return the first env-supplied CA bundle path that exists on disk.
+
+    Consults the same env var ordering as the rest of the Python
+    ecosystem so a Cullis Connector + Frontdesk bundle can carry a
+    trust anchor without manual ``/setup/pin-ca`` interaction. Single
+    source of truth: callers in :func:`verify_arg_for` and in
+    ``cullis_connector/ambassador/router.py::_build_user_client``
+    share this resolver so a future change to the env list (e.g.
+    adding ``XDG_CA_BUNDLE``) does not have to be made in two places
+    and risk drifting.
+
+    NOTE on TOCTOU: ``Path(...).exists()`` is checked, the path is
+    returned as a string, and httpx opens the file later. Between
+    those two events the file can in principle be swapped. The
+    Frontdesk bundle (`docker-compose.yml`) mounts the CA at
+    ``/etc/cullis/ca-bundle.pem`` read-only and the env value comes
+    from controlled boot env, not user input, so the race is not
+    exploitable in the supported deploy. Callers that rely on this
+    resolver outside the bundle must vouch for the env source.
+
+    Returns ``None`` when no env-supplied path exists. Callers decide
+    whether that maps to ``True`` (system CA store) or some other
+    fallback.
+    """
+    for env_name in _ENV_CA_BUNDLE_NAMES:
+        env_path = os.environ.get(env_name, "").strip()
+        if env_path and Path(env_path).exists():
+            return env_path
+    return None
+
+
 def verify_arg_for(verify_tls: bool, ca_chain_path: Path) -> bool | str:
     """Compute ``httpx.verify`` from a form-supplied ``verify_tls`` and a
     profile's ``ca-chain.pem`` path.
@@ -166,15 +215,10 @@ def verify_arg_for(verify_tls: bool, ca_chain_path: Path) -> bool | str:
         return False
     if ca_chain_path.exists():
         return str(ca_chain_path)
-    import os
-    for env_name in (
-        "CULLIS_FRONTDESK_CA_BUNDLE",
-        "SSL_CERT_FILE",
-        "REQUESTS_CA_BUNDLE",
-    ):
-        env_path = os.environ.get(env_name, "").strip()
-        if env_path and Path(env_path).exists():
-            return env_path
+    env_path = _resolve_env_ca_path()
+    if env_path is not None:
+        _log.debug("verify_arg_for using env CA bundle: %s", env_path)
+        return env_path
     return True
 
 

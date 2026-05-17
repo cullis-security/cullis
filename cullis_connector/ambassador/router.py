@@ -86,15 +86,19 @@ def _build_user_client(request: Request, cred: Any):
     # to httpx's system CA store, which never carries the Org Root and
     # every ``/v1/principals/csr`` call collapsed to
     # ``provisioning="deferred"`` with ``CERTIFICATE_VERIFY_FAILED``.
-    # Same env precedence as ``config.verify_arg_for``.
+    # Shares :func:`cullis_connector.config._resolve_env_ca_path` with
+    # :func:`verify_arg_for` so the env precedence stays in one place.
+    #
+    # Sync I/O (``open(...).read()``) is intentional: this helper is a
+    # ``def`` (not ``async def``), invoked under a request that already
+    # pays three round-trip HTTPS calls inside
+    # :meth:`login_via_proxy_with_local_key`; the marginal file read is
+    # noise. If this is ever moved to ``async def``, wrap the read in
+    # ``await asyncio.to_thread(...)``.
+    from cullis_connector.config import _resolve_env_ca_path
     _ca_chain_pem: str | None = None
-    _ca_path = (
-        _os.environ.get("CULLIS_FRONTDESK_CA_BUNDLE")
-        or _os.environ.get("SSL_CERT_FILE")
-        or _os.environ.get("REQUESTS_CA_BUNDLE")
-        or ""
-    ).strip()
-    if _ca_path and _os.path.exists(_ca_path):
+    _ca_path = _resolve_env_ca_path()
+    if _ca_path is not None:
         try:
             with open(_ca_path, "r", encoding="utf-8") as _f:
                 _ca_chain_pem = _f.read()
