@@ -1,0 +1,153 @@
+{"timestamp": "2026-05-17T09:47:02.745910+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:02.786507+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:02.787081+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:02.937223+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+INFO:     Uvicorn running on http://0.0.0.0:9100 (Press CTRL+C to quit)
+INFO:     Started parent process [1]
+{"timestamp": "2026-05-17T09:47:03.848829+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:03.859409+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:03.869205+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:03.884065+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:03.901052+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:03.901612+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:03.912805+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:03.913323+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:03.922841+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:03.923367+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:03.935783+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:03.936309+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:04.013246+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+{"timestamp": "2026-05-17T09:47:04.023870+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+{"timestamp": "2026-05-17T09:47:04.034860+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+{"timestamp": "2026-05-17T09:47:04.047644+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+INFO:     Started server process [8]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:04.326428+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:04.326522+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:04.326577+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO:     Started server process [9]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:04.336702+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:04.336774+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:04.336822+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO:     Started server process [11]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:04.350758+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:04.350820+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:04.350866+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO:     Started server process [10]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:04.358944+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:04.359006+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:04.359044+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_snapshot, Initial schema snapshot — legacy proxy tables.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_snapshot, Initial schema snapshot — legacy proxy tables.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_snapshot, Initial schema snapshot — legacy proxy tables.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial_snapshot, Initial schema snapshot — legacy proxy tables.
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial_snapshot -> 0002_local_tables, Local-* tables — ADR-001 Phase 1 scope.
+INFO  [alembic.runtime.migration] Running upgrade 0002_local_tables -> 0003_add_pending_enrollments, Add pending_enrollments table — Connector Phase 2 (#64).
+INFO  [alembic.runtime.migration] Running upgrade 0003_add_pending_enrollments -> 0004_add_federation_cache, Add federation cache tables — ADR-001 Phase 4b.
+INFO  [alembic.runtime.migration] Running upgrade 0004_add_federation_cache -> 0005_schema_parity_with_broker, Schema parity local_*↔broker — ADR-006 Fase 0.
+INFO  [alembic.runtime.migration] Running upgrade 0005_schema_parity_with_broker -> 0006_enrollment_api_key_hash, Add api_key_hash column to pending_enrollments — #122 follow-up.
+INFO  [alembic.runtime.migration] Running upgrade 0006_enrollment_api_key_hash -> 0007_mcp_resources, Local MCP resources + agent bindings — ADR-007 Phase 1 PR #1.
+INFO  [alembic.runtime.migration] Running upgrade 0007_mcp_resources -> 0008_oneshot_messages, Sessionless one-shot messaging columns — ADR-008 Phase 1 PR #1.
+INFO  [alembic.runtime.migration] Running upgrade 0008_oneshot_messages -> 0009_audit_chain_unique_seq, local_audit — UNIQUE(org_id, chain_seq) for multi-worker safety.
+INFO  [alembic.runtime.migration] Running upgrade 0009_audit_chain_unique_seq -> 0010_internal_agents_federated, ADR-010 Phase 2 — internal_agents.federated flag.
+INFO  [alembic.runtime.migration] Running upgrade 0010_internal_agents_federated -> 0011_last_pushed_revision, ADR-010 Phase 3 — track last-pushed revision on internal_agents.
+INFO  [alembic.runtime.migration] Running upgrade 0011_last_pushed_revision -> 0012_drop_local_agents, ADR-010 Phase 6b — drop ``local_agents`` (doppione of ``internal_agents``).
+INFO  [alembic.runtime.migration] Running upgrade 0012_drop_local_agents -> 0013_internal_agents_device_info, Persist the Connector device_info JSON on internal_agents.
+INFO  [alembic.runtime.migration] Running upgrade 0013_internal_agents_device_info -> 0014_internal_agents_dpop_jkt, F-B-11 Phase 2 — ``internal_agents.dpop_jkt`` pins the agent's DPoP JWK.
+INFO  [alembic.runtime.migration] Running upgrade 0014_internal_agents_dpop_jkt -> 0015_enrollment_dpop_jkt, F-B-11 Phase 3b — ``pending_enrollments.dpop_jkt`` carries the
+agent's DPoP JWK thumbprint from start-of-enrollment to approval.
+INFO  [alembic.runtime.migration] Running upgrade 0015_enrollment_dpop_jkt -> 0016_enrollment_metadata, ADR-011 Phase 1a — enrollment metadata on ``internal_agents``.
+INFO  [alembic.runtime.migration] Running upgrade 0016_enrollment_metadata -> 0017_internal_agents_reach, ``internal_agents.reach`` — intra-org / cross-org / both.
+INFO  [alembic.runtime.migration] Running upgrade 0017_internal_agents_reach -> 0018_mastio_keys, ``mastio_keys`` — multi-key store for the Mastio ES256 identity.
+INFO  [alembic.runtime.migration] Running upgrade 0018_mastio_keys -> 0019_pending_updates, ``pending_updates`` — registry of migrations the boot detector flagged.
+INFO  [alembic.runtime.migration] Running upgrade 0019_pending_updates -> 0020_migration_state_backups, ``migration_state_backups`` — snapshot blob for federation update rollback.
+INFO  [alembic.runtime.migration] Running upgrade 0020_migration_state_backups -> 0021_anomaly_detector_tables, Anomaly detection tables — ADR-013 Phase 4.
+INFO  [alembic.runtime.migration] Running upgrade 0021_anomaly_detector_tables -> 0022_drop_api_key_hash, Drop api_key_hash columns — ADR-014 PR-C closes the api_key path.
+INFO  [alembic.runtime.migration] Running upgrade 0022_drop_api_key_hash -> 0023_audit_hash_chain, Add hash chain columns to mcp_proxy audit_log — H4 lane7.
+INFO  [alembic.runtime.migration] Running upgrade 0023_audit_hash_chain -> 0024_bindings_principal_type, ``local_agent_resource_bindings.principal_type`` (ADR-020).
+INFO  [alembic.runtime.migration] Running upgrade 0024_bindings_principal_type -> 0025_local_principals, Mastio-local principal directories for users + workloads.
+INFO  [alembic.runtime.migration] Running upgrade 0025_local_principals -> 0026_user_password, AD-style local password credentials for user principals.
+INFO  [alembic.runtime.migration] Running upgrade 0026_user_password -> 0027_ai_provider_creds, Multi-provider AI credentials, dashboard-managed.
+INFO  [alembic.runtime.migration] Running upgrade 0027_ai_provider_creds -> 0028_revert_user_password, Revert AD-style password layer added in 0026 — Mastio is not the password store.
+INFO  [alembic.runtime.migration] Running upgrade 0028_revert_user_password -> 0029_user_api_tokens, User API tokens for cross-channel Bearer auth (ADR-027 Phase 1).
+INFO  [alembic.runtime.migration] Running upgrade 0029_user_api_tokens -> 0030_user_pubkey_thumbprint, TOFU pubkey thumbprint pinning for typed principals (CRIT-1 fix).
+INFO  [alembic.runtime.migration] Running upgrade 0030_user_pubkey_thumbprint -> 0031_audit_append_only_v2, Audit DB-level append-only enforcement + v2 hash format (CRIT-3).
+INFO  [alembic.runtime.migration] Running upgrade 0031_audit_append_only_v2 -> 0032_ai_creds_at_rest_enc, Encrypt ai_provider_credentials.creds_json at rest (Wave B B1).
+INFO  [alembic.runtime.migration] Running upgrade 0032_ai_creds_at_rest_enc -> 0033_audit_dpop_jkt, P1.2 — denormalize DPoP jkt into ``audit_log``.
+INFO  [alembic.runtime.migration] Running upgrade 0033_audit_dpop_jkt -> 0034_user_sessions_obo, ADR-032 Layer 2 — user sessions + audit on_behalf_of_user_id.
+{"timestamp": "2026-05-17T09:47:05.614940+00:00", "level": "INFO", "logger": "mcp_proxy.kms", "message": "KMS provider: local (proxy_config DB)"}
+{"timestamp": "2026-05-17T09:47:05.616408+00:00", "level": "WARNING", "logger": "mcp_proxy.egress.agent_manager", "message": "Org CA not found via KMS provider \u2014 agent cert issuance unavailable"}
+{"timestamp": "2026-05-17T09:47:05.638296+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Self-signed Org CA generated (CN=stress-org CA, validity=3650d)"}
+{"timestamp": "2026-05-17T09:47:05.649272+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Mastio intermediate CA minted (CN=<Name(O=stress-org,CN=stress-org Mastio CA)>)"}
+{"timestamp": "2026-05-17T09:47:05.654467+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Mastio leaf minted \u2014 kid=mastio-fe4d13d996ec991a, SAN=spiffe://cullis.local/proxy/stress-org"}
+{"timestamp": "2026-05-17T09:47:05.664610+00:00", "level": "INFO", "logger": "mcp_proxy.tools.resource_loader", "message": "MCP resource loader: 0 loaded, 0 skipped (conflict with builtin)"}
+{"timestamp": "2026-05-17T09:47:05.664652+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "MCP resource registry populated (count=0)"}
+{"timestamp": "2026-05-17T09:47:05.677197+00:00", "level": "INFO", "logger": "mcp_proxy.local.sweeper", "message": "local sweeper started (interval=30s, idle_timeout=600s)"}
+INFO:     Waiting for child process [11]
+INFO:     Child process [11] died
+INFO:     Waiting for child process [9]
+INFO:     Child process [9] died
+INFO:     Waiting for child process [10]
+INFO:     Child process [10] died
+{"timestamp": "2026-05-17T09:47:10.354186+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:10.406333+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:10.406797+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:10.517246+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+INFO:     Started server process [40]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:10.815499+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:10.815574+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:10.815626+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+{"timestamp": "2026-05-17T09:47:10.867286+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:10.890883+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "DB latency circuit breaker middleware registered (ADR-013 layer 6)"}
+{"timestamp": "2026-05-17T09:47:10.932325+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:10.932878+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:10.944876+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "Global rate limit: rps=500.0 burst=1000 (ADR-013 layer 2)"}
+{"timestamp": "2026-05-17T09:47:10.945409+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "X-Cullis-* incoming header strip middleware registered (P1.3)"}
+{"timestamp": "2026-05-17T09:47:10.962303+00:00", "level": "INFO", "logger": "mcp_proxy.kms", "message": "KMS provider: local (proxy_config DB)"}
+{"timestamp": "2026-05-17T09:47:10.964495+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Org CA loaded \u2014 issuer CN=stress-org CA"}
+{"timestamp": "2026-05-17T09:47:10.966890+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Mastio identity loaded (ca + active key)"}
+{"timestamp": "2026-05-17T09:47:10.975335+00:00", "level": "INFO", "logger": "mcp_proxy.tools.resource_loader", "message": "MCP resource loader: 0 loaded, 0 skipped (conflict with builtin)"}
+{"timestamp": "2026-05-17T09:47:10.975372+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "MCP resource registry populated (count=0)"}
+{"timestamp": "2026-05-17T09:47:10.984702+00:00", "level": "INFO", "logger": "mcp_proxy.local.sweeper", "message": "local sweeper started (interval=30s, idle_timeout=600s)"}
+{"timestamp": "2026-05-17T09:47:11.044795+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+{"timestamp": "2026-05-17T09:47:11.060155+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "ADR-012 local /v1/auth/token handler ENABLED"}
+INFO:     Started server process [43]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:11.342900+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:11.342971+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:11.343010+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO:     Started server process [44]
+INFO:     Waiting for application startup.
+{"timestamp": "2026-05-17T09:47:11.348299+00:00", "level": "WARNING", "logger": "mcp_proxy.startup", "message": "Neither BROKER_JWKS_URL nor JWKS_OVERRIDE_PATH is set. External JWT validation will not work until configured."}
+{"timestamp": "2026-05-17T09:47:11.348352+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "MCP_PROXY_DASHBOARD_SIGNING_KEY not set \u2014 persisting auto-generated key at certs/.mcp_proxy_dashboard_signing_key (audit F-B-10). Set the env var to override, or back up the file to keep sessions across container rebuilds."}
+{"timestamp": "2026-05-17T09:47:11.348390+00:00", "level": "INFO", "logger": "mcp_proxy.startup", "message": "Startup validation passed (environment=development, secret_backend=env, kms_backend=local, standalone=True)."}
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+{"timestamp": "2026-05-17T09:47:11.459899+00:00", "level": "INFO", "logger": "mcp_proxy.kms", "message": "KMS provider: local (proxy_config DB)"}
+{"timestamp": "2026-05-17T09:47:11.462074+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Org CA loaded \u2014 issuer CN=stress-org CA"}
+{"timestamp": "2026-05-17T09:47:11.464266+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Mastio identity loaded (ca + active key)"}
+{"timestamp": "2026-05-17T09:47:11.467371+00:00", "level": "INFO", "logger": "mcp_proxy.kms", "message": "KMS provider: local (proxy_config DB)"}
+{"timestamp": "2026-05-17T09:47:11.469314+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Org CA loaded \u2014 issuer CN=stress-org CA"}
+{"timestamp": "2026-05-17T09:47:11.471842+00:00", "level": "INFO", "logger": "mcp_proxy.egress.agent_manager", "message": "Mastio identity loaded (ca + active key)"}
+{"timestamp": "2026-05-17T09:47:11.472017+00:00", "level": "INFO", "logger": "mcp_proxy.tools.resource_loader", "message": "MCP resource loader: 0 loaded, 0 skipped (conflict with builtin)"}
+{"timestamp": "2026-05-17T09:47:11.472048+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "MCP resource registry populated (count=0)"}
+{"timestamp": "2026-05-17T09:47:11.479816+00:00", "level": "INFO", "logger": "mcp_proxy.tools.resource_loader", "message": "MCP resource loader: 0 loaded, 0 skipped (conflict with builtin)"}
+{"timestamp": "2026-05-17T09:47:11.479852+00:00", "level": "INFO", "logger": "mcp_proxy", "message": "MCP resource registry populated (count=0)"}
+{"timestamp": "2026-05-17T09:47:11.480670+00:00", "level": "INFO", "logger": "mcp_proxy.local.sweeper", "message": "local sweeper started (interval=30s, idle_timeout=600s)"}
+{"timestamp": "2026-05-17T09:47:11.489129+00:00", "level": "INFO", "logger": "mcp_proxy.local.sweeper", "message": "local sweeper started (interval=30s, idle_timeout=600s)"}
