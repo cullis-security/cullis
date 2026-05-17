@@ -57,17 +57,21 @@ def _register_tool() -> AsyncMock:
     return handler
 
 
-def _agent(scope: list[str] | None = None) -> TokenPayload:
+def _agent(
+    scope: list[str] | None = None,
+    principal_type: str = "agent",
+    agent_id: str = "acme::daniele",
+) -> TokenPayload:
     return TokenPayload(
-        sub="spiffe://cullis.test/acme::daniele",
-        agent_id="acme::daniele",
+        sub=f"spiffe://cullis.test/{agent_id}",
+        agent_id=agent_id,
         org="acme",
         exp=9_999_999_999,
         iat=0,
         jti="jti-tier-test",
         scope=scope or [_TOOL_CAP],
         cnf={"jkt": "fake-jkt"},
-        principal_type="agent",
+        principal_type=principal_type,
     )
 
 
@@ -291,3 +295,101 @@ async def test_no_app_state_falls_back_to_load_default_matrix(
     # default_min_tier=untrusted ⇒ gate passes ⇒ handler fires.
     assert resp.status == "success"
     handler.assert_awaited_once()
+
+
+# ── typed-principal exemption (F5 follow-up #6) ───────────────────────
+
+
+async def _run_typed_with_tier(
+    *, principal_type: str, agent_id: str,
+    required_tier: str = "managed_attested",
+):
+    """Driver for typed-principal tier-gate cases.
+
+    Uses a tier matrix that would *deny* every agent-typed call
+    (required=managed_attested vs. a mocked effective=untrusted).
+    The point is to assert the resolver isn't even consulted for
+    typed callers — the gate is skipped, the handler fires, and
+    no ``policy.tier_evaluated`` audit row is emitted.
+    """
+    handler = _register_tool()
+    agent = _agent(principal_type=principal_type, agent_id=agent_id)
+    app_state = SimpleNamespace(tier_matrix=_matrix(required_tier))
+    audit = AsyncMock()
+    resolver = AsyncMock(return_value=("untrusted", None))
+    with patch(
+        "mcp_proxy.tools.executor.resolve_effective_tier", resolver,
+    ), patch(
+        "mcp_proxy.tools.executor.log_audit", audit,
+    ):
+        resp = await executor.run(
+            request=_request(),
+            agent=agent,
+            db=None,
+            secret_provider=_FakeSecrets(),
+            app_state=app_state,
+        )
+    return resp, handler, audit, resolver
+
+
+@pytest.mark.asyncio
+async def test_user_principal_bypasses_tier_gate(clean_registry):
+    """A ``user::*`` principal must skip the device tier check.
+
+    The user-typed caller has no ``internal_agents`` row, so reading
+    ``last_attestation`` would always return ``None`` and collapse to
+    ``untrusted``. Denying every typed call is the wrong default —
+    user attestation belongs to a separate path (ADR-021 multi-user
+    KMS, Frontdesk SSO, Connector local-credentials).
+    """
+    resp, handler, audit, resolver = await _run_typed_with_tier(
+        principal_type="user",
+        agent_id="acme::alice",
+    )
+    assert resp.status == "success"
+    handler.assert_awaited_once()
+    resolver.assert_not_awaited()
+
+    actions = [call.kwargs.get("action") for call in audit.await_args_list]
+    assert "policy.tier_evaluated" not in actions, (
+        "tier gate must not emit policy.tier_evaluated for typed principals"
+    )
+
+
+@pytest.mark.asyncio
+async def test_workload_principal_bypasses_tier_gate(clean_registry):
+    """A ``workload::*`` principal must skip the device tier check.
+
+    Workloads (M2M) authenticate server-side via SPIRE / cert chain;
+    they have no Connector device claim. Same exemption as user.
+    """
+    resp, handler, audit, resolver = await _run_typed_with_tier(
+        principal_type="workload",
+        agent_id="acme::pipeline-batch",
+    )
+    assert resp.status == "success"
+    handler.assert_awaited_once()
+    resolver.assert_not_awaited()
+
+    actions = [call.kwargs.get("action") for call in audit.await_args_list]
+    assert "policy.tier_evaluated" not in actions
+
+
+@pytest.mark.asyncio
+async def test_agent_principal_still_gated_after_typed_exemption(
+    clean_registry,
+):
+    """Regression pin: the agent path keeps the tier gate.
+
+    Same matrix that the typed tests above use to prove the
+    exemption — here it must DENY because the principal is
+    agent-typed and the mocked effective tier (``untrusted``) is
+    below the requirement (``managed_attested``).
+    """
+    resp, handler, _ = await _run_with_tier(
+        effective_tier="untrusted",
+        required_tier="managed_attested",
+    )
+    assert resp.status == "error"
+    handler.assert_not_awaited()
+    assert "untrusted" in (resp.error or "").lower()

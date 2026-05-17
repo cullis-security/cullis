@@ -18,6 +18,21 @@ Mastio is the authoritative source for ``effective_tier`` because
 The helper is intentionally synchronous in spirit (no DB session
 needed beyond ``get_agent``) and async in shape so callers can
 ``await`` without restructuring.
+
+**Agent-only by construction (F5 follow-up #6).** The read path
+targets ``internal_agents`` because that's where the per-device
+``last_attestation`` claim lives (migration 0035; see the commit
+message there for the lifetime reasoning). Typed principals
+(``user`` / ``workload``, ADR-020) have no row in that table — a
+typed ``agent_id`` like ``user::alice`` resolves to ``None`` in
+``get_agent`` and collapses to ``untrusted`` here. Callers
+(``mcp_proxy.tools.executor`` today) MUST guard the call with
+``principal_type == "agent"``; this module does not branch on type
+because it only sees an opaque string id. When ADR-021 v2 wires a
+per-user attestation column (likely on ``user_sessions`` per
+migration 0035 for shared-mode Frontdesk F4 R2, not on
+``local_user_principals``), add a typed-principal read path here
+and let the executor drop its agent-only guard.
 """
 from __future__ import annotations
 
