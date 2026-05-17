@@ -29,7 +29,10 @@ executors:
 
   node-browsers:
     docker:
-      - image: cimg/node:20-browsers
+      # cimg/node major-only -browsers tag (e.g. "20-browsers") returns
+      # "manifest unknown" on Docker Hub since CircleCI's image team
+      # deprecated bare-major variants. Pin to a specific minor.
+      - image: cimg/node:20.18-browsers
     resource_class: medium
 
   ubuntu-machine:
