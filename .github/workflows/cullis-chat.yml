@@ -11,14 +11,20 @@ on:
       - 'frontend/cullis-chat/**'
       - '.github/workflows/cullis-chat.yml'
 
+concurrency:
+  group: cullis-chat-${{ github.ref }}
+  cancel-in-progress: true
+
 defaults:
   run:
     working-directory: frontend/cullis-chat
 
 jobs:
   build-and-e2e:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
     timeout-minutes: 15
+    # Skip on fork PR: self-hosted runner is on Cullis dev infra.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
 

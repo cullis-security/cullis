@@ -38,8 +38,11 @@ jobs:
     #   - "demo_network smoke (ec)"            — all-ECC, sqlite (REQUIRED)
     #   - "demo_network smoke (rsa, postgres)" — ADR-001 Phase 1.4, additive
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
     timeout-minutes: 20
+    # Skip on fork PR (self-hosted runner is on Cullis dev infra, fork
+    # code must not run there). Fork PRs validate via local smoke.sh.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:

@@ -1,15 +1,24 @@
 name: DCO
 
 on:
-  # No `branches:` filter — stacked PRs (base != main) must run
+  # No `branches:` filter, stacked PRs (base != main) must run
   # DCO check too. A missing filter matches any base branch.
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: dco-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dco-check:
     name: Signed-off-by check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
+    timeout-minutes: 10
+    # Skip on fork PR: the self-hosted runner lives on Cullis dev
+    # infra (Mastio VM), fork PR code must not execute there. Fork
+    # PRs validate DCO via local ``git commit -s`` discipline.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -29,8 +29,10 @@ concurrency:
 jobs:
   customer-path-smoke:
     name: customer-path smoke (mastio+frontdesk+1 turn)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
     timeout-minutes: 25
+    # Skip on fork PR: self-hosted runner is on Cullis dev infra.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       - uses: actions/checkout@v4

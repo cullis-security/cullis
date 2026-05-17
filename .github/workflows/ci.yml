@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-  # No `branches:` filter on pull_request — stacked PRs (base != main)
+  # No `branches:` filter on pull_request, stacked PRs (base != main)
   # must trigger CI too. A missing filter matches any base branch.
   pull_request:
 
@@ -12,15 +12,28 @@ on:
 permissions:
   contents: read
 
+# Cancel any in-flight CI run for the same ref when a new push lands.
+# Pre-fix the self-hosted runner (PR #779) had to chew through every
+# stale push on a busy PR sequentially; this cancels the prior run as
+# soon as a new commit arrives.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ─── Path filter ────────────────────────────────────────────────────
   # Detects whether the PR touches code paths that the unit suite + lint
   # actually cover. Docs / sandbox / reference / packaging changes don't
-  # need the 1981-test pytest run — the umbrella ``test (3.11)`` job
-  # below short-circuits to a green pass when ``code`` is false, so
+  # need the full pytest run, the umbrella ``test (3.11)`` job below
+  # short-circuits to a green pass when ``code`` is false, so
   # branch protection still gets the required check.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
+    timeout-minutes: 5
+    # Skip on PR from fork. The self-hosted runner lives on Cullis dev
+    # infra (Mastio VM), so fork PR code MUST NOT execute there.
+    # Fork PRs validate via local pytest run by the maintainer.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -43,24 +56,31 @@ jobs:
               - 'pytest.ini'
               - '.github/workflows/ci.yml'
 
-  # ─── Test shards (3-way pytest-split) ───────────────────────────────
-  # Splits the ~1981-test suite across 3 parallel runners. Each shard
-  # repeats setup (pip + npm cache hits keep it cheap) and runs roughly
-  # one third of the tests by file. ``--dist=loadfile`` from pytest.ini
-  # still applies inside each shard for intra-runner xdist parallelism.
+  # ─── Test shard (collapsed from 3-way pytest-split) ─────────────────
+  # Pre-migration to self-hosted runner (PR #779), this was a 3-way
+  # matrix executed on 3 parallel ubuntu-latest runners. The
+  # self-hosted runner is a single 4-vCPU VM, so 3 sequential matrix
+  # jobs would actually be SLOWER than one job using pytest-xdist
+  # ``-n auto`` across the 4 cores. Collapsed to a single shard +
+  # let xdist parallelize within the job.
   #
-  # Not a required check — the umbrella ``test (3.11)`` job below
-  # aggregates the three results so branch protection keeps a single
+  # The conditional ``if: matrix.split-group == 1`` guards inside
+  # this job are no-ops now (single shard always == 1) but kept for
+  # blame-history clarity. They can be inlined in a follow-up.
+  #
+  # Not a required check, the umbrella ``test (3.11)`` job below
+  # aggregates the result so branch protection keeps a single
   # check name.
   test-shard:
-    name: test-shard (${{ matrix.split-group }}/3)
+    name: test-shard (${{ matrix.split-group }}/1)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    if: needs.changes.outputs.code == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, x64, cullis-vm]
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        split-group: [1, 2, 3]
+        split-group: [1]
     env:
       ADMIN_SECRET: "test-secret-not-default"
     steps:
@@ -106,24 +126,25 @@ jobs:
           python -c "import sqlite3; c=sqlite3.connect('test_migrations.db'); tables=c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall(); print(f'{len(tables)} tables created'); assert len(tables) >= 10, f'Expected >=10 tables, got {len(tables)}'"
           rm -f test_migrations.db
 
-      - name: Run tests (shard ${{ matrix.split-group }}/3)
+      - name: Run tests (full suite on single self-hosted shard)
         env:
           OTEL_ENABLED: "false"
           DATABASE_URL: "sqlite+aiosqlite://"
         # ``tests/test_e2e.py`` is order-dependent (module-level _state
-        # dict shared across step1..step10). pytest-split's
-        # duration-based distribution scatters those steps across shards
-        # whenever the suite's overall timing shifts (e.g. a PR adds
-        # tests). When step1 lands in one shard and step5 in another,
-        # step5 can't read state step1 wrote and the suite fails with
-        # "State 'session_id' not found — tests must run in order".
-        # Excluded here and re-run as a single block in shard 1.
+        # dict shared across step1..step10) and runs as a separate
+        # step below to keep its in-process serial semantics.
+        #
+        # Migration note (PR #779): pre-migration this used
+        # ``--splits 3 --group N`` to fan out across a 3-way matrix on
+        # GH-hosted runners. On the single self-hosted runner the
+        # matrix collapsed to 1 shard, so we drop ``--splits`` and let
+        # pytest-xdist (``-n auto`` from pytest.ini) parallelize across
+        # the runner's 4 cores.
         run: |
           pytest tests/ \
               --tb=short \
               --ignore=tests/test_postgres_integration.py \
-              --ignore=tests/test_e2e.py \
-              --splits 3 --group ${{ matrix.split-group }}
+              --ignore=tests/test_e2e.py
 
       - name: Run tests/test_e2e.py (order-dependent, no split)
         if: matrix.split-group == 1
@@ -148,39 +169,50 @@ jobs:
           pytest tests/test_proxy_mastio_rotation_concurrency.py \
               --count=10 -n auto --dist=loadfile --tb=short -q
 
-  # ─── Umbrella job — preserves the ``test (3.11)`` required check ────
-  # Aggregates the test-shard matrix into a single status check named
+  # ─── Umbrella job, preserves the ``test (3.11)`` required check ────
+  # Aggregates the test-shard result into a single status check named
   # ``test (3.11)`` so the existing branch protection rule keeps
   # working without rule edits. Passes when:
   #   - ``code`` filter is false (no relevant changes), OR
-  #   - all three shards succeeded.
+  #   - the test-shard succeeded.
   test:
     needs: [changes, test-shard]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
+    timeout-minutes: 5
     strategy:
       matrix:
         python-version: ["3.11"]
     steps:
-      - name: Aggregate shard results
+      - name: Aggregate shard result
         run: |
           set -e
           code="${{ needs.changes.outputs.code }}"
           shard="${{ needs.test-shard.result }}"
           echo "code=${code} shard=${shard}"
           if [[ "${code}" != "true" ]]; then
-            echo "No code changes — skipping test suite (umbrella PASS)."
+            echo "No code changes, skipping test suite (umbrella PASS)."
+            exit 0
+          fi
+          # When the changes filter is true but the test-shard was
+          # skipped (typical of fork PRs that bypass the self-hosted
+          # runner), the umbrella stays green so branch protection
+          # does not block. Fork PRs validate via local pytest.
+          if [[ "${shard}" == "skipped" ]]; then
+            echo "test-shard skipped (likely fork PR); umbrella PASS."
             exit 0
           fi
           if [[ "${shard}" == "success" ]]; then
-            echo "All shards green."
+            echo "test-shard green."
             exit 0
           fi
-          echo "::error::test-shard matrix did not succeed (result=${shard})"
+          echo "::error::test-shard did not succeed (result=${shard})"
           exit 1
 
   security:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, cullis-vm]
+    timeout-minutes: 15
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
 
