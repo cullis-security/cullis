@@ -281,11 +281,30 @@ async def test_cert_pin_mismatch_rejected(proxy_app):
         headers=bob_headers,
     )
     assert resp.status_code == 401
-    # ``unknown`` (bob row not provisioned) or ``match`` (bob row
-    # exists but DER doesn't match) are both valid pin-failure
-    # detail strings — both surface the same security boundary.
-    detail = resp.json()["detail"].lower()
-    assert "unknown" in detail or "match" in detail or "pin" in detail
+    # Post P3 MAJOR-C (#771): the detail body is a structured dict
+    # ``{"reason": "...", "hint": "...", ...}`` instead of a prose
+    # string. Both ``unknown`` (bob row not provisioned) and the
+    # cert-pin mismatch (bob row exists but DER doesn't match) surface
+    # via reason tokens — both are valid pin-failure outcomes and
+    # share the same security boundary, so accept either.
+    detail = resp.json()["detail"]
+    if isinstance(detail, dict):
+        reason = (detail.get("reason") or "").lower()
+        assert (
+            "unknown" in reason
+            or "pin" in reason
+            or "match" in reason
+            or "agent_unknown" in reason
+        ), f"unexpected reason token: {reason!r}"
+    else:
+        # Legacy prose-string path — keep coverage for any 401 raised
+        # outside the client_cert.py refactor surface.
+        detail_str = detail.lower()
+        assert (
+            "unknown" in detail_str
+            or "match" in detail_str
+            or "pin" in detail_str
+        )
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,9 @@ async def test_rejects_missing_verify_header(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
-    assert "verified" in resp.json()["detail"].lower()
+    body = resp.json()["detail"]
+    assert isinstance(body, dict)
+    assert body["reason"] == "client_cert_not_verified"
 
 
 @pytest.mark.asyncio
@@ -102,6 +104,7 @@ async def test_rejects_missing_cert_header(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
+    assert resp.json()["detail"]["reason"] == "client_cert_header_missing"
 
 
 @pytest.mark.asyncio
@@ -113,7 +116,7 @@ async def test_rejects_garbage_pem(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
-    assert "PEM" in resp.json()["detail"] or "valid" in resp.json()["detail"].lower()
+    assert resp.json()["detail"]["reason"] == "client_cert_invalid_pem"
 
 
 @pytest.mark.asyncio
@@ -124,7 +127,9 @@ async def test_rejects_unknown_agent(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
-    assert "unknown" in resp.json()["detail"].lower() or "inactive" in resp.json()["detail"].lower()
+    body = resp.json()["detail"]
+    assert body["reason"] == "agent_unknown_or_inactive"
+    assert body["agent_id"] == "acme::stranger"
 
 
 @pytest.mark.asyncio
@@ -145,6 +150,39 @@ async def test_rejects_org_mismatch(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_org_mismatch_response_detail_carries_expected_and_presented(
+    proxy_app,
+):
+    """P3 MAJOR-C — the org-mismatch 401 must surface both
+    ``expected_org`` (this Mastio's config) and ``presented_org``
+    (from the cert SAN) in a machine-readable JSON body so a
+    customer admin / dashboard banner / SPA dispatches on the stable
+    token instead of parsing prose. Both values are public-by-design
+    (cert SAN, admin-derivable config) — disclosure is safe per the
+    controlled-disclosure principle in
+    ``feedback_sqlalchemy_exc_leaks_bound_params``.
+    """
+    cert_pem, _ = mint_agent_cert(org_id="foreign", agent_name="alice")
+    headers = mtls_headers(cert_pem)
+    _, client = proxy_app
+    resp = await client.get("/v1/egress/peers", headers=headers)
+    assert resp.status_code == 401
+
+    body = resp.json()["detail"]
+    # MUST be parser-friendly JSON — not a bare string — otherwise
+    # customer admins fall back to substring matching.
+    assert isinstance(body, dict), (
+        f"expected dict body, got {type(body).__name__}: {body!r}"
+    )
+    assert body["reason"] == "client_cert_org_mismatch"
+    assert body["expected_org"] == "acme"
+    assert body["presented_org"] == "foreign"
+    assert body["agent_name"] == "alice"
+    assert body["hint"]
+    assert body["docs"].startswith("https://")
 
 
 @pytest.mark.asyncio
@@ -169,7 +207,11 @@ async def test_rejects_cert_pin_mismatch(proxy_app):
     _, client = proxy_app
     resp = await client.get("/v1/egress/peers", headers=headers)
     assert resp.status_code == 401
-    assert "match" in resp.json()["detail"].lower() or "registered" in resp.json()["detail"].lower()
+    body = resp.json()["detail"]
+    assert body["reason"] == "client_cert_pin_mismatch"
+    assert body["agent_id"] == "acme::alice"
+    assert "cert_serial" in body
+    assert "cert_san" in body
 
 
 @pytest.mark.asyncio
@@ -326,7 +368,9 @@ async def test_typed_user_principal_unknown_rejected(proxy_app):
     with pytest.raises(HTTPException) as exc_info:
         await get_agent_from_client_cert(request)
     assert exc_info.value.status_code == 401
-    assert "unknown" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["reason"] == "typed_principal_unknown"
+    assert exc_info.value.detail["principal_kind"] == "user"
+    assert exc_info.value.detail["principal_id"] == "acme::user::nobody"
 
 
 @pytest.mark.asyncio
@@ -351,7 +395,8 @@ async def test_typed_user_principal_pubkey_unset_rejected(proxy_app):
     with pytest.raises(HTTPException) as exc_info:
         await get_agent_from_client_cert(request)
     assert exc_info.value.status_code == 401
-    assert "enrolled" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["reason"] == "typed_principal_not_yet_enrolled"
+    assert exc_info.value.detail["principal_id"] == "acme::user::pending"
 
 
 @pytest.mark.asyncio
@@ -378,7 +423,8 @@ async def test_typed_user_principal_pubkey_mismatch_rejected(proxy_app):
     with pytest.raises(HTTPException) as exc_info:
         await get_agent_from_client_cert(request)
     assert exc_info.value.status_code == 401
-    assert "pubkey" in exc_info.value.detail.lower() or "bound" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["reason"] == "client_cert_pubkey_not_bound_to_principal"
+    assert exc_info.value.detail["principal_id"] == "acme::user::ceo"
 
 
 def _capture_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -547,7 +593,8 @@ async def test_typed_workload_principal_unknown_rejected(proxy_app):
     with pytest.raises(HTTPException) as exc_info:
         await get_agent_from_client_cert(request)
     assert exc_info.value.status_code == 401
-    assert "unknown" in exc_info.value.detail.lower()
+    assert exc_info.value.detail["reason"] == "typed_principal_unknown"
+    assert exc_info.value.detail["principal_kind"] == "workload"
 
 
 # ── Diagnostic helper unit tests ─────────────────────────────────────
