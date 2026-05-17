@@ -129,18 +129,26 @@ def test_pre_expiry_returns_payload():
 
 
 def test_tampered_signature_returns_none():
+    # Tamper the FIRST base64url char of the sig, not the last. In an
+    # un-padded base64url string only the last char may carry filler
+    # bits: HMAC-SHA256 is 32 bytes → 43 chars where the last char
+    # encodes 4 useful bits + 2 filler bits, so swaps inside the same
+    # top-4-bit cluster (A↔B, C↔D, …) leave the decoded sig bytes
+    # identical and the HMAC compare still passes ~25 % of the time.
     payload = build_payload(user_name="mario", must_change_password=False)
     cookie = issue_local_cookie(payload, SECRET)
     body, sig = cookie.split(".", 1)
-    bad = sig[:-1] + ("A" if sig[-1] != "A" else "B")
+    bad = ("A" if sig[0] != "A" else "B") + sig[1:]
     assert parse_local_cookie(f"{body}.{bad}", SECRET) is None
 
 
 def test_tampered_payload_returns_none():
+    # Same rationale as test_tampered_signature_returns_none — tamper
+    # the first base64url char so the decoded bytes always change.
     payload = build_payload(user_name="mario", must_change_password=False)
     cookie = issue_local_cookie(payload, SECRET)
     body, sig = cookie.split(".", 1)
-    bad_body = body[:-1] + ("A" if body[-1] != "A" else "B")
+    bad_body = ("A" if body[0] != "A" else "B") + body[1:]
     assert parse_local_cookie(f"{bad_body}.{sig}", SECRET) is None
 
 
