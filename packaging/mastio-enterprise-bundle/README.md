@@ -118,6 +118,26 @@ sed -i 's/^CULLIS_MASTIO_VERSION=.*/CULLIS_MASTIO_VERSION=<new>/' proxy.env
 Operator-side data (`./data/mcp_proxy.db`, `./nginx-certs/`,
 `./saml-keys/`) survives the image bump.
 
+## Troubleshooting
+
+### Troubleshooting: tutti gli agent rispondono 401 dopo restart VM
+
+Sintomo: dopo `docker compose restart` o reboot VM, tutti i Connector ricevono 401
+"Invalid DPoP proof: htu mismatch". L'header `X-Cullis-Hint:
+htu_mismatch_check_proxy_public_url` è la firma diagnostica.
+
+Causa: il valore di `MCP_PROXY_PROXY_PUBLIC_URL` in `proxy.env` (o
+`frontdesk.env`) non coincide con l'URL che il Connector usa per
+raggiungere Mastio. DPoP RFC 9449 firma `htu` sul URL atteso.
+
+Diagnosi:
+  1. Verifica env: `grep MCP_PROXY_PROXY_PUBLIC_URL proxy.env`
+  2. Verifica URL Connector: `cullis-connector doctor`
+  3. Devono coincidere (incluso schema + porta).
+
+Fix: allinea `MCP_PROXY_PROXY_PUBLIC_URL` al valore corretto, esegui
+`./deploy.sh --pull` per restart pulito.
+
 ## Where things live
 
 | Path | What |
