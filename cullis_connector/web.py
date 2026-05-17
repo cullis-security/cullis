@@ -266,6 +266,68 @@ def _ensure_inbox_poller_running(app: FastAPI) -> bool:
     return True
 
 
+def _ensure_ambassador_installed(app: FastAPI) -> bool:
+    """Idempotently mount the Ambassador router on the running dashboard.
+
+    Mirrors ``_ensure_inbox_poller_running``: the dashboard process may
+    have been launched before enrollment (the Frontdesk bundle starts
+    the Connector first so the operator can drive the wizard from the
+    UI). In that boot the lifespan install at :func:`_dashboard_lifespan`
+    short-circuits via ``has_identity`` and the Ambassador stays unmounted,
+    so every ``/v1/chat/completions``, ``/v1/models``, ``/api/session/*``
+    returns 404 until someone manually restarts the container.
+
+    Calling this from ``/api/status`` the moment the enrollment flips
+    to ``approved`` (or the moment a poll lands on an already-enrolled
+    profile) closes the gap without an operator restart. Both single
+    and shared variants of ``_maybe_install_ambassador`` are themselves
+    idempotent, so this helper is safe on every poll.
+
+    Returns ``True`` if the Ambassador is now mounted (either we just
+    installed it or it was already there), ``False`` if install failed
+    or was skipped — failure is intentionally best-effort: we log a
+    warning and let the rest of the enrollment flow continue, because
+    an Ambassador wiring error mustn't strand the operator on the
+    "Approved" screen.
+    """
+    config = app.state.connector_config
+
+    if getattr(app.state, "ambassador", None) is not None:
+        return True
+    if getattr(app.state, "shared_ambassador", None) is not None:
+        return True
+
+    try:
+        from cullis_connector.ambassador.shared.wire import (
+            shared_mode_settings_from_env,
+        )
+        shared_settings = shared_mode_settings_from_env()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "post-enrollment Ambassador install skipped — could not read "
+            "shared-mode settings: %s", exc,
+        )
+        return False
+
+    try:
+        if shared_settings.enabled:
+            _maybe_install_shared_ambassador(app, config, shared_settings)
+            return getattr(app.state, "shared_ambassador", None) is not None
+        _maybe_install_ambassador(app, config)
+        return getattr(app.state, "ambassador", None) is not None
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort: never abort enrollment on Ambassador install
+        # failure. The most likely cause is the Mastio Site being
+        # unreachable during the post-CSR ``ensure_local_token`` step;
+        # the operator can retry via a container restart once the
+        # network settles.
+        _log.warning(
+            "post-enrollment Ambassador install failed (will retry on "
+            "next /api/status poll): %s", exc,
+        )
+        return False
+
+
 def _start_inbox_poller(config: ConnectorConfig) -> DashboardInboxPoller | None:
     """Build the poller if the identity is ready, return None otherwise.
 
@@ -308,10 +370,19 @@ def _maybe_install_ambassador(app: FastAPI, config: ConnectorConfig) -> None:
     Silent no-op when ``ambassador.enabled`` is false or when there is
     no identity yet (pre-enrollment dashboard). Logs the outcome
     explicitly for operator visibility.
+
+    Idempotent: re-calling after the Ambassador is already mounted is a
+    no-op. The post-enrollment hook in ``/api/status`` and the lifespan
+    bootstrap can both call this safely — the second caller short-circuits
+    here instead of tripping the loud ``RuntimeError`` raised by
+    :func:`install_ambassador` on double-mount.
     """
     import logging
     log = logging.getLogger("cullis_connector.web")
 
+    if getattr(app.state, "ambassador", None):
+        log.info("Ambassador already installed; skipping re-install")
+        return
     if not config.ambassador.enabled:
         log.info("Ambassador disabled by config (ambassador.enabled=False)")
         return
@@ -527,6 +598,9 @@ def _maybe_install_shared_ambassador(
     import logging
     log = logging.getLogger("cullis_connector.web")
 
+    if getattr(app.state, "shared_ambassador", None):
+        log.info("shared Ambassador already installed; skipping re-install")
+        return
     if not has_identity(config.config_dir):
         log.warning(
             "shared Ambassador install deferred: no identity at %s yet "
@@ -1260,6 +1334,13 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             # should start receiving notifications without having to
             # restart the dashboard. Idempotent + cheap.
             _ensure_inbox_poller_running(request.app)
+            # Same shape for the Ambassador router — when the dashboard
+            # was launched pre-enrollment the lifespan saw no identity
+            # and skipped the mount, so ``/v1/chat/completions`` and
+            # ``/api/session/*`` would 404 forever. Mount lazily here
+            # (idempotent) so a restart is never required for the
+            # customer to start chatting after approval.
+            _ensure_ambassador_installed(request.app)
             return JSONResponse({"status": "approved"})
         if _pending is None:
             return JSONResponse({"status": "idle"})
@@ -1346,6 +1427,14 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             # closes the small window between approval and the
             # following HTMX poll.
             _ensure_inbox_poller_running(request.app)
+            # Same window applies to the Ambassador mount — without
+            # this hook the Frontdesk bundle leaves ``/v1/chat`` 404
+            # until ``docker compose restart`` because the Connector
+            # boots before the operator runs the wizard. The helper
+            # is idempotent and best-effort (logs + continues on
+            # failure), so the approval response is never blocked
+            # on Mastio reachability.
+            _ensure_ambassador_installed(request.app)
             return JSONResponse({"status": "approved", "agent_id": agent_id})
 
         if remote_status == "rejected":
