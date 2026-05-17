@@ -171,11 +171,16 @@ _check_sqlite_orphan_vs_postgres() {
     [[ -n "$size" && "$size" -gt 0 ]] || return 0
 
     if [[ "${ACCEPT_DATA_LOSS:-0}" -eq 1 ]]; then
-        warn "--accept-data-loss: orphan SQLite DB at ${sqlite_path#$SCRIPT_DIR/} (${size} bytes) ignored."
+        warn "--accept-data-loss: orphan SQLite DB at ${sqlite_path#$SCRIPT_DIR/} (${size} bytes) acknowledged."
         warn "    Every Connector previously enrolled against the Org CA in that DB"
         warn "    will fail TLS verification at /v1/principals/csr until re-enrolled."
-        warn "    The old SQLite file is left on disk — delete by hand once you have"
-        warn "    confirmed the new Postgres-backed Mastio boots cleanly."
+        # P3 MINOR-E: orphan files now garbage-collected (mcp_proxy.db
+        # plus WAL / SHM sidecars). Pre-fix the file was left on disk
+        # for "forensics", but in practice it just confused later
+        # ``du -sh ./data`` audits and wasted 281 MB on the dogfood VM.
+        # The operator has already opted into losing the data via the
+        # flag, so silent retention had no upside.
+        _wipe_orphan_sqlite "$data_dir"
         return 0
     fi
 
@@ -198,8 +203,10 @@ _check_sqlite_orphan_vs_postgres() {
     err "     ./nginx-certs/) by hand if you are SURE you can re-enroll every"
     err "     agent, then re-run. The new Postgres-backed Mastio will mint a"
     err "     fresh Org CA on first boot."
-    err "  3. Skip this check with --accept-data-loss (same outcome as 2, but"
-    err "     the orphan SQLite file is left on disk for forensics)."
+    err "  3. Skip this check with --accept-data-loss. Same outcome as 2,"
+    err "     and the orphan ./data/mcp_proxy.db (+ WAL/SHM) is garbage-"
+    err "     collected for you. Back up the SQLite DB first if you want a"
+    err "     forensic copy — once the flag runs, the file is gone."
     die "Refusing to start — pick a path explicitly."
 }
 
@@ -504,10 +511,16 @@ Options:
                               SQLite → Postgres migration, so swapping
                               MCP_PROXY_DATABASE_URL silently re-derives
                               a fresh Org CA and invalidates every
-                              previously enrolled Connector). Pass this
-                              flag ONLY after you have backed up the
-                              SQLite DB and are ready to re-enroll every
-                              agent against the new Postgres-backed CA.
+                              previously enrolled Connector). Once
+                              acknowledged, the orphan SQLite files
+                              (mcp_proxy.db, mcp_proxy.db-wal, mcp_
+                              proxy.db-shm) are garbage-collected from
+                              ./data/ via a transient root busybox so
+                              ``du -sh ./data`` no longer surfaces the
+                              dead weight. Pass this flag ONLY after
+                              you have backed up the SQLite DB and are
+                              ready to re-enroll every agent against
+                              the new Postgres-backed CA.
   --help, -h                  Show this help and exit.
 
 Environment:

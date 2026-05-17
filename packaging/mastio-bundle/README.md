@@ -193,9 +193,12 @@ Pick one explicitly:
      `./nginx-certs/`, then `./deploy.sh`. The new Postgres-backed
      Mastio mints a fresh Org CA; every agent must re-run the enroll
      flow against the new CA.
-  3. **`--accept-data-loss`**: skip the guard. Same outcome as 2, but
-     the orphan SQLite file is left on disk for forensics. Use only
-     after backing up `./data/mcp_proxy.db` and confirming you have a
+  3. **`--accept-data-loss`**: skip the guard. Same outcome as 2, with
+     the orphan SQLite files (`mcp_proxy.db`, `mcp_proxy.db-wal`,
+     `mcp_proxy.db-shm`) garbage-collected from `./data/` for you so
+     the next `du -sh ./data` doesn't surface dead weight. Back up the
+     SQLite DB by hand first if you want a forensic copy — once the
+     flag runs, the file is gone. Use only after confirming you have a
      way to re-enroll every agent.
 
 A future bundle release will ship a `--migrate-db` flow that dumps the
