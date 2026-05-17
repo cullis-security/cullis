@@ -143,12 +143,39 @@ def verify_arg_for(verify_tls: bool, ca_chain_path: Path) -> bool | str:
     verifying the Site's leaf cert end-to-end. Returns ``False`` when
     the operator has explicitly disabled verification (opt-out is
     opt-out — a pinned CA does not silently re-enable it). Falls back
-    to ``True`` when verification is on but no CA has been pinned yet
-    (first contact before TOFU bootstrap completes).
+    to the env-provided CA bundle (``CULLIS_FRONTDESK_CA_BUNDLE`` /
+    ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE``) when one exists,
+    otherwise ``True`` (system CA store).
+
+    Order of precedence: explicit ``verify_tls=False`` > per-profile
+    pinned ``ca-chain.pem`` > env CA bundle > system store. Pinning
+    still wins so an operator-controlled TOFU trust anchor is never
+    silently overridden by an env var.
+
+    The env fallback was added 2026-05-17 after the Frontdesk
+    customer-path smoke surfaced ``CERTIFICATE_VERIFY_FAILED`` on every
+    post-login ``/v1/principals/csr`` call. The bundle ships the Org
+    Root CA at ``/etc/cullis/ca-bundle.pem`` and exports
+    ``CULLIS_FRONTDESK_CA_BUNDLE`` pointing to it, but this function
+    only honoured the per-profile ``ca-chain.pem`` (populated by the
+    manual ``/setup/pin-ca`` step, which headless auto-enrollment
+    skips). Result: ``provisioning="deferred"`` forever after login,
+    user TOFU pin never written on Mastio, ``/v1/llm/chat`` 401.
     """
     if not verify_tls:
         return False
-    return str(ca_chain_path) if ca_chain_path.exists() else True
+    if ca_chain_path.exists():
+        return str(ca_chain_path)
+    import os
+    for env_name in (
+        "CULLIS_FRONTDESK_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+    ):
+        env_path = os.environ.get(env_name, "").strip()
+        if env_path and Path(env_path).exists():
+            return env_path
+    return True
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
