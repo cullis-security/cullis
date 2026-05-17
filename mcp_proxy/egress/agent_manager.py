@@ -162,16 +162,96 @@ class AgentManager:
         Key Vault, etc.) plug in via ``MCP_PROXY_KMS_BACKEND`` + the
         ``kms_factory`` plugin hook.
 
-        Returns True if loaded successfully, False otherwise.
+        P3 MAJOR-B (2026-05-17 dogfood) — after the load, cross-check
+        cert subject CN against ``proxy_config.org_id``. The Mastio CA
+        in :meth:`generate_org_ca` always carries CN ``"{org_id} CA"``;
+        a mismatch means a DB swap or stale pin, and every client cert
+        chain validation downstream silently 400/401's otherwise. We
+        also DER-compare the on-disk ``nginx_cert_dir/org-ca.crt`` to
+        the DB cert and WARN on divergence (advisory only —
+        ``ensure_nginx_server_cert`` re-syncs it later in the lifespan).
+
+        Returns True on successful load, False on missing-CA or mismatch.
         """
         from mcp_proxy.kms import get_kms_provider
         loaded = await get_kms_provider().load_org_ca()
-        if loaded is not None:
-            ca_key_pem, ca_cert_pem = loaded
-            await self.load_org_ca(ca_key_pem, ca_cert_pem)
-            return True
-        logger.warning("Org CA not found via KMS provider — agent cert issuance unavailable")
-        return False
+        if loaded is None:
+            logger.warning("Org CA not found via KMS provider — agent cert issuance unavailable")
+            return False
+
+        ca_key_pem, ca_cert_pem = loaded
+        await self.load_org_ca(ca_key_pem, ca_cert_pem)
+
+        # Primary check: CN vs proxy_config.org_id. Skip when org_id is
+        # env-pinned only (proxy_config row absent).
+        persisted_org_id = await get_config("org_id")
+        if persisted_org_id and self._org_ca_cert is not None:
+            try:
+                cn_attrs = self._org_ca_cert.subject.get_attributes_for_oid(
+                    NameOID.COMMON_NAME,
+                )
+                cert_cn = cn_attrs[0].value if cn_attrs else ""
+            except Exception:
+                cert_cn = ""
+            expected_cn = f"{persisted_org_id} CA"
+            if cert_cn != expected_cn:
+                logger.critical(
+                    "Org CA subject mismatch — refusing to load. "
+                    "proxy_config.org_id=%r expected CN=%r, loaded CN=%r "
+                    "(cert serial=%s). DB state inconsistent: either "
+                    "org_id was rewritten without re-issuing the Org CA, "
+                    "or a stale CA from a previous deploy is pinned. "
+                    "Agent cert issuance + mTLS will fail until resolved.",
+                    persisted_org_id, expected_cn, cert_cn,
+                    self._org_ca_cert.serial_number,
+                )
+                # Roll back so ca_loaded reports False — same degraded
+                # branch as the "no CA found" path above.
+                self._org_ca_key = None
+                self._org_ca_cert = None
+                return False
+
+        # Secondary check: nginx-certs bind mount DER. Advisory only.
+        await self._verify_nginx_cert_dir_matches_db(ca_cert_pem)
+
+        return True
+
+    async def _verify_nginx_cert_dir_matches_db(self, db_ca_cert_pem: str) -> None:
+        """DER-compare the on-disk ``org-ca.crt`` against the DB cert.
+
+        No-op when ``settings.nginx_cert_dir`` is unset (pytest in-
+        process lifespan) or the file doesn't exist yet (pre-first
+        ``ensure_nginx_server_cert`` write).
+        """
+        try:
+            cert_dir = get_settings().nginx_cert_dir
+            if not cert_dir:
+                return
+            from pathlib import Path
+            ca_path = Path(cert_dir) / "org-ca.crt"
+            if not ca_path.exists():
+                return
+            on_disk_der = x509.load_pem_x509_certificate(
+                ca_path.read_bytes(),
+            ).public_bytes(serialization.Encoding.DER)
+            db_der = x509.load_pem_x509_certificate(
+                db_ca_cert_pem.encode(),
+            ).public_bytes(serialization.Encoding.DER)
+            if on_disk_der != db_der:
+                logger.warning(
+                    "Org CA on-disk vs DB mismatch — %s differs from "
+                    "proxy_config.org_ca_cert. The nginx sidecar will "
+                    "serve a stale trust bundle until ensure_nginx_server_cert "
+                    "rewrites it. If divergence persists, re-run deploy.sh "
+                    "to re-export nginx-certs from the current DB state.",
+                    ca_path,
+                )
+        except Exception as exc:  # noqa: BLE001 — diagnostic only
+            logger.debug(
+                "nginx-certs DER check skipped (%s) — primary CN check "
+                "already gates the load, this is advisory only",
+                exc,
+            )
 
     async def generate_org_ca(
         self,
