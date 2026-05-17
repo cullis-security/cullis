@@ -19,8 +19,6 @@ os.environ.setdefault("SKIP_ALEMBIC", "1")
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-
 from mcp_proxy.policy.tier_matrix import TierMatrix
 from mcp_proxy.tools import executor
 
