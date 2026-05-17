@@ -216,7 +216,15 @@ async def test_mtls_only_sender_without_cert_is_rejected(proxy_app):
         },
     )
     assert resp.status_code == 401, resp.text
-    assert "cert" in resp.json()["detail"].lower()
+    # Post P3 MAJOR-C (#771): client_cert.py raises return structured
+    # ``detail = {"reason": "...", ...}``. Other endpoints still raise
+    # prose strings — accept both shapes.
+    detail = resp.json()["detail"]
+    if isinstance(detail, dict):
+        reason = (detail.get("reason") or "").lower()
+        assert "cert" in reason, f"unexpected reason token: {reason!r}"
+    else:
+        assert "cert" in detail.lower()
 
 
 @pytest.mark.asyncio
