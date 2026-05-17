@@ -22,6 +22,12 @@ class ToolExecuteResponse(BaseModel):
     result: Any = None
     error: str | None = None
     execution_time_ms: float
+    # Machine-readable token for failure dispatch. Stable identifier from
+    # ``mcp_proxy.policy.denied_reason_codes``; SDK consumers branch on
+    # this instead of substring-matching ``error``. Set on every non-
+    # success path; ``None`` only on ``status="success"``. (F5 follow-up
+    # tracker #4.)
+    denied_reason_code: str | None = None
 
 
 class ToolInfo(BaseModel):

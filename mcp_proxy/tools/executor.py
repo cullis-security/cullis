@@ -13,6 +13,13 @@ import httpx
 
 from mcp_proxy.db import log_audit
 from mcp_proxy.models import TokenPayload, ToolExecuteRequest, ToolExecuteResponse
+from mcp_proxy.policy.denied_reason_codes import (
+    CAPABILITY_DENIED,
+    INSUFFICIENT_TIER,
+    INTERNAL_ERROR,
+    MISSING_BINDING,
+    TOOL_NOT_FOUND,
+)
 from mcp_proxy.policy.tier_eval import resolve_effective_tier
 from mcp_proxy.policy.tier_matrix import tier_meets_requirement
 from mcp_proxy.tools.context import ToolContext
@@ -107,6 +114,7 @@ async def run(
             tool=tool_name,
             status="error",
             error=f"Tool '{tool_name}' not found",
+            denied_reason_code=TOOL_NOT_FOUND,
             execution_time_ms=duration_ms,
         )
 
@@ -181,6 +189,7 @@ async def run(
                 status="error",
                 error="Forbidden: capability lookup failed",
                 execution_time_ms=duration_ms,
+                denied_reason_code=CAPABILITY_DENIED,
             )
 
         if tool_def.required_capability not in principal_caps:
@@ -214,6 +223,7 @@ async def run(
                     f"'{tool_def.required_capability}'"
                 ),
                 execution_time_ms=duration_ms,
+                denied_reason_code=CAPABILITY_DENIED,
             )
 
     # 2a. Tier gate (ADR-032 Decision E / F5).
@@ -313,6 +323,7 @@ async def run(
                     f"'{tool_def.required_capability}'"
                 ),
                 execution_time_ms=duration_ms,
+                denied_reason_code=INSUFFICIENT_TIER,
             )
 
     # 2b. Binding check for MCP-resource tools (CRIT-2 fix, audit T3-F1).
@@ -353,6 +364,7 @@ async def run(
                 request_id=request_id,
                 tool=tool_name,
                 status="error",
+                denied_reason_code=MISSING_BINDING,
                 error=(
                     f"Forbidden: no active binding for resource "
                     f"'{tool_def.resource_id}'"
@@ -436,6 +448,7 @@ async def run(
                 status="error",
                 error=f"Tool execution timed out after {timeout}s",
                 execution_time_ms=duration_ms,
+                denied_reason_code=INTERNAL_ERROR,
             )
 
         except ToolExecutionError as exc:
@@ -461,6 +474,7 @@ async def run(
                 status="error",
                 error=str(exc),
                 execution_time_ms=duration_ms,
+                denied_reason_code=INTERNAL_ERROR,
             )
 
         except Exception as exc:
@@ -485,6 +499,7 @@ async def run(
                 status="error",
                 error="Internal tool execution error",
                 execution_time_ms=duration_ms,
+                denied_reason_code=INTERNAL_ERROR,
             )
 
 
