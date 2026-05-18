@@ -84,8 +84,11 @@ fi
 echo "[_run-k6] scenario=${SCENARIO_NAME} results_dir=${RESULTS_DIR}" >&2
 echo "[_run-k6] keep_ndjson=${KEEP_NDJSON} threshold_mb=${KEEP_THRESHOLD_MB} tmp_free_mb=${TMP_FREE_MB}" >&2
 
+# Run k6 inline (not via exec) so the EXIT trap above can fire and
+# clean up the ndjson. With `exec` the bash process is replaced by
+# k6 and the trap is lost.
 # shellcheck disable=SC2086
-exec k6 run \
+k6 run \
     --insecure-skip-tls-verify \
     --out "json=${NDJSON}" \
     --summary-export="${SUMMARY}" \
