@@ -1852,6 +1852,18 @@ from mcp_proxy.registry.connector_login_local_attribution_router import (
 )
 app.include_router(connector_login_local_attribution_router)
 
+# ADR-033 Phase 2 — WebAuthn user assertion binding. Endpoints under
+# /v1/principals/{id}/webauthn/* drive registration + authentication
+# ceremonies; the assertion produced here is later forwarded inline
+# with the session emission request and verified by
+# ``mcp_proxy.auth.user_session``. The router stays mounted even when
+# the optional ``webauthn`` library is missing — each endpoint returns
+# 503 on first call so the dashboard surface degrades gracefully.
+from mcp_proxy.registry.user_principals_webauthn_router import (
+    router as user_principals_webauthn_router,
+)
+app.include_router(user_principals_webauthn_router)
+
 # ADR-004 PR A — reverse-proxy router for /v1/broker/*, /v1/auth/*,
 # /v1/registry/*. Registered before local handlers so the proxy owns these
 # paths by default; local endpoints live under /v1/egress/* and /v1/ingress/*.

@@ -93,6 +93,31 @@ class ConnectorLoginLocalAttributionRequest(BaseModel):
     )
     auth_mode: Literal["local"] = "local"
 
+    # ADR-033 Phase 2 — optional WebAuthn assertion produced by the
+    # browser during ``navigator.credentials.get``. When present the
+    # router verifies it against a previously registered credential and
+    # stores it on the new ``user_sessions`` row. When
+    # ``MCP_PROXY_WEBAUTHN_ENFORCEMENT="required"`` and these fields are
+    # missing the router returns 401 so the Connector dashboard knows
+    # it must drive the user through the WebAuthn ceremony before
+    # retrying.
+    user_signed_assertion: dict | None = Field(
+        default=None,
+        description=(
+            "AssertionResponse JSON returned by navigator.credentials."
+            "get on the Connector dashboard. Required when "
+            "MCP_PROXY_WEBAUTHN_ENFORCEMENT=required."
+        ),
+    )
+    webauthn_challenge_b64url: str | None = Field(
+        default=None, min_length=8, max_length=256,
+        description=(
+            "Base64url challenge previously issued by "
+            "/v1/principals/{id}/webauthn/authenticate/start. Required "
+            "alongside user_signed_assertion."
+        ),
+    )
+
 
 class ConnectorLoginLocalAttributionResponse(BaseModel):
     """Body returned by ``POST /v1/principals/connector-login-local-attribution``."""
@@ -224,6 +249,49 @@ async def connector_login_local_attribution(
     expires_at = now + timedelta(seconds=ttl)
     session_id = secrets.token_urlsafe(32)
 
+    # ADR-033 Phase 2 — verify the WebAuthn assertion when present, refuse
+    # the login outright when enforcement="required" and it is missing.
+    enforcement = (
+        get_settings().webauthn_enforcement or "warn"
+    ).lower()
+    serialised_assertion: str | None = None
+    credential_id: bytes | None = None
+    if body.user_signed_assertion is not None:
+        if not body.webauthn_challenge_b64url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "user_signed_assertion was provided but "
+                    "webauthn_challenge_b64url is missing"
+                ),
+            )
+        from mcp_proxy.auth.user_session import (
+            verify_and_serialise_user_assertion,
+        )
+
+        serialised_assertion, credential_id = (
+            await verify_and_serialise_user_assertion(
+                caller_agent_id=token.agent_id,
+                principal_id=principal_id,
+                assertion=body.user_signed_assertion,
+                challenge_b64url=body.webauthn_challenge_b64url,
+            )
+        )
+    elif enforcement == "required":
+        _log.warning(
+            "connector-login-local-attribution: enforcement=required but "
+            "request omitted WebAuthn assertion (agent=%s user=%s)",
+            token.agent_id, principal_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "WebAuthn assertion required by MCP_PROXY_WEBAUTHN_"
+                "ENFORCEMENT=required; complete the WebAuthn ceremony "
+                "before retrying."
+            ),
+        )
+
     # The SSO sibling carries the real ``sso_subject`` / ``idp_issuer``
     # for the audit row; local-auth has neither, so we stuff a constant
     # marker into ``sso_subject`` so a downstream SQL "where did this
@@ -238,6 +306,8 @@ async def connector_login_local_attribution(
             idp_issuer="local",
             display_name=body.display_name,
             expires_at=expires_at,
+            user_signed_assertion=serialised_assertion,
+            user_credential_id=credential_id,
         )
     except Exception:  # noqa: BLE001
         _log.exception(

@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% block title %}WebAuthn{% endblock %}
+{% block content %}
+<section class="card">
+    <header class="card-head">
+        <div>
+            <h1>Security keys &amp; passkeys</h1>
+            <p class="card-sub">
+                Bind a WebAuthn authenticator to your Cullis user so the
+                Mastio can prove the human authorised every session
+                (ADR-033 Phase 2). The Connector workload identity stays
+                separate and is verified through its own mTLS certificate.
+            </p>
+        </div>
+        <div class="card-head-actions">
+            <button id="register-btn" class="btn-primary" type="button">
+                Add a new authenticator
+            </button>
+        </div>
+    </header>
+
+    <div id="webauthn-banner" class="banner banner-info" hidden>
+        <span id="webauthn-banner-text"></span>
+    </div>
+
+    <div class="table-wrap">
+        <table class="data-table" aria-label="Registered authenticators">
+            <thead>
+                <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Transport</th>
+                    <th scope="col">Registered</th>
+                    <th scope="col">Last used</th>
+                    <th scope="col" class="col-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="credentials-tbody">
+                <tr><td colspan="5" class="muted">Loading credentials…</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <details class="explain">
+        <summary>How this protects you</summary>
+        <p>
+            Without a WebAuthn assertion the Mastio can only trust the
+            Connector to claim "user <em>X</em> is using me". An attacker
+            who compromises the Connector workload could mint sessions
+            for any local user. With WebAuthn enabled the Mastio
+            verifies a fresh assertion produced by your authenticator
+            (Touch ID, YubiKey, Windows Hello) at every session
+            emission. The private key never leaves the authenticator.
+        </p>
+    </details>
+</section>
+
+<script>
+(function () {
+    const principalId = {{ principal_id|tojson }};
+    const tbody = document.getElementById('credentials-tbody');
+    const banner = document.getElementById('webauthn-banner');
+    const bannerText = document.getElementById('webauthn-banner-text');
+    const registerBtn = document.getElementById('register-btn');
+
+    function showBanner(text, kind) {
+        banner.classList.remove('banner-info', 'banner-error', 'banner-success');
+        banner.classList.add('banner-' + (kind || 'info'));
+        bannerText.textContent = text;
+        banner.hidden = false;
+    }
+
+    function clearBanner() {
+        banner.hidden = true;
+        bannerText.textContent = '';
+    }
+
+    function b64urlToBytes(value) {
+        const pad = '='.repeat((4 - (value.length % 4)) % 4);
+        const b64 = (value + pad).replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(b64);
+        const buf = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+        return buf;
+    }
+
+    function bytesToB64url(buf) {
+        const bytes = new Uint8Array(buf);
+        let s = '';
+        for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function fmtDate(value) {
+        if (!value) return '—';
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+    }
+
+    function renderCredentials(rows) {
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="muted">'
+                + 'No authenticators registered yet. '
+                + 'Click "Add a new authenticator" to enrol your first one.'
+                + '</td></tr>';
+            return;
+        }
+        tbody.innerHTML = '';
+        rows.forEach(function (row) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = ''
+                + '<td>' + (row.name ? escapeHtml(row.name) : '<em class="muted">unnamed</em>') + '</td>'
+                + '<td>' + (row.transports ? escapeHtml(row.transports.join(', ')) : '—') + '</td>'
+                + '<td>' + fmtDate(row.created_at) + '</td>'
+                + '<td>' + fmtDate(row.last_used_at) + '</td>'
+                + '<td class="col-right"><button type="button" class="btn-danger-link" data-cred="'
+                + escapeAttr(row.credential_id_b64url) + '">Revoke</button></td>';
+            tbody.appendChild(tr);
+        });
+        tbody.querySelectorAll('button[data-cred]').forEach(function (btn) {
+            btn.addEventListener('click', function () { revoke(btn.getAttribute('data-cred')); });
+        });
+    }
+
+    function escapeHtml(value) {
+        const div = document.createElement('div');
+        div.textContent = value;
+        return div.innerHTML;
+    }
+    function escapeAttr(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+    }
+
+    async function refresh() {
+        try {
+            const resp = await fetch('/api/webauthn/credentials', {credentials: 'same-origin'});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderCredentials(data.credentials || []);
+        } catch (err) {
+            renderCredentials([]);
+            showBanner('Could not load credentials: ' + err.message, 'error');
+        }
+    }
+
+    async function register() {
+        clearBanner();
+        if (!window.PublicKeyCredential) {
+            showBanner('This browser does not expose WebAuthn (navigator.credentials).', 'error');
+            return;
+        }
+        try {
+            const startResp = await fetch('/api/webauthn/register/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin',
+            });
+            if (!startResp.ok) {
+                const detail = await startResp.text();
+                throw new Error('start ' + startResp.status + ': ' + detail.slice(0, 200));
+            }
+            const startData = await startResp.json();
+            const opts = startData.options;
+            opts.challenge = b64urlToBytes(opts.challenge);
+            opts.user.id = b64urlToBytes(opts.user.id);
+            if (Array.isArray(opts.excludeCredentials)) {
+                opts.excludeCredentials.forEach(function (c) {
+                    c.id = b64urlToBytes(c.id);
+                });
+            }
+            const credential = await navigator.credentials.create({publicKey: opts});
+            const attestation = {
+                id: credential.id,
+                rawId: bytesToB64url(credential.rawId),
+                type: credential.type,
+                response: {
+                    clientDataJSON: bytesToB64url(credential.response.clientDataJSON),
+                    attestationObject: bytesToB64url(credential.response.attestationObject),
+                    transports: credential.response.getTransports
+                        ? credential.response.getTransports() : undefined,
+                },
+                clientExtensionResults: credential.getClientExtensionResults
+                    ? credential.getClientExtensionResults() : {},
+            };
+            const nameRaw = prompt('Give this authenticator a name (e.g. "YubiKey 5C", "MacBook Touch ID").', '');
+            const name = (nameRaw || '').slice(0, 128) || null;
+            const finishResp = await fetch('/api/webauthn/register/finish', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    challenge_b64url: startData.challenge_b64url,
+                    credential: attestation,
+                    name: name,
+                }),
+            });
+            if (!finishResp.ok) {
+                const detail = await finishResp.text();
+                throw new Error('finish ' + finishResp.status + ': ' + detail.slice(0, 200));
+            }
+            showBanner('Authenticator registered. You will be asked for it on the next login.', 'success');
+            refresh();
+        } catch (err) {
+            showBanner('Registration failed: ' + (err.message || err), 'error');
+        }
+    }
+
+    async function revoke(credentialIdB64url) {
+        if (!confirm('Revoke this authenticator? You will need to register a new one before the next login if no others remain.')) {
+            return;
+        }
+        clearBanner();
+        try {
+            const resp = await fetch('/api/webauthn/credentials/' + encodeURIComponent(credentialIdB64url), {
+                method: 'DELETE',
+                credentials: 'same-origin',
+            });
+            if (resp.status !== 204) throw new Error('HTTP ' + resp.status);
+            showBanner('Authenticator revoked.', 'success');
+            refresh();
+        } catch (err) {
+            showBanner('Revoke failed: ' + err.message, 'error');
+        }
+    }
+
+    registerBtn.addEventListener('click', register);
+    refresh();
+})();
+</script>
+{% endblock %}
