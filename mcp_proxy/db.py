@@ -2238,3 +2238,225 @@ async def upsert_local_user_principal_sso(
                     "ts": ts,
                 },
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PKI key store (three-tier hardening, issue #261)
+#
+# Replaces the historic ``proxy_config.org_ca_key`` /
+# ``proxy_config.mastio_ca_key`` plaintext rows. Each row carries an
+# encrypted (Fernet, mcp_proxy.kms.pki_at_rest) PEM payload plus the
+# public cert in clear; lifecycle columns mirror ``mastio_keys`` so
+# rotation can stage + atomic-swap with the same primitives.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def insert_pki_key(
+    *,
+    key_id: str,
+    key_type: str,
+    ciphertext: str,
+    cert_pem: str,
+    created_at: str,
+    activated_at: str | None = None,
+    deprecated_at: str | None = None,
+    expires_at: str | None = None,
+) -> None:
+    """Insert a new row into ``pki_key_store``.
+
+    ``key_type`` is one of ``org_ca`` | ``intermediate_ca``.
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO pki_key_store
+                    (key_id, key_type, ciphertext, cert_pem, created_at,
+                     activated_at, deprecated_at, expires_at)
+                VALUES
+                    (:key_id, :key_type, :ciphertext, :cert_pem, :created,
+                     :activated, :deprecated, :expires)
+                """
+            ),
+            {
+                "key_id": key_id,
+                "key_type": key_type,
+                "ciphertext": ciphertext,
+                "cert_pem": cert_pem,
+                "created": created_at,
+                "activated": activated_at,
+                "deprecated": deprecated_at,
+                "expires": expires_at,
+            },
+        )
+
+
+async def get_active_pki_key(key_type: str) -> dict | None:
+    """Return the active row for ``key_type`` (activated, not deprecated).
+
+    Invariant: at most one row per ``key_type`` satisfies the WHERE
+    clause. Returns ``None`` when none exists (first boot, mid-rotation
+    staged-only).
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """SELECT * FROM pki_key_store
+                    WHERE key_type = :key_type
+                      AND activated_at IS NOT NULL
+                      AND deprecated_at IS NULL"""
+            ),
+            {"key_type": key_type},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def get_staged_pki_key(key_type: str) -> dict | None:
+    """Return the staged row for ``key_type`` (``activated_at IS NULL``).
+
+    Used by rotation flows (Phase 4) and the boot-time recovery
+    detector (mirrors :func:`mastio_keys.find_staged`).
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """SELECT * FROM pki_key_store
+                    WHERE key_type = :key_type
+                      AND activated_at IS NULL"""
+            ),
+            {"key_type": key_type},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+
+async def list_pki_keys(key_type: str) -> list[dict]:
+    """Return all rows for ``key_type`` ordered by ``created_at`` desc.
+
+    Used by the admin / dashboard surface to render the rotation history.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """SELECT * FROM pki_key_store
+                    WHERE key_type = :key_type
+                    ORDER BY created_at DESC"""
+            ),
+            {"key_type": key_type},
+        )
+        return [dict(r) for r in result.mappings()]
+
+
+async def activate_staged_pki_and_deprecate_old(
+    *,
+    key_type: str,
+    new_key_id: str,
+    new_activated_at: str,
+    old_key_id: str | None,
+    old_deprecated_at: str,
+    old_expires_at: str,
+) -> None:
+    """Atomic swap: activate ``new_key_id``, deprecate ``old_key_id``.
+
+    Mirrors :func:`activate_staged_and_deprecate_old` for ``mastio_keys``,
+    using the same Postgres advisory-lock pattern via the surrounding
+    ``async with get_db()`` transaction. ``old_key_id`` may be ``None``
+    on the first activation (Phase 0 hard wipe path) when there is no
+    prior active row.
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """UPDATE pki_key_store
+                      SET activated_at = :activated
+                    WHERE key_id = :new_id
+                      AND activated_at IS NULL"""
+            ),
+            {"activated": new_activated_at, "new_id": new_key_id},
+        )
+        if old_key_id is not None:
+            await conn.execute(
+                text(
+                    """UPDATE pki_key_store
+                          SET deprecated_at = :deprecated,
+                              expires_at   = :expires
+                        WHERE key_id = :old_id
+                          AND deprecated_at IS NULL"""
+                ),
+                {
+                    "deprecated": old_deprecated_at,
+                    "expires": old_expires_at,
+                    "old_id": old_key_id,
+                },
+            )
+
+
+async def delete_staged_pki_key(key_id: str) -> int:
+    """Delete a staged (``activated_at IS NULL``) row. Returns rowcount."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """DELETE FROM pki_key_store
+                    WHERE key_id = :key_id
+                      AND activated_at IS NULL"""
+            ),
+            {"key_id": key_id},
+        )
+        return result.rowcount
+
+
+async def archive_legacy_pki(
+    *,
+    key_id: str,
+    key_type: str,
+    legacy_pem: str,
+    archived_at: str,
+) -> None:
+    """Park a legacy plaintext PEM in ``legacy_pki_archive``.
+
+    Called by the Phase 0 wipe path at first boot post-upgrade. Idempotent:
+    a second call with the same ``key_id`` is a no-op (the row already
+    exists), so a crashed wipe restarts cleanly.
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            text(
+                """INSERT INTO legacy_pki_archive
+                      (key_id, key_type, legacy_pem, archived_at)
+                   VALUES (:key_id, :key_type, :legacy_pem, :archived_at)
+                   ON CONFLICT(key_id) DO NOTHING"""
+            ),
+            {
+                "key_id": key_id,
+                "key_type": key_type,
+                "legacy_pem": legacy_pem,
+                "archived_at": archived_at,
+            },
+        )
+
+
+async def list_legacy_pki_archive() -> list[dict]:
+    """Return every archived legacy PEM (operator audit surface)."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """SELECT key_id, key_type, archived_at
+                     FROM legacy_pki_archive
+                    ORDER BY archived_at DESC"""
+            ),
+        )
+        return [dict(r) for r in result.mappings()]
+
+
+async def delete_proxy_config(key: str) -> int:
+    """Remove a single row from ``proxy_config`` (Phase 0 wipe helper).
+
+    Returns rowcount. Idempotent: 0 when the row was already absent.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text("DELETE FROM proxy_config WHERE key = :key"),
+            {"key": key},
+        )
+        return result.rowcount

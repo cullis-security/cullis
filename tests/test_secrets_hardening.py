@@ -123,6 +123,9 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         # Audit F-B-10 — prod now refuses empty signing key, so every
         # prod-shaped helper has to provide one.
         dashboard_signing_key="strong-signing-key",
+        # Three-tier PKI hardening (audit 2026-05-18) — prod now
+        # refuses empty MCP_PROXY_DB_ENCRYPTION_KEY too.
+        db_encryption_key="x" * 48,
     )
     base.update(overrides)
     return ProxySettings(**base)
@@ -160,6 +163,7 @@ def test_proxy_validate_config_rejects_standalone_prod_with_env_backend():
         kms_backend="vault",  # H3 P0.1: pin so the SystemExit is from secret_backend only
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",  # F-B-10
+        db_encryption_key="x" * 48,  # 2026-05-18 three-tier hardening
     )
     with pytest.raises(SystemExit):
         proxy_validate_config(settings)
@@ -209,6 +213,7 @@ def test_proxy_validate_config_rejects_standalone_prod_with_kms_local():
         kms_backend="local",
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",  # F-B-10
+        db_encryption_key="x" * 48,  # 2026-05-18 three-tier hardening
     )
     with pytest.raises(SystemExit):
         proxy_validate_config(settings)

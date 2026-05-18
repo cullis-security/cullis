@@ -91,6 +91,14 @@ async def test_factory_dispatches_to_plugin(monkeypatch):
         async def store_org_ca(self, key_pem, cert_pem):
             self.last_store = (key_pem, cert_pem)
 
+        async def load_intermediate_ca(self):
+            # Three-tier PKI hardening (audit 2026-05-18) — protocol
+            # also covers the Intermediate.
+            return None
+
+        async def store_intermediate_ca(self, key_pem, cert_pem):
+            self.last_store_intermediate = (key_pem, cert_pem)
+
     class FakePlugin(core_plugins.Plugin):
         name = "fake-aws-kms"
         instance = FakeProvider()

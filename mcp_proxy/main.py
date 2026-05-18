@@ -279,6 +279,27 @@ async def lifespan(app: FastAPI):
         )
 
     agent_mgr = AgentManager(org_id=org_id, trust_domain=settings.trust_domain)
+
+    # Three-tier PKI hardening (audit 2026-05-18) — Phase 0 hard wipe.
+    # If legacy plaintext rows are present in ``proxy_config``
+    # (``org_ca_key`` / ``mastio_ca_key``) and the at-rest master key
+    # is configured, archive them into ``legacy_pki_archive`` and
+    # delete from ``proxy_config``. The Mastio re-issues the chain
+    # under the encrypted ``pki_key_store`` schema on the same boot.
+    try:
+        wiped = await agent_mgr.wipe_legacy_pki_if_present()
+        if wiped:
+            _log.info(
+                "Phase 0 hard wipe completed — legacy PKI rows archived. "
+                "Mastio will reissue chain under encrypted pki_key_store "
+                "on this boot.",
+            )
+    except Exception as exc:
+        _log.warning(
+            "Phase 0 wipe raised %s — continuing with whatever state is "
+            "loadable. Operator action may be needed.", exc,
+        )
+
     await agent_mgr.load_org_ca_from_config()
 
     # #115 — standalone first-boot: generate a fresh self-signed Org CA when
@@ -357,6 +378,45 @@ async def lifespan(app: FastAPI):
     app.state.agent_manager = agent_mgr
     app.state.org_id = org_id
     _log.info("Lifespan: agent_manager + org_id wired (org_id=%s)", org_id)
+
+    # Three-tier PKI hardening (audit 2026-05-18), Phase 4 — weekly-ish
+    # background watcher for the Mastio Intermediate CA expiry. Leader-
+    # elected so only one worker runs the loop in a multi-worker deploy
+    # (pattern from PR #784). The loop log+audit warns at < 180 days,
+    # errors at < 60 days, auto-rotates at < 30 days.
+    if getattr(agent_mgr, "_mastio_ca_cert", None) is not None:
+        try:
+            from mcp_proxy.lifespan import get_leader
+            from mcp_proxy.lifespan.intermediate_ca_watcher import (
+                intermediate_ca_watcher_loop,
+            )
+            intermediate_leader = get_leader("mastio_ca_rotation_watcher")
+            if await intermediate_leader.acquire():
+                intermediate_stop = asyncio.Event()
+                intermediate_task = asyncio.create_task(
+                    intermediate_ca_watcher_loop(
+                        agent_mgr,
+                        stop_event=intermediate_stop,
+                    ),
+                    name="mastio_ca_rotation_watcher",
+                )
+                app.state.intermediate_ca_watcher_task = intermediate_task
+                app.state.intermediate_ca_watcher_stop = intermediate_stop
+                app.state.intermediate_ca_watcher_leader = intermediate_leader
+                _log.info(
+                    "mastio_ca_rotation_watcher: leader acquired, loop spawned",
+                )
+            else:
+                _log.info(
+                    "mastio_ca_rotation_watcher: another worker holds the "
+                    "leader lock — skipping",
+                )
+        except Exception as exc:
+            _log.warning(
+                "mastio_ca_rotation_watcher startup failed: %s — manual "
+                "rotation via POST /v1/admin/mastio-ca/rotate still works",
+                exc,
+            )
 
     # Federation update framework (imp/federation_hardening_plan.md
     # Parte 1, PR 2). Must run BEFORE ``LocalIssuer`` construction so a
@@ -983,6 +1043,35 @@ async def lifespan(app: FastAPI):
             await mdm_leader.release()
         except Exception as exc:  # noqa: BLE001 — best-effort
             _log.debug("mdm_intune_poller leader release failed: %s", exc)
+
+    # Three-tier PKI hardening (audit 2026-05-18), Phase 4 — stop the
+    # Mastio Intermediate CA watcher.
+    int_stop = getattr(app.state, "intermediate_ca_watcher_stop", None)
+    int_task = getattr(app.state, "intermediate_ca_watcher_task", None)
+    if int_stop is not None:
+        int_stop.set()
+    if int_task is not None:
+        try:
+            await asyncio.wait_for(int_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            int_task.cancel()
+            try:
+                await int_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug(
+                "intermediate_ca_watcher teardown loop mismatch (xdist): %s",
+                exc,
+            )
+    int_leader = getattr(app.state, "intermediate_ca_watcher_leader", None)
+    if int_leader is not None:
+        try:
+            await int_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "mastio_ca_rotation_watcher leader release failed: %s", exc,
+            )
 
     # ADR-032 F6 — stop the stale-watcher.
     stale_stop = getattr(app.state, "attestation_stale_stop", None)
@@ -1668,6 +1757,11 @@ if get_settings().local_auth_enabled:
 # ADR-009 Phase 2 — /v1/admin/mastio-pubkey for bootstrap automation.
 from mcp_proxy.admin.info import router as admin_info_router
 app.include_router(admin_info_router)
+
+# Three-tier PKI hardening (audit 2026-05-18), Phase 4 — Intermediate
+# CA rotation admin endpoint (POST /v1/admin/mastio-ca/rotate).
+from mcp_proxy.admin.mastio_ca import router as admin_mastio_ca_router
+app.include_router(admin_mastio_ca_router)
 
 # ADR-013 layer 6 — /v1/admin/observability/circuit-breaker.
 from mcp_proxy.admin.observability import router as admin_observability_router

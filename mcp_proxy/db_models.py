@@ -157,6 +157,54 @@ class MastioKeyRow(Base):
     )
 
 
+class PkiKeyStore(Base):
+    """Three-tier PKI hardening (audit 2026-05-18) — encrypted Org Root +
+    Mastio Intermediate keypairs.
+
+    Replaces the historic plaintext ``proxy_config.org_ca_key`` /
+    ``proxy_config.mastio_ca_key`` rows. ``ciphertext`` wraps a JSON
+    ``{key_pem, cert_pem}`` pair in a Fernet envelope keyed off
+    ``MCP_PROXY_DB_ENCRYPTION_KEY`` (PBKDF2 600k iterations). ``cert_pem``
+    is duplicated unencrypted on the row so verification-only paths
+    don't need the master key.
+    """
+    __tablename__ = "pki_key_store"
+
+    key_id = Column(Text, primary_key=True)
+    key_type = Column(Text, nullable=False)  # 'org_ca' | 'intermediate_ca'
+    ciphertext = Column(Text, nullable=False)
+    cert_pem = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    activated_at = Column(Text, nullable=True)
+    deprecated_at = Column(Text, nullable=True)
+    expires_at = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_pki_key_store_type_active",
+            "key_type", "activated_at", "deprecated_at",
+        ),
+    )
+
+
+class LegacyPkiArchive(Base):
+    """Audit + recovery hatch for the Phase 0 hard wipe (audit 2026-05-18).
+
+    Pre-fix plaintext PEMs from ``proxy_config.org_ca_key`` /
+    ``mastio_ca_key`` are archived here on first boot post-upgrade,
+    then the legacy ``proxy_config`` rows are deleted. Operators who
+    spot a botched migration can recover the original key material
+    from this table; long-term operators should drop the table once
+    the new chain is verified working.
+    """
+    __tablename__ = "legacy_pki_archive"
+
+    key_id = Column(Text, primary_key=True)
+    key_type = Column(Text, nullable=False)
+    legacy_pem = Column(Text, nullable=False)
+    archived_at = Column(Text, nullable=False)
+
+
 class PendingEnrollment(Base):
     """Connector enrollment requests awaiting admin decision.
 

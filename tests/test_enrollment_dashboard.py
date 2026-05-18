@@ -136,6 +136,9 @@ async def proxy_app(tmp_path, monkeypatch):
             mgr = AgentManager(org_id="acme", trust_domain="cullis.local")
             ca_key, ca_cert = _generate_self_signed_ca("acme")
             await mgr.load_org_ca(ca_key, ca_cert)
+            # Three-tier PKI hardening (audit 2026-05-18) — Intermediate
+            # needs to be loaded before sign_external_pubkey.
+            await mgr.ensure_mastio_identity()
             app.state.agent_manager = mgr
             yield app, client
     get_settings.cache_clear()

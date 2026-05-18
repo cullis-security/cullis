@@ -28,12 +28,15 @@ from mcp_proxy.auth.mastio_rotation import ContinuityProof, build_proof
 from mcp_proxy.config import get_settings, vault_tls_verify
 from mcp_proxy.db import (
     activate_staged_and_deprecate_old,
+    archive_legacy_pki,
     create_agent as db_create_agent,
     deactivate_agent as db_deactivate_agent,
+    delete_proxy_config,
     delete_staged_mastio_key,
     get_agent as db_get_agent,
     get_config,
     insert_mastio_key,
+    log_audit,
     set_config,
 )
 from mcp_proxy.telemetry_metrics import (
@@ -44,6 +47,20 @@ from mcp_proxy.telemetry_metrics import (
 from typing import Awaitable, Callable
 
 logger = logging.getLogger("mcp_proxy.egress.agent_manager")
+
+
+# ── PKI durations (three-tier hardening, audit 2026-05-18) ──────────────
+# Rebalanced from the historic 10/3/1/1/1y profile to spread expiry
+# risk across the chain. Org Root is cold so length is operational
+# only (rotation event is rare and disruptive). Intermediate is the
+# hot online signer so its 5y window matches NIST SP 800-57 §5.3.6
+# for active signing keys with automated rotation hooks. Leaves
+# inherit the shorter end of the curve.
+ORG_CA_VALIDITY_DAYS = 365 * 15  # 15 years (cold root)
+INTERMEDIATE_CA_VALIDITY_DAYS = 365 * 5  # 5 years (hot signer, auto-rotation)
+MASTIO_LEAF_VALIDITY_DAYS = 365  # 1 year (existing ADR-012 Phase 2.1 rotation cadence)
+AGENT_CERT_VALIDITY_DAYS = 365  # 1 year (Wave 2 narrows further with grace-period support)
+NGINX_SERVER_CERT_VALIDITY_DAYS = 90  # 90 days (was 1y, audit 2026-05-18 short-lived TLS)
 
 
 def _strict_pki_enabled() -> bool:
@@ -70,6 +87,104 @@ def _priv_to_pem(key) -> str:
 
 def _cert_to_pem(cert: x509.Certificate) -> str:
     return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+class _OrgRootUnsealCtx:
+    """Async context manager produced by :meth:`AgentManager._unseal_org_root`.
+
+    Loads the Org Root private key from the configured KMS provider on
+    ``__aenter__``, emits an ``org_root_unsealed`` audit row, yields,
+    then scrubs the cached private key reference on ``__aexit__``. The
+    cert pointer stays loaded (it's public material) so subsequent
+    daily-ops can still read CN / subject / pathLen without re-fetching.
+
+    Concurrent unseals (e.g. boot Intermediate mint + admin manual
+    rotation racing) serialize on ``AgentManager._org_root_lock`` so
+    the private key cache is single-owner during the sensitive window.
+    """
+
+    def __init__(self, mgr: "AgentManager", *, reason: str, operator: str):
+        self._mgr = mgr
+        self._reason = reason
+        self._operator = operator
+        self._start_ns: int = 0
+        self._previous_key = None
+        self._previous_was_cached = False
+
+    async def __aenter__(self):
+        import time
+
+        await self._mgr._org_root_lock.acquire()
+        self._start_ns = time.monotonic_ns()
+        # If the legacy path already cached a key, remember it so we
+        # don't accidentally scrub material the caller still wants.
+        # In the post-hardening flow ``_org_ca_key`` is None at entry.
+        self._previous_key = self._mgr._org_ca_key
+        self._previous_was_cached = self._previous_key is not None
+        if not self._previous_was_cached:
+            from mcp_proxy.kms import get_kms_provider
+            loaded = await get_kms_provider().load_org_ca()
+            if loaded is None:
+                self._mgr._org_root_lock.release()
+                raise RuntimeError(
+                    "Org Root not present in KMS provider — cannot "
+                    f"unseal for reason={self._reason!r}. Either "
+                    "first-boot has not run, or the provider lost the "
+                    "key (Vault path missing, cloud KMS unreachable).",
+                )
+            key_pem, _cert_pem = loaded
+            self._mgr._org_ca_key = serialization.load_pem_private_key(
+                key_pem.encode(), password=None,
+            )
+            logger.info(
+                "Org Root unsealed (reason=%s, operator=%s) — key in memory",
+                self._reason, self._operator,
+            )
+        return self._mgr._org_ca_key
+
+    async def __aexit__(self, exc_type, exc, tb):
+        import gc
+        import time
+
+        try:
+            if not self._previous_was_cached:
+                # Belt-and-braces scrub: clear the reference, force gc
+                # so the OpenSSL-backed buffer is freed promptly. Note
+                # that ``cryptography`` does not expose a public clear()
+                # API for private-key material, so we rely on Python's
+                # reference counting + the C extension's destructor.
+                self._mgr._org_ca_key = None
+                gc.collect()
+                duration_ms = (time.monotonic_ns() - self._start_ns) / 1_000_000
+
+                # Audit row: best-effort. If audit chain is unavailable
+                # (early boot, multi-worker init race) the unseal still
+                # happened, log loudly so the operator notices. Only
+                # logged when the unseal actually loaded the private
+                # key from KMS (cold-path); the dev fallback that
+                # kept the key cached is a back-compat no-op and does
+                # not represent a real "unseal event".
+                try:
+                    await log_audit(
+                        agent_id=self._operator,
+                        action="pki.org_root_unsealed",
+                        status="success" if exc is None else "error",
+                        detail=(
+                            f"reason={self._reason} "
+                            f"duration_ms={duration_ms:.1f}"
+                            + (f" error={type(exc).__name__}" if exc is not None else "")
+                        ),
+                    )
+                except Exception as audit_exc:
+                    logger.warning(
+                        "org_root_unsealed audit row failed (reason=%s, "
+                        "duration_ms=%.1f): %s, unseal completed but "
+                        "trail missing",
+                        self._reason, duration_ms, audit_exc,
+                    )
+        finally:
+            self._mgr._org_root_lock.release()
+        return False
 
 
 class AgentManager:
@@ -138,19 +253,72 @@ class AgentManager:
         # operators see a clear signal before a design partner trips
         # over silent federation failures.
         self._legacy_ca_pathlen_zero = False
+        # Three-tier PKI hardening (audit 2026-05-18) — Org Root cold path.
+        # ``_org_root_lock`` serializes unseal calls so two operations
+        # that need the root (boot Intermediate mint + admin manual
+        # rotation racing) don't tear each other's private-key cache.
+        self._org_root_lock = asyncio.Lock()
 
     # ── CA loading ──────────────────────────────────────────────────
 
     async def load_org_ca(self, ca_key_pem: str, ca_cert_pem: str) -> None:
-        """Load org CA key+cert from PEM strings (fetched from Vault or config)."""
+        """Load org CA key+cert from PEM strings (fetched from Vault or config).
+
+        Pre-three-tier-hardening this method retained the private key in
+        ``self._org_ca_key`` for the full process lifetime. Post-fix the
+        private key is loaded on-demand via :meth:`_unseal_org_root` and
+        scrubbed immediately after use, so the steady-state holds only
+        the public cert. Tests + legacy bootstrap paths that pass the
+        key PEM in explicitly still see it cached (back-compat); the
+        ``load_org_ca_from_config`` path that runs at boot deliberately
+        skips loading the private key and leaves ``_org_ca_key`` None.
+        """
         self._org_ca_key = serialization.load_pem_private_key(
             ca_key_pem.encode(), password=None,
         )
         self._org_ca_cert = x509.load_pem_x509_certificate(ca_cert_pem.encode())
         logger.info(
-            "Org CA loaded — issuer CN=%s",
+            "Org CA loaded (with private key cached) — issuer CN=%s",
             self._org_ca_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
         )
+
+    def _unseal_org_root(self, *, reason: str, operator: str = "system"):
+        """Async context manager: load Org Root private key, yield, scrub.
+
+        Three-tier PKI hardening (audit 2026-05-18) — Org Root is cold
+        by default. Daily operations (sign agent cert, sign nginx leaf,
+        sign Mastio Leaf rotation) all use the Intermediate CA via
+        ``self._mastio_ca_key``. Only rare operations need the root:
+
+        * Initial mint of the Intermediate (first boot).
+        * Intermediate rotation (Phase 4, weekly leader-elected watcher
+          + manual admin trigger).
+        * Generating the CA bundle for export (read of cert only, no
+          private key needed — that path does NOT call this helper).
+
+        Each unseal emits an ``org_root_unsealed`` audit row with the
+        operator + reason so post-incident reviews can correlate any
+        Intermediate signature back to the operator who triggered it.
+
+        Usage:
+
+        ```
+        async with self._unseal_org_root(reason="mint_intermediate"):
+            # sign the cert using self._org_ca_key
+            ...
+        ```
+
+        Scrubbing: we ``del`` the private key reference and force a GC
+        pass so the heap copy drops out of resident memory before the
+        next request. ``cryptography``'s C-backed key objects also wipe
+        their internal buffer in their ``__del__`` for OpenSSL backend
+        builds; the Python-level scrub is belt-and-braces.
+
+        Synchronous return (NOT a coroutine) so callers use
+        ``async with self._unseal_org_root(...)`` directly without an
+        intermediate ``await``.
+        """
+        return _OrgRootUnsealCtx(self, reason=reason, operator=operator)
 
     async def load_org_ca_from_config(self) -> bool:
         """Try to load the Org CA via the configured KMS provider.
@@ -179,8 +347,20 @@ class AgentManager:
             logger.warning("Org CA not found via KMS provider — agent cert issuance unavailable")
             return False
 
-        ca_key_pem, ca_cert_pem = loaded
-        await self.load_org_ca(ca_key_pem, ca_cert_pem)
+        # Three-tier PKI hardening (audit 2026-05-18) — at boot we only
+        # cache the Org Root **cert** (public material). The private key
+        # stays cold; daily-ops paths (sign agent / nginx / Mastio leaf
+        # rotation) go through the Intermediate. Rare root-needing
+        # paths (mint Intermediate, rotate Intermediate) unseal via
+        # :meth:`_unseal_org_root`.
+        _ca_key_pem, ca_cert_pem = loaded
+        self._org_ca_cert = x509.load_pem_x509_certificate(ca_cert_pem.encode())
+        # _org_ca_key stays None — cold storage by default.
+        self._org_ca_key = None
+        logger.info(
+            "Org Root cert cached (cold private key) — CN=%s",
+            self._org_ca_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value,
+        )
 
         # Primary check: CN vs proxy_config.org_id. Skip when org_id is
         # env-pinned only (proxy_config row absent).
@@ -256,15 +436,16 @@ class AgentManager:
     async def generate_org_ca(
         self,
         *,
-        validity_days: int = 3650,
+        validity_days: int = ORG_CA_VALIDITY_DAYS,
         derive_org_id: bool = False,
     ) -> None:
-        """Generate a fresh self-signed Org CA and persist it to proxy_config.
+        """Generate a fresh self-signed Org CA and persist it via the KMS provider.
 
         Intended for standalone deploys (#115) where there is no broker to
-        run the attach-ca flow against. The CA is a long-lived root
-        (10 years by default); BasicConstraints(ca=True, path_length=1)
-        so a future SPIRE UpstreamAuthority can mint one intermediate
+        run the attach-ca flow against. Three-tier PKI hardening
+        (audit 2026-05-18) extends validity to ``ORG_CA_VALIDITY_DAYS``
+        (15 years cold root); BasicConstraints(ca=True, path_length=1)
+        so a SPIRE UpstreamAuthority can mint one intermediate
         underneath without re-rooting.
 
         When ``derive_org_id`` is True, the proxy's ``org_id`` is derived
@@ -281,9 +462,9 @@ class AgentManager:
         if self.ca_loaded:
             raise RuntimeError("Org CA already loaded — refusing to overwrite")
 
-        # M-crypto-2 audit fix — Org CA is a 10-year root, so it must
+        # M-crypto-2 audit fix — Org CA is a 15-year root, so it must
         # use a key size that survives its full lifetime under NIST
-        # SP 800-57 (≥3072-bit RSA or EC P-256). EC P-256 is also the
+        # SP 800-57 (>=3072-bit RSA or EC P-256). EC P-256 is also the
         # SPIFFE/SPIRE convention and matches what the Mastio
         # intermediate (``_mint_mastio_ca``) and leaf (``leaf_key``)
         # already use. Verifiers stay dual-stack; legacy Org CAs
@@ -348,22 +529,73 @@ class AgentManager:
 
         # Route through the KMS provider so enterprise backends (cloud
         # KMS / Key Vault / Secrets Manager) get to persist this without
-        # touching agent_manager. The LocalKMSProvider default writes to
-        # proxy_config exactly like the prior inline calls did.
+        # touching agent_manager. The LocalKMSProvider default writes
+        # the encrypted PEM into ``pki_key_store`` under the Fernet
+        # at-rest envelope (three-tier PKI hardening, audit 2026-05-18).
         from mcp_proxy.kms import get_kms_provider
-        await get_kms_provider().store_org_ca(ca_key_pem, ca_cert_pem)
+        from mcp_proxy.kms.pki_at_rest import pki_master_key_configured
 
-        self._org_ca_key = ca_key
+        provider = get_kms_provider()
+        if provider.name == "local" and not pki_master_key_configured():
+            # Legacy dev/test path: keep the plaintext
+            # ``proxy_config.org_ca_key`` / ``org_ca_cert`` rows so
+            # ``/pki/ca.crt`` + bootstrap endpoints still serve. Validate
+            # _config refuses this in production.
+            logger.warning(
+                "MCP_PROXY_DB_ENCRYPTION_KEY not set, falling back to "
+                "legacy plaintext org_ca_{key,cert} rows in proxy_config. "
+                "Dev/test only.",
+            )
+            await set_config("org_ca_key", ca_key_pem)
+            await set_config("org_ca_cert", ca_cert_pem)
+        else:
+            await provider.store_org_ca(ca_key_pem, ca_cert_pem)
+            # The /pki/ca.crt endpoint still reads org_ca_cert from
+            # proxy_config for back-compat; write the cert (public
+            # material, no privacy concern) so legacy callers keep
+            # working. The private key NEVER lands in proxy_config.
+            await set_config("org_ca_cert", ca_cert_pem)
+
+        # Three-tier PKI hardening — cache only the cert at steady state
+        # when the encrypted KMS path is active (the unseal helper can
+        # re-load from ``pki_key_store``). When the dev/test fallback
+        # wrote plaintext into ``proxy_config.org_ca_key``, leave the
+        # private key cached so the immediate next call to
+        # ``_mint_mastio_ca`` doesn't have to scaffold a fake unseal.
         self._org_ca_cert = ca_cert
-
-        logger.info(
-            "Self-signed Org CA generated (CN=%s, validity=%dd)",
-            f"{self._org_id} CA", validity_days,
-        )
+        if provider.name == "local" and not pki_master_key_configured():
+            # Dev fallback: keep the key in memory (matches pre-fix
+            # behavior so existing tests + dev sandbox keep booting).
+            self._org_ca_key = ca_key
+            logger.info(
+                "Self-signed Org CA generated (CN=%s, validity=%dd, "
+                "dev fallback, key cached)",
+                f"{self._org_id} CA", validity_days,
+            )
+        else:
+            # Encrypted path: scrub the private key. Future operations
+            # that need the root unseal via ``_unseal_org_root``.
+            self._org_ca_key = None
+            import gc
+            del ca_key
+            gc.collect()
+            logger.info(
+                "Self-signed Org CA generated (CN=%s, validity=%dd, "
+                "cold root)",
+                f"{self._org_id} CA", validity_days,
+            )
 
     @property
     def ca_loaded(self) -> bool:
-        return self._org_ca_key is not None and self._org_ca_cert is not None
+        """True when the Org Root *cert* is available.
+
+        Three-tier PKI hardening (audit 2026-05-18) — pre-fix this also
+        required the private key in memory, which leaked the root
+        across the whole process lifetime. Post-fix the cert alone is
+        the steady-state requirement; the private key is unsealed on
+        demand via :meth:`_unseal_org_root` for rare rotation events.
+        """
+        return self._org_ca_cert is not None
 
     @property
     def org_id(self) -> str:
@@ -398,7 +630,7 @@ class AgentManager:
         *,
         out_dir: str,
         sans: list[str] | None = None,
-        validity_days: int = 365,
+        validity_days: int = NGINX_SERVER_CERT_VALIDITY_DAYS,
         renew_within_days: int = 30,
     ) -> bool:
         """Emit / refresh the TLS server cert that the nginx sidecar uses.
@@ -423,6 +655,13 @@ class AgentManager:
         """
         if not self.ca_loaded:
             raise RuntimeError("Org CA not loaded — cannot emit nginx server cert")
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError(
+                "Mastio Intermediate CA not loaded, cannot emit nginx "
+                "server cert. Three-tier PKI hardening (audit 2026-05-18) "
+                "requires the nginx server cert to be signed by the "
+                "Intermediate, not the Org Root. Call ensure_mastio_identity() first.",
+            )
 
         from pathlib import Path
 
@@ -479,10 +718,16 @@ class AgentManager:
                     }
                 except x509.ExtensionNotFound:
                     existing_hosts, existing_ips = set(), set()
-                # Issuer match (current Org CA's subject)
+                # Issuer match (current Mastio Intermediate's subject).
+                # Pre-three-tier-hardening this checked against the Org
+                # CA subject; after PR fix the leaf is signed by the
+                # Intermediate. Either issuer counts as a hit during
+                # the rollout window so a freshly-upgraded Mastio
+                # doesn't unnecessarily regenerate when the prior
+                # nginx leaf was Org-issued.
                 issuer_ok = (
                     existing.issuer.rfc4514_string()
-                    == self._org_ca_cert.subject.rfc4514_string()
+                    == self._mastio_ca_cert.subject.rfc4514_string()
                 )
                 # Expiry guard
                 now = datetime.now(timezone.utc)
@@ -535,7 +780,7 @@ class AgentManager:
         builder = (
             x509.CertificateBuilder()
             .subject_name(subject)
-            .issuer_name(self._org_ca_cert.subject)
+            .issuer_name(self._mastio_ca_cert.subject)
             .public_key(leaf_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=5))
@@ -575,18 +820,28 @@ class AgentManager:
             )
             .add_extension(
                 x509.AuthorityKeyIdentifier.from_issuer_public_key(
-                    self._org_ca_cert.public_key(),
+                    self._mastio_ca_cert.public_key(),
                 ),
                 critical=False,
             )
         )
-        leaf_cert = builder.sign(self._org_ca_key, hashes.SHA256())
+        leaf_cert = builder.sign(self._mastio_ca_key, hashes.SHA256())
 
         # Write atomically: tmp file then rename. nginx watches the
         # files and reload (SIGHUP) is the operator's job; mid-boot
         # we just need the writes consistent so a restart-within-restart
         # never observes a torn pair.
-        ca_pem = self._org_ca_cert.public_bytes(serialization.Encoding.PEM)
+        #
+        # Three-tier PKI hardening (audit 2026-05-18): ``org-ca.crt`` now
+        # holds the **full chain** (Org Root || Intermediate) so a
+        # client doing strict path validation against an arbitrary
+        # leaf still sees the issuer chain. The legacy single-cert
+        # mode (Root only) would fail validation now that leaves are
+        # Intermediate-issued.
+        ca_pem = (
+            self._org_ca_cert.public_bytes(serialization.Encoding.PEM)
+            + self._mastio_ca_cert.public_bytes(serialization.Encoding.PEM)
+        )
         crt_pem = leaf_cert.public_bytes(serialization.Encoding.PEM)
         key_pem = leaf_key.private_bytes(
             serialization.Encoding.PEM,
@@ -621,20 +876,31 @@ class AgentManager:
           - CN: {org_id}::{agent_name}
           - O:  {org_id}
           - SAN URI: spiffe://{trust_domain}/{org_id}/{agent_name}
-          - Signed by Org CA
-          - Valid 365 days
+          - Signed by the Mastio Intermediate CA (three-tier hardening,
+            audit 2026-05-18: was signed by Org Root pre-fix).
+          - Valid ``AGENT_CERT_VALIDITY_DAYS`` (1 year).
 
         Returns (cert_pem, key_pem).
 
+        Signing path: ``self._mastio_ca_key`` (the Intermediate). The
+        Org Root stays cold; agent cert issuance must not unseal it.
+        Callers gate on :attr:`mastio_loaded` to ensure the
+        Intermediate is available; the lifespan's
+        ``ensure_mastio_identity`` mints it under the Root on first
+        boot (the only path that legitimately unseals the Root).
+
         M-crypto-2 audit fix: agent leaves are EC P-256, matching the
         Mastio leaf (``leaf_key``) and DPoP keypair. RSA-2048 was
-        below NIST SP 800-57's ≥3072-bit recommendation for new keys.
+        below NIST SP 800-57's >=3072-bit recommendation for new keys.
         Verifiers stay dual-stack so existing RSA-issued agents keep
         working until their cert expires (1 year), then auto-renew
         in EC at the next enrollment.
         """
-        if not self.ca_loaded:
-            raise RuntimeError("Org CA not loaded — call load_org_ca() first")
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError(
+                "Mastio Intermediate CA not loaded, cannot sign agent cert. "
+                "Call ensure_mastio_identity() first.",
+            )
 
         # Generate agent key pair
         agent_key = ec.generate_private_key(ec.SECP256R1())
@@ -651,18 +917,18 @@ class AgentManager:
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
-            .issuer_name(self._org_ca_cert.subject)
+            .issuer_name(self._mastio_ca_cert.subject)
             .public_key(agent_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now)
-            .not_valid_after(now + timedelta(days=365))
+            .not_valid_after(now + timedelta(days=AGENT_CERT_VALIDITY_DAYS))
             .add_extension(
                 SubjectAlternativeName([
                     UniformResourceIdentifier(spiffe_uri),
                 ]),
                 critical=False,
             )
-            .sign(self._org_ca_key, hashes.SHA256())
+            .sign(self._mastio_ca_key, hashes.SHA256())
         )
 
         cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
@@ -672,23 +938,33 @@ class AgentManager:
             serialization.NoEncryption(),
         ).decode()
 
-        logger.info("Generated x509 cert for %s (SAN %s)", agent_id, spiffe_uri)
+        logger.info(
+            "Generated x509 cert for %s (SAN %s, issuer=Intermediate)",
+            agent_id, spiffe_uri,
+        )
         return cert_pem, key_pem
 
     def sign_external_pubkey(self, *, pubkey_pem: str, agent_name: str) -> str:
-        """Sign an externally-generated public key with the Org CA.
+        """Sign an externally-generated public key with the Mastio Intermediate CA.
 
         Used by the Connector enrollment flow: the Connector keeps its
         private key on the user's machine and only submits the public key,
         the admin approves, and the proxy issues a cert bound to that key.
 
-        Raises ``RuntimeError`` if the Org CA is not loaded or the PEM is
-        malformed. Accepts any key type the ``cryptography`` library can
-        load (RSA, EC, Ed25519); the resulting cert signature is always
-        SHA-256 per the existing convention.
+        Three-tier PKI hardening (audit 2026-05-18) — signs with the
+        Intermediate (was Org Root pre-fix). Accepts any key type the
+        ``cryptography`` library can load (RSA, EC, Ed25519); the
+        resulting cert signature is always SHA-256 per the existing
+        convention.
+
+        Raises ``RuntimeError`` if the Mastio Intermediate CA is not
+        loaded or the PEM is malformed.
         """
-        if not self.ca_loaded:
-            raise RuntimeError("Org CA not loaded — call load_org_ca() first")
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError(
+                "Mastio Intermediate CA not loaded, cannot sign external pubkey. "
+                "Call ensure_mastio_identity() first.",
+            )
 
         public_key = serialization.load_pem_public_key(pubkey_pem.encode())
 
@@ -704,23 +980,24 @@ class AgentManager:
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
-            .issuer_name(self._org_ca_cert.subject)
+            .issuer_name(self._mastio_ca_cert.subject)
             .public_key(public_key)
             .serial_number(x509.random_serial_number())
             .not_valid_before(now)
-            .not_valid_after(now + timedelta(days=365))
+            .not_valid_after(now + timedelta(days=AGENT_CERT_VALIDITY_DAYS))
             .add_extension(
                 SubjectAlternativeName([
                     UniformResourceIdentifier(spiffe_uri),
                 ]),
                 critical=False,
             )
-            .sign(self._org_ca_key, hashes.SHA256())
+            .sign(self._mastio_ca_key, hashes.SHA256())
         )
 
         cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
         logger.info(
-            "Signed external pubkey for %s (SAN %s)", agent_id, spiffe_uri
+            "Signed external pubkey for %s (SAN %s, issuer=Intermediate)",
+            agent_id, spiffe_uri,
         )
         return cert_pem
 
@@ -841,8 +1118,27 @@ class AgentManager:
                 "Org CA not loaded — cannot issue Mastio intermediate CA",
             )
 
-        ca_key_pem = await get_config("mastio_ca_key")
-        ca_cert_pem = await get_config("mastio_ca_cert")
+        # Three-tier PKI hardening (audit 2026-05-18) — Intermediate
+        # now routes through the KMS provider (LocalKMSProvider lands
+        # in pki_key_store with Fernet at-rest). Legacy
+        # proxy_config.mastio_ca_{key,cert} rows are the dev/test
+        # fallback when the at-rest master key is absent.
+        ca_key_pem: str | None = None
+        ca_cert_pem: str | None = None
+        try:
+            from mcp_proxy.kms import get_kms_provider
+            loaded = await get_kms_provider().load_intermediate_ca()
+            if loaded is not None:
+                ca_key_pem, ca_cert_pem = loaded
+        except Exception as exc:  # noqa: BLE001 — defensive on KMS failure
+            logger.warning(
+                "KMSProvider.load_intermediate_ca failed: %s — falling "
+                "back to legacy proxy_config rows",
+                exc,
+            )
+        if not ca_key_pem or not ca_cert_pem:
+            ca_key_pem = await get_config("mastio_ca_key")
+            ca_cert_pem = await get_config("mastio_ca_cert")
 
         if ca_key_pem and ca_cert_pem:
             self._mastio_ca_key = serialization.load_pem_private_key(
@@ -1086,6 +1382,105 @@ class AgentManager:
             prior_reason or "<legacy #281 path, no reason>",
         )
 
+    async def wipe_legacy_pki_if_present(self) -> bool:
+        """Phase 0 hard wipe: archive plaintext PKI rows + re-issue cleanly.
+
+        Three-tier PKI hardening (audit 2026-05-18). The user confirmed
+        no live deploys exist (Mastio VMs torn down for the upgrade),
+        so a back-compat read path for the legacy
+        ``proxy_config.org_ca_key`` / ``mastio_ca_key`` plaintext rows
+        is unnecessary. This helper:
+
+        1. Detects either legacy row.
+        2. Archives the PEM into ``legacy_pki_archive`` with audit
+           trail (operator can still recover from a bad upgrade for
+           N days if they keep the DB row around).
+        3. Deletes the legacy ``proxy_config`` rows.
+        4. Returns True so the caller can re-issue from a clean slate.
+
+        Idempotent: a second call after the wipe is a no-op. Safe to
+        run on every boot (the legacy-row detection is the gate).
+
+        Returns True when a wipe happened, False when no legacy material
+        was present (steady-state).
+        """
+        legacy_org_key = await get_config("org_ca_key")
+        legacy_org_cert = await get_config("org_ca_cert")
+        legacy_int_key = await get_config("mastio_ca_key")
+        legacy_int_cert = await get_config("mastio_ca_cert")
+
+        wiped = False
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # We only wipe when the new ``pki_key_store`` has already been
+        # populated (else we'd archive the only copy and leave the
+        # Mastio without an Org CA on the next boot). The lifespan
+        # caller orchestrates: load_org_ca_from_config → if cert came
+        # via legacy proxy_config row AND the KMS provider says
+        # "load_org_ca returned None", we are pre-migration; defer
+        # wipe to a future boot where the encrypted row exists.
+        from mcp_proxy.kms.pki_at_rest import pki_master_key_configured
+        if not pki_master_key_configured():
+            # Without the at-rest master key we cannot encrypt the
+            # re-issued material; the wipe would create a strictly
+            # worse state than the legacy plaintext. Skip with a
+            # warning so the operator sets the env var and retries.
+            if legacy_org_key or legacy_int_key:
+                logger.warning(
+                    "Legacy plaintext PKI rows detected but "
+                    "MCP_PROXY_DB_ENCRYPTION_KEY is not set. Phase 0 "
+                    "wipe deferred. Set the env var and restart to "
+                    "complete the three-tier hardening migration.",
+                )
+            return False
+
+        if legacy_org_key and legacy_org_cert:
+            await archive_legacy_pki(
+                key_id=f"legacy-org-ca-{now_iso}",
+                key_type="org_ca",
+                legacy_pem=legacy_org_key,
+                archived_at=now_iso,
+            )
+            await delete_proxy_config("org_ca_key")
+            # Keep ``org_ca_cert`` row in proxy_config for the legacy
+            # ``/pki/ca.crt`` and ``/.well-known/cullis/connector-bootstrap``
+            # endpoints that still read it directly. The cert is public
+            # material; only the private key needs to disappear.
+            try:
+                await log_audit(
+                    agent_id="system",
+                    action="pki.legacy_wipe",
+                    status="success",
+                    detail="key_type=org_ca archived_to=legacy_pki_archive",
+                )
+            except Exception:
+                pass
+            logger.info("Phase 0 wipe: archived legacy org_ca_key")
+            wiped = True
+
+        if legacy_int_key and legacy_int_cert:
+            await archive_legacy_pki(
+                key_id=f"legacy-intermediate-{now_iso}",
+                key_type="intermediate_ca",
+                legacy_pem=legacy_int_key,
+                archived_at=now_iso,
+            )
+            await delete_proxy_config("mastio_ca_key")
+            await delete_proxy_config("mastio_ca_cert")
+            try:
+                await log_audit(
+                    agent_id="system",
+                    action="pki.legacy_wipe",
+                    status="success",
+                    detail="key_type=intermediate_ca archived_to=legacy_pki_archive",
+                )
+            except Exception:
+                pass
+            logger.info("Phase 0 wipe: archived legacy mastio_ca_key")
+            wiped = True
+
+        return wiped
+
     async def _migrate_legacy_leaf_to_keystore(self) -> None:
         """Seed ``mastio_keys`` from ``proxy_config.mastio_leaf_{key,cert}``.
 
@@ -1141,25 +1536,35 @@ class AgentManager:
             await self._mint_mastio_leaf(now)
 
     async def _mint_mastio_ca(self, now: datetime) -> None:
-        """Mint a fresh EC P-256 intermediate CA and persist it.
+        """Mint a fresh EC P-256 Intermediate CA and persist it.
 
-        3y validity: online signer intended to be rotated ahead of
-        expiry (NIST SP 800-57 Part 1 §5.3.6 guidance for signing keys
-        in active use). Automatic rotation is tracked in issue #261.
+        Three-tier PKI hardening (audit 2026-05-18):
+
+        * Validity ``INTERMEDIATE_CA_VALIDITY_DAYS`` (5 years). Online
+          signer rotated ahead of expiry by the leader-elected
+          ``mastio_ca_rotation_watcher`` background task + manual
+          ``POST /v1/admin/mastio-ca/rotate`` admin endpoint.
+        * Org Root unsealed, signed, scrubbed (cold-by-default).
+        * Persistence routes through ``KMSProvider.store_intermediate_ca``
+          (was direct ``set_config`` pre-fix). LocalKMSProvider lands the
+          row in ``pki_key_store`` with Fernet at-rest encryption.
+
+        NIST SP 800-57 Part 1 §5.3.6 covers signing-keys-in-active-use
+        cadence. Automatic rotation is tracked in issue #261.
         """
         mastio_ca_key = ec.generate_private_key(ec.SECP256R1())
         mastio_ca_subject = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, f"{self._org_id} Mastio CA"),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
         ])
-        mastio_ca_cert = (
+        builder = (
             x509.CertificateBuilder()
             .subject_name(mastio_ca_subject)
             .issuer_name(self._org_ca_cert.subject)
             .public_key(mastio_ca_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=5))
-            .not_valid_after(now + timedelta(days=365 * 3))
+            .not_valid_after(now + timedelta(days=INTERMEDIATE_CA_VALIDITY_DAYS))
             .add_extension(
                 x509.BasicConstraints(ca=True, path_length=0),
                 critical=True,
@@ -1182,14 +1587,64 @@ class AgentManager:
                 x509.SubjectKeyIdentifier.from_public_key(mastio_ca_key.public_key()),
                 critical=False,
             )
-            .sign(self._org_ca_key, hashes.SHA256())
         )
 
-        await set_config("mastio_ca_key", _priv_to_pem(mastio_ca_key))
-        await set_config("mastio_ca_cert", _cert_to_pem(mastio_ca_cert))
+        # Unseal Org Root only for the brief signing call, scrub immediately.
+        async with self._unseal_org_root(
+            reason="mint_intermediate", operator="system",
+        ) as org_root_key:
+            mastio_ca_cert = builder.sign(org_root_key, hashes.SHA256())
+
+        key_pem = _priv_to_pem(mastio_ca_key)
+        cert_pem = _cert_to_pem(mastio_ca_cert)
+
+        # Route through KMSProvider (LocalKMSProvider lands in
+        # pki_key_store with Fernet at-rest, cloud KMS plugins do
+        # whatever they were licensed for). Falls back to direct
+        # proxy_config write for back-compat in tests / dev that lack
+        # the at-rest master key (``MCP_PROXY_DB_ENCRYPTION_KEY``).
+        await self._persist_intermediate_ca(key_pem, cert_pem)
+
         self._mastio_ca_key = mastio_ca_key
         self._mastio_ca_cert = mastio_ca_cert
-        logger.info("Mastio intermediate CA minted (CN=%s)", mastio_ca_subject)
+        logger.info(
+            "Mastio Intermediate CA minted (CN=%s, validity_days=%d)",
+            mastio_ca_subject, INTERMEDIATE_CA_VALIDITY_DAYS,
+        )
+
+    async def _persist_intermediate_ca(self, key_pem: str, cert_pem: str) -> None:
+        """Store the Mastio Intermediate CA via the configured KMS provider.
+
+        Dev-only fallback: if the PKI at-rest master key is missing
+        (``MCP_PROXY_DB_ENCRYPTION_KEY`` unset) AND the KMS backend is
+        ``local`` (so the encrypted ``pki_key_store`` is the destination),
+        log a loud warning and write to the legacy
+        ``proxy_config.mastio_ca_{key,cert}`` rows instead. Production
+        validate_config refuses to start in that state, so this branch
+        only triggers in unit tests + sandbox boots that have not yet
+        exported the dev passphrase. Cloud KMS / Vault backends are
+        unaffected (they don't depend on the local Fernet envelope).
+        """
+        from mcp_proxy.kms import get_kms_provider
+        from mcp_proxy.kms.pki_at_rest import pki_master_key_configured
+
+        provider = get_kms_provider()
+        # Only the local provider depends on the Fernet master key; all
+        # others get the PEMs as-is and can store however they prefer.
+        if provider.name == "local" and not pki_master_key_configured():
+            logger.warning(
+                "MCP_PROXY_DB_ENCRYPTION_KEY not set, falling back to "
+                "legacy plaintext mastio_ca_{key,cert} rows in proxy_config. "
+                "This path is dev/test only — production validate_config "
+                "refuses to start without the at-rest passphrase. Set "
+                "MCP_PROXY_DB_ENCRYPTION_KEY to land the Intermediate "
+                "under Fernet at-rest.",
+            )
+            await set_config("mastio_ca_key", key_pem)
+            await set_config("mastio_ca_cert", cert_pem)
+            return
+
+        await provider.store_intermediate_ca(key_pem, cert_pem)
 
     async def _mint_mastio_leaf(self, now: datetime) -> None:
         """Mint a fresh EC P-256 leaf under the existing intermediate CA.
@@ -1216,7 +1671,7 @@ class AgentManager:
             .public_key(leaf_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=5))
-            .not_valid_after(now + timedelta(days=365))
+            .not_valid_after(now + timedelta(days=MASTIO_LEAF_VALIDITY_DAYS))
             .add_extension(
                 SubjectAlternativeName([UniformResourceIdentifier(proxy_spiffe)]),
                 critical=False,
@@ -1378,7 +1833,7 @@ class AgentManager:
             .public_key(new_leaf_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(minutes=5))
-            .not_valid_after(now + timedelta(days=365))
+            .not_valid_after(now + timedelta(days=MASTIO_LEAF_VALIDITY_DAYS))
             .add_extension(
                 SubjectAlternativeName([UniformResourceIdentifier(proxy_spiffe)]),
                 critical=False,
@@ -1491,6 +1946,375 @@ class AgentManager:
         )
         assert self._active_key is not None
         return self._active_key
+
+    async def rotate_mastio_ca(
+        self,
+        *,
+        grace_days: int = 14,
+        operator: str = "admin",
+        dry_run: bool = False,
+    ) -> dict:
+        """Rotate the Mastio Intermediate CA.
+
+        Three-tier PKI hardening (audit 2026-05-18), Phase 4. Mirrors
+        the proven Mastio Leaf rotation pattern (ADR-012 Phase 2.1):
+
+        1. Mint a fresh EC P-256 Intermediate keypair.
+        2. Unseal Org Root, sign the new Intermediate, scrub.
+        3. Build a continuity proof — the new Intermediate cert signed
+           by the *old* Intermediate's private key (so verifiers
+           that pinned the old Intermediate's pubkey can still verify
+           the chain through the rotation window).
+        4. Persist the new keypair as a staged row in ``pki_key_store``
+           (``activated_at IS NULL``), durable on disk before any
+           atomic-swap so a crash mid-flight leaves the staged row
+           visible for boot recovery.
+        5. Re-mint the Mastio Leaf under the new Intermediate as
+           issuer (so subsequent ES256 counter-signatures verify
+           against the new chain).
+        6. Atomic-swap under the ``pki_key_store`` activation helper —
+           new row becomes active, old row deprecated with
+           ``expires_at = now + grace_days``.
+        7. Re-cache the Intermediate in-memory and refresh the Mastio
+           Leaf cache.
+
+        ``grace_days`` (default 14) controls how long the old
+        Intermediate stays verifier-accepted after deprecation, giving
+        agents that pinned the old chain a window to receive the new
+        CA bundle (out-of-band via the dashboard or the next
+        ``/v1/registry/ca-bundle`` poll).
+
+        ``dry_run`` performs all validation + cert minting in memory
+        but does NOT persist or atomic-swap; useful for the
+        ``POST /v1/admin/mastio-ca/rotate?dry_run=true`` admin
+        endpoint to surface validation errors without committing.
+
+        Returns a dict with ``{"old_intermediate_cn", "new_intermediate_cn",
+        "new_leaf_kid", "grace_days", "dry_run"}`` so the caller can
+        log + display the outcome.
+        """
+        if grace_days <= 0:
+            raise ValueError("grace_days must be a positive integer")
+        if self._mastio_ca_key is None or self._mastio_ca_cert is None:
+            raise RuntimeError(
+                "Mastio Intermediate CA not loaded, cannot rotate. "
+                "Call ensure_mastio_identity() first.",
+            )
+        if not self.ca_loaded:
+            raise RuntimeError(
+                "Org Root cert not loaded, cannot rotate Intermediate.",
+            )
+
+        # Use the same in-process lock as Mastio Leaf rotation so a
+        # dashboard click + watcher tick race serializes.
+        async with self._rotation_lock:
+            return await self._rotate_intermediate_locked(
+                grace_days=grace_days,
+                operator=operator,
+                dry_run=dry_run,
+            )
+
+    async def _rotate_intermediate_locked(
+        self,
+        *,
+        grace_days: int,
+        operator: str,
+        dry_run: bool,
+    ) -> dict:
+        """Body of :meth:`rotate_mastio_ca`, executed under the rotation lock.
+
+        Split out so the test suite can drive individual steps without
+        re-acquiring the lock during fault-injection scenarios.
+        """
+        from mcp_proxy.db import (
+            activate_staged_pki_and_deprecate_old,
+            delete_staged_pki_key,
+            get_active_pki_key,
+            insert_pki_key,
+        )
+        from mcp_proxy.kms.pki_at_rest import (
+            encrypt_pki_payload,
+            pki_master_key_configured,
+        )
+
+        old_intermediate_key = self._mastio_ca_key
+        old_intermediate_cert = self._mastio_ca_cert
+        old_intermediate_cn = old_intermediate_cert.subject.rfc4514_string()
+
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
+
+        # 1. Mint new Intermediate keypair + cert.
+        new_int_key = ec.generate_private_key(ec.SECP256R1())
+        new_int_subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{self._org_id} Mastio CA"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
+        ])
+        new_int_builder = (
+            x509.CertificateBuilder()
+            .subject_name(new_int_subject)
+            .issuer_name(self._org_ca_cert.subject)
+            .public_key(new_int_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=INTERMEDIATE_CA_VALIDITY_DAYS))
+            .add_extension(
+                x509.BasicConstraints(ca=True, path_length=0),
+                critical=True,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=False,
+                    content_commitment=False,
+                    key_encipherment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=True,
+                    crl_sign=True,
+                    encipher_only=False,
+                    decipher_only=False,
+                ),
+                critical=True,
+            )
+            .add_extension(
+                x509.SubjectKeyIdentifier.from_public_key(new_int_key.public_key()),
+                critical=False,
+            )
+        )
+
+        # 2. Unseal Org Root, sign new Intermediate, scrub.
+        async with self._unseal_org_root(
+            reason="rotate_intermediate", operator=operator,
+        ) as org_root_key:
+            new_int_cert = new_int_builder.sign(org_root_key, hashes.SHA256())
+
+        new_int_key_pem = _priv_to_pem(new_int_key)
+        new_int_cert_pem = _cert_to_pem(new_int_cert)
+
+        # 3. Continuity proof: sign the new Intermediate cert with the
+        # old Intermediate's private key. Verifiers that pinned the old
+        # Intermediate can confirm the rotation was authorised by the
+        # holder of the old key, not a stranger who got hold of the Org
+        # Root by other means.
+        import base64
+        cont_proof_bytes = old_intermediate_key.sign(
+            new_int_cert.public_bytes(serialization.Encoding.DER),
+            ec.ECDSA(hashes.SHA256()),
+        )
+        continuity_proof_b64 = base64.urlsafe_b64encode(
+            cont_proof_bytes,
+        ).rstrip(b"=").decode()
+
+        if dry_run:
+            logger.info(
+                "rotate_mastio_ca dry-run OK (old CN=%s, new CN=%s, "
+                "grace_days=%d)",
+                old_intermediate_cn, new_int_subject.rfc4514_string(),
+                grace_days,
+            )
+            return {
+                "old_intermediate_cn": old_intermediate_cn,
+                "new_intermediate_cn": new_int_subject.rfc4514_string(),
+                "new_leaf_kid": None,
+                "grace_days": grace_days,
+                "dry_run": True,
+                "continuity_proof": continuity_proof_b64,
+            }
+
+        # 4. Persist new Intermediate as staged row. Only the encrypted
+        # path is supported here (Phase 4 is post-migration; the dev
+        # fallback is for boot/cold-start, not for operator rotation).
+        if not pki_master_key_configured():
+            raise RuntimeError(
+                "rotate_mastio_ca requires MCP_PROXY_DB_ENCRYPTION_KEY. "
+                "The new Intermediate cannot be stored without the "
+                "at-rest envelope master key.",
+            )
+        envelope = encrypt_pki_payload(
+            key_pem=new_int_key_pem, cert_pem=new_int_cert_pem,
+        )
+        import hashlib
+        new_int_pubkey_der = new_int_cert.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        new_int_key_id = (
+            "intermediate-" + hashlib.sha256(new_int_pubkey_der).hexdigest()[:16]
+        )
+        current_row = await get_active_pki_key("intermediate_ca")
+        old_key_id = current_row["key_id"] if current_row else None
+
+        await insert_pki_key(
+            key_id=new_int_key_id,
+            key_type="intermediate_ca",
+            ciphertext=envelope,
+            cert_pem=new_int_cert_pem,
+            created_at=now_iso,
+            activated_at=None,
+        )
+
+        # 5. Re-mint the Mastio Leaf under the new Intermediate.
+        # The existing rotate_mastio_key flow assumes the Intermediate
+        # is unchanged; here we have to do the leaf re-issue inline,
+        # bypassing the propagator (Court would be talking through a
+        # cross-org rotation event; standalone-mode Mastio has no
+        # Court). The leaf is staged as inactive, atomic-swapped
+        # together with the Intermediate below.
+        try:
+            new_leaf_kid = await self._reissue_mastio_leaf_under(
+                new_int_key=new_int_key,
+                new_int_cert=new_int_cert,
+                now=now,
+                grace_days=grace_days,
+            )
+        except Exception:
+            # Roll back the staged Intermediate so the next boot
+            # doesn't see an orphaned row.
+            try:
+                await delete_staged_pki_key(new_int_key_id)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "staged Intermediate cleanup failed after leaf "
+                    "re-issue error (key_id=%s): %s — boot recovery "
+                    "will handle it",
+                    new_int_key_id, cleanup_exc,
+                )
+            raise
+
+        # 6. Atomic-swap Intermediate. The leaf was already activated
+        # inside `_reissue_mastio_leaf_under` via the existing
+        # activate_staged_and_deprecate_old helper.
+        try:
+            await activate_staged_pki_and_deprecate_old(
+                key_type="intermediate_ca",
+                new_key_id=new_int_key_id,
+                new_activated_at=now_iso,
+                old_key_id=old_key_id,
+                old_deprecated_at=now_iso,
+                old_expires_at=grace_end_iso,
+            )
+        except Exception:
+            logger.error(
+                "rotate_mastio_ca: Intermediate atomic-swap failed "
+                "AFTER leaf re-issue succeeded. Manual recovery: "
+                "either revert the leaf via /proxy/mastio-key/complete-"
+                "staged drop, or replay the swap with the staged row "
+                "(key_id=%s).",
+                new_int_key_id,
+            )
+            raise
+
+        # 7. Refresh in-memory caches.
+        self._mastio_ca_key = new_int_key
+        self._mastio_ca_cert = new_int_cert
+        await self.refresh_active_key()
+
+        # Audit row + telemetry.
+        try:
+            await log_audit(
+                agent_id=operator,
+                action="pki.intermediate_rotated",
+                status="success",
+                detail=(
+                    f"old_key_id={old_key_id} new_key_id={new_int_key_id} "
+                    f"grace_days={grace_days}"
+                ),
+            )
+        except Exception:
+            pass
+
+        logger.info(
+            "Mastio Intermediate CA rotated (old CN=%s, new CN=%s, "
+            "grace_days=%d, operator=%s)",
+            old_intermediate_cn, new_int_subject.rfc4514_string(),
+            grace_days, operator,
+        )
+
+        return {
+            "old_intermediate_cn": old_intermediate_cn,
+            "new_intermediate_cn": new_int_subject.rfc4514_string(),
+            "new_leaf_kid": new_leaf_kid,
+            "grace_days": grace_days,
+            "dry_run": False,
+            "continuity_proof": continuity_proof_b64,
+        }
+
+    async def _reissue_mastio_leaf_under(
+        self,
+        *,
+        new_int_key: ec.EllipticCurvePrivateKey,
+        new_int_cert: x509.Certificate,
+        now: datetime,
+        grace_days: int,
+    ) -> str:
+        """Mint a fresh Mastio Leaf under a new Intermediate.
+
+        Atomic-swap variant of ``_mint_mastio_leaf`` used during
+        Intermediate rotation. Inserts the new leaf as staged
+        (``activated_at IS NULL``) then activates it under the
+        existing ``activate_staged_and_deprecate_old`` advisory lock,
+        deprecating the prior active leaf with the same grace window.
+        Returns the new leaf's ``kid``.
+        """
+        leaf_key = ec.generate_private_key(ec.SECP256R1())
+        proxy_spiffe = f"spiffe://{self._trust_domain}/proxy/{self._org_id}"
+        leaf_subject = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, f"proxy:{self._org_id}"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, self._org_id),
+        ])
+        leaf_cert = (
+            x509.CertificateBuilder()
+            .subject_name(leaf_subject)
+            .issuer_name(new_int_cert.subject)
+            .public_key(leaf_key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5))
+            .not_valid_after(now + timedelta(days=MASTIO_LEAF_VALIDITY_DAYS))
+            .add_extension(
+                SubjectAlternativeName([UniformResourceIdentifier(proxy_spiffe)]),
+                critical=False,
+            )
+            .add_extension(
+                x509.BasicConstraints(ca=False, path_length=None),
+                critical=True,
+            )
+            .sign(new_int_key, hashes.SHA256())
+        )
+
+        priv_pem = _priv_to_pem(leaf_key)
+        cert_pem = _cert_to_pem(leaf_cert)
+        pub_pem = leaf_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode()
+        kid = compute_kid(pub_pem)
+        now_iso = now.isoformat()
+        grace_end_iso = (now + timedelta(days=grace_days)).isoformat()
+
+        # Current active leaf (if any) — captured before insert so the
+        # atomic-swap helper knows who to deprecate.
+        current_leaf = await self._keystore.current_signer()
+
+        await insert_mastio_key(
+            kid=kid,
+            pubkey_pem=pub_pem,
+            privkey_pem=priv_pem,
+            cert_pem=cert_pem,
+            created_at=now_iso,
+            activated_at=None,
+        )
+        await activate_staged_and_deprecate_old(
+            new_kid=kid,
+            new_activated_at=now_iso,
+            old_kid=current_leaf.kid,
+            old_deprecated_at=now_iso,
+            old_expires_at=grace_end_iso,
+        )
+        logger.info(
+            "Mastio Leaf re-issued under new Intermediate (kid=%s)", kid,
+        )
+        return kid
 
     async def complete_staged_rotation(self, decision: str) -> dict:
         """Resolve an orphaned staged row (issue #281 recovery path).

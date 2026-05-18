@@ -261,6 +261,11 @@ async def test_approve_signs_cert_and_marks_approved(db_engine):
     manager = AgentManager(org_id="acme", trust_domain="cullis.local")
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
+    # Three-tier PKI hardening (audit 2026-05-18) — agent / external
+    # pubkey signing now goes through the Mastio Intermediate, so the
+    # identity must be loaded before service.approve() invokes
+    # sign_external_pubkey.
+    await manager.ensure_mastio_identity()
 
     _priv, pubkey = _rsa_keypair()
     async with get_db() as conn:
@@ -315,6 +320,11 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
     manager = AgentManager(org_id="acme", trust_domain="cullis.local")
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
+    # Three-tier PKI hardening (audit 2026-05-18) — agent / external
+    # pubkey signing now goes through the Mastio Intermediate, so the
+    # identity must be loaded before service.approve() invokes
+    # sign_external_pubkey.
+    await manager.ensure_mastio_identity()
 
     _priv, pubkey = _rsa_keypair()
     async with get_db() as conn:
@@ -388,6 +398,11 @@ async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
     manager = AgentManager(org_id="acme", trust_domain="cullis.local")
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
+    # Three-tier PKI hardening (audit 2026-05-18) — agent / external
+    # pubkey signing now goes through the Mastio Intermediate, so the
+    # identity must be loaded before service.approve() invokes
+    # sign_external_pubkey.
+    await manager.ensure_mastio_identity()
 
     # First enrollment + approval — establishes the baseline row.
     _priv_1, pubkey_1 = _rsa_keypair()
@@ -493,6 +508,11 @@ async def test_approve_shared_mode_skips_auto_baseline_binding(
     manager = AgentManager(org_id="acme", trust_domain="cullis.local")
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
+    # Three-tier PKI hardening (audit 2026-05-18) — agent / external
+    # pubkey signing now goes through the Mastio Intermediate, so the
+    # identity must be loaded before service.approve() invokes
+    # sign_external_pubkey.
+    await manager.ensure_mastio_identity()
 
     _priv, pubkey = _rsa_keypair()
 
@@ -546,6 +566,11 @@ async def test_approve_single_mode_still_schedules_auto_baseline_binding(
     manager = AgentManager(org_id="acme", trust_domain="cullis.local")
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
+    # Three-tier PKI hardening (audit 2026-05-18) — agent / external
+    # pubkey signing now goes through the Mastio Intermediate, so the
+    # identity must be loaded before service.approve() invokes
+    # sign_external_pubkey.
+    await manager.ensure_mastio_identity()
 
     _priv, pubkey = _rsa_keypair()
 

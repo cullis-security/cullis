@@ -72,13 +72,18 @@ async def test_standalone_ca_persisted_to_proxy_config(standalone_proxy):
 
 @pytest.mark.asyncio
 async def test_standalone_ca_can_issue_agent_cert(standalone_proxy):
-    """The generated CA must be usable to mint internal agent certs."""
+    """The generated CA must be usable to mint internal agent certs.
+
+    Three-tier PKI hardening (audit 2026-05-18) — agent leaves are
+    Intermediate-issued, not Org-Root-issued. The issuer assertion
+    below reflects the new chain.
+    """
     app, _ = standalone_proxy
     mgr = app.state.agent_manager
     cert_pem, key_pem = mgr._generate_agent_cert("bot-alpha")
     cert = x509.load_pem_x509_certificate(cert_pem.encode())
-    # Signed by the freshly-generated Org CA
-    assert cert.issuer == mgr._org_ca_cert.subject
+    # Signed by the Mastio Intermediate CA (three-tier hardening).
+    assert cert.issuer == mgr._mastio_ca_cert.subject
     # Agent subject is {org}::{name}
     cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
     assert cn == "acme::bot-alpha"

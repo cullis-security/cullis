@@ -46,6 +46,9 @@ def _prod_settings(**overrides) -> ProxySettings:
         kms_backend="vault",
         # Audit F-B-10 — prod now refuses empty signing key.
         dashboard_signing_key="strong-signing-key",
+        # Three-tier PKI hardening (audit 2026-05-18) — prod now
+        # refuses empty MCP_PROXY_DB_ENCRYPTION_KEY.
+        db_encryption_key="x" * 48,
     )
     base.update(overrides)
     return ProxySettings(**base)

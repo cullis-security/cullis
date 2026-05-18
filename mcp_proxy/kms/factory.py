@@ -64,6 +64,9 @@ def get_kms_provider() -> KMSProvider:
             org_ca_path=settings.vault_org_ca_path,
             verify_tls=settings.vault_verify_tls,
             ca_cert_path=settings.vault_ca_cert_path,
+            intermediate_ca_path=getattr(
+                settings, "vault_intermediate_ca_path", "",
+            ),
         )
         _log.info(
             "KMS provider: vault (path=%s)",

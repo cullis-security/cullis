@@ -273,6 +273,12 @@ services:
       # Distinct from PROXY_PUBLIC_URL above which is the TLS sidecar.
       MCP_PROXY_OIDC_REDIRECT_URI_BASE: "http://localhost:9100"
       MCP_PROXY_ADMIN_SECRET:      "sandbox-proxy-admin-a"
+      # Three-tier PKI hardening (audit 2026-05-18) — at-rest envelope
+      # master passphrase. pki_key_store wraps Org Root + Intermediate
+      # private keys under Fernet keyed off this value (PBKDF2 600k).
+      # Dev-only fixed value below; production validate_config refuses
+      # to start without a strong random passphrase.
+      MCP_PROXY_DB_ENCRYPTION_KEY: "dev-key-not-secure-must-be-32-chars-or-longer"
       # ADR-017 native AI gateway on Mastio (post-2026-05-06 architectural
       # fix): the Mastio dispatches LLM calls itself via litellm_embedded.
       # No Court egress hop. Required for standalone Mastio + intra-org

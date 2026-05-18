@@ -57,13 +57,22 @@ def _make_ca() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
 
 
 def _make_manager_with_ca() -> AgentManager:
-    """An AgentManager wired with an Org CA but skipping the
-    Vault / DB bootstrap — the SAN logic only touches in-memory CA
-    material + a path on disk."""
+    """An AgentManager wired with an Org CA + Mastio Intermediate but
+    skipping the Vault / DB bootstrap — the SAN logic only touches
+    in-memory CA material + a path on disk.
+
+    Three-tier PKI hardening (audit 2026-05-18) — ensure_nginx_server_cert
+    now signs the leaf with the Intermediate, so the test fixture has
+    to populate ``_mastio_ca_*`` too. We use the same self-signed cert
+    as both Root and Intermediate for the SAN tests, which only
+    inspect SAN extension shape on the leaf.
+    """
     mgr = AgentManager.__new__(AgentManager)
     key, cert = _make_ca()
     mgr._org_ca_key = key
     mgr._org_ca_cert = cert
+    mgr._mastio_ca_key = key
+    mgr._mastio_ca_cert = cert
     mgr._org_id = "test-org"
     return mgr
 
