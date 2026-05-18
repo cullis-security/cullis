@@ -1,0 +1,75 @@
+# Sandbox overlay: swap both Mastios from SQLite to a Postgres instance.
+#
+# Companion to docs/runbooks/postgres-pilot.md. Lets a maintainer
+# dogfood the Postgres persistence path without standing up an external
+# Postgres or editing the canonical sandbox compose file.
+#
+# Usage:
+#   ./sandbox/demo-postgres.sh up       # wrapper (recommended)
+#   ./sandbox/demo-postgres.sh down
+#
+# Direct:
+#   docker compose \
+#       -f sandbox/docker-compose.yml \
+#       -f sandbox/overlays/postgres.yml \
+#       --profile full up -d --wait
+#
+# Layout: one Postgres 16 service on both org networks, two logical
+# databases (mastio_a, mastio_b) so each Mastio keeps its own Org CA,
+# audit chain, and agent registry. Matches the "one bundle, one
+# database" guidance in the runbook.
+#
+# NOT for production. The Postgres password is hardcoded, no backup,
+# no PITR. Pilot guidance lives in docs/runbooks/postgres-pilot.md.
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cullis
+      POSTGRES_PASSWORD: sandbox-pg-password
+      POSTGRES_DB: postgres
+    # Both Mastios + the alembic chains hit this database. The init
+    # script creates the two per-Mastio logical databases below.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./overlays/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # pg_isready returns 0 once the postmaster is accepting
+      # connections. The Mastio containers depend on this passing,
+      # so they will not race the database to alembic head.
+      test: ["CMD-SHELL", "pg_isready -U cullis -d postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    networks:
+      orga-internal:
+        aliases: [postgres]
+      orgb-internal:
+        aliases: [postgres]
+    restart: unless-stopped
+
+  proxy-a:
+    environment:
+      # Override the SQLite default from docker-compose.yml:290.
+      # asyncpg dialect is bundled in the Mastio image; no extra
+      # install needed.
+      MCP_PROXY_DATABASE_URL: "postgresql+asyncpg://cullis:sandbox-pg-password@postgres:5432/mastio_a"
+    depends_on:
+      proxy-a-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  proxy-b:
+    environment:
+      MCP_PROXY_DATABASE_URL: "postgresql+asyncpg://cullis:sandbox-pg-password@postgres:5432/mastio_b"
+    depends_on:
+      proxy-b-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
