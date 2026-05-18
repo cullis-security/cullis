@@ -35,11 +35,12 @@ cd scripts/stress
 nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify health-throughput.js"
 
 # Soak / burst (any run that writes raw NDJSON output): use the
-# wrapper. It traps EXIT and drops the ndjson if it exceeds 1 GiB,
+# wrapper. It traps EXIT and drops the ndjson if it exceeds 1 GiB
+# (or skip it entirely with K6_SKIP_NDJSON=1 for high-RPS targets),
 # keeping the summary JSON. See "NDJSON cleanup wrapper" below for
-# why this matters.
-nix-shell -p k6 --run "bash _run-k6.sh soak-stability.js"
-nix-shell -p k6 --run "bash _run-k6.sh intra-org-mastio-burst.js"
+# why this matters and which mode each scenario wants.
+K6_SKIP_NDJSON=1 nix-shell -p k6 --run "bash _run-k6.sh soak-stability.js"
+K6_KEEP_NDJSON=1 K6_RESULTS_DIR=. nix-shell -p k6 --run "bash _run-k6.sh intra-org-mastio-burst.js"
 
 # Or against a remote stack:
 BASE_URL=https://mastio.example.com:9443 \
@@ -65,9 +66,18 @@ survives.
 
 Tunables (env):
 
+- `K6_SKIP_NDJSON=1` — do not write the ndjson at all. Use this for
+  high-RPS scenarios against fast targets (e.g. `soak-stability.js`
+  or `health-throughput.js` against a local Mastio bundle), where
+  post-run cleanup is too late because the file grows faster than
+  disk can hold it. Observed 2026-05-18: `soak-stability.js` against
+  the local bundle sustained 7k req/s and produced ~110 GiB/h of
+  NDJSON, hitting ENOSPC well before the 1h run finished. Wins over
+  `K6_KEEP_NDJSON`.
 - `K6_KEEP_NDJSON=1` — never drop the ndjson. Use this when you plan
   to run `_analyze_burst.py` against it, or need forensic per-sample
   data. Make sure the output dir lives on a disk with enough room.
+  Ignored when `K6_SKIP_NDJSON=1`.
 - `K6_NDJSON_KEEP_THRESHOLD_MB=<N>` — drop only if the ndjson grew
   past N MiB. Default 1024.
 - `K6_RESULTS_DIR=<path>` — where to write ndjson + summary. Default
@@ -77,7 +87,16 @@ Tunables (env):
 - `K6_EXTRA_ARGS="..."` — extra args appended to the k6 invocation.
 
 The wrapper also pre-flights `df` on the output dir and warns when
-less than 5 GiB is free.
+less than 5 GiB is free (skipped when `K6_SKIP_NDJSON=1`).
+
+### When to use which mode
+
+| Scenario | Recommended mode | Why |
+|---|---|---|
+| `soak-stability.js` against any target | `K6_SKIP_NDJSON=1` | Read-only `/health` loop, summary covers all assertions, no analyzer reads the ndjson. |
+| `health-throughput.js` smoke / triage | `K6_SKIP_NDJSON=1` | Same — high RPS, no per-sample analysis needed. |
+| `intra-org-mastio-burst.js` baseline | `K6_KEEP_NDJSON=1` + `K6_RESULTS_DIR=scripts/stress` | `_analyze_burst.py` walks the ndjson for per-plateau aggregation. Run on a disk with at least 50 GiB free. |
+| Quick local probe (<2 min) | default | Default threshold 1024 MiB will keep the small ndjson, useful if you want to peek at raw samples. |
 
 ## When to re-run
 

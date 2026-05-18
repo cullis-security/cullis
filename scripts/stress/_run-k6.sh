@@ -11,7 +11,14 @@
 # then on exit (success OR failure) drops the ndjson if it exceeded the size
 # threshold. The summary always survives. Override behaviour via env:
 #
+#   K6_SKIP_NDJSON=1                  Do not write the ndjson at all. Use this for
+#                                     high-RPS scenarios against fast targets where
+#                                     post-run cleanup is too late (file grows faster
+#                                     than disk can hold it — observed 110 GiB/h on a
+#                                     local Mastio bundle 2026-05-18). Wins over
+#                                     K6_KEEP_NDJSON.
 #   K6_KEEP_NDJSON=1                  Never drop ndjson (forensic / _analyze_burst.py).
+#                                     Ignored when K6_SKIP_NDJSON=1.
 #   K6_NDJSON_KEEP_THRESHOLD_MB=<N>   Drop only if ndjson > N MiB. Default 1024.
 #   K6_RESULTS_DIR=<path>             Where to write ndjson + summary. Default
 #                                     /tmp/k6-run-<scenario>-<epoch>.
@@ -51,10 +58,22 @@ SUMMARY="${RESULTS_DIR}/summary.json"
 
 KEEP_NDJSON="${K6_KEEP_NDJSON:-0}"
 KEEP_THRESHOLD_MB="${K6_NDJSON_KEEP_THRESHOLD_MB:-1024}"
+SKIP_NDJSON="${K6_SKIP_NDJSON:-0}"
+
+# K6_SKIP_NDJSON=1 wins over K6_KEEP_NDJSON. Skipping means we never
+# pass --out json= to k6, so no NDJSON file exists at all. Use this
+# for high-RPS scenarios against fast targets where the file would
+# grow faster than disk can hold it (~110 GiB/h soak on a local
+# bundle observed 2026-05-18).
+if [[ "${SKIP_NDJSON}" == "1" && "${KEEP_NDJSON}" == "1" ]]; then
+    echo "[_run-k6] WARNING: K6_SKIP_NDJSON=1 overrides K6_KEEP_NDJSON=1 (no ndjson will be written)." >&2
+fi
 
 cleanup() {
     local rc=$?
-    if [[ -f "${NDJSON}" ]]; then
+    if [[ "${SKIP_NDJSON}" == "1" ]]; then
+        echo "[_run-k6] K6_SKIP_NDJSON=1, no ndjson was written" >&2
+    elif [[ -f "${NDJSON}" ]]; then
         local size_bytes
         size_bytes=$(stat -c '%s' "${NDJSON}" 2>/dev/null || echo 0)
         local size_mb=$((size_bytes / 1024 / 1024))
@@ -74,15 +93,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Pre-flight: warn if /tmp has less than 5 GiB free. ndjson can grow fast,
-# k6 also writes its own buffer files alongside.
+# Pre-flight: warn if the output dir has less than 5 GiB free, only
+# when we are about to write the NDJSON (skipping = no growth on disk).
 TMP_FREE_MB=$(df -BM --output=avail "${RESULTS_DIR}" | tail -1 | tr -dc '0-9')
-if (( TMP_FREE_MB < 5120 )); then
-    echo "[_run-k6] WARNING: only ${TMP_FREE_MB} MiB free at ${RESULTS_DIR}. ndjson at 2k req/s grows ~30 MiB/min." >&2
+if [[ "${SKIP_NDJSON}" != "1" ]] && (( TMP_FREE_MB < 5120 )); then
+    echo "[_run-k6] WARNING: only ${TMP_FREE_MB} MiB free at ${RESULTS_DIR}. ndjson at 2k req/s grows ~30 MiB/min and can hit 100+ GiB/h against fast targets. Consider K6_SKIP_NDJSON=1." >&2
 fi
 
 echo "[_run-k6] scenario=${SCENARIO_NAME} results_dir=${RESULTS_DIR}" >&2
-echo "[_run-k6] keep_ndjson=${KEEP_NDJSON} threshold_mb=${KEEP_THRESHOLD_MB} tmp_free_mb=${TMP_FREE_MB}" >&2
+echo "[_run-k6] skip_ndjson=${SKIP_NDJSON} keep_ndjson=${KEEP_NDJSON} threshold_mb=${KEEP_THRESHOLD_MB} tmp_free_mb=${TMP_FREE_MB}" >&2
+
+# Build the k6 argv. When K6_SKIP_NDJSON=1 we omit --out json= so k6
+# never opens the NDJSON file in the first place. The summary export
+# is always on.
+K6_OUTPUT_ARGS=()
+if [[ "${SKIP_NDJSON}" != "1" ]]; then
+    K6_OUTPUT_ARGS+=(--out "json=${NDJSON}")
+fi
 
 # Run k6 inline (not via exec) so the EXIT trap above can fire and
 # clean up the ndjson. With `exec` the bash process is replaced by
@@ -90,7 +117,7 @@ echo "[_run-k6] keep_ndjson=${KEEP_NDJSON} threshold_mb=${KEEP_THRESHOLD_MB} tmp
 # shellcheck disable=SC2086
 k6 run \
     --insecure-skip-tls-verify \
-    --out "json=${NDJSON}" \
+    "${K6_OUTPUT_ARGS[@]}" \
     --summary-export="${SUMMARY}" \
     ${K6_EXTRA_ARGS:-} \
     "${SCENARIO_PATH}" \
