@@ -638,14 +638,33 @@ async def lifespan(app: FastAPI):
     # succeeds). Standalone proxies skip entirely.
     if broker_url and getattr(agent_mgr, "mastio_loaded", False):
         from mcp_proxy.federation.publisher import run_publisher, run_stats_publisher
-        pub_stop = asyncio.Event()
-        pub_task = asyncio.create_task(
-            run_publisher(app.state, stop_event=pub_stop),
-            name="federation_publisher",
-        )
-        app.state.federation_publisher_stop = pub_stop
-        app.state.federation_publisher_task = pub_task
-        _log.info("federation publisher started (org=%s)", org_id)
+        from mcp_proxy.lifespan import get_leader as _fed_get_leader
+
+        # Multi-worker leader election — Bug 3 follow-up to PR #759.
+        # Without gating, every uvicorn worker reads
+        # ``federation_revision > last_pushed_revision`` and POSTs the
+        # same revision to the Court. The Court de-duplicates
+        # (already_present), but the wasted bandwidth + Court-side
+        # compute is 4x per tick on a 4-worker bundle. The publisher
+        # body itself is correct when only one caller runs it — keep
+        # it untouched and gate the loop spawn.
+        publisher_leader = _fed_get_leader("federation_publisher")
+        if await publisher_leader.acquire():
+            pub_stop = asyncio.Event()
+            pub_task = asyncio.create_task(
+                run_publisher(app.state, stop_event=pub_stop),
+                name="federation_publisher",
+            )
+            app.state.federation_publisher_stop = pub_stop
+            app.state.federation_publisher_task = pub_task
+            app.state.federation_publisher_leader = publisher_leader
+            _log.info("federation publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_publisher: another worker holds the leader "
+                "lock — skipping (Court bandwidth saved, org=%s)",
+                org_id,
+            )
 
         # Aggregate-stats publisher — fleet-size counters for the Court
         # dashboard. Separate task so a slow stats push never delays the
@@ -1014,6 +1033,12 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation publisher teardown loop mismatch (xdist): %s", exc)
+    publisher_leader = getattr(app.state, "federation_publisher_leader", None)
+    if publisher_leader is not None:
+        try:
+            await publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("federation_publisher leader release failed: %s", exc)
 
     # Wave B PR8 / D1 — audit replication publisher teardown.
     audit_stop = getattr(app.state, "federation_audit_stop", None)
