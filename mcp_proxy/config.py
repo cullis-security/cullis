@@ -565,6 +565,32 @@ class ProxySettings(BaseSettings):
     attestation_stale_watcher_enabled: bool = True
     attestation_stale_watcher_interval_seconds: int = 60
 
+    # Wave 2 fix 5 — cert expiry watcher daemon. Background tick that
+    # iterates the PKI fleet (Org Root, Intermediate, Mastio leaf,
+    # agent leaves, nginx server) and emits warning logs + audit rows
+    # when a cert enters its per-tier threshold. Visibility only, no
+    # auto-rotation (the primary Intermediate watcher handles that for
+    # its tier; the other tiers need a human in the loop or sit behind
+    # a different rotation path, e.g. Wave 2 fix 6 for nginx).
+    #
+    # Defaults:
+    #   - interval: 24h (the warning is informational, no need to
+    #     poll faster than once per day)
+    #   - Org Root threshold: 5y (cert is 15y, so >10y silent)
+    #   - Intermediate threshold: 2y (fallback only, primary watcher
+    #     handles 180d/60d/30d)
+    #   - Mastio leaf threshold: 90d (Court ACK round-trip = lead time)
+    #   - Agent cert threshold: 90d (Connector re-enrollment lead time)
+    #   - nginx server cert threshold: 30d (matches
+    #     ``ensure_nginx_server_cert`` renew_within_days)
+    cert_expiry_watcher_enabled: bool = True
+    cert_expiry_watcher_interval_seconds: int = 86400
+    cert_expiry_warn_days_org_root: int = 1825
+    cert_expiry_warn_days_intermediate: int = 730
+    cert_expiry_warn_days_mastio_leaf: int = 90
+    cert_expiry_warn_days_agent: int = 90
+    cert_expiry_warn_days_nginx: int = 30
+
     # Docker compose ``${VAR:-}`` substitutes to the empty string when
     # the operator has not set the var in proxy.env. Pydantic v2's bool
     # parser rejects "" with ``bool_parsing`` ValidationError, which

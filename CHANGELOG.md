@@ -70,6 +70,22 @@ flow until the next `## ` heading.
   (admin-secret gated, with `?dry_run=true`). A weekly leader-elected
   background watcher (`mastio_ca_rotation_watcher`) warns at < 180
   days to expiry, errors at < 60, auto-rotates at < 30.
+- **Cert expiry watcher daemon (`cert_expiry_watcher`).** Wave 2
+  follow-up to the three-tier hardening. A leader-elected background
+  loop (24h tick) inspects every cert tier the Intermediate watcher
+  does NOT cover and emits warning logs + audit chain rows on
+  per-tier thresholds: Org Root (1825d), Mastio leaf (90d), agent
+  leaves (90d, one row per agent pinned to the agent_id so the
+  audit-by-agent query surfaces it), nginx server cert (30d).
+  Visibility only, no auto-rotation. Tunable via
+  `MCP_PROXY_CERT_EXPIRY_WATCHER_INTERVAL_SECONDS`,
+  `MCP_PROXY_CERT_EXPIRY_WARN_DAYS_ORG_ROOT`,
+  `MCP_PROXY_CERT_EXPIRY_WARN_DAYS_INTERMEDIATE`,
+  `MCP_PROXY_CERT_EXPIRY_WARN_DAYS_MASTIO_LEAF`,
+  `MCP_PROXY_CERT_EXPIRY_WARN_DAYS_AGENT`,
+  `MCP_PROXY_CERT_EXPIRY_WARN_DAYS_NGINX`. Opt-out for
+  single-shot scripts via
+  `MCP_PROXY_CERT_EXPIRY_WATCHER_ENABLED=false`.
 - **WebAuthn-bound user session tokens (ADR-033 Phase 2)** for Frontdesk
   shared mode. A new optional `[webauthn]` extra (`pip install
   'cullis-agent-sdk[webauthn]'`) pulls `webauthn>=2.0,<3.0`. Five new
