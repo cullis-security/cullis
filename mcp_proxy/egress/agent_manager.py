@@ -827,10 +827,12 @@ class AgentManager:
         )
         leaf_cert = builder.sign(self._mastio_ca_key, hashes.SHA256())
 
-        # Write atomically: tmp file then rename. nginx watches the
-        # files and reload (SIGHUP) is the operator's job; mid-boot
-        # we just need the writes consistent so a restart-within-restart
-        # never observes a torn pair.
+        # Write atomically: tmp file then rename. The mtime change is
+        # the signal the sidecar ``nginx-reload-watcher.sh`` (Wave 2
+        # fix 6) picks up to trigger ``nginx -s reload`` — no SIGHUP
+        # from this side, no docker socket. At boot we still need the
+        # writes consistent so a restart-within-restart never observes
+        # a torn pair.
         #
         # Three-tier PKI hardening (audit 2026-05-18): ``org-ca.crt`` now
         # holds the **full chain** (Org Root || Intermediate) so a

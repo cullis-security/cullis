@@ -418,6 +418,63 @@ async def lifespan(app: FastAPI):
                 exc,
             )
 
+    # Wave 2 fix 6 — nginx server cert runtime rotation watcher. Pairs
+    # with the sidecar ``nginx-reload-watcher.sh`` that polls
+    # ``mastio-server.crt`` mtime and runs ``nginx -s reload`` on
+    # change. Boot-time provisioning above is one-shot; this loop
+    # closes the gap for containers that stay up past the 90-day cert
+    # validity. Same leader-election pattern as the other watchers.
+    if (
+        settings.nginx_cert_dir
+        and settings.nginx_cert_watcher_enabled
+        and getattr(agent_mgr, "_mastio_ca_cert", None) is not None
+    ):
+        try:
+            from mcp_proxy.lifespan import get_leader as _get_leader_nginx
+            from mcp_proxy.lifespan.nginx_cert_watcher import (
+                nginx_cert_watcher_loop,
+            )
+            nginx_sans = [
+                s.strip()
+                for s in (settings.nginx_san or "mastio.local").split(",")
+                if s.strip()
+            ]
+            nginx_leader = _get_leader_nginx("nginx_cert_watcher")
+            if await nginx_leader.acquire():
+                nginx_stop = asyncio.Event()
+                nginx_task = asyncio.create_task(
+                    nginx_cert_watcher_loop(
+                        agent_mgr,
+                        out_dir=settings.nginx_cert_dir,
+                        sans=nginx_sans,
+                        tick_seconds=settings.nginx_cert_watcher_interval_seconds,
+                        renew_within_days=settings.nginx_cert_renew_within_days,
+                        stop_event=nginx_stop,
+                    ),
+                    name="nginx_cert_watcher",
+                )
+                app.state.nginx_cert_watcher_task = nginx_task
+                app.state.nginx_cert_watcher_stop = nginx_stop
+                app.state.nginx_cert_watcher_leader = nginx_leader
+                _log.info(
+                    "nginx_cert_watcher: leader acquired, loop spawned "
+                    "(tick=%ds, renew_within=%dd)",
+                    settings.nginx_cert_watcher_interval_seconds,
+                    settings.nginx_cert_renew_within_days,
+                )
+            else:
+                _log.info(
+                    "nginx_cert_watcher: another worker holds the leader "
+                    "lock — skipping",
+                )
+        except Exception as exc:
+            _log.warning(
+                "nginx_cert_watcher startup failed: %s — boot-time "
+                "provisioning already ran, but runtime rotation will not "
+                "occur until next restart",
+                exc,
+            )
+
     # Federation update framework (imp/federation_hardening_plan.md
     # Parte 1, PR 2). Must run BEFORE ``LocalIssuer`` construction so a
     # critical-pending migration affecting this proxy's enrollments can
@@ -1072,6 +1129,32 @@ async def lifespan(app: FastAPI):
             _log.debug(
                 "mastio_ca_rotation_watcher leader release failed: %s", exc,
             )
+
+    # Wave 2 fix 6 — stop the nginx server cert rotation watcher.
+    nginx_stop = getattr(app.state, "nginx_cert_watcher_stop", None)
+    nginx_task = getattr(app.state, "nginx_cert_watcher_task", None)
+    if nginx_stop is not None:
+        nginx_stop.set()
+    if nginx_task is not None:
+        try:
+            await asyncio.wait_for(nginx_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            nginx_task.cancel()
+            try:
+                await nginx_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug(
+                "nginx_cert_watcher teardown loop mismatch (xdist): %s",
+                exc,
+            )
+    nginx_leader = getattr(app.state, "nginx_cert_watcher_leader", None)
+    if nginx_leader is not None:
+        try:
+            await nginx_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("nginx_cert_watcher leader release failed: %s", exc)
 
     # ADR-032 F6 — stop the stale-watcher.
     stale_stop = getattr(app.state, "attestation_stale_stop", None)

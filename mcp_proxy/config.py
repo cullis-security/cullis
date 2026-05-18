@@ -103,6 +103,21 @@ class ProxySettings(BaseSettings):
     # docker-compose default; override with MCP_PROXY_NGINX_SAN for
     # production hostnames.
     nginx_san: str = "mastio.local"
+    # Wave 2 fix 6 — runtime watcher that re-invokes
+    # ``ensure_nginx_server_cert`` on a periodic tick so a container
+    # up beyond ``NGINX_SERVER_CERT_VALIDITY_DAYS`` (90d) still
+    # rotates the leaf before expiry. Disable only for tests or
+    # one-shot debug runs; production keeps it on.
+    nginx_cert_watcher_enabled: bool = True
+    # Tick interval in seconds. 24h default leaves a 30-attempt retry
+    # budget against the 30-day renew threshold so a transient blip on
+    # a single tick is never load-bearing.
+    nginx_cert_watcher_interval_seconds: int = 86400
+    # Days-of-life threshold below which the watcher rewrites the
+    # leaf. Matches the boot-time default in
+    # ``ensure_nginx_server_cert`` for consistency between boot +
+    # runtime renewal.
+    nginx_cert_renew_within_days: int = 30
 
     # DPoP
     dpop_iat_window: int = 60
