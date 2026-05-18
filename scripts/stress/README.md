@@ -30,25 +30,54 @@ a JSON dump (`summary.json`, `soak-summary.json`,
 # walkthrough). The script targets the public TLS edge by default.
 ./deploy.sh
 
-# Run the scenario (override BASE_URL when the stack is elsewhere).
+# Quick smoke / triage (<10 min): run k6 directly, summary only.
 cd scripts/stress
 nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify health-throughput.js"
 
+# Soak / burst (any run that writes raw NDJSON output): use the
+# wrapper. It traps EXIT and drops the ndjson if it exceeds 1 GiB,
+# keeping the summary JSON. See "NDJSON cleanup wrapper" below for
+# why this matters.
+nix-shell -p k6 --run "bash _run-k6.sh soak-stability.js"
+nix-shell -p k6 --run "bash _run-k6.sh intra-org-mastio-burst.js"
+
 # Or against a remote stack:
 BASE_URL=https://mastio.example.com:9443 \
-    k6 run --insecure-skip-tls-verify health-throughput.js
-
-# Soak (1h sustained 50 VUs, watch for RSS drift in a second terminal):
-nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify soak-stability.js"
-docker stats --no-stream cullis-mastio-mcp-proxy-1   # in another shell
+    nix-shell -p k6 --run "bash _run-k6.sh health-throughput.js"
 
 # Shorter soak smoke (e.g. validate the script itself):
-SOAK_MINUTES=2 k6 run --insecure-skip-tls-verify soak-stability.js
+SOAK_MINUTES=2 bash _run-k6.sh soak-stability.js
 ```
 
 The scripts write `summary.json` / `soak-summary.json` next to
 themselves and print a one-screen text summary to stdout. Both JSON
 artefacts are gitignored.
+
+### NDJSON cleanup wrapper (`_run-k6.sh`)
+
+`k6 --out json=` writes one NDJSON line per HTTP sample. At 2k req/s
+that's ~30 MiB/min — a 1h soak is ~1.8 GiB, a 30-min 5k-VU burst is
+~18 GiB, a 3h partial soak filled 89 GiB on 2026-05-18 and killed k6
+mid-run with ENOSPC. `_run-k6.sh` invokes k6 with the same `--out
+json=` + `--summary-export=` pair, then on EXIT (success or failure)
+drops the ndjson if it exceeded a threshold. The summary always
+survives.
+
+Tunables (env):
+
+- `K6_KEEP_NDJSON=1` — never drop the ndjson. Use this when you plan
+  to run `_analyze_burst.py` against it, or need forensic per-sample
+  data. Make sure the output dir lives on a disk with enough room.
+- `K6_NDJSON_KEEP_THRESHOLD_MB=<N>` — drop only if the ndjson grew
+  past N MiB. Default 1024.
+- `K6_RESULTS_DIR=<path>` — where to write ndjson + summary. Default
+  `/tmp/k6-run-<scenario>-<epoch>`. Point this at `/var/tmp` or a
+  dedicated mount when `K6_KEEP_NDJSON=1` for long runs, since `/`
+  hitting 100 % poisons every other process on the box.
+- `K6_EXTRA_ARGS="..."` — extra args appended to the k6 invocation.
+
+The wrapper also pre-flights `df` on the output dir and warns when
+less than 5 GiB is free.
 
 ## When to re-run
 
@@ -199,11 +228,17 @@ ssh cullis@192.168.122.170 "docker logs -f cullis-mastio-mcp-proxy-1 \
     2>&1 | grep -iE 'error|warning|429|503|circuit|busy|deadlock'" \
     > scripts/stress/mastio-errors.log &
 
-# 4. Run k6. Saves the raw ndjson stream + the summary export.
-nix-shell -p k6 --run "k6 run --insecure-skip-tls-verify \
-    --out json=scripts/stress/intra-org-results.ndjson \
-    --summary-export=scripts/stress/intra-org-summary.json \
-    scripts/stress/intra-org-mastio-burst.js"
+# 4. Run k6. Use the wrapper with K6_KEEP_NDJSON=1 because the
+#    per-plateau analyzer (_analyze_burst.py) needs the raw ndjson.
+#    Point the output dir at the repo so the analyzer finds it.
+nix-shell -p k6 --run "K6_KEEP_NDJSON=1 \
+    K6_RESULTS_DIR=scripts/stress \
+    bash scripts/stress/_run-k6.sh intra-org-mastio-burst.js"
+# Wrapper writes scripts/stress/results.ndjson + scripts/stress/summary.json.
+# Rename to intra-org-* if you want the legacy file names the analyzer
+# defaults to, or pass the paths explicitly to _analyze_burst.py.
+# When the analysis is done, drop the ndjson — at 5k VUs it's
+# ~10 GiB per 30-min run.
 ```
 
 The k6 scenario can be re-shaped via env:
