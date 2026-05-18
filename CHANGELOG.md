@@ -24,6 +24,21 @@ flow until the next `## ` heading.
   `pki.nginx_server_cert_rotated` per rotation.
 
 ### Fixed
+- `AgentManager.ensure_nginx_server_cert` now writes
+  `mastio-server.crt` as a **full chain bundle** (leaf || Mastio
+  Intermediate) instead of leaf-only. Pre-fix the file held only the
+  Intermediate-signed leaf, so strict TLS clients (Python `ssl`,
+  OpenSSL, Go `crypto/tls`) whose trust store contains only the Org
+  Root cert (the sandbox / standalone bundle layout) failed the
+  handshake with `unable to get local issuer certificate`, the path
+  `Leaf -> Intermediate -> Org Root` was un-buildable. Symptom
+  observed in `./sandbox/demo.sh full` post-PR #795: agent-a, agent-b,
+  byoca-a unhealthy with `broker https://mastio-nginx-a:9443 not
+  reachable`. The reuse path also regenerates a pre-fix single-cert
+  `mastio-server.crt` on next boot so upgrades self-heal without
+  manual file deletion. Wave 1-A bootstrap follow-up #2 to PR #788
+  (which had already updated the `org-ca.crt` trust bundle to the
+  full chain but missed the server cert path).
 - Phase 0 PKI bootstrap now **migrates** legacy plaintext
   `proxy_config.org_ca_key` / `mastio_ca_key` rows into the encrypted
   `pki_key_store` table before archiving and deleting them. Pre-fix

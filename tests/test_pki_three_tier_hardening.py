@@ -452,3 +452,149 @@ async def test_bootstrap_legacy_plaintext_rows_are_archived(
     assert issuer_cn.endswith("Mastio CA"), (
         f"agent cert must chain under the migrated Intermediate, got CN={issuer_cn!r}"
     )
+
+
+# ── Wave 1-A bootstrap follow-up #2: nginx server cert full chain ──────
+
+
+def _split_pem_bundle(bundle_bytes: bytes) -> list[x509.Certificate]:
+    """Parse every cert block in a PEM bundle, preserving order."""
+    marker = b"-----BEGIN CERTIFICATE-----"
+    end_marker = b"-----END CERTIFICATE-----"
+    certs: list[x509.Certificate] = []
+    cursor = 0
+    while True:
+        start = bundle_bytes.find(marker, cursor)
+        if start == -1:
+            break
+        end = bundle_bytes.find(end_marker, start)
+        if end == -1:
+            break
+        block = bundle_bytes[start:end + len(end_marker)]
+        certs.append(x509.load_pem_x509_certificate(block))
+        cursor = end + len(end_marker)
+    return certs
+
+
+@pytest.mark.asyncio
+async def test_ensure_nginx_server_cert_writes_full_chain_bundle(
+    proxy_app, tmp_path,
+):
+    """``mastio-server.crt`` must hold ``leaf || Intermediate``.
+
+    Finding 5 (sandbox dogfood 2026-05-18 post-PR #795): pre-fix the
+    server cert file contained only the Intermediate-issued leaf, so
+    strict TLS clients with only the Org Root in their trust store
+    failed the handshake with ``unable to get local issuer certificate``.
+    """
+    app, _ = proxy_app
+    mgr = app.state.agent_manager
+    out_dir = tmp_path / "nginx-certs"
+    await mgr.ensure_nginx_server_cert(
+        out_dir=str(out_dir), sans=["mastio.local"],
+    )
+
+    bundle_bytes = (out_dir / "mastio-server.crt").read_bytes()
+    block_count = bundle_bytes.count(b"-----BEGIN CERTIFICATE-----")
+    assert block_count == 2, (
+        f"mastio-server.crt must hold (leaf || Intermediate); got "
+        f"{block_count} cert blocks"
+    )
+
+    certs = _split_pem_bundle(bundle_bytes)
+    assert len(certs) == 2
+    leaf, intermediate = certs
+
+    # Ordering: leaf first (standard PEM bundle).
+    leaf_san_ext = leaf.extensions.get_extension_for_class(
+        x509.SubjectAlternativeName,
+    ).value
+    assert "mastio.local" in leaf_san_ext.get_values_for_type(x509.DNSName), (
+        "first cert in the bundle must be the leaf"
+    )
+    # Second cert is the Intermediate (CA=True, CN ends with 'Mastio CA').
+    int_bc = intermediate.extensions.get_extension_for_class(
+        x509.BasicConstraints,
+    ).value
+    assert int_bc.ca is True, "second cert in the bundle must be a CA"
+    int_cn = intermediate.subject.get_attributes_for_oid(
+        x509.NameOID.COMMON_NAME,
+    )[0].value
+    assert int_cn.endswith("Mastio CA"), (
+        f"second cert must be the Mastio Intermediate, got CN={int_cn!r}"
+    )
+
+    # Bundle order matches the chain: leaf.issuer == intermediate.subject.
+    assert leaf.issuer.rfc4514_string() == intermediate.subject.rfc4514_string()
+
+    # And the on-disk Intermediate equals the one currently held by the
+    # manager (no stale or drifted copy).
+    assert (
+        intermediate.public_bytes(serialization.Encoding.DER)
+        == mgr._mastio_ca_cert.public_bytes(serialization.Encoding.DER)
+    )
+
+
+@pytest.mark.asyncio
+async def test_nginx_server_cert_chain_validates_against_org_root_only(
+    proxy_app, tmp_path,
+):
+    """Client with only the Org Root in trust store validates the chain.
+
+    Re-creates the sandbox client trust model: agent + Connector ship
+    with the Org Root cert as their TLS trust anchor (``/state/{org}/
+    ca.pem``). They MUST be able to build the full path
+    ``Leaf -> Intermediate -> Org Root`` from what nginx serves. If the
+    server bundle is leaf-only, path building fails with
+    ``unable to get local issuer certificate`` (Finding 5).
+    """
+    app, _ = proxy_app
+    mgr = app.state.agent_manager
+    out_dir = tmp_path / "nginx-certs"
+    await mgr.ensure_nginx_server_cert(
+        out_dir=str(out_dir), sans=["mastio.local"],
+    )
+
+    bundle_bytes = (out_dir / "mastio-server.crt").read_bytes()
+    certs = _split_pem_bundle(bundle_bytes)
+    assert len(certs) == 2, "bundle must hold leaf + Intermediate"
+    leaf, intermediate = certs
+    org_root = mgr._org_ca_cert
+    assert org_root is not None
+
+    # Manual chain build, matching what stdlib verifiers do under the
+    # hood: from the leaf, follow issuer up until we hit a self-signed
+    # trust anchor that is present in the trust store. The trust store
+    # here holds ONLY the Org Root (simulating ``ca.pem`` on the agent
+    # side). The Intermediate must come from what the server presented
+    # in the bundle.
+    intermediate.public_key().verify(
+        leaf.signature,
+        leaf.tbs_certificate_bytes,
+        ec.ECDSA(leaf.signature_hash_algorithm),
+    )
+    org_root.public_key().verify(
+        intermediate.signature,
+        intermediate.tbs_certificate_bytes,
+        ec.ECDSA(intermediate.signature_hash_algorithm),
+    )
+    # Org Root is the trust anchor (self-signed).
+    assert org_root.issuer.rfc4514_string() == org_root.subject.rfc4514_string()
+    org_root.public_key().verify(
+        org_root.signature,
+        org_root.tbs_certificate_bytes,
+        ec.ECDSA(org_root.signature_hash_algorithm),
+    )
+
+    # Negative control: a trust store WITHOUT the Intermediate but only
+    # the leaf cannot build the chain (this is the pre-fix failure mode
+    # we are guarding against). Verify that without the Intermediate
+    # present in the bundle, signature verification of the leaf against
+    # the Org Root pubkey fails — proving the Intermediate is load-
+    # bearing for chain construction.
+    with pytest.raises(Exception):
+        org_root.public_key().verify(
+            leaf.signature,
+            leaf.tbs_certificate_bytes,
+            ec.ECDSA(leaf.signature_hash_algorithm),
+        )
