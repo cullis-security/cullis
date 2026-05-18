@@ -726,6 +726,8 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.observability.traffic_recorder import TrafficRecorder
 
     if settings.anomaly_quarantine_mode != "off":
+        from mcp_proxy.lifespan import get_leader
+
         engine = _require_engine()
 
         traffic_recorder = TrafficRecorder(engine)
@@ -739,26 +741,55 @@ async def lifespan(app: FastAPI):
         await baseline_rollup.start()
         app.state.baseline_rollup = baseline_rollup
 
-        anomaly_evaluator = AnomalyEvaluator(
-            engine,
-            mode=settings.anomaly_quarantine_mode,
-            ratio_threshold=settings.anomaly_ratio_threshold,
-            abs_threshold_rps=settings.anomaly_absolute_threshold_rps,
-            abs_threshold_rps_soft=settings.anomaly_absolute_threshold_rps_soft,
-            sustained_ticks_required=settings.anomaly_sustained_ticks_required,
-            interval_s=settings.anomaly_evaluation_interval_s,
-            ceiling_per_min=settings.anomaly_ceiling_per_min,
-            baseline_min_days=settings.anomaly_baseline_min_days,
-            apply_hook=make_quarantine_apply_hook(
-                engine, ttl_hours=settings.anomaly_quarantine_ttl_hours
-            ),
-        )
-        await anomaly_evaluator.start()
-        app.state.anomaly_evaluator = anomaly_evaluator
+        # Multi-worker leader election — Bug 3 follow-up to PR #759.
+        # Without gating, every uvicorn worker runs its own evaluator
+        # loop. Four workers see the same traffic baseline, four
+        # independent ``apply_hook`` calls run on the same agent, four
+        # rows land in ``agent_quarantine_events`` and four
+        # ``is_active = 0`` UPDATEs fire for one logical anomaly. The
+        # downstream symptom is audit-chain inflation and operator
+        # confusion ("why are there four quarantine events for the
+        # same agent in the same second?"). Lock per task name so the
+        # expiry scheduler can still run on a different worker than
+        # the evaluator if scheduling lands that way.
+        anomaly_leader = get_leader("anomaly_evaluator")
+        if await anomaly_leader.acquire():
+            anomaly_evaluator = AnomalyEvaluator(
+                engine,
+                mode=settings.anomaly_quarantine_mode,
+                ratio_threshold=settings.anomaly_ratio_threshold,
+                abs_threshold_rps=settings.anomaly_absolute_threshold_rps,
+                abs_threshold_rps_soft=settings.anomaly_absolute_threshold_rps_soft,
+                sustained_ticks_required=settings.anomaly_sustained_ticks_required,
+                interval_s=settings.anomaly_evaluation_interval_s,
+                ceiling_per_min=settings.anomaly_ceiling_per_min,
+                baseline_min_days=settings.anomaly_baseline_min_days,
+                apply_hook=make_quarantine_apply_hook(
+                    engine, ttl_hours=settings.anomaly_quarantine_ttl_hours
+                ),
+            )
+            await anomaly_evaluator.start()
+            app.state.anomaly_evaluator = anomaly_evaluator
+            app.state.anomaly_evaluator_leader = anomaly_leader
+            _log.info("anomaly_evaluator: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "anomaly_evaluator: another worker holds the leader "
+                "lock — skipping (audit storm prevention)"
+            )
 
-        quarantine_expiry = QuarantineExpiryScheduler(engine)
-        await quarantine_expiry.start()
-        app.state.quarantine_expiry = quarantine_expiry
+        quarantine_leader = get_leader("quarantine_expiry")
+        if await quarantine_leader.acquire():
+            quarantine_expiry = QuarantineExpiryScheduler(engine)
+            await quarantine_expiry.start()
+            app.state.quarantine_expiry = quarantine_expiry
+            app.state.quarantine_expiry_leader = quarantine_leader
+            _log.info("quarantine_expiry: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "quarantine_expiry: another worker holds the leader "
+                "lock — skipping"
+            )
 
         _log.info(
             "anomaly detector: mode=%s ratio>%.1fx abs>%.0frps "
@@ -832,6 +863,27 @@ async def lifespan(app: FastAPI):
                 _log.warning("%s.stop raised: %s", attr_name, exc)
             try:
                 delattr(app.state, attr_name)
+            except AttributeError:
+                pass
+
+    # Release leader locks for anomaly_evaluator + quarantine_expiry
+    # (Bug 3 follow-up to PR #759). Release after .stop() above so the
+    # held connection / flock fd outlives any in-flight cycle that
+    # ``stop()`` is draining.
+    for leader_attr in (
+        "anomaly_evaluator_leader",
+        "quarantine_expiry_leader",
+    ):
+        leader_obj = getattr(app.state, leader_attr, None)
+        if leader_obj is not None:
+            try:
+                await leader_obj.release()
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                _log.debug(
+                    "%s release failed: %s", leader_attr, exc,
+                )
+            try:
+                delattr(app.state, leader_attr)
             except AttributeError:
                 pass
 
