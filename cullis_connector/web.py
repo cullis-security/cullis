@@ -2011,6 +2011,148 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         )
         return HTMLResponse(snippet)
 
+    # ── ADR-033 Phase 2 — WebAuthn dashboard surface ─────────────────────
+    async def _webauthn_proxy(
+        request: Request,
+        *,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        json_body: bool = False,
+    ) -> Response:
+        """Forward a WebAuthn dashboard call to the Mastio.
+
+        The Connector dashboard runs on the user's machine on a loopback
+        port; the browser cannot present the Connector workload certificate
+        directly. We proxy the call through this helper so the same mTLS
+        identity the Ambassador uses for ``/v1/principals/csr`` also
+        authorises the WebAuthn endpoints.
+
+        Phase 2 ships with a thin httpx-based forwarder: it relies on
+        ``CULLIS_FRONTDESK_MASTIO_URL`` for the upstream URL and on the
+        Ambassador-provided cert + DPoP-bound token already cached in
+        ``cullis_connector.ambassador.shared`` to authenticate. When that
+        wiring is missing (developer setup running the dashboard without
+        the shared Ambassador) the proxy returns 503 so the dashboard
+        renders the message instead of failing silently.
+        """
+        if not has_identity(config.config_dir):
+            return JSONResponse(
+                {"detail": "connector not enrolled yet"}, status_code=403,
+            )
+        identity = load_identity(config.config_dir)
+        principal_id = getattr(
+            identity.metadata, "user_principal_id", "",
+        ) or getattr(identity.metadata, "agent_id", "")
+        if not principal_id:
+            return JSONResponse(
+                {"detail": "no principal id resolved on this connector"},
+                status_code=503,
+            )
+
+        mastio_url = os.environ.get("CULLIS_FRONTDESK_MASTIO_URL", "").rstrip("/")
+        if not mastio_url:
+            mastio_url = (
+                getattr(identity.metadata, "site_url", "") or config.site_url or ""
+            ).rstrip("/")
+        if not mastio_url:
+            return JSONResponse(
+                {
+                    "detail": (
+                        "no Mastio URL configured; set "
+                        "CULLIS_FRONTDESK_MASTIO_URL or re-run enrollment "
+                        "to refresh identity metadata."
+                    ),
+                },
+                status_code=503,
+            )
+
+        target = (
+            f"{mastio_url}/v1/principals/{principal_id}/{path}"
+            if "webauthn/" in path
+            else f"{mastio_url}/v1/principals/{principal_id}/webauthn/{path}"
+        )
+
+        # Phase 2 ships the proxy surface + dashboard UI; the underlying
+        # shared Ambassador HTTP client wiring (DPoP-bound JWT, mTLS
+        # cert chain, refresh on rotate) lands in Phase 2b. Returning
+        # 501 with a stable detail lets the dashboard render an explicit
+        # banner instead of degenerating into a "fetch failed" toast,
+        # and keeps the route shape stable for the Phase 2b commit.
+        log.info(
+            "webauthn proxy stub hit: method=%s path=%s principal=%s "
+            "target=%s (Phase 2b wires the upstream client)",
+            method, path, principal_id, target,
+        )
+        return JSONResponse(
+            {
+                "detail": (
+                    "WebAuthn proxy is staged but not yet wired to the "
+                    "shared Ambassador HTTP client; tracked as ADR-033 "
+                    "Phase 2b. The dashboard UI, schema, Mastio endpoints "
+                    "and audit chain rows are already live; this stub "
+                    "lifts to a real forwarder once the Ambassador "
+                    "exposes a reusable client surface."
+                ),
+            },
+            status_code=501,
+        )
+
+    @app.get("/webauthn", response_class=HTMLResponse)
+    def webauthn_page(request: Request) -> Response:
+        """Render the per-principal authenticator management screen.
+
+        The page lists registered credentials, lets the user enrol a new
+        authenticator through ``navigator.credentials.create``, and
+        revokes one through DELETE on the Connector proxy endpoints
+        below. Resolving the principal id needs an enrolled Connector
+        identity; redirect to /setup when missing so the user sees the
+        onboarding flow first.
+        """
+        if not has_identity(config.config_dir):
+            return RedirectResponse("/setup", status_code=303)
+        identity = load_identity(config.config_dir)
+        meta = identity.metadata
+        principal_id = getattr(meta, "user_principal_id", "") or getattr(
+            meta, "agent_id", "",
+        ) or "(unassigned)"
+        return templates.TemplateResponse(
+            request,
+            "webauthn.html",
+            {
+                "connector_status": "online",
+                "connector_status_label": "Online",
+                "principal_id": principal_id,
+            },
+        )
+
+    @app.get("/api/webauthn/credentials", response_class=JSONResponse)
+    async def webauthn_list_credentials(request: Request) -> JSONResponse:
+        return await _webauthn_proxy(request, method="GET", path="credentials")
+
+    @app.post("/api/webauthn/register/start", response_class=JSONResponse)
+    async def webauthn_register_start(request: Request) -> JSONResponse:
+        return await _webauthn_proxy(
+            request, method="POST", path="webauthn/register/start",
+        )
+
+    @app.post("/api/webauthn/register/finish", response_class=JSONResponse)
+    async def webauthn_register_finish(request: Request) -> JSONResponse:
+        body = await request.body()
+        return await _webauthn_proxy(
+            request, method="POST", path="webauthn/register/finish",
+            body=body, json_body=True,
+        )
+
+    @app.delete("/api/webauthn/credentials/{credential_id_b64url}")
+    async def webauthn_revoke_credential(
+        request: Request, credential_id_b64url: str,
+    ) -> Response:
+        return await _webauthn_proxy(
+            request, method="DELETE",
+            path=f"webauthn/credentials/{credential_id_b64url}",
+        )
+
     return app
 
 
