@@ -110,6 +110,27 @@ flow until the next `## ` heading.
   `docs/runbooks/frontdesk-shared-hardening.md`. Covers container
   security configuration, network isolation, monitoring, update cadence,
   compromise response procedure, and the Phase 2 WebAuthn roadmap.
+- **CISO-ready security bundle** published under `docs/security/` and
+  `docs/runbooks/`. Four new customer-facing documents land in one PR:
+  - `docs/security/threat-model.md` (v1.0): threat catalog (in scope +
+    out of scope), trust boundaries, cryptographic primitives, key
+    lifecycle, audit trail integrity, compliance mapping preview.
+    Cross-links the STRIDE per-component walkthrough on cullis.io.
+  - `docs/security/post-quantum-roadmap.md` (v1.0): hybrid-first PQC
+    strategy across five phases gated by upstream library maturity
+    (`pyca/cryptography` ML-KEM, `liboqs-python` on NixOS, IETF
+    composite-sig RFC). Includes spike validation numbers from
+    2026-05-06 (X25519 + ML-KEM-768, ~4 to 5 ms roundtrip, +1088 bytes
+    overhead). Documents the Org Root rotation coupling with Phase 1a
+    kickoff (Wave 1-A deferred rotation automation by design).
+  - `docs/runbooks/incident-response.md` (v1.0): severity classification
+    (Sev 1 through Sev 4) keyed to Cullis-specific assets (Org Root
+    compromise, Mastio Intermediate compromise, agent cert leak,
+    Frontdesk Connector compromise). Per-severity response procedure,
+    customer notification template, public disclosure template, SLA
+    summary matrix.
+  - `docs/security/README.md`: index for the new `docs/security/`
+    directory with quarterly review cadence note.
 
 ### Reference
 
