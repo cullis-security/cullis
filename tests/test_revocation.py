@@ -21,7 +21,10 @@ from tests.cert_factory import (
 )
 from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_revocation"),
+]
 
 from app.config import get_settings
 ADMIN_SECRET = get_settings().admin_secret

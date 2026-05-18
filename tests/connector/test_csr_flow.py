@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+pytestmark = pytest.mark.xdist_group(name="serial_csr_flow")
+
 from cullis_connector.ambassador.shared.credentials import (
     UserCredentialCache,
 )

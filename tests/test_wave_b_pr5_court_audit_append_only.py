@@ -17,10 +17,14 @@ same SQL the migration emits for SQLite.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_wave_b_pr5_court_audit_append_only"),
+]
 
 
 _SQLITE_TRIGGER_SQL = [
@@ -53,6 +57,32 @@ async def _install_triggers(db) -> None:
     for sql in _SQLITE_TRIGGER_SQL:
         await db.execute(text(sql))
     await db.commit()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drop_audit_log_triggers_after_test():
+    """The append-only triggers installed by ``_install_triggers`` use
+    ``CREATE TRIGGER IF NOT EXISTS`` on the session-scoped ``:memory:``
+    SQLite (one DB per xdist worker process). Without an explicit DROP
+    they survive into the next test on the same worker, which then sees
+    ``DELETE FROM audit_log`` rejected with ``RAISE(ABORT)`` —
+    deterministically breaking ``test_audit_export_tsa`` and the
+    conftest auto-wipe fixture.
+
+    ``--dist=loadfile`` used to mask this because audit-related tests
+    landed on a dedicated worker; ``loadgroup`` distributes more
+    aggressively and surfaces the leak.
+    """
+    yield
+    from app.db.database import get_db
+    async for db in get_db():
+        bind = db.get_bind()
+        if bind.dialect.name != "sqlite":
+            break
+        await db.execute(text("DROP TRIGGER IF EXISTS audit_log_no_update"))
+        await db.execute(text("DROP TRIGGER IF EXISTS audit_log_no_delete"))
+        await db.commit()
+        break
 
 
 async def test_log_event_writes_v2_hash_format(client):

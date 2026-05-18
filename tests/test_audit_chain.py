@@ -6,7 +6,10 @@ from sqlalchemy import update
 from app.db.audit import AuditLog, log_event, verify_chain
 from tests.conftest import TestSessionLocal
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_audit_chain"),
+]
 
 
 @pytest_asyncio.fixture

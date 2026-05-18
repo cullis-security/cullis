@@ -24,7 +24,10 @@ from httpx import AsyncClient
 from tests.cert_factory import make_assertion, get_org_ca_pem, make_encrypted_envelope, DPoPHelper
 from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_e2e"),
+]
 
 
 # ---------------------------------------------------------------------------

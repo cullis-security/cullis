@@ -32,7 +32,10 @@ from app.policy.reach import (
 )
 from tests.conftest import TestSessionLocal
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_user_inbox"),
+]
 
 
 @pytest_asyncio.fixture

@@ -1,4 +1,15 @@
 import os
+import tempfile
+
+# Route pytest tmp_path + every temporary file through tmpfs when the host
+# exposes one. 80+ test files write disk-backed SQLite via tmp_path; on ext4
+# the fsync storm dominated wall-clock. /dev/shm is RAM-backed so the cost
+# collapses. No-op on hosts without /dev/shm (e.g. macOS).
+if os.path.isdir("/dev/shm") and os.access("/dev/shm", os.W_OK):
+    _shm_tmp = "/dev/shm/pytest-tmp"
+    os.makedirs(_shm_tmp, exist_ok=True)
+    os.environ.setdefault("TMPDIR", _shm_tmp)
+    tempfile.tempdir = _shm_tmp
 
 # M3.6 — disable broker queue ops invoked from lifespan/WS-connect paths.
 # The in-memory SQLite StaticPool used in tests cannot sustain the
@@ -168,6 +179,57 @@ async def setup_db():
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+# Cached at module level so the autouse wipe doesn't re-query sqlite_master
+# for every test. Populated lazily on first wipe.
+_COURT_TABLES_FOR_WIPE: list[str] | None = None
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _wipe_court_db_between_unmarked_tests(request):
+    """Cross-test DB isolation for tests that don't opt into a serial group.
+
+    With ``--dist=loadgroup`` xdist co-locates only tests sharing an
+    ``xdist_group`` marker. Unmarked tests are work-stolen individually
+    across workers, and two unrelated tests can land on the same worker
+    process — which means they share the module-global ``test_engine``
+    + ``TestSessionLocal`` (:memory: SQLite, StaticPool). Cross-test
+    pollution then breaks any test that asserts on row counts (e.g.
+    test_audit_export_tsa, test_user_inbox, test_reach_policy).
+
+    Tests inside an ``xdist_group="serial_*"`` cluster intentionally
+    chain state across multiple test functions (e.g. test_e2e step1→10
+    builds up an org + session + binding incrementally), so the wipe is
+    skipped for them.
+    """
+    yield
+    if request.node.get_closest_marker("xdist_group"):
+        return
+    global _COURT_TABLES_FOR_WIPE
+    from sqlalchemy import text
+    async with test_engine.begin() as conn:
+        if _COURT_TABLES_FOR_WIPE is None:
+            result = await conn.execute(text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' "
+                "AND name != 'alembic_version'"
+            ))
+            _COURT_TABLES_FOR_WIPE = [row[0] for row in result.fetchall()]
+        for t in _COURT_TABLES_FOR_WIPE:
+            try:
+                await conn.execute(text(f'DELETE FROM "{t}"'))
+            except Exception:
+                # Tables with an append-only trigger installed by a
+                # specific test (e.g. test_wave_b_pr5 explicitly creates
+                # the trigger) can't be wiped via DELETE. Those tests
+                # are themselves marked xdist_group so this branch is
+                # only hit if the trigger leaks across tests — at which
+                # point the next test will inherit a wedged table, but
+                # that's a pre-existing problem, not one this fixture
+                # introduces.
+                pass
 
 
 @pytest.fixture(autouse=True)

@@ -29,6 +29,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+pytestmark = pytest.mark.xdist_group(name="serial_updates_admin_endpoint")
+
 from mcp_proxy.updates import registry as registry_mod
 from mcp_proxy.updates.base import Migration
 

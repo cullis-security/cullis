@@ -13,7 +13,10 @@ from httpx import AsyncClient
 
 from app.config import get_settings
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_dashboard_first_boot"),
+]
 
 
 FRESH_BOOTSTRAP_TOKEN = "fresh-deploy-bootstrap-token-for-tests"
