@@ -93,6 +93,17 @@ class InternalAgent(BaseModel):
     # unless the operator widens it explicitly.
     scope_providers: list[str] | None = None
     scope_paths: list[str] | None = None
+    # Wave 2 fix 7+8 — rotation grace period. Populated by the
+    # rotation writers (re-enrollment, admin DPoP) when the previous
+    # cert / jkt is still inside the configured grace window. Pinning
+    # verifiers in ``mcp_proxy/auth/client_cert.py`` and
+    # ``mcp_proxy/auth/dpop_client_cert.py`` fall back to these when
+    # the current pin mismatches and ``previous_grace_period_expires_at``
+    # is in the future. Cleaned by
+    # ``mcp_proxy/lifespan/agent_cert_grace_cleanup.py`` on expiry.
+    previous_cert_pem: str | None = None
+    previous_dpop_jkt: str | None = None
+    previous_grace_period_expires_at: str | None = None
 
 
 class AuditEntry(BaseModel):

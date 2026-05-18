@@ -82,6 +82,18 @@ class InternalAgent(Base):
     # written there too; not declared on the ORM model because the
     # writers use raw SQL via ``conn.execute(text(...))``.
 
+    # Wave 2 fix 7+8 (migration 0039) — agent leaf cert rotation grace
+    # period. When the re-enrollment flow or admin DPoP endpoint
+    # rotates ``cert_pem`` / ``dpop_jkt``, the old values are stashed
+    # here so the pinning verifier (``client_cert.py`` /
+    # ``dpop_client_cert.py``) can fall back during a bounded window
+    # (``MCP_PROXY_AGENT_CERT_GRACE_PERIOD_HOURS`` default 48h). The
+    # cleanup task in ``mcp_proxy/lifespan/agent_cert_grace_cleanup.py``
+    # sweeps rows past expiry and resets all three to NULL.
+    previous_cert_pem = Column(Text, nullable=True)
+    previous_dpop_jkt = Column(Text, nullable=True)
+    previous_grace_period_expires_at = Column(Text, nullable=True)
+
 
 class AuditLogEntry(Base):
     __tablename__ = "audit_log"

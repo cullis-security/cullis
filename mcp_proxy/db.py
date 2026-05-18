@@ -1534,6 +1534,19 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
     # as "untrusted".
     if "last_attestation" in row.keys():
         out["last_attestation"] = row["last_attestation"]
+    # Wave 2 fix 7+8 migration 0039 — agent cert rotation grace period.
+    # Optional at read time so unit tests / fixtures that hand-build
+    # ``internal_agents`` rows pre-migration don't blow up. The
+    # rotation writers (re-enrollment, admin DPoP) and the pinning
+    # verifiers both treat NULL / absent identically as "no grace
+    # window active".
+    for key in (
+        "previous_cert_pem",
+        "previous_dpop_jkt",
+        "previous_grace_period_expires_at",
+    ):
+        if key in row.keys():
+            out[key] = row[key]
     return out
 
 

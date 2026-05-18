@@ -591,6 +591,24 @@ class ProxySettings(BaseSettings):
     cert_expiry_warn_days_agent: int = 90
     cert_expiry_warn_days_nginx: int = 30
 
+    # Wave 2 fix 7+8. Agent leaf cert rotation grace period. When the
+    # re-enrollment flow or the admin DPoP endpoint rotates
+    # ``internal_agents.cert_pem`` / ``dpop_jkt``, the previous values
+    # stay valid for ``agent_cert_grace_period_hours`` hours so
+    # mid-flight requests signed with the OLD keypair don't 401 at the
+    # instant the row flips. After expiry the cleanup task sweeps the
+    # row back to a single-pin state. 48h matches the typical SDK retry
+    # / Connector re-enroll-on-401 budget; tighten to 1h+ for
+    # short-window operators, widen for batch workloads with multi-day
+    # checkpoints.
+    agent_cert_grace_period_hours: int = 48
+    # Tick cadence for the grace-period cleanup loop. Default 1h gives
+    # the operator a worst-case "old pin valid up to grace + 1h"
+    # surface, which keeps the bounded window predictable without
+    # burning sleeping wakeups on a typical fleet.
+    agent_cert_grace_cleanup_interval_seconds: int = 3600
+    agent_cert_grace_cleanup_enabled: bool = True
+
     # Docker compose ``${VAR:-}`` substitutes to the empty string when
     # the operator has not set the var in proxy.env. Pydantic v2's bool
     # parser rejects "" with ``bool_parsing`` ValidationError, which

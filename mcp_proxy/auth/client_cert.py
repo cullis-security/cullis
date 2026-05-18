@@ -638,4 +638,9 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
         cert_pem=agent_data.get("cert_pem"),
         dpop_jkt=agent_data.get("dpop_jkt"),
         reach=agent_data.get("reach") or "both",
+        previous_cert_pem=agent_data.get("previous_cert_pem"),
+        previous_dpop_jkt=agent_data.get("previous_dpop_jkt"),
+        previous_grace_period_expires_at=agent_data.get(
+            "previous_grace_period_expires_at"
+        ),
     )
