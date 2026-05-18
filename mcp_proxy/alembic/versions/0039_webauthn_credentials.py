@@ -52,8 +52,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0038_webauthn_credentials"
-down_revision: Union[str, Sequence[str], None] = "0037_audit_dev_attest"
+revision: str = "0039_webauthn_credentials"
+down_revision: Union[str, Sequence[str], None] = "0038_pki_key_store"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -149,17 +149,82 @@ After verifying the container image and configuration are clean, bring the bundl
 
 ---
 
-## Roadmap: Cryptographic Fix (Phase 2)
+## WebAuthn user enrollment procedure (ADR-033 Phase 2)
 
-Phase 2, planned for the first Frontdesk shared customer engagement, adds WebAuthn-bound session tokens:
+WebAuthn-bound session tokens cut the residual trust the Mastio places in the Connector container: the user proves they consented to each session through an authenticator the Connector never sees the private key of. This section documents the enrollment + migration steps an administrator runs to flip a deployment from the Phase 1 warn-only posture to Phase 2 hard enforcement.
 
-1. At login, the user's browser signs a challenge using a FIDO2 authenticator (platform authenticator or YubiKey).
-2. The signature is included in the session token as a `user_signed_assertion` field.
-3. The Mastio verifies the assertion against the user's registered public key before accepting the session.
+### Prerequisites
 
-After Phase 2, compromising the Connector container alone is not sufficient to impersonate users. The attacker also needs access to each user's authenticator device. The `frontdesk_shared_unauthenticated_user_session_warning` audit events will stop appearing once users have enrolled a WebAuthn credential.
+- Frontdesk bundle v0.4.x or later with the `[webauthn]` extra installed on the Mastio image. The bundle image published from the `release-mastio-enterprise.yml` workflow includes the extra; an air-gapped operator who rebuilds the image manually adds `pip install 'cullis-agent-sdk[webauthn]'` to the Dockerfile.
+- Mastio nginx sidecar reachable from each user's browser via a stable DNS name (the `MCP_PROXY_WEBAUTHN_RP_ID` value below must match the host the browser sees).
+- Each user has at least one WebAuthn authenticator available (passkey synchronised through Apple/Google, YubiKey 5-series, Windows Hello on Win10+, Touch ID on macOS).
 
-Phase 3 (long term) adds TPM-bound device attestation for regulated-industry deployments where the threat model extends to compromised user devices.
+### Configuration
+
+Add to `proxy.env`:
+
+```
+MCP_PROXY_WEBAUTHN_RP_ID=mastio.example.corp
+MCP_PROXY_WEBAUTHN_RP_NAME=Acme Frontdesk
+MCP_PROXY_WEBAUTHN_ENFORCEMENT=warn
+MCP_PROXY_WEBAUTHN_CHALLENGE_TTL_SECONDS=300
+MCP_PROXY_WEBAUTHN_EXPECTED_ORIGIN=https://mastio.example.corp,https://frontdesk.example.corp:9443
+```
+
+Then `./deploy.sh --pull` from the bundle to apply.
+
+Notes:
+
+- Start with `MCP_PROXY_WEBAUTHN_ENFORCEMENT=warn`. The warn mode emits the legacy Phase 1 audit row (`frontdesk_shared_unauthenticated_user_session_warning`) when a user has not yet enrolled, but still issues the session. This is the migration window.
+- `MCP_PROXY_WEBAUTHN_EXPECTED_ORIGIN` is a comma-separated allow-list. Include every host name a user's browser may use to reach the dashboard. An empty value defaults to `https://<rp_id>`.
+- The Mastio refuses to start when `MCP_PROXY_WEBAUTHN_ENFORCEMENT=required` but the `webauthn` library is not importable, or when `MCP_PROXY_WEBAUTHN_RP_ID` is empty. This is intentional: production deployments fail loud rather than 500-ing every user login.
+
+### User enrollment flow
+
+1. The user opens the Connector dashboard (`https://frontdesk.example.corp:9443/webauthn` by default).
+2. The page lists registered authenticators (empty on first visit) and exposes an "Add a new authenticator" button.
+3. Clicking the button triggers `navigator.credentials.create` in the browser, which prompts for the user's gesture (Touch ID, YubiKey tap, Windows Hello PIN).
+4. The browser returns an `AttestationResponse`; the Connector dashboard forwards it to `POST /v1/principals/{principal_id}/webauthn/register/finish`.
+5. On success the Mastio writes a `frontdesk_shared_webauthn_credential_registered` audit chain entry. The user can name the authenticator (e.g. "YubiKey 5C", "MacBook Touch ID") for later identification.
+
+The user can repeat the flow to register additional authenticators (recommended: at least one platform authenticator + one roaming key, so a lost device does not lock them out).
+
+### Migration: from `warn` to `required`
+
+After every active user has registered at least one authenticator (verify via the audit chain query in the next subsection):
+
+1. Flip `MCP_PROXY_WEBAUTHN_ENFORCEMENT=required` in `proxy.env`.
+2. Re-run `./deploy.sh --pull`.
+3. From this point onwards, the Mastio rejects (HTTP 401) any session emission lacking a WebAuthn assertion. The Connector dashboard handles the 401 by sending the user through the WebAuthn ceremony before retrying the login.
+
+### Auditing enrollment status
+
+The Mastio audit chain records four event types relevant to WebAuthn:
+
+| Event | Meaning |
+|---|---|
+| `frontdesk_shared_webauthn_credential_registered` | User completed a registration ceremony. |
+| `frontdesk_shared_webauthn_credential_revoked` | User (or admin) revoked a credential. |
+| `frontdesk_shared_authenticated_user_session` | Session emitted with a verified assertion. |
+| `frontdesk_shared_webauthn_enforcement_rejected` | `required` enforcement refused a session for missing assertion. |
+
+Use these to drive the readiness dashboard before flipping enforcement. A simple readiness check: for each `principal_id` in `local_user_principals`, confirm at least one `frontdesk_shared_webauthn_credential_registered` row exists.
+
+### Rollback
+
+If the migration to `required` exposes a regression (for example, a user whose authenticator stopped working), set `MCP_PROXY_WEBAUTHN_ENFORCEMENT=warn` and redeploy. Existing assertion-bound sessions keep working; sessions emitted during the rollback fall back to the Phase 1 warning path until the user re-enrolls.
+
+---
+
+## Roadmap
+
+Phase 1 (PR #786, merged 2026-05-18): audit chain visibility for sessions emitted without a user-signed assertion. Operators run regex-on-rate alerts against `frontdesk_shared_unauthenticated_user_session_warning` to surface anomalous on-behalf-of volume before the cryptographic fix lands.
+
+Phase 2 (this runbook section): WebAuthn-bound session tokens. The user's browser signs a challenge with a FIDO2 authenticator at login; the signature is verified by the Mastio and persisted on the `user_sessions` row. After enrollment the `frontdesk_shared_unauthenticated_user_session_warning` events stop appearing for the migrated user.
+
+Phase 2b (next): wire the Connector dashboard proxy to the shared Ambassador HTTP client so the WebAuthn endpoints work end-to-end on a stock Frontdesk bundle. Today the dashboard surfaces a 501 banner when the proxy cannot reach a configured Mastio client. Operators running the standalone Mastio reach the endpoints directly with their existing API client.
+
+Phase 3 (long term): TPM-bound device attestation for regulated-industry deployments where the threat model extends to compromised user devices.
 
 ---
 

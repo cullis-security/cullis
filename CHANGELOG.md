@@ -70,6 +70,23 @@ flow until the next `## ` heading.
   (admin-secret gated, with `?dry_run=true`). A weekly leader-elected
   background watcher (`mastio_ca_rotation_watcher`) warns at < 180
   days to expiry, errors at < 60, auto-rotates at < 30.
+- **WebAuthn-bound user session tokens (ADR-033 Phase 2)** for Frontdesk
+  shared mode. A new optional `[webauthn]` extra (`pip install
+  'cullis-agent-sdk[webauthn]'`) pulls `webauthn>=2.0,<3.0`. Five new
+  endpoints under `/v1/principals/{id}/webauthn/*` drive the
+  registration + authentication ceremonies; the Connector dashboard
+  exposes `/webauthn` for credential management. `user_sessions`
+  carries new `user_signed_assertion` (TEXT) + `user_credential_id`
+  (BLOB) columns populated when the Connector forwards a verified
+  assertion. Migration `0039_webauthn_credentials` is idempotent and
+  reversible. Enforcement is gated by `MCP_PROXY_WEBAUTHN_ENFORCEMENT`
+  (`off`, `warn`, `required`), defaulting to `warn` so the Phase 1
+  audit warnings keep firing during the migration window. When
+  enforcement is `required` the Mastio refuses to start without the
+  `webauthn` library and `maybe_stamp_user_session` raises HTTP 401
+  for any session row missing an assertion. See
+  `docs/runbooks/frontdesk-shared-hardening.md` (§WebAuthn user
+  enrollment procedure) for the migration playbook.
 
 ### Migration
 
