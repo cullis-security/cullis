@@ -23,6 +23,21 @@ flow until the next `## ` heading.
   and `NGINX_RELOAD_POLL_SECONDS` (default 60). Audit chain entry
   `pki.nginx_server_cert_rotated` per rotation.
 
+### Fixed
+- Phase 0 PKI bootstrap now **migrates** legacy plaintext
+  `proxy_config.org_ca_key` / `mastio_ca_key` rows into the encrypted
+  `pki_key_store` table before archiving and deleting them. Pre-fix
+  the wipe destroyed the only copy of the Org Root keypair on first
+  boot post-upgrade, and the federated lifespan
+  (`MCP_PROXY_STANDALONE=false`) short-circuited the
+  `generate_org_ca` fallback, leaving the Mastio without a usable
+  chain and cascading into nginx cert + Mastio Intermediate
+  provisioning failures (`./sandbox/demo.sh full` boot failure). The
+  migration preserves the existing Org Root pubkey so cross-org
+  federation trust pinning (`organizations.mastio_pubkey` on the
+  Court) survives the upgrade unchanged. Wave 1-A bootstrap
+  follow-up to PR #794.
+
 ### Breaking changes
 
 - **`POST /v1/enrollment/start` now requires `pop_signature`** (H-csr-pop

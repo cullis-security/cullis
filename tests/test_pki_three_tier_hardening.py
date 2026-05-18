@@ -227,3 +227,228 @@ async def test_rotate_mastio_ca_real_swap(proxy_app):
         new_agent_cert.tbs_certificate_bytes,
         ec.ECDSA(new_agent_cert.signature_hash_algorithm),
     )
+
+
+# ── Wave 1-A bootstrap regression (PR #794 follow-up) ─────────────────
+
+
+def _seed_org_ca_pem(org_id: str) -> tuple[str, str]:
+    """Mint a self-signed Org Root + return (key_pem, cert_pem) PEMs.
+
+    Mirrors what ``sandbox/proxy-init/seed.py`` does for the legacy
+    plaintext seeding path: an EC P-256 keypair under a CA cert with
+    pathLen=1 so a Mastio Intermediate can chain underneath.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, f"{org_id} CA"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
+    ])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=1),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    return key_pem, cert_pem
+
+
+@pytest_asyncio.fixture
+async def proxy_app_with_seeded_legacy_org_ca(tmp_path, monkeypatch):
+    """Like ``proxy_app`` but pre-seeds legacy plaintext rows BEFORE lifespan.
+
+    Reproduces the sandbox federated boot: ``proxy-init/seed.py`` writes
+    ``proxy_config.org_ca_key`` + ``org_ca_cert`` as plaintext, then the
+    Mastio container boots and runs the lifespan. Without the Wave 1-A
+    fix, Phase 0 wipes the plaintext rows without first migrating them
+    into ``pki_key_store``, leaving the Mastio without an Org Root on
+    the next ``ensure_mastio_identity`` call.
+    """
+    db_file = tmp_path / "pki_bootstrap_migrate.sqlite"
+    monkeypatch.setenv("MCP_PROXY_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.delenv("PROXY_DB_URL", raising=False)
+    monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
+    monkeypatch.setenv("PROXY_LOCAL_SWEEPER_DISABLED", "1")
+    monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
+    # Federated mode: short-circuits the standalone generate_org_ca
+    # fallback, so the migration is the only path that lands a usable
+    # Org Root on this boot.
+    monkeypatch.setenv("MCP_PROXY_STANDALONE", "false")
+    monkeypatch.setenv(
+        "MCP_PROXY_DB_ENCRYPTION_KEY",
+        "test-passphrase-32-chars-minimum-three-tier",
+    )
+
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    from mcp_proxy.kms.pki_at_rest import _reset_cache_for_tests
+    _reset_cache_for_tests()
+    from mcp_proxy.kms.factory import reset_kms_provider
+    reset_kms_provider()
+
+    # Mirror what ``sandbox/proxy-init/seed.py`` writes BEFORE the
+    # Mastio lifespan runs: schema upgrade + legacy plaintext rows
+    # in ``proxy_config``. Lifespan calls ``init_db`` again on entry;
+    # alembic upgrade head is idempotent so the double call is safe.
+    from sqlalchemy import text as _text
+
+    key_pem, cert_pem = _seed_org_ca_pem("acme")
+
+    from mcp_proxy.db import dispose_db, get_db, init_db
+    await init_db(f"sqlite+aiosqlite:///{db_file}")
+    async with get_db() as conn:
+        for k, v in (
+            ("org_id", "acme"),
+            ("org_ca_key", key_pem),
+            ("org_ca_cert", cert_pem),
+        ):
+            await conn.execute(
+                _text(
+                    "INSERT INTO proxy_config (key, value) "
+                    "VALUES (:k, :v) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+                ),
+                {"k": k, "v": v},
+            )
+    await dispose_db()
+
+    from httpx import ASGITransport, AsyncClient
+
+    from mcp_proxy.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with app.router.lifespan_context(app):
+            yield app, client, key_pem, cert_pem
+
+    get_settings.cache_clear()
+    reset_kms_provider()
+    _reset_cache_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_migrates_legacy_org_ca_into_pki_key_store(
+    proxy_app_with_seeded_legacy_org_ca,
+):
+    """Phase 0 must MIGRATE legacy plaintext into ``pki_key_store``.
+
+    Reproduces the sandbox federated cold-boot. Pre-fix the wipe
+    archived + deleted the only copy of the Org Root keypair, and the
+    federated lifespan (``settings.standalone=False``) skipped the
+    ``generate_org_ca`` fallback — leaving ``ca_loaded=False`` and
+    cascading into nginx cert + Mastio Intermediate provisioning
+    failures. Post-fix the migration step encrypts the legacy keypair
+    into ``pki_key_store`` before the archive+delete, so the very same
+    boot can load it via ``load_org_ca_from_config`` and complete the
+    chain.
+    """
+    app, _client, expected_key_pem, expected_cert_pem = (
+        proxy_app_with_seeded_legacy_org_ca
+    )
+    mgr = app.state.agent_manager
+
+    # Lifespan must have loaded the Org Root + minted the Intermediate
+    # + emitted a Mastio leaf. The bug surfaced as ca_loaded=False here.
+    assert mgr.ca_loaded, "Org Root must be loaded after migrate-then-wipe"
+    assert mgr._mastio_ca_cert is not None, (
+        "Mastio Intermediate must be minted under the migrated Org Root"
+    )
+    assert mgr._active_key is not None, (
+        "Mastio Leaf must be issued under the new Intermediate"
+    )
+
+    # The Org Root cert preserved across the migration must match the
+    # legacy seed (pubkey identity, not a fresh keypair — federation
+    # trust pinning would break otherwise).
+    persisted_cert = _load_cert(expected_cert_pem)
+    assert (
+        mgr._org_ca_cert.public_bytes(serialization.Encoding.DER)
+        == persisted_cert.public_bytes(serialization.Encoding.DER)
+    ), "migration must preserve the legacy Org Root pubkey, not regen it"
+
+    # ``pki_key_store`` should hold the migrated keypair under the
+    # active row for ``key_type='org_ca'``.
+    from mcp_proxy.db import get_active_pki_key
+    row = await get_active_pki_key("org_ca")
+    assert row is not None, "pki_key_store.org_ca active row must exist post-migration"
+    assert row["cert_pem"] == expected_cert_pem
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_legacy_plaintext_rows_are_archived(
+    proxy_app_with_seeded_legacy_org_ca,
+):
+    """After migration the legacy plaintext key is gone from proxy_config.
+
+    The wipe step still runs (the migration is on top of, not in place
+    of, the archive+delete). ``org_ca_cert`` stays in ``proxy_config``
+    for the legacy ``/pki/ca.crt`` and connector-bootstrap endpoints
+    that still read it directly.
+    """
+    app, _client, _key_pem, expected_cert_pem = (
+        proxy_app_with_seeded_legacy_org_ca
+    )
+
+    from mcp_proxy.db import get_config, list_legacy_pki_archive
+    assert await get_config("org_ca_key") is None, (
+        "legacy org_ca_key plaintext must be deleted from proxy_config "
+        "after Phase 0 migrate+wipe"
+    )
+    # Cert kept for back-compat readers.
+    assert await get_config("org_ca_cert") == expected_cert_pem
+
+    archive = await list_legacy_pki_archive()
+    org_rows = [r for r in archive if r["key_type"] == "org_ca"]
+    assert len(org_rows) >= 1, (
+        "legacy_pki_archive must record the archived plaintext key for forensic recovery"
+    )
+
+    # And the chain still works end-to-end: agent cert minted under
+    # the Intermediate (the cascade-fail surface pre-fix).
+    mgr = app.state.agent_manager
+    cert_pem, _ = mgr._generate_agent_cert("alice")
+    cert = _load_cert(cert_pem)
+    issuer_cn = cert.issuer.get_attributes_for_oid(
+        x509.NameOID.COMMON_NAME,
+    )[0].value
+    assert issuer_cn.endswith("Mastio CA"), (
+        f"agent cert must chain under the migrated Intermediate, got CN={issuer_cn!r}"
+    )

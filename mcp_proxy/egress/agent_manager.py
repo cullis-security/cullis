@@ -1385,26 +1385,50 @@ class AgentManager:
         )
 
     async def wipe_legacy_pki_if_present(self) -> bool:
-        """Phase 0 hard wipe: archive plaintext PKI rows + re-issue cleanly.
+        """Phase 0 migrate-then-wipe: relocate legacy plaintext PKI rows.
 
-        Three-tier PKI hardening (audit 2026-05-18). The user confirmed
-        no live deploys exist (Mastio VMs torn down for the upgrade),
-        so a back-compat read path for the legacy
-        ``proxy_config.org_ca_key`` / ``mastio_ca_key`` plaintext rows
-        is unnecessary. This helper:
+        Three-tier PKI hardening (audit 2026-05-18). The historic shape
+        of this helper was a pure wipe (archive + delete), on the
+        assumption that the caller would either re-issue a fresh chain
+        (standalone first-boot) or had already populated the encrypted
+        ``pki_key_store`` via an earlier boot. Both assumptions break
+        on the sandbox / federated path: ``proxy-init/seed.py`` writes
+        plaintext ``proxy_config.org_ca_key`` rows when the Mastio has
+        never booted, ``settings.standalone=False`` short-circuits the
+        ``generate_org_ca`` fallback in the lifespan, and the broker
+        ``/attach-ca`` flow is only consumed *after* the Mastio is
+        already reachable. The pure-wipe variant therefore archived
+        the only copy of the Org Root keypair and the next boot tried
+        to mint the Mastio Intermediate without a parent.
+
+        Post-fix (PR #794 follow-up, Wave 1-A bootstrap regeneration)
+        this helper:
 
         1. Detects either legacy row.
-        2. Archives the PEM into ``legacy_pki_archive`` with audit
-           trail (operator can still recover from a bad upgrade for
-           N days if they keep the DB row around).
-        3. Deletes the legacy ``proxy_config`` rows.
-        4. Returns True so the caller can re-issue from a clean slate.
+        2. **Migrates** the plaintext keypair into ``pki_key_store``
+           under the Fernet at-rest envelope via the configured
+           ``KMSProvider`` — preserving the Org Root pubkey that the
+           Court / broker pinned during attach-ca. A regen would
+           silently break federation; the migration keeps trust
+           continuity intact.
+        3. Archives the legacy PEM into ``legacy_pki_archive`` with
+           audit trail (operator can still recover from a bad upgrade
+           if they keep the DB row around).
+        4. Deletes the legacy ``proxy_config`` rows (private key only
+           for ``org_ca``; both rows for ``mastio_ca`` since the
+           public Mastio Intermediate cert is not consumed by any
+           legacy endpoint).
+        5. Returns True so the caller knows a wipe happened.
 
-        Idempotent: a second call after the wipe is a no-op. Safe to
-        run on every boot (the legacy-row detection is the gate).
+        Idempotent: when the encrypted row is already in place from a
+        previous boot, the migration step is a no-op (the
+        ``store_org_ca`` / ``store_intermediate_ca`` provider methods
+        short-circuit on identical material). When no legacy rows are
+        present at all, the whole helper is a no-op.
 
         Returns True when a wipe happened, False when no legacy material
-        was present (steady-state).
+        was present (steady-state) or when the migration was deferred
+        (master key absent).
         """
         legacy_org_key = await get_config("org_ca_key")
         legacy_org_cert = await get_config("org_ca_cert")
@@ -1414,19 +1438,12 @@ class AgentManager:
         wiped = False
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # We only wipe when the new ``pki_key_store`` has already been
-        # populated (else we'd archive the only copy and leave the
-        # Mastio without an Org CA on the next boot). The lifespan
-        # caller orchestrates: load_org_ca_from_config → if cert came
-        # via legacy proxy_config row AND the KMS provider says
-        # "load_org_ca returned None", we are pre-migration; defer
-        # wipe to a future boot where the encrypted row exists.
+        # Without the at-rest master key we cannot encrypt the legacy
+        # material into ``pki_key_store``; deleting the plaintext now
+        # would strand the Mastio on the next boot. Skip with a
+        # warning so the operator sets the env var and retries.
         from mcp_proxy.kms.pki_at_rest import pki_master_key_configured
         if not pki_master_key_configured():
-            # Without the at-rest master key we cannot encrypt the
-            # re-issued material; the wipe would create a strictly
-            # worse state than the legacy plaintext. Skip with a
-            # warning so the operator sets the env var and retries.
             if legacy_org_key or legacy_int_key:
                 logger.warning(
                     "Legacy plaintext PKI rows detected but "
@@ -1436,7 +1453,29 @@ class AgentManager:
                 )
             return False
 
+        from mcp_proxy.kms import get_kms_provider
+        provider = get_kms_provider()
+
         if legacy_org_key and legacy_org_cert:
+            # Migrate first — if ``pki_key_store`` already has an
+            # active row, ``store_org_ca`` is idempotent on identical
+            # material and a no-op on the fast path. If the encrypted
+            # store is empty (the common sandbox / federated cold-
+            # boot case), this writes the legacy PEM under Fernet
+            # at-rest so the lifespan's ``load_org_ca_from_config``
+            # finds the keypair on the very next call.
+            try:
+                await provider.store_org_ca(legacy_org_key, legacy_org_cert)
+            except Exception as exc:  # noqa: BLE001 — refuse-to-wipe on failure
+                logger.error(
+                    "Phase 0 migration failed for org_ca: %s. Aborting "
+                    "wipe to avoid losing the only copy of the Org Root "
+                    "keypair. Operator action: inspect the KMS provider "
+                    "(MCP_PROXY_KMS_BACKEND, pki_key_store schema) and "
+                    "restart.",
+                    exc,
+                )
+                return False
             await archive_legacy_pki(
                 key_id=f"legacy-org-ca-{now_iso}",
                 key_type="org_ca",
@@ -1453,14 +1492,33 @@ class AgentManager:
                     agent_id="system",
                     action="pki.legacy_wipe",
                     status="success",
-                    detail="key_type=org_ca archived_to=legacy_pki_archive",
+                    detail=(
+                        "key_type=org_ca migrated_to=pki_key_store "
+                        "archived_to=legacy_pki_archive"
+                    ),
                 )
             except Exception:
                 pass
-            logger.info("Phase 0 wipe: archived legacy org_ca_key")
+            logger.info(
+                "Phase 0 migrate+wipe: org_ca_key relocated into "
+                "pki_key_store and legacy plaintext archived",
+            )
             wiped = True
 
         if legacy_int_key and legacy_int_cert:
+            try:
+                await provider.store_intermediate_ca(
+                    legacy_int_key, legacy_int_cert,
+                )
+            except Exception as exc:  # noqa: BLE001 — refuse-to-wipe on failure
+                logger.error(
+                    "Phase 0 migration failed for intermediate_ca: %s. "
+                    "Aborting wipe of the Mastio Intermediate rows. "
+                    "Operator action: inspect the KMS provider and "
+                    "restart.",
+                    exc,
+                )
+                return wiped
             await archive_legacy_pki(
                 key_id=f"legacy-intermediate-{now_iso}",
                 key_type="intermediate_ca",
@@ -1474,11 +1532,17 @@ class AgentManager:
                     agent_id="system",
                     action="pki.legacy_wipe",
                     status="success",
-                    detail="key_type=intermediate_ca archived_to=legacy_pki_archive",
+                    detail=(
+                        "key_type=intermediate_ca migrated_to=pki_key_store "
+                        "archived_to=legacy_pki_archive"
+                    ),
                 )
             except Exception:
                 pass
-            logger.info("Phase 0 wipe: archived legacy mastio_ca_key")
+            logger.info(
+                "Phase 0 migrate+wipe: mastio_ca relocated into "
+                "pki_key_store and legacy plaintext archived",
+            )
             wiped = True
 
         return wiped
