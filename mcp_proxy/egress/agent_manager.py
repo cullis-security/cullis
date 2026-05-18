@@ -640,8 +640,13 @@ class AgentManager:
         - ``org-ca.crt`` — the Org CA's public certificate (the trust
           bundle nginx uses as ``ssl_client_certificate`` to verify
           Connector certs at the TLS handshake).
-        - ``mastio-server.crt`` — the leaf cert nginx serves on 9443,
-          signed by the Org CA, with the requested SANs.
+        - ``mastio-server.crt`` — the **full chain bundle** nginx serves
+          on 9443: leaf (Intermediate-signed, with the requested SANs)
+          followed by the Mastio Intermediate cert. Without the
+          Intermediate in the bundle, a client whose trust store holds
+          only the Org Root cannot build the path ``Leaf -> Intermediate
+          -> Org Root`` and rejects the handshake with
+          ``unable to get local issuer certificate``.
         - ``mastio-server.key`` — the leaf's private key.
 
         Idempotent: at every boot the method checks whether the existing
@@ -701,7 +706,16 @@ class AgentManager:
         reuse = False
         if ca_path.exists() and crt_path.exists() and key_path.exists():
             try:
-                existing = x509.load_pem_x509_certificate(crt_path.read_bytes())
+                # The on-disk crt is a bundle (leaf + Intermediate, audit
+                # 2026-05-18 follow-up #2). A pre-fix single-cert file
+                # falls through to the mint path because it is missing
+                # the Intermediate that strict TLS clients need to build
+                # the chain.
+                existing_bundle_bytes = crt_path.read_bytes()
+                bundle_blocks = existing_bundle_bytes.count(
+                    b"-----BEGIN CERTIFICATE-----",
+                )
+                existing = x509.load_pem_x509_certificate(existing_bundle_bytes)
                 # SAN match — read DNSName + IPAddress because the same
                 # ``san_list`` may contain both (now that we split). A
                 # cert that already carries the right entries — even if
@@ -749,7 +763,8 @@ class AgentManager:
                     and existing_ips == set(san_ips)
                 )
 
-                if issuer_ok and expiry_ok and ca_ok and sans_ok:
+                bundle_ok = bundle_blocks == 2
+                if issuer_ok and expiry_ok and ca_ok and sans_ok and bundle_ok:
                     reuse = True
             except Exception as exc:  # treat any parse failure as "regenerate"
                 logger.info(
@@ -844,7 +859,18 @@ class AgentManager:
             self._org_ca_cert.public_bytes(serialization.Encoding.PEM)
             + self._mastio_ca_cert.public_bytes(serialization.Encoding.PEM)
         )
-        crt_pem = leaf_cert.public_bytes(serialization.Encoding.PEM)
+        # Three-tier PKI hardening (audit 2026-05-18) follow-up #2:
+        # ``mastio-server.crt`` is now a full chain bundle
+        # (leaf || Intermediate). Strict TLS clients (Python ssl,
+        # OpenSSL, Go crypto/tls) require the Intermediate to build the
+        # path ``Leaf -> Intermediate -> Org Root`` when only the Org
+        # Root is in the trust store. Standard PEM ordering: leaf first,
+        # then Intermediate; the root is omitted because it lives in the
+        # client trust store.
+        crt_pem = (
+            leaf_cert.public_bytes(serialization.Encoding.PEM)
+            + self._mastio_ca_cert.public_bytes(serialization.Encoding.PEM)
+        )
         key_pem = leaf_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
