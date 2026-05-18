@@ -447,29 +447,86 @@ async def register_agent_dpop_jwk(
             detail="malformed JWK",
         ) from exc
 
+    # Wave 2 fix 7+8 — stash the previous ``dpop_jkt`` so the DPoP
+    # pinning dep can fall back to the old jkt during a bounded grace
+    # window (``MCP_PROXY_AGENT_CERT_GRACE_PERIOD_HOURS``, default 48h).
+    # Without this, every in-flight DPoP-proof signed by the old key
+    # 401s the instant the row flips — kills long-running MCP
+    # connections + streaming chat completions.
+    from mcp_proxy.auth.cert_grace import compute_grace_expiry
+    from mcp_proxy.config import get_settings as _grace_settings
+
+    grace_hours = _grace_settings().agent_cert_grace_period_hours
+    grace_expiry = compute_grace_expiry(grace_hours)
+
     async with get_db() as conn:
-        result = await conn.execute(
+        prev_row = (await conn.execute(
             text(
-                """
-                UPDATE internal_agents
-                   SET dpop_jkt = :jkt
-                 WHERE agent_id = :aid AND is_active = 1
-                """
+                "SELECT dpop_jkt FROM internal_agents "
+                "WHERE agent_id = :aid AND is_active = 1"
             ),
-            {"jkt": jkt, "aid": agent_id},
-        )
+            {"aid": agent_id},
+        )).mappings().first()
+        old_jkt = prev_row["dpop_jkt"] if prev_row else None
+        # Skip the previous-stash when the row already carried the same
+        # jkt (idempotent set: operator re-POSTed the same JWK to fix a
+        # botched API call). Otherwise a same-key replay would clear
+        # the previous-stash on the next legitimate rotation by setting
+        # previous = current.
+        same_jkt = bool(old_jkt) and old_jkt == jkt
+
+        if same_jkt:
+            result = await conn.execute(
+                text(
+                    "UPDATE internal_agents SET dpop_jkt = :jkt "
+                    "WHERE agent_id = :aid AND is_active = 1"
+                ),
+                {"jkt": jkt, "aid": agent_id},
+            )
+        else:
+            result = await conn.execute(
+                text(
+                    """
+                    UPDATE internal_agents
+                       SET dpop_jkt = :jkt,
+                           previous_dpop_jkt = :prev_jkt,
+                           previous_grace_period_expires_at = :grace_expiry
+                     WHERE agent_id = :aid AND is_active = 1
+                    """
+                ),
+                {
+                    "jkt": jkt,
+                    "aid": agent_id,
+                    "prev_jkt": old_jkt,
+                    "grace_expiry": grace_expiry,
+                },
+            )
         if result.rowcount == 0:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="agent not found or inactive",
             )
 
-    await log_audit(
-        agent_id="admin",
-        action="agent.dpop_jwk_set",
-        status="success",
-        detail=f"agent_id={agent_id} jkt={jkt}",
-    )
+    if same_jkt:
+        await log_audit(
+            agent_id="admin",
+            action="agent.dpop_jwk_set",
+            status="success",
+            detail=f"agent_id={agent_id} jkt={jkt} idempotent=1",
+        )
+    else:
+        await log_audit(
+            agent_id="admin",
+            action="agent.dpop_jwk_rotated",
+            status="success",
+            detail=json.dumps({
+                "agent_id": agent_id,
+                "previous_dpop_jkt": old_jkt,
+                "new_dpop_jkt": jkt,
+                "grace_period_expires_at": grace_expiry,
+                "grace_period_hours": grace_hours,
+            }),
+        )
     return DpopJwkResponse(agent_id=agent_id, dpop_jkt=jkt)
 
 
