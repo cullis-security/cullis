@@ -386,6 +386,22 @@ services:
     volumes:
       - ../nginx/mastio:/etc/nginx/conf.d:ro
       - mastio-a-nginx-certs:/etc/nginx/certs:ro
+      # Wave 2 fix 6 — sidecar reload watcher: polls mtime on the
+      # cert file every NGINX_RELOAD_POLL_SECONDS and triggers
+      # ``nginx -s reload`` on change. Pairs with the Mastio
+      # ``nginx_cert_watcher`` lifespan task that rewrites the leaf
+      # on the 30-day-before-expiry threshold.
+      - ../packaging/nginx-reload-watcher/reload-watcher.sh:/usr/local/bin/nginx-reload-watcher.sh:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /usr/local/bin/nginx-reload-watcher.sh &
+        exec nginx -g 'daemon off;'
+    environment:
+      # Tight poll for the sandbox so manual mtime touches (smoke tests
+      # exercising rotation) flush within a couple of seconds.
+      NGINX_RELOAD_POLL_SECONDS: "5"
     networks:
       orga-internal:
         aliases: [mastio-nginx-a]
@@ -669,6 +685,16 @@ services:
     volumes:
       - ../nginx/mastio:/etc/nginx/conf.d:ro
       - mastio-b-nginx-certs:/etc/nginx/certs:ro
+      # Wave 2 fix 6 — same reload watcher pattern as mastio-nginx-a.
+      - ../packaging/nginx-reload-watcher/reload-watcher.sh:/usr/local/bin/nginx-reload-watcher.sh:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /usr/local/bin/nginx-reload-watcher.sh &
+        exec nginx -g 'daemon off;'
+    environment:
+      NGINX_RELOAD_POLL_SECONDS: "5"
     networks:
       orgb-internal:
         aliases: [mastio-nginx-b]
