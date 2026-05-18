@@ -580,6 +580,50 @@ class ProxySettings(BaseSettings):
     attestation_stale_watcher_enabled: bool = True
     attestation_stale_watcher_interval_seconds: int = 60
 
+    # Wave 2 fix 5 — cert expiry watcher daemon. Background tick that
+    # iterates the PKI fleet (Org Root, Intermediate, Mastio leaf,
+    # agent leaves, nginx server) and emits warning logs + audit rows
+    # when a cert enters its per-tier threshold. Visibility only, no
+    # auto-rotation (the primary Intermediate watcher handles that for
+    # its tier; the other tiers need a human in the loop or sit behind
+    # a different rotation path, e.g. Wave 2 fix 6 for nginx).
+    #
+    # Defaults:
+    #   - interval: 24h (the warning is informational, no need to
+    #     poll faster than once per day)
+    #   - Org Root threshold: 5y (cert is 15y, so >10y silent)
+    #   - Intermediate threshold: 2y (fallback only, primary watcher
+    #     handles 180d/60d/30d)
+    #   - Mastio leaf threshold: 90d (Court ACK round-trip = lead time)
+    #   - Agent cert threshold: 90d (Connector re-enrollment lead time)
+    #   - nginx server cert threshold: 30d (matches
+    #     ``ensure_nginx_server_cert`` renew_within_days)
+    cert_expiry_watcher_enabled: bool = True
+    cert_expiry_watcher_interval_seconds: int = 86400
+    cert_expiry_warn_days_org_root: int = 1825
+    cert_expiry_warn_days_intermediate: int = 730
+    cert_expiry_warn_days_mastio_leaf: int = 90
+    cert_expiry_warn_days_agent: int = 90
+    cert_expiry_warn_days_nginx: int = 30
+
+    # Wave 2 fix 7+8. Agent leaf cert rotation grace period. When the
+    # re-enrollment flow or the admin DPoP endpoint rotates
+    # ``internal_agents.cert_pem`` / ``dpop_jkt``, the previous values
+    # stay valid for ``agent_cert_grace_period_hours`` hours so
+    # mid-flight requests signed with the OLD keypair don't 401 at the
+    # instant the row flips. After expiry the cleanup task sweeps the
+    # row back to a single-pin state. 48h matches the typical SDK retry
+    # / Connector re-enroll-on-401 budget; tighten to 1h+ for
+    # short-window operators, widen for batch workloads with multi-day
+    # checkpoints.
+    agent_cert_grace_period_hours: int = 48
+    # Tick cadence for the grace-period cleanup loop. Default 1h gives
+    # the operator a worst-case "old pin valid up to grace + 1h"
+    # surface, which keeps the bounded window predictable without
+    # burning sleeping wakeups on a typical fleet.
+    agent_cert_grace_cleanup_interval_seconds: int = 3600
+    agent_cert_grace_cleanup_enabled: bool = True
+
     # Docker compose ``${VAR:-}`` substitutes to the empty string when
     # the operator has not set the var in proxy.env. Pydantic v2's bool
     # parser rejects "" with ``bool_parsing`` ValidationError, which

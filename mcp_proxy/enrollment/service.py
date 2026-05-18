@@ -581,6 +581,33 @@ async def approve(
         # re-enroll cannot reset operator decisions, and bump the
         # revision so the federation publisher republishes the new cert
         # to the Court.
+        #
+        # Wave 2 fix 7+8 — instead of clobbering the previous
+        # ``cert_pem`` / ``dpop_jkt`` we stash them into the
+        # ``previous_*`` columns so the pinning verifiers can fall back
+        # to the OLD credentials for a bounded grace window (default
+        # 48h, see ``MCP_PROXY_AGENT_CERT_GRACE_PERIOD_HOURS``).
+        # Mid-flight requests signed with the old keypair survive the
+        # rotation instead of 401-ing the instant the row flips.
+        from mcp_proxy.auth.cert_grace import (
+            cert_thumbprint_hex,
+            compute_grace_expiry,
+        )
+        from mcp_proxy.config import get_settings as _grace_settings
+
+        prev_row = (await conn.execute(
+            text(
+                "SELECT cert_pem, dpop_jkt FROM internal_agents "
+                "WHERE agent_id = :aid"
+            ),
+            {"aid": canonical_id},
+        )).mappings().first()
+        old_cert_pem = prev_row["cert_pem"] if prev_row else None
+        old_dpop_jkt = prev_row["dpop_jkt"] if prev_row else None
+
+        grace_hours = _grace_settings().agent_cert_grace_period_hours
+        grace_expiry = compute_grace_expiry(grace_hours)
+
         await conn.execute(
             text(
                 """UPDATE internal_agents
@@ -590,7 +617,10 @@ async def approve(
                        spiffe_id = :spiffe_id,
                        enrolled_at = :now,
                        is_active = 1,
-                       federation_revision = COALESCE(federation_revision, 0) + 1
+                       federation_revision = COALESCE(federation_revision, 0) + 1,
+                       previous_cert_pem = :prev_cert,
+                       previous_dpop_jkt = :prev_jkt,
+                       previous_grace_period_expires_at = :grace_expiry
                    WHERE agent_id = :aid"""
             ),
             {
@@ -600,13 +630,16 @@ async def approve(
                 "spiffe_id": spiffe_id,
                 "now": now,
                 "aid": canonical_id,
+                "prev_cert": old_cert_pem,
+                "prev_jkt": old_dpop_jkt,
+                "grace_expiry": grace_expiry,
             },
         )
         await conn.execute(
             text(
                 """INSERT INTO audit_log
                    (timestamp, agent_id, action, status, detail)
-                   VALUES (:ts, :aid, 'agent.cert_renewed', 'success', :detail)"""
+                   VALUES (:ts, :aid, 'agent.cert_rotated', 'success', :detail)"""
             ),
             {
                 "ts": now,
@@ -616,6 +649,12 @@ async def approve(
                     "session_id": session_id,
                     "admin": admin_name,
                     "reason": "re-enrollment of existing agent_id",
+                    "previous_cert_thumbprint": cert_thumbprint_hex(old_cert_pem),
+                    "new_cert_thumbprint": cert_thumbprint_hex(cert_pem),
+                    "previous_dpop_jkt": old_dpop_jkt,
+                    "new_dpop_jkt": record.get("dpop_jkt"),
+                    "grace_period_expires_at": grace_expiry,
+                    "grace_period_hours": grace_hours,
                 }),
             },
         )

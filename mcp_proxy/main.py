@@ -418,6 +418,88 @@ async def lifespan(app: FastAPI):
                 exc,
             )
 
+    # Wave 2 fix 5 — cert expiry watcher daemon. Warning-only loop that
+    # covers the rest of the PKI fleet (Org Root, Mastio leaf, agent
+    # leaves, nginx server cert) so silent expiry never strands a
+    # customer. Leader-elected; same pattern as the Intermediate watcher.
+    if getattr(settings, "cert_expiry_watcher_enabled", True):
+        try:
+            from mcp_proxy.lifespan import get_leader as _cert_get_leader
+            from mcp_proxy.lifespan.cert_expiry_watcher import (
+                cert_expiry_watcher_loop,
+            )
+            cert_expiry_leader = _cert_get_leader("cert_expiry_watcher")
+            if await cert_expiry_leader.acquire():
+                cert_expiry_stop = asyncio.Event()
+                cert_expiry_task = asyncio.create_task(
+                    cert_expiry_watcher_loop(
+                        agent_mgr,
+                        settings=settings,
+                        tick_seconds=settings.cert_expiry_watcher_interval_seconds,
+                        stop_event=cert_expiry_stop,
+                    ),
+                    name="cert_expiry_watcher",
+                )
+                app.state.cert_expiry_watcher_task = cert_expiry_task
+                app.state.cert_expiry_watcher_stop = cert_expiry_stop
+                app.state.cert_expiry_watcher_leader = cert_expiry_leader
+                _log.info(
+                    "cert_expiry_watcher: leader acquired, loop spawned",
+                )
+            else:
+                _log.info(
+                    "cert_expiry_watcher: another worker holds the leader "
+                    "lock, skipping",
+                )
+        except Exception as exc:
+            _log.warning(
+                "cert_expiry_watcher startup failed: %s, the PKI fleet "
+                "will not surface expiry warnings until next restart",
+                exc,
+            )
+
+    # Wave 2 fix 7+8 — agent cert + DPoP jkt rotation grace period
+    # cleanup. Hourly leader-elected sweep clears expired previous_*
+    # columns on internal_agents so the trust surface collapses back
+    # to "one pin" after MCP_PROXY_AGENT_CERT_GRACE_PERIOD_HOURS. Same
+    # leader-election pattern as the Intermediate watcher above.
+    if getattr(settings, "agent_cert_grace_cleanup_enabled", True):
+        try:
+            from mcp_proxy.lifespan import get_leader as _grace_get_leader
+            from mcp_proxy.lifespan.agent_cert_grace_cleanup import (
+                agent_cert_grace_cleanup_loop,
+            )
+            grace_cleanup_leader = _grace_get_leader(
+                "agent_cert_grace_cleanup",
+            )
+            if await grace_cleanup_leader.acquire():
+                grace_cleanup_stop = asyncio.Event()
+                grace_cleanup_task = asyncio.create_task(
+                    agent_cert_grace_cleanup_loop(
+                        tick_seconds=settings.agent_cert_grace_cleanup_interval_seconds,
+                        stop_event=grace_cleanup_stop,
+                    ),
+                    name="agent_cert_grace_cleanup",
+                )
+                app.state.agent_cert_grace_cleanup_task = grace_cleanup_task
+                app.state.agent_cert_grace_cleanup_stop = grace_cleanup_stop
+                app.state.agent_cert_grace_cleanup_leader = grace_cleanup_leader
+                _log.info(
+                    "agent_cert_grace_cleanup: leader acquired, loop spawned",
+                )
+            else:
+                _log.info(
+                    "agent_cert_grace_cleanup: another worker holds the "
+                    "leader lock — skipping",
+                )
+        except Exception as exc:
+            _log.warning(
+                "agent_cert_grace_cleanup startup failed: %s — expired "
+                "previous_* columns will linger until next restart",
+                exc,
+            )
+
+
     # Wave 2 fix 6 — nginx server cert runtime rotation watcher. Pairs
     # with the sidecar ``nginx-reload-watcher.sh`` that polls
     # ``mastio-server.crt`` mtime and runs ``nginx -s reload`` on
@@ -1129,6 +1211,62 @@ async def lifespan(app: FastAPI):
             _log.debug(
                 "mastio_ca_rotation_watcher leader release failed: %s", exc,
             )
+
+    # Wave 2 fix 5. Stop the cert expiry watcher.
+    cert_expiry_stop = getattr(app.state, "cert_expiry_watcher_stop", None)
+    cert_expiry_task = getattr(app.state, "cert_expiry_watcher_task", None)
+    if cert_expiry_stop is not None:
+        cert_expiry_stop.set()
+    if cert_expiry_task is not None:
+        try:
+            await asyncio.wait_for(cert_expiry_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            cert_expiry_task.cancel()
+            try:
+                await cert_expiry_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug(
+                "cert_expiry_watcher teardown loop mismatch (xdist): %s", exc,
+            )
+    cert_expiry_leader = getattr(app.state, "cert_expiry_watcher_leader", None)
+    if cert_expiry_leader is not None:
+        try:
+            await cert_expiry_leader.release()
+        except Exception as exc:  # noqa: BLE001 best-effort
+            _log.debug(
+                "cert_expiry_watcher leader release failed: %s", exc,
+            )
+
+    # Wave 2 fix 7+8. Stop the agent cert grace cleanup sweep.
+    grace_stop = getattr(app.state, "agent_cert_grace_cleanup_stop", None)
+    grace_task = getattr(app.state, "agent_cert_grace_cleanup_task", None)
+    if grace_stop is not None:
+        grace_stop.set()
+    if grace_task is not None:
+        try:
+            await asyncio.wait_for(grace_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            grace_task.cancel()
+            try:
+                await grace_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except ValueError as exc:
+            _log.debug(
+                "agent_cert_grace_cleanup teardown loop mismatch (xdist): %s",
+                exc,
+            )
+    grace_leader = getattr(app.state, "agent_cert_grace_cleanup_leader", None)
+    if grace_leader is not None:
+        try:
+            await grace_leader.release()
+        except Exception as exc:  # noqa: BLE001 best-effort
+            _log.debug(
+                "agent_cert_grace_cleanup leader release failed: %s", exc,
+            )
+
 
     # Wave 2 fix 6 — stop the nginx server cert rotation watcher.
     nginx_stop = getattr(app.state, "nginx_cert_watcher_stop", None)
