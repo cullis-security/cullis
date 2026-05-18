@@ -569,26 +569,76 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
                     agent_id=canonical_id,
                 ),
             )
-        if not hmac.compare_digest(_cert_der_digest(cert), stored_digest):
-            _log.warning(
-                "client cert pin mismatch for %s — presented cert is not "
-                "the one this Mastio issued.",
-                canonical_id,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=_err(
-                    _REASON_CERT_PIN_MISMATCH,
-                    "Presented cert's DER digest does not match the "
-                    f"one stored for ``{canonical_id}`` (likely a stale "
-                    "cert post-rotation); re-enroll the Connector, or "
-                    "treat as forged if the caller insists their cert "
-                    "is current.",
-                    agent_id=canonical_id,
-                    cert_serial=_cert_serial_hex(cert),
-                    cert_san=_cert_first_spiffe(cert),
-                ),
-            )
+        presented_digest = _cert_der_digest(cert)
+        if not hmac.compare_digest(presented_digest, stored_digest):
+            # Wave 2 fix 7+8 — fall back to ``previous_cert_pem`` when
+            # the row carries an active grace window. Pre-fix, the
+            # rotation writers swapped ``cert_pem`` in place and every
+            # mid-flight request signed with the OLD keypair 401'd
+            # against the fresh pin. Now, requests signed with the
+            # previous cert keep working until
+            # ``previous_grace_period_expires_at`` passes. Logged as a
+            # warning + audited so operators can see how many
+            # rotations land mid-flight and tune the grace window.
+            from mcp_proxy.auth.cert_grace import is_grace_active
+            prev_pem = agent_data.get("previous_cert_pem")
+            grace_expires = agent_data.get("previous_grace_period_expires_at")
+            prev_digest = _pem_der_digest(prev_pem) if prev_pem else None
+            if (
+                prev_digest is not None
+                and is_grace_active(grace_expires)
+                and hmac.compare_digest(presented_digest, prev_digest)
+            ):
+                _log.warning(
+                    "client cert pin grace match for %s — presented the "
+                    "PREVIOUS cert (post-rotation grace, expires=%s). "
+                    "Connector should re-enroll to pick up the new cert "
+                    "before the grace window closes.",
+                    canonical_id, grace_expires,
+                )
+                # Best-effort audit; mirror the writer's audit shape so
+                # ``agent.cert_rotated`` + ``agent.cert_pinning_grace_match``
+                # join cleanly on agent_id + thumbprint in forensic queries.
+                try:
+                    from mcp_proxy.db import log_audit
+                    await log_audit(
+                        agent_id=canonical_id,
+                        action="agent.cert_pinning_grace_match",
+                        status="success",
+                        detail=(
+                            f"grace_expires_at={grace_expires} "
+                            f"presented_thumbprint={presented_digest.hex()}"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    _log.debug(
+                        "agent.cert_pinning_grace_match audit emit failed: %s",
+                        exc,
+                    )
+                # Drop through to the rate-limit + traffic-recorder steps
+                # below as if the pin matched. ``agent_data`` already
+                # carries the active credentials for the InternalAgent
+                # envelope returned to the caller.
+            else:
+                _log.warning(
+                    "client cert pin mismatch for %s — presented cert is not "
+                    "the one this Mastio issued.",
+                    canonical_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=_err(
+                        _REASON_CERT_PIN_MISMATCH,
+                        "Presented cert's DER digest does not match the "
+                        f"one stored for ``{canonical_id}`` (likely a stale "
+                        "cert post-rotation); re-enroll the Connector, or "
+                        "treat as forged if the caller insists their cert "
+                        "is current.",
+                        agent_id=canonical_id,
+                        cert_serial=_cert_serial_hex(cert),
+                        cert_san=_cert_first_spiffe(cert),
+                    ),
+                )
 
     settings = get_settings()
     if not await get_agent_rate_limiter().check(

@@ -144,16 +144,58 @@ async def get_agent_from_dpop_client_cert(request: Request) -> InternalAgent:
     stored_jkt = getattr(agent, "dpop_jkt", None)
     if stored_jkt:
         if not hmac.compare_digest(proof_jkt, stored_jkt):
-            _log.warning(
-                "DPoP proof jkt mismatch (agent=%s, proof_jkt=%s, "
-                "stored_jkt=%s)",
-                agent.agent_id, proof_jkt, stored_jkt,
+            # Wave 2 fix 7+8 — fall back to ``previous_dpop_jkt`` when
+            # the row carries an active grace window. Pre-fix, the
+            # admin DPoP rotation endpoint (or the re-enrollment flow)
+            # swapped ``dpop_jkt`` in place and every mid-flight proof
+            # signed by the OLD key 401'd against the fresh jkt. With
+            # grace, proofs signed by the previous key keep working
+            # until ``previous_grace_period_expires_at`` passes.
+            from mcp_proxy.auth.cert_grace import is_grace_active
+            prev_jkt = getattr(agent, "previous_dpop_jkt", None)
+            grace_expires = getattr(
+                agent, "previous_grace_period_expires_at", None,
             )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="DPoP proof was signed by a key not registered "
-                       "for this agent.",
-            )
+            if (
+                prev_jkt
+                and is_grace_active(grace_expires)
+                and hmac.compare_digest(proof_jkt, prev_jkt)
+            ):
+                _log.warning(
+                    "DPoP proof jkt grace match (agent=%s, proof_jkt=%s, "
+                    "previous_jkt=%s, grace_expires=%s) — Connector "
+                    "should re-issue its DPoP keypair before the grace "
+                    "window closes.",
+                    agent.agent_id, proof_jkt, prev_jkt, grace_expires,
+                )
+                try:
+                    from mcp_proxy.db import log_audit
+                    await log_audit(
+                        agent_id=agent.agent_id,
+                        action="agent.dpop_pinning_grace_match",
+                        status="success",
+                        detail=(
+                            f"grace_expires_at={grace_expires} "
+                            f"presented_jkt={proof_jkt}"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    _log.debug(
+                        "agent.dpop_pinning_grace_match audit emit failed: %s",
+                        exc,
+                    )
+                # Fall through: same shape as a current-jkt match.
+            else:
+                _log.warning(
+                    "DPoP proof jkt mismatch (agent=%s, proof_jkt=%s, "
+                    "stored_jkt=%s)",
+                    agent.agent_id, proof_jkt, stored_jkt,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="DPoP proof was signed by a key not registered "
+                           "for this agent.",
+                )
     elif mode == "required":
         _log.warning(
             "DPoP required but agent %s has no registered dpop_jkt — "
