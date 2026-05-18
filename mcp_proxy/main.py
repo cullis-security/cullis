@@ -613,24 +613,44 @@ async def lifespan(app: FastAPI):
                 "— subscriber not started. Set one before app startup.",
             )
         else:
+            from mcp_proxy.lifespan import get_leader as _sub_get_leader
             from mcp_proxy.sync.subscriber import (
                 SubscriberConfig,
                 run_subscriber,
             )
-            sub_cfg = SubscriberConfig(
-                broker_url=broker_url,
-                org_id=org_id,
-                client_factory=factory,
-            )
-            sub_stop = asyncio.Event()
-            sub_task = asyncio.create_task(
-                run_subscriber(sub_cfg, stop_event=sub_stop),
-                name="federation_subscriber",
-            )
-            app.state.federation_subscriber_stop = sub_stop
-            app.state.federation_subscriber_task = sub_task
-            app.state.federation_subscriber_stats = sub_cfg.stats
-            _log.info("federation subscriber started (org=%s)", org_id)
+
+            # Bug 3 follow-up to PR #759. Without leader gating, four
+            # uvicorn workers each open their own SSE connection to
+            # the Court (4x persistent HTTP streams) and re-apply the
+            # same events. apply_event() is idempotent per
+            # ``(org_id, seq)`` so correctness holds, but the bandwidth
+            # + Court-side compute is 4x per worker and the SSE
+            # connection count surfaces in Court dashboards as
+            # "phantom subscribers".
+            subscriber_leader = _sub_get_leader("federation_subscriber")
+            if await subscriber_leader.acquire():
+                sub_cfg = SubscriberConfig(
+                    broker_url=broker_url,
+                    org_id=org_id,
+                    client_factory=factory,
+                )
+                sub_stop = asyncio.Event()
+                sub_task = asyncio.create_task(
+                    run_subscriber(sub_cfg, stop_event=sub_stop),
+                    name="federation_subscriber",
+                )
+                app.state.federation_subscriber_stop = sub_stop
+                app.state.federation_subscriber_task = sub_task
+                app.state.federation_subscriber_stats = sub_cfg.stats
+                app.state.federation_subscriber_leader = subscriber_leader
+                _log.info("federation subscriber started (org=%s)", org_id)
+            else:
+                _log.info(
+                    "federation_subscriber: another worker holds the "
+                    "leader lock — skipping (SSE bandwidth saved, "
+                    "org=%s)",
+                    org_id,
+                )
 
     # ADR-010 Phase 3 — federation publisher loop. Only makes sense when
     # the proxy is federated (broker_url set) and the mastio identity
@@ -638,40 +658,92 @@ async def lifespan(app: FastAPI):
     # succeeds). Standalone proxies skip entirely.
     if broker_url and getattr(agent_mgr, "mastio_loaded", False):
         from mcp_proxy.federation.publisher import run_publisher, run_stats_publisher
-        pub_stop = asyncio.Event()
-        pub_task = asyncio.create_task(
-            run_publisher(app.state, stop_event=pub_stop),
-            name="federation_publisher",
-        )
-        app.state.federation_publisher_stop = pub_stop
-        app.state.federation_publisher_task = pub_task
-        _log.info("federation publisher started (org=%s)", org_id)
+        from mcp_proxy.lifespan import get_leader as _fed_get_leader
+
+        # Multi-worker leader election — Bug 3 follow-up to PR #759.
+        # Without gating, every uvicorn worker reads
+        # ``federation_revision > last_pushed_revision`` and POSTs the
+        # same revision to the Court. The Court de-duplicates
+        # (already_present), but the wasted bandwidth + Court-side
+        # compute is 4x per tick on a 4-worker bundle. The publisher
+        # body itself is correct when only one caller runs it — keep
+        # it untouched and gate the loop spawn.
+        publisher_leader = _fed_get_leader("federation_publisher")
+        if await publisher_leader.acquire():
+            pub_stop = asyncio.Event()
+            pub_task = asyncio.create_task(
+                run_publisher(app.state, stop_event=pub_stop),
+                name="federation_publisher",
+            )
+            app.state.federation_publisher_stop = pub_stop
+            app.state.federation_publisher_task = pub_task
+            app.state.federation_publisher_leader = publisher_leader
+            _log.info("federation publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_publisher: another worker holds the leader "
+                "lock — skipping (Court bandwidth saved, org=%s)",
+                org_id,
+            )
 
         # Aggregate-stats publisher — fleet-size counters for the Court
         # dashboard. Separate task so a slow stats push never delays the
         # per-agent revision loop above.
-        stats_stop = asyncio.Event()
-        stats_task = asyncio.create_task(
-            run_stats_publisher(app.state, stop_event=stats_stop),
-            name="federation_stats_publisher",
-        )
-        app.state.federation_stats_stop = stats_stop
-        app.state.federation_stats_task = stats_task
-        _log.info("federation stats publisher started (org=%s)", org_id)
+        #
+        # Bug 3 follow-up to PR #759 — same anti-pattern as the agent
+        # publisher above (4 workers, 4 redundant POSTs). Lowest
+        # priority of the federation trio, but the leader scaffolding
+        # cost is identical so wire it for consistency.
+        stats_leader = _fed_get_leader("federation_stats_publisher")
+        if await stats_leader.acquire():
+            stats_stop = asyncio.Event()
+            stats_task = asyncio.create_task(
+                run_stats_publisher(app.state, stop_event=stats_stop),
+                name="federation_stats_publisher",
+            )
+            app.state.federation_stats_stop = stats_stop
+            app.state.federation_stats_task = stats_task
+            app.state.federation_stats_publisher_leader = stats_leader
+            _log.info("federation stats publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_stats_publisher: another worker holds the "
+                "leader lock — skipping (org=%s)",
+                org_id,
+            )
 
         # Wave B PR8 / D1 — Mastio audit replication. Pushes
         # local_audit rows to the Court (mastio_audit_replica) so
         # cross-org disputes have a Mastio-attested source of truth
         # alongside the Court's broker-observed audit_log.
+        #
+        # Bug 3 follow-up to PR #759 — without leader gating, four
+        # uvicorn workers each read ``last_replicated_local_audit_id``,
+        # batch the same rows, POST four times and race on
+        # ``_write_cursor``. The Court enforces
+        # ``UNIQUE(mastio_org_id, chain_seq)`` so dupes are dropped,
+        # but the customer's Court quota burns 4x. Separate lock from
+        # the agent publisher: audit replication has a tighter
+        # freshness SLA so it should be free to land on a different
+        # worker if scheduling pins the publisher elsewhere.
         from mcp_proxy.federation.audit_publisher import run_audit_publisher
-        audit_stop = asyncio.Event()
-        audit_task = asyncio.create_task(
-            run_audit_publisher(app.state, stop_event=audit_stop),
-            name="federation_audit_publisher",
-        )
-        app.state.federation_audit_stop = audit_stop
-        app.state.federation_audit_task = audit_task
-        _log.info("federation audit publisher started (org=%s)", org_id)
+        audit_leader = _fed_get_leader("federation_audit_publisher")
+        if await audit_leader.acquire():
+            audit_stop = asyncio.Event()
+            audit_task = asyncio.create_task(
+                run_audit_publisher(app.state, stop_event=audit_stop),
+                name="federation_audit_publisher",
+            )
+            app.state.federation_audit_stop = audit_stop
+            app.state.federation_audit_task = audit_task
+            app.state.federation_audit_publisher_leader = audit_leader
+            _log.info("federation audit publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_audit_publisher: another worker holds the "
+                "leader lock — skipping (Court quota saved, org=%s)",
+                org_id,
+            )
 
     # ADR-013 layer 6 — DB latency tracker + circuit breaker state.
     # Started after init_db (need the engine) and after the federation
@@ -726,6 +798,8 @@ async def lifespan(app: FastAPI):
     from mcp_proxy.observability.traffic_recorder import TrafficRecorder
 
     if settings.anomaly_quarantine_mode != "off":
+        from mcp_proxy.lifespan import get_leader
+
         engine = _require_engine()
 
         traffic_recorder = TrafficRecorder(engine)
@@ -739,26 +813,55 @@ async def lifespan(app: FastAPI):
         await baseline_rollup.start()
         app.state.baseline_rollup = baseline_rollup
 
-        anomaly_evaluator = AnomalyEvaluator(
-            engine,
-            mode=settings.anomaly_quarantine_mode,
-            ratio_threshold=settings.anomaly_ratio_threshold,
-            abs_threshold_rps=settings.anomaly_absolute_threshold_rps,
-            abs_threshold_rps_soft=settings.anomaly_absolute_threshold_rps_soft,
-            sustained_ticks_required=settings.anomaly_sustained_ticks_required,
-            interval_s=settings.anomaly_evaluation_interval_s,
-            ceiling_per_min=settings.anomaly_ceiling_per_min,
-            baseline_min_days=settings.anomaly_baseline_min_days,
-            apply_hook=make_quarantine_apply_hook(
-                engine, ttl_hours=settings.anomaly_quarantine_ttl_hours
-            ),
-        )
-        await anomaly_evaluator.start()
-        app.state.anomaly_evaluator = anomaly_evaluator
+        # Multi-worker leader election — Bug 3 follow-up to PR #759.
+        # Without gating, every uvicorn worker runs its own evaluator
+        # loop. Four workers see the same traffic baseline, four
+        # independent ``apply_hook`` calls run on the same agent, four
+        # rows land in ``agent_quarantine_events`` and four
+        # ``is_active = 0`` UPDATEs fire for one logical anomaly. The
+        # downstream symptom is audit-chain inflation and operator
+        # confusion ("why are there four quarantine events for the
+        # same agent in the same second?"). Lock per task name so the
+        # expiry scheduler can still run on a different worker than
+        # the evaluator if scheduling lands that way.
+        anomaly_leader = get_leader("anomaly_evaluator")
+        if await anomaly_leader.acquire():
+            anomaly_evaluator = AnomalyEvaluator(
+                engine,
+                mode=settings.anomaly_quarantine_mode,
+                ratio_threshold=settings.anomaly_ratio_threshold,
+                abs_threshold_rps=settings.anomaly_absolute_threshold_rps,
+                abs_threshold_rps_soft=settings.anomaly_absolute_threshold_rps_soft,
+                sustained_ticks_required=settings.anomaly_sustained_ticks_required,
+                interval_s=settings.anomaly_evaluation_interval_s,
+                ceiling_per_min=settings.anomaly_ceiling_per_min,
+                baseline_min_days=settings.anomaly_baseline_min_days,
+                apply_hook=make_quarantine_apply_hook(
+                    engine, ttl_hours=settings.anomaly_quarantine_ttl_hours
+                ),
+            )
+            await anomaly_evaluator.start()
+            app.state.anomaly_evaluator = anomaly_evaluator
+            app.state.anomaly_evaluator_leader = anomaly_leader
+            _log.info("anomaly_evaluator: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "anomaly_evaluator: another worker holds the leader "
+                "lock — skipping (audit storm prevention)"
+            )
 
-        quarantine_expiry = QuarantineExpiryScheduler(engine)
-        await quarantine_expiry.start()
-        app.state.quarantine_expiry = quarantine_expiry
+        quarantine_leader = get_leader("quarantine_expiry")
+        if await quarantine_leader.acquire():
+            quarantine_expiry = QuarantineExpiryScheduler(engine)
+            await quarantine_expiry.start()
+            app.state.quarantine_expiry = quarantine_expiry
+            app.state.quarantine_expiry_leader = quarantine_leader
+            _log.info("quarantine_expiry: leader acquired, loop spawned")
+        else:
+            _log.info(
+                "quarantine_expiry: another worker holds the leader "
+                "lock — skipping"
+            )
 
         _log.info(
             "anomaly detector: mode=%s ratio>%.1fx abs>%.0frps "
@@ -832,6 +935,27 @@ async def lifespan(app: FastAPI):
                 _log.warning("%s.stop raised: %s", attr_name, exc)
             try:
                 delattr(app.state, attr_name)
+            except AttributeError:
+                pass
+
+    # Release leader locks for anomaly_evaluator + quarantine_expiry
+    # (Bug 3 follow-up to PR #759). Release after .stop() above so the
+    # held connection / flock fd outlives any in-flight cycle that
+    # ``stop()`` is draining.
+    for leader_attr in (
+        "anomaly_evaluator_leader",
+        "quarantine_expiry_leader",
+    ):
+        leader_obj = getattr(app.state, leader_attr, None)
+        if leader_obj is not None:
+            try:
+                await leader_obj.release()
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                _log.debug(
+                    "%s release failed: %s", leader_attr, exc,
+                )
+            try:
+                delattr(app.state, leader_attr)
             except AttributeError:
                 pass
 
@@ -930,6 +1054,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation subscriber teardown loop mismatch (xdist): %s", exc)
+    subscriber_leader = getattr(
+        app.state, "federation_subscriber_leader", None,
+    )
+    if subscriber_leader is not None:
+        try:
+            await subscriber_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_subscriber leader release failed: %s", exc,
+            )
 
     stats_stop = getattr(app.state, "federation_stats_stop", None)
     stats_task = getattr(app.state, "federation_stats_task", None)
@@ -946,6 +1080,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation stats teardown loop mismatch (xdist): %s", exc)
+    stats_publisher_leader = getattr(
+        app.state, "federation_stats_publisher_leader", None,
+    )
+    if stats_publisher_leader is not None:
+        try:
+            await stats_publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_stats_publisher leader release failed: %s", exc,
+            )
 
     pub_stop = getattr(app.state, "federation_publisher_stop", None)
     pub_task = getattr(app.state, "federation_publisher_task", None)
@@ -962,6 +1106,12 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation publisher teardown loop mismatch (xdist): %s", exc)
+    publisher_leader = getattr(app.state, "federation_publisher_leader", None)
+    if publisher_leader is not None:
+        try:
+            await publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug("federation_publisher leader release failed: %s", exc)
 
     # Wave B PR8 / D1 — audit replication publisher teardown.
     audit_stop = getattr(app.state, "federation_audit_stop", None)
@@ -979,6 +1129,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("audit publisher teardown loop mismatch (xdist): %s", exc)
+    audit_publisher_leader = getattr(
+        app.state, "federation_audit_publisher_leader", None,
+    )
+    if audit_publisher_leader is not None:
+        try:
+            await audit_publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_audit_publisher leader release failed: %s", exc,
+            )
 
     ws_manager = getattr(app.state, "local_ws_manager", None)
     if ws_manager is not None:
