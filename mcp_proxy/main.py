@@ -613,24 +613,44 @@ async def lifespan(app: FastAPI):
                 "— subscriber not started. Set one before app startup.",
             )
         else:
+            from mcp_proxy.lifespan import get_leader as _sub_get_leader
             from mcp_proxy.sync.subscriber import (
                 SubscriberConfig,
                 run_subscriber,
             )
-            sub_cfg = SubscriberConfig(
-                broker_url=broker_url,
-                org_id=org_id,
-                client_factory=factory,
-            )
-            sub_stop = asyncio.Event()
-            sub_task = asyncio.create_task(
-                run_subscriber(sub_cfg, stop_event=sub_stop),
-                name="federation_subscriber",
-            )
-            app.state.federation_subscriber_stop = sub_stop
-            app.state.federation_subscriber_task = sub_task
-            app.state.federation_subscriber_stats = sub_cfg.stats
-            _log.info("federation subscriber started (org=%s)", org_id)
+
+            # Bug 3 follow-up to PR #759. Without leader gating, four
+            # uvicorn workers each open their own SSE connection to
+            # the Court (4x persistent HTTP streams) and re-apply the
+            # same events. apply_event() is idempotent per
+            # ``(org_id, seq)`` so correctness holds, but the bandwidth
+            # + Court-side compute is 4x per worker and the SSE
+            # connection count surfaces in Court dashboards as
+            # "phantom subscribers".
+            subscriber_leader = _sub_get_leader("federation_subscriber")
+            if await subscriber_leader.acquire():
+                sub_cfg = SubscriberConfig(
+                    broker_url=broker_url,
+                    org_id=org_id,
+                    client_factory=factory,
+                )
+                sub_stop = asyncio.Event()
+                sub_task = asyncio.create_task(
+                    run_subscriber(sub_cfg, stop_event=sub_stop),
+                    name="federation_subscriber",
+                )
+                app.state.federation_subscriber_stop = sub_stop
+                app.state.federation_subscriber_task = sub_task
+                app.state.federation_subscriber_stats = sub_cfg.stats
+                app.state.federation_subscriber_leader = subscriber_leader
+                _log.info("federation subscriber started (org=%s)", org_id)
+            else:
+                _log.info(
+                    "federation_subscriber: another worker holds the "
+                    "leader lock — skipping (SSE bandwidth saved, "
+                    "org=%s)",
+                    org_id,
+                )
 
     # ADR-010 Phase 3 — federation publisher loop. Only makes sense when
     # the proxy is federated (broker_url set) and the mastio identity
@@ -669,14 +689,28 @@ async def lifespan(app: FastAPI):
         # Aggregate-stats publisher — fleet-size counters for the Court
         # dashboard. Separate task so a slow stats push never delays the
         # per-agent revision loop above.
-        stats_stop = asyncio.Event()
-        stats_task = asyncio.create_task(
-            run_stats_publisher(app.state, stop_event=stats_stop),
-            name="federation_stats_publisher",
-        )
-        app.state.federation_stats_stop = stats_stop
-        app.state.federation_stats_task = stats_task
-        _log.info("federation stats publisher started (org=%s)", org_id)
+        #
+        # Bug 3 follow-up to PR #759 — same anti-pattern as the agent
+        # publisher above (4 workers, 4 redundant POSTs). Lowest
+        # priority of the federation trio, but the leader scaffolding
+        # cost is identical so wire it for consistency.
+        stats_leader = _fed_get_leader("federation_stats_publisher")
+        if await stats_leader.acquire():
+            stats_stop = asyncio.Event()
+            stats_task = asyncio.create_task(
+                run_stats_publisher(app.state, stop_event=stats_stop),
+                name="federation_stats_publisher",
+            )
+            app.state.federation_stats_stop = stats_stop
+            app.state.federation_stats_task = stats_task
+            app.state.federation_stats_publisher_leader = stats_leader
+            _log.info("federation stats publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_stats_publisher: another worker holds the "
+                "leader lock — skipping (org=%s)",
+                org_id,
+            )
 
         # Wave B PR8 / D1 — Mastio audit replication. Pushes
         # local_audit rows to the Court (mastio_audit_replica) so
@@ -1020,6 +1054,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation subscriber teardown loop mismatch (xdist): %s", exc)
+    subscriber_leader = getattr(
+        app.state, "federation_subscriber_leader", None,
+    )
+    if subscriber_leader is not None:
+        try:
+            await subscriber_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_subscriber leader release failed: %s", exc,
+            )
 
     stats_stop = getattr(app.state, "federation_stats_stop", None)
     stats_task = getattr(app.state, "federation_stats_task", None)
@@ -1036,6 +1080,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("federation stats teardown loop mismatch (xdist): %s", exc)
+    stats_publisher_leader = getattr(
+        app.state, "federation_stats_publisher_leader", None,
+    )
+    if stats_publisher_leader is not None:
+        try:
+            await stats_publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_stats_publisher leader release failed: %s", exc,
+            )
 
     pub_stop = getattr(app.state, "federation_publisher_stop", None)
     pub_task = getattr(app.state, "federation_publisher_task", None)
