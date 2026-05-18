@@ -1,7 +1,7 @@
 """ADR-033 Phase 2: WebAuthn-bound user session tokens for Frontdesk shared mode.
 
-Revision ID: 0038_webauthn_credentials
-Revises: 0037_audit_dev_attest
+Revision ID: 0039_webauthn_credentials
+Revises: 0038_pki_key_store
 Create Date: 2026-05-18 14:00:00.000000
 
 Phase 1 (PR #786) added an audit warning when a Connector-issued user
