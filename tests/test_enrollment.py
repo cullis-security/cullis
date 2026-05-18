@@ -389,7 +389,7 @@ async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
       - admin-managed columns (capabilities, federated, reach) are
         preserved across the re-enroll so a re-approval cannot reset
         operator decisions
-      - audit_log carries an ``agent.cert_renewed`` event distinct from
+      - audit_log carries an ``agent.cert_rotated`` event distinct from
         the original ``agent.create``
       - ``federation_revision`` is bumped so the publisher republishes
     """
@@ -490,7 +490,7 @@ async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
     # Audit chain: one create (first approve), one cert_renewed (second).
     actions = [row["action"] for row in audits]
     assert "agent.create" in actions
-    assert "agent.cert_renewed" in actions
+    assert "agent.cert_rotated" in actions
 
 
 @pytest.mark.asyncio

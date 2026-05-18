@@ -24,3 +24,12 @@ redis>=5.0.0
 # federation-only, AI gateway egress runs in-process on Mastio).
 # Required when MCP_PROXY_AI_GATEWAY_BACKEND=litellm_embedded.
 litellm>=1.50.0
+# ADR-033 Phase 2 WebAuthn user assertion binding (PR #789). The lazy
+# importer in mcp_proxy/auth/webauthn/_lib.py raises
+# WebAuthnLibraryMissingError on every register/authenticate path and
+# on warn-mode session emission that carries a user_signed_assertion
+# when this package is absent. ``pyproject.toml`` exposes the same pin
+# via the ``[webauthn]`` extra for SDK consumers; the Mastio container
+# installs from requirements-proxy.txt rather than the cullis-agent-sdk
+# extra, so the dep must be pinned here too.
+webauthn>=2.0,<3.0
