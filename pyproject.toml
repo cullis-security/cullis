@@ -63,6 +63,14 @@ spiffe = [
 tpm = [
     "tpm2-pytss>=2.0",
 ]
+# ADR-033 Phase 2: WebAuthn-bound user session tokens for Frontdesk shared
+# mode. Optional so deployments still pinned to Phase 1 (warn-only) keep
+# installing core packages without pulling extra crypto. When
+# MCP_PROXY_WEBAUTHN_ENFORCEMENT="required" the Mastio refuses to start
+# unless the import succeeds (see config.validate_settings).
+webauthn = [
+    "webauthn>=2.0,<3.0",
+]
 
 [project.scripts]
 cullis-connector = "cullis_connector.cli:main"

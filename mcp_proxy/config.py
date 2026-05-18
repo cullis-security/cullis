@@ -443,6 +443,54 @@ class ProxySettings(BaseSettings):
     # volume would obscure other signal. Never disable in production.
     frontdesk_audit_warning_enabled: bool = True
 
+    # ADR-033 Phase 2 — WebAuthn-bound user session tokens.
+    # The Connector posts a WebAuthn assertion alongside the session
+    # request; the Mastio verifies the assertion against a credential
+    # registered earlier by the user (Touch ID, YubiKey, Windows Hello,
+    # passkey). Without a valid assertion the path either warns (Phase 1
+    # carry-over) or hard-fails (target steady state), gated by
+    # ``webauthn_enforcement``.
+    #
+    # Relying Party identifiers (rp.id, rp.name) are baked into every
+    # registration / authentication option blob. rp.id must match the
+    # DNS suffix the browser sees when invoking ``navigator.credentials``.
+    # For a Connector dashboard reaching the Mastio via the local TLS
+    # sidecar the rp.id is the Mastio host (default ``mastio.local`` for
+    # the Frontdesk bundle); customers running a custom DNS name override
+    # via ``MCP_PROXY_WEBAUTHN_RP_ID``.
+    webauthn_rp_id: str = "mastio.local"
+    webauthn_rp_name: str = "Cullis Mastio"
+
+    # Enforcement gate. Three modes:
+    #   * "off"      — accept session emissions without an assertion,
+    #                  no warning. Use only during a developer setup
+    #                  where the operator already accepts the Phase 1
+    #                  threat model (Connector signs for the user).
+    #   * "warn"     — default. The legacy Phase 1 warning path keeps
+    #                  firing when the assertion is missing; when an
+    #                  assertion is present it is verified and stored,
+    #                  but a verification failure is logged not raised.
+    #                  Used during migration from Phase 1.
+    #   * "required" — production target. Missing or invalid assertion
+    #                  raises HTTP 401 at session emission and at every
+    #                  session-stamped request. Mastio refuses to start
+    #                  if the ``webauthn`` Python package is not
+    #                  importable.
+    webauthn_enforcement: str = "warn"
+
+    # TTL of the registration / authentication challenge nonce. py_webauthn
+    # ships its own time-skew tolerance on the assertion side, this value
+    # bounds how long a generated options blob remains spendable.
+    webauthn_challenge_ttl_seconds: int = 300
+
+    # Expected ``Origin`` header the browser will set on the WebAuthn
+    # ceremony. Empty defaults to ``https://<rp_id>``; multiple origins
+    # can be supplied comma-separated (e.g. dashboard URL + Frontdesk
+    # TLS sidecar URL) when the same RP id is reachable through more
+    # than one entry point. Verification rejects any origin not in this
+    # allow-list — narrow this in production.
+    webauthn_expected_origin: str = ""
+
     # ADR-017 native AI gateway on Mastio. When the Mastio runs litellm
     # in-process (default: ``litellm_embedded``), every chat completion
     # is dispatched without a Court round trip. Set ``backend=portkey``
@@ -751,7 +799,7 @@ def validate_config(settings: ProxySettings) -> None:
             )
             raise SystemExit(1)
 
-        # Three-tier PKI hardening (audit 2026-05-18) — the
+        # Three-tier PKI hardening (audit 2026-05-18). The
         # ``pki_key_store`` table wraps Org Root + Mastio Intermediate
         # private keys in a Fernet envelope. The master passphrase
         # ``MCP_PROXY_DB_ENCRYPTION_KEY`` is operator-supplied and must
@@ -777,6 +825,43 @@ def validate_config(settings: ProxySettings) -> None:
                 len(db_enc_key),
             )
             raise SystemExit(1)
+
+        # ADR-033 Phase 2. When enforcement is "required" the WebAuthn
+        # verification path is on the critical path of every session
+        # emission. Failing to import the ``webauthn`` library here means
+        # the Mastio would 500 every login the moment a user tries it.
+        # Refuse to start instead, so the deploy script can catch the
+        # misconfigured bundle (missing ``[webauthn]`` extra) before
+        # users see it.
+        enforcement = (settings.webauthn_enforcement or "").lower()
+        if enforcement not in {"off", "warn", "required"}:
+            _log.critical(
+                "MCP_PROXY_WEBAUTHN_ENFORCEMENT=%r is not a recognised "
+                "value. Use one of: off, warn, required.",
+                settings.webauthn_enforcement,
+            )
+            raise SystemExit(1)
+        if enforcement == "required":
+            try:
+                import webauthn  # noqa: F401
+            except ImportError:
+                _log.critical(
+                    "MCP_PROXY_WEBAUTHN_ENFORCEMENT=required but the "
+                    "``webauthn`` Python package is not importable. "
+                    "Install with the `[webauthn]` extra "
+                    "(pip install 'cullis-agent-sdk[webauthn]') or "
+                    "lower enforcement to 'warn' during the Phase 1 "
+                    "to Phase 2 migration window."
+                )
+                raise SystemExit(1)
+            if not settings.webauthn_rp_id:
+                _log.critical(
+                    "MCP_PROXY_WEBAUTHN_RP_ID is empty but enforcement is "
+                    "'required'. Set it to the DNS suffix the browser sees "
+                    "when invoking navigator.credentials (typically the "
+                    "Mastio host name)."
+                )
+                raise SystemExit(1)
 
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:
