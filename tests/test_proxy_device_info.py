@@ -112,16 +112,29 @@ class _FakeAgentManager:
         return f"-----BEGIN CERTIFICATE-----\nstub-{agent_name}\n-----END CERTIFICATE-----\n"
 
 
-def _fresh_pubkey_pem() -> str:
-    """Generate a real ECDSA P-256 public key PEM; start_enrollment() parses
-    it to fingerprint, so a stub string gets rejected."""
-    from cryptography.hazmat.primitives import serialization
+def _fresh_pop_kwargs() -> dict[str, str]:
+    """Generate a real ECDSA P-256 keypair, return kwargs that satisfy
+    both ``pubkey_pem`` (fingerprint parsing) and ``pop_signature``
+    (H-csr-pop verify) on ``start_enrollment``."""
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
+
     priv = ec.generate_private_key(ec.SECP256R1())
-    return priv.public_key().public_bytes(
+    pem = priv.public_key().public_bytes(
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+    der = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    pop = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+    return {"pubkey_pem": pem, "pop_signature": pop}
 
 
 @pytest.mark.asyncio
@@ -141,7 +154,7 @@ async def test_approve_copies_device_info_to_internal_agents(_proxy_db):
     async with get_db() as conn:
         started = await start_enrollment(
             conn,
-            pubkey_pem=_fresh_pubkey_pem(),
+            **_fresh_pop_kwargs(),
             requester_name="alice",
             requester_email="alice@example.com",
             reason=None,
@@ -178,7 +191,7 @@ async def test_approve_without_device_info_yields_null(_proxy_db):
     async with get_db() as conn:
         started = await start_enrollment(
             conn,
-            pubkey_pem=_fresh_pubkey_pem(),
+            **_fresh_pop_kwargs(),
             requester_name="bob",
             requester_email="bob@example.com",
             reason=None,

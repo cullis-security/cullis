@@ -19,7 +19,7 @@ import secrets
 import pytest
 import pytest_asyncio
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, padding
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from sqlalchemy import text
 
@@ -51,6 +51,28 @@ def _ec_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
     return key, pem
+
+
+def _sign_pop(priv, pub_pem: str) -> str:
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
 
 
 def _build_quote_b64(nonce: bytes, key: ec.EllipticCurvePrivateKey) -> str:
@@ -88,6 +110,7 @@ async def test_start_enrollment_with_valid_tpm_quote_persists_claim(db_engine):
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pem,
+            pop_signature=_sign_pop(key, pem),
             requester_name="Hardware Hannah",
             requester_email="hh@acme.com",
             reason="tpm-pilot",
@@ -127,6 +150,7 @@ async def test_start_enrollment_audit_row_written_on_verified_quote(db_engine):
         await service.start_enrollment(
             conn,
             pubkey_pem=pem,
+            pop_signature=_sign_pop(key, pem),
             requester_name="Hannah",
             requester_email="h@acme.com",
             reason=None,
@@ -150,11 +174,12 @@ async def test_start_enrollment_audit_row_written_on_verified_quote(db_engine):
 
 @pytest.mark.asyncio
 async def test_start_enrollment_without_tpm_fields_skips_attestation(db_engine):
-    _, pem = _ec_keypair()
+    key, pem = _ec_keypair()
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pem,
+            pop_signature=_sign_pop(key, pem),
             requester_name="Soft Sam",
             requester_email="s@acme.com",
             reason=None,
@@ -183,6 +208,7 @@ async def test_start_enrollment_rejects_quote_without_nonce_id(db_engine):
             await service.start_enrollment(
                 conn,
                 pubkey_pem=pem,
+                pop_signature=_sign_pop(key, pem),
                 requester_name="Half",
                 requester_email="h@acme.com",
                 reason=None,
@@ -208,6 +234,7 @@ async def test_start_enrollment_rejects_expired_or_unknown_nonce(db_engine):
             await service.start_enrollment(
                 conn,
                 pubkey_pem=pem,
+                pop_signature=_sign_pop(key, pem),
                 requester_name="Stale",
                 requester_email="x@acme.com",
                 reason=None,
@@ -234,6 +261,7 @@ async def test_start_enrollment_rejects_tampered_quote(db_engine):
             await service.start_enrollment(
                 conn,
                 pubkey_pem=pem,
+                pop_signature=_sign_pop(key, pem),
                 requester_name="Tampered",
                 requester_email="t@acme.com",
                 reason=None,

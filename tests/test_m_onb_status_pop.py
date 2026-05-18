@@ -67,11 +67,35 @@ def _sign_proof(priv, session_id: str) -> str:
     return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
 
 
-async def _start_enrollment(client: AsyncClient, pub_pem: str) -> str:
+def _sign_pop(priv, pub_pem: str) -> str:
+    import hashlib as _hashlib
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = _hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
+async def _start_enrollment(client: AsyncClient, priv, pub_pem: str) -> str:
     resp = await client.post(
         "/v1/enrollment/start",
         json={
             "pubkey_pem": pub_pem,
+            "pop_signature": _sign_pop(priv, pub_pem),
             "requester_name": "M Rossi",
             "requester_email": "m@acme.test",
             "reason": "test",
@@ -108,7 +132,7 @@ async def _approve(client: AsyncClient, session_id: str) -> None:
 async def test_status_without_proof_hides_cert_and_caps(proxy_app) -> None:
     _, client = proxy_app
     priv, pub_pem = _ec_keypair()
-    session_id = await _start_enrollment(client, pub_pem)
+    session_id = await _start_enrollment(client, priv, pub_pem)
     await _approve(client, session_id)
 
     resp = await client.get(f"/v1/enrollment/{session_id}/status")
@@ -133,7 +157,7 @@ async def test_status_with_wrong_key_proof_hides_cert(proxy_app) -> None:
     the signature won't verify against the enroller's public key."""
     _, client = proxy_app
     priv, pub_pem = _ec_keypair()
-    session_id = await _start_enrollment(client, pub_pem)
+    session_id = await _start_enrollment(client, priv, pub_pem)
     await _approve(client, session_id)
 
     attacker_priv, _ = _ec_keypair()
@@ -157,7 +181,7 @@ async def test_status_with_wrong_key_proof_hides_cert(proxy_app) -> None:
 async def test_status_with_valid_proof_returns_full_payload(proxy_app) -> None:
     _, client = proxy_app
     priv, pub_pem = _ec_keypair()
-    session_id = await _start_enrollment(client, pub_pem)
+    session_id = await _start_enrollment(client, priv, pub_pem)
     await _approve(client, session_id)
 
     proof = _sign_proof(priv, session_id)
@@ -184,7 +208,7 @@ async def test_status_field_alone_still_observable_without_proof(proxy_app) -> N
     accepted residual."""
     _, client = proxy_app
     priv, pub_pem = _ec_keypair()
-    session_id = await _start_enrollment(client, pub_pem)
+    session_id = await _start_enrollment(client, priv, pub_pem)
 
     resp = await client.get(f"/v1/enrollment/{session_id}/status")
     assert resp.status_code == 200

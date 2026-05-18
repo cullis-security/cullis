@@ -9,13 +9,15 @@ Covers:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from httpx import ASGITransport, AsyncClient
 
 from mcp_proxy.db import dispose_db, get_db, init_db
@@ -26,20 +28,69 @@ from mcp_proxy.enrollment.service import EnrollmentError
 # ── Helpers ────────────────────────────────────────────────────────
 
 
-def _rsa_pubkey_pem() -> str:
+def _rsa_keypair() -> tuple[rsa.RSAPrivateKey, str]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return key.public_key().public_bytes(
+    pem = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+    return key, pem
+
+
+def _ec_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    return key, pem
+
+
+def _rsa_pubkey_pem() -> str:
+    return _rsa_keypair()[1]
 
 
 def _ec_pubkey_pem() -> str:
-    key = ec.generate_private_key(ec.SECP256R1())
-    return key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
+    return _ec_keypair()[1]
+
+
+def _sign_pop(priv, pub_pem: str) -> str:
+    """Build a valid H-csr-pop signature over ``enrollment-pop:v1|<fp>``.
+
+    Mirrors ``cullis_connector/enrollment.py:_build_pop_signature`` so
+    the test calls match what the server's ``_verify_pop_signature``
+    accepts.
+    """
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode()
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
+def _rsa_pop_kwargs() -> dict[str, str]:
+    """Returns ``{pubkey_pem, pop_signature}`` ready to splat into a call."""
+    priv, pem = _rsa_keypair()
+    return {"pubkey_pem": pem, "pop_signature": _sign_pop(priv, pem)}
+
+
+def _ec_pop_kwargs() -> dict[str, str]:
+    priv, pem = _ec_keypair()
+    return {"pubkey_pem": pem, "pop_signature": _sign_pop(priv, pem)}
 
 
 # ── Service layer tests (SQLite-backed, no HTTP) ───────────────────
@@ -62,11 +113,12 @@ async def db_engine(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_start_enrollment_persists_row(db_engine):
-    pubkey = _ec_pubkey_pem()
+    _priv, pubkey = _ec_keypair()
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="Mario Rossi",
             requester_email="mario@acme.com",
             reason="Procurement Q2 project",
@@ -89,6 +141,7 @@ async def test_start_rejects_malformed_pubkey(db_engine):
             await service.start_enrollment(
                 conn,
                 pubkey_pem="not a real pem",
+                pop_signature="noise",
                 requester_name="Mario",
                 requester_email="m@x.com",
                 reason=None,
@@ -107,11 +160,12 @@ async def test_get_record_not_found_raises_404(db_engine):
 
 @pytest.mark.asyncio
 async def test_expired_record_flips_on_read(db_engine):
-    pubkey = _rsa_pubkey_pem()
+    _priv, pubkey = _rsa_keypair()
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="N",
             requester_email="n@x.com",
             reason=None,
@@ -137,7 +191,7 @@ async def test_list_pending_skips_expired(db_engine):
     async with get_db() as conn:
         alive = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Alive",
             requester_email="alive@x.com",
             reason=None,
@@ -145,7 +199,7 @@ async def test_list_pending_skips_expired(db_engine):
         )
         stale = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Stale",
             requester_email="stale@x.com",
             reason=None,
@@ -172,7 +226,7 @@ async def test_reject_sets_status_and_reason(db_engine):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="R",
             requester_email="r@x.com",
             reason=None,
@@ -208,11 +262,12 @@ async def test_approve_signs_cert_and_marks_approved(db_engine):
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
 
-    pubkey = _rsa_pubkey_pem()
+    _priv, pubkey = _rsa_keypair()
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="A",
             requester_email="a@x.com",
             reason=None,
@@ -261,11 +316,12 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
 
-    pubkey = _rsa_pubkey_pem()
+    _priv, pubkey = _rsa_keypair()
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="A",
             requester_email="a@x.com",
             reason=None,
@@ -334,11 +390,12 @@ async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
     await manager.load_org_ca(ca_key, ca_cert_pem)
 
     # First enrollment + approval — establishes the baseline row.
-    pubkey_1 = _rsa_pubkey_pem()
+    _priv_1, pubkey_1 = _rsa_keypair()
     async with get_db() as conn:
         s1 = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey_1,
+            pop_signature=_sign_pop(_priv_1, pubkey_1),
             requester_name="A",
             requester_email="a@x.com",
             reason=None,
@@ -360,12 +417,13 @@ async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
     # recovery flow). The admin's ``capabilities`` arg here is a stand-in
     # for a re-approval ritual; it should NOT overwrite the first
     # approval's stored caps because admin state is preserved.
-    pubkey_2 = _rsa_pubkey_pem()
+    _priv_2, pubkey_2 = _rsa_keypair()
     assert pubkey_2 != pubkey_1, "test fixture sanity"
     async with get_db() as conn:
         s2 = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey_2,
+            pop_signature=_sign_pop(_priv_2, pubkey_2),
             requester_name="A",
             requester_email="a@x.com",
             reason="reinstall",
@@ -436,7 +494,7 @@ async def test_approve_shared_mode_skips_auto_baseline_binding(
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
 
-    pubkey = _rsa_pubkey_pem()
+    _priv, pubkey = _rsa_keypair()
 
     # Spy on the auto-baseline-binding scheduler so we can assert no task
     # is created for shared-mode enrollments. ``approve()`` calls
@@ -453,6 +511,7 @@ async def test_approve_shared_mode_skips_auto_baseline_binding(
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="Frontdesk",
             requester_email="frontdesk@acme.com",
             reason=None,
@@ -488,7 +547,7 @@ async def test_approve_single_mode_still_schedules_auto_baseline_binding(
     ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
     await manager.load_org_ca(ca_key, ca_cert_pem)
 
-    pubkey = _rsa_pubkey_pem()
+    _priv, pubkey = _rsa_keypair()
 
     called: list[dict] = []
 
@@ -501,6 +560,7 @@ async def test_approve_single_mode_still_schedules_auto_baseline_binding(
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey,
+            pop_signature=_sign_pop(_priv, pubkey),
             requester_name="Daniele",
             requester_email="d@acme.com",
             reason=None,
@@ -567,7 +627,7 @@ async def test_http_start_returns_201_and_poll_url(proxy_app):
     resp = await client.post(
         "/v1/enrollment/start",
         json={
-            "pubkey_pem": _ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             "requester_name": "Mario",
             "requester_email": "mario@acme.com",
             "reason": "Onboarding",
@@ -586,7 +646,7 @@ async def test_http_status_pending_then_not_found(proxy_app):
     start = await client.post(
         "/v1/enrollment/start",
         json={
-            "pubkey_pem": _ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             "requester_name": "X",
             "requester_email": "x@x.com",
         },
@@ -694,7 +754,7 @@ async def test_http_start_rate_limits_after_budget(proxy_app, monkeypatch):
         resp = await client.post(
             "/v1/enrollment/start",
             json={
-                "pubkey_pem": _ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 "requester_name": "Mario",
                 "requester_email": "mario@acme.com",
             },
@@ -704,7 +764,7 @@ async def test_http_start_rate_limits_after_budget(proxy_app, monkeypatch):
     blocked = await client.post(
         "/v1/enrollment/start",
         json={
-            "pubkey_pem": _ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             "requester_name": "Mario",
             "requester_email": "mario@acme.com",
         },
@@ -729,7 +789,7 @@ async def test_http_status_rate_limits_after_budget(proxy_app, monkeypatch):
     started = await client.post(
         "/v1/enrollment/start",
         json={
-            "pubkey_pem": _ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             "requester_name": "X",
             "requester_email": "x@x.com",
         },
