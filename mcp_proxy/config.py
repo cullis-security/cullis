@@ -412,6 +412,19 @@ class ProxySettings(BaseSettings):
     # Operators tune via ``MCP_PROXY_USER_SESSION_TTL_SECONDS``.
     user_session_ttl_seconds: int = 3600
 
+    # ADR-033 Phase 1 — Frontdesk shared-mode audit warning.
+    # When true (default), ``maybe_stamp_user_session`` emits a
+    # WARNING log entry and an audit chain row of type
+    # ``frontdesk_shared_unauthenticated_user_session_warning``
+    # whenever a Connector presents a session token that lacks a
+    # ``user_signed_assertion`` field (i.e. no cryptographic proof
+    # that the user authorised this specific session). This is every
+    # session today because Phase 2 (WebAuthn-bound session tokens)
+    # is not yet implemented.
+    # Set to false only in dev/test environments where the warning
+    # volume would obscure other signal. Never disable in production.
+    frontdesk_audit_warning_enabled: bool = True
+
     # ADR-017 native AI gateway on Mastio. When the Mastio runs litellm
     # in-process (default: ``litellm_embedded``), every chat completion
     # is dispatched without a Court round trip. Set ``backend=portkey``

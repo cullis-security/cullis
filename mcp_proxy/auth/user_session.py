@@ -19,6 +19,15 @@ leave the contextvar at None. Rationale: the agent identity is the
 primary credential — the user binding is optional dual-attribution.
 If the user wants strict enforcement they can run with
 ``CULLIS_REQUIRE_USER_SESSION=true`` (config flag added in a follow-up).
+
+ADR-033 Phase 1 audit warning:
+When a session token is accepted but the stored row lacks a
+``user_signed_assertion`` field (no cryptographic proof from the user),
+:func:`maybe_stamp_user_session` emits a WARNING log and writes an
+audit chain row of type
+``frontdesk_shared_unauthenticated_user_session_warning``. This
+visibility is the Phase 1 baseline; Phase 2 (WebAuthn-bound session
+tokens) will add the assertion and the warning will cease.
 """
 from __future__ import annotations
 
@@ -33,6 +42,10 @@ from mcp_proxy.db import get_user_session
 
 _log = logging.getLogger("mcp_proxy.auth.user_session")
 
+# Action constant for the ADR-033 Phase 1 audit entry.
+ACTION_FRONTDESK_SHARED_UNAUTHENTICATED_SESSION = (
+    "frontdesk_shared_unauthenticated_user_session_warning"
+)
 
 SESSION_HEADER = "X-Cullis-Session-Token"
 PRINCIPAL_HEADER = "X-Cullis-On-Behalf-Of-User"
@@ -48,6 +61,11 @@ async def maybe_stamp_user_session(
 
     Returns the verified ``principal_id`` on success, ``None`` otherwise.
     Never raises — failure is logged and the contextvar stays at None.
+
+    ADR-033 Phase 1: when the session is accepted but lacks a
+    ``user_signed_assertion``, emits an audit chain row and a WARNING log
+    so operators can alert on unauthenticated-to-user sessions in
+    Frontdesk shared mode.
     """
     session_token = request.headers.get(SESSION_HEADER)
     claimed_principal = request.headers.get(PRINCIPAL_HEADER)
@@ -110,4 +128,81 @@ async def maybe_stamp_user_session(
         "user-session: stamped on_behalf_of_user=%s (agent=%s)",
         stored_principal, caller_agent_id,
     )
+
+    # ADR-033 Phase 1 — emit audit warning when no user-signed assertion is
+    # present. Today this fires on every accepted session because Phase 2
+    # (WebAuthn-bound tokens) is not yet implemented. The warning enables
+    # SOC alerting on anomalous on_behalf_of volume before Phase 2 lands.
+    await _emit_unauthenticated_session_warning_if_needed(
+        caller_agent_id=caller_agent_id,
+        claimed_principal=stored_principal,
+        session_id=session_token,
+        row=row,
+    )
+
     return stored_principal
+
+
+async def _emit_unauthenticated_session_warning_if_needed(
+    *,
+    caller_agent_id: str,
+    claimed_principal: str,
+    session_id: str,
+    row: dict,
+) -> None:
+    """Emit WARNING log + audit chain entry for sessions lacking user assertion.
+
+    Checks ``MCP_PROXY_FRONTDESK_AUDIT_WARNING_ENABLED`` before acting.
+    Never raises — audit warning failures must not break the auth flow.
+    The audit entry is awaited inline (not fire-and-forget) to ensure
+    correctness: the write is cheap (same DB connection pool) and the
+    latency added is below the DPoP proof window.
+    """
+    try:
+        from mcp_proxy.config import get_settings
+        if not get_settings().frontdesk_audit_warning_enabled:
+            return
+    except Exception:
+        return
+
+    # Check whether the session row carries a user-signed assertion (Phase 2).
+    # The field does not exist yet; any truthy value would suppress the warning.
+    has_user_assertion = bool(row.get("user_signed_assertion"))
+    if has_user_assertion:
+        return
+
+    ts = datetime.now(timezone.utc).isoformat()
+
+    _log.warning(
+        "frontdesk-shared: session accepted without user cryptographic assertion "
+        "(agent=%s claimed_user=%s session=%s). "
+        "This is expected pre-Phase-2 (ADR-033). "
+        "Alert if rate exceeds 10/min per container.",
+        caller_agent_id,
+        claimed_principal,
+        session_id[:12] + "...",  # truncate for log hygiene
+    )
+
+    from mcp_proxy.db import log_audit
+
+    try:
+        await log_audit(
+            caller_agent_id,
+            ACTION_FRONTDESK_SHARED_UNAUTHENTICATED_SESSION,
+            "warning",
+            details={
+                "connector_agent_id": caller_agent_id,
+                "claimed_user_principal_id": claimed_principal,
+                "session_id": session_id[:12] + "...",
+                "timestamp": ts,
+                "note": (
+                    "No user_signed_assertion field present. "
+                    "Phase 2 WebAuthn-bound sessions will add this. "
+                    "See ADR-033."
+                ),
+            },
+        )
+    except Exception as exc:
+        _log.debug(
+            "frontdesk-shared: audit warning entry failed (non-critical): %s", exc,
+        )

@@ -10,6 +10,29 @@ The `release-*.yml` workflows extract the section for the released
 version from this file via `awk` matching `## [v<version>]`; bodies
 flow until the next `## ` heading.
 
+## [Unreleased]
+
+### Security
+
+- **Frontdesk shared-mode audit warning (ADR-033 Phase 1).** When the
+  Frontdesk Connector forwards a user session to the Mastio without a
+  cryptographic assertion from the user (the current state pre-Phase-2
+  WebAuthn), the Mastio now emits a structured WARNING log entry and an
+  audit chain row of type
+  `frontdesk_shared_unauthenticated_user_session_warning`. This gives
+  operators a baseline metric for alerting on anomalous impersonation
+  patterns before the Phase 2 cryptographic fix ships.
+  Opt-out for dev/test: `MCP_PROXY_FRONTDESK_AUDIT_WARNING_ENABLED=false`.
+
+### Documentation
+
+- **Frontdesk shared-mode security hardening runbook** added at
+  `docs/runbooks/frontdesk-shared-hardening.md`. Covers container
+  security configuration, network isolation, monitoring, update cadence,
+  compromise response procedure, and the Phase 2 WebAuthn roadmap.
+
+---
+
 ## [v0.4.4] — Mastio multi-worker default — 2026-05-16
 
 First Mastio release that uses this file for release notes (the
