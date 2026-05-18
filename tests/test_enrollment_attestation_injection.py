@@ -10,13 +10,15 @@ matches, and verify:
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding
 from sqlalchemy import text
 
 from mcp_proxy.db import dispose_db, get_db, init_db
@@ -24,12 +26,35 @@ from mcp_proxy.enrollment import service
 from mcp_proxy.mdm.poller import upsert_device_rows
 
 
-def _ec_pubkey_pem() -> str:
+def _ec_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     key = ec.generate_private_key(ec.SECP256R1())
-    return key.public_key().public_bytes(
+    pem = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+    return key, pem
+
+
+def _sign_pop(priv, pub_pem: str) -> str:
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
 
 
 @pytest_asyncio.fixture
@@ -65,11 +90,14 @@ class _FakeAgentManager:
         return f"-----BEGIN CERTIFICATE-----\nFAKE-{agent_name}\n-----END CERTIFICATE-----\n"
 
 
-async def _seed_pending(pubkey_pem: str, device_info_json: str) -> str:
+async def _seed_pending(
+    priv, pubkey_pem: str, device_info_json: str,
+) -> str:
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
             pubkey_pem=pubkey_pem,
+            pop_signature=_sign_pop(priv, pubkey_pem),
             requester_name="Alice Tester",
             requester_email="alice@example.com",
             reason="attestation test",
@@ -94,12 +122,12 @@ async def test_enrollment_with_matching_intune_device_stamps_claim(db_engine):
         now=now,
     )
 
-    pubkey = _ec_pubkey_pem()
+    _priv, pubkey = _ec_keypair()
     device_info = json.dumps({
         "os": "linux",
         "azure_ad_device_id": "aad-1",
     })
-    session_id = await _seed_pending(pubkey, device_info)
+    session_id = await _seed_pending(_priv, pubkey, device_info)
 
     # 2. Approve.
     async with get_db() as conn:
@@ -150,9 +178,9 @@ async def test_enrollment_with_matching_intune_device_stamps_claim(db_engine):
 @pytest.mark.asyncio
 async def test_enrollment_without_mdm_match_completes_without_stamping(db_engine):
     """No cache match → no last_attestation, no audit, no error."""
-    pubkey = _ec_pubkey_pem()
+    _priv, pubkey = _ec_keypair()
     device_info = json.dumps({"os": "linux", "azure_ad_device_id": "unknown-aad"})
-    session_id = await _seed_pending(pubkey, device_info)
+    session_id = await _seed_pending(_priv, pubkey, device_info)
 
     async with get_db() as conn:
         record = await service.approve(
@@ -195,9 +223,9 @@ async def test_non_compliant_match_stamps_byod_attested_or_untrusted(db_engine):
         now=now,
     )
 
-    pubkey = _ec_pubkey_pem()
+    _priv, pubkey = _ec_keypair()
     device_info = json.dumps({"azure_ad_device_id": "aad-2"})
-    session_id = await _seed_pending(pubkey, device_info)
+    session_id = await _seed_pending(_priv, pubkey, device_info)
 
     async with get_db() as conn:
         record = await service.approve(
@@ -237,8 +265,8 @@ async def test_enrollment_hook_failure_does_not_break_approve(db_engine, monkeyp
         _boom,
     )
 
-    pubkey = _ec_pubkey_pem()
-    session_id = await _seed_pending(pubkey, "{}")
+    _priv, pubkey = _ec_keypair()
+    session_id = await _seed_pending(_priv, pubkey, "{}")
 
     async with get_db() as conn:
         record = await service.approve(

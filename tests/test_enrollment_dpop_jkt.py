@@ -13,11 +13,12 @@ Covers the service layer and the HTTP path:
 from __future__ import annotations
 
 import base64
+import hashlib
 
 import pytest
 import pytest_asyncio
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from sqlalchemy import text
 
 from mcp_proxy.db import dispose_db, get_db, init_db
@@ -27,12 +28,44 @@ from mcp_proxy.enrollment.service import EnrollmentError
 
 # ── Helpers ────────────────────────────────────────────────────────
 
-def _ec_pubkey_pem() -> str:
+def _ec_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     key = ec.generate_private_key(ec.SECP256R1())
-    return key.public_key().public_bytes(
+    pem = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+    return key, pem
+
+
+def _ec_pubkey_pem() -> str:
+    return _ec_keypair()[1]
+
+
+def _sign_pop(priv, pub_pem: str) -> str:
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
+def _ec_pop_kwargs() -> dict[str, str]:
+    priv, pem = _ec_keypair()
+    return {"pubkey_pem": pem, "pop_signature": _sign_pop(priv, pem)}
 
 
 def _ec_public_jwk() -> dict:
@@ -81,7 +114,7 @@ async def test_start_with_valid_ec_jwk_stores_thumbprint(db_engine):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Alice",
             requester_email="alice@example.com",
             reason="test",
@@ -106,7 +139,7 @@ async def test_start_with_valid_rsa_jwk_stores_thumbprint(db_engine):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Bob",
             requester_email="bob@example.com",
             reason=None,
@@ -129,7 +162,7 @@ async def test_start_without_jwk_keeps_dpop_jkt_null(db_engine):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Carol",
             requester_email="carol@example.com",
             reason=None,
@@ -153,7 +186,7 @@ async def test_start_rejects_jwk_with_private_material(db_engine):
         with pytest.raises(EnrollmentError) as exc:
             await service.start_enrollment(
                 conn,
-                pubkey_pem=_ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 requester_name="Dave",
                 requester_email="dave@example.com",
                 reason=None,
@@ -170,7 +203,7 @@ async def test_start_rejects_unsupported_kty(db_engine):
         with pytest.raises(EnrollmentError) as exc:
             await service.start_enrollment(
                 conn,
-                pubkey_pem=_ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 requester_name="Erin",
                 requester_email="erin@example.com",
                 reason=None,
@@ -187,7 +220,7 @@ async def test_start_rejects_malformed_jwk(db_engine):
         with pytest.raises(EnrollmentError) as exc:
             await service.start_enrollment(
                 conn,
-                pubkey_pem=_ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 requester_name="Fred",
                 requester_email="fred@example.com",
                 reason=None,
@@ -203,7 +236,7 @@ async def test_start_rejects_empty_jwk(db_engine):
         with pytest.raises(EnrollmentError) as exc:
             await service.start_enrollment(
                 conn,
-                pubkey_pem=_ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 requester_name="Gina",
                 requester_email="gina@example.com",
                 reason=None,
@@ -232,7 +265,7 @@ async def test_approve_copies_jkt_to_internal_agents(agent_manager):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Helen",
             requester_email="helen@example.com",
             reason=None,
@@ -266,7 +299,7 @@ async def test_approve_without_jwk_leaves_agent_dpop_jkt_null(agent_manager):
     async with get_db() as conn:
         started = await service.start_enrollment(
             conn,
-            pubkey_pem=_ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             requester_name="Iris",
             requester_email="iris@example.com",
             reason=None,
@@ -319,7 +352,7 @@ async def test_http_start_with_dpop_jwk_returns_201(http_app):
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with http_app.router.lifespan_context(http_app):
             body = {
-                "pubkey_pem": _ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 "requester_name": "Jack",
                 "requester_email": "jack@example.com",
                 "dpop_jwk": _ec_public_jwk(),
@@ -335,7 +368,7 @@ async def test_http_start_rejects_malformed_dpop_jwk(http_app):
     async with AsyncClient(transport=transport, base_url="http://test") as cli:
         async with http_app.router.lifespan_context(http_app):
             body = {
-                "pubkey_pem": _ec_pubkey_pem(),
+                **_ec_pop_kwargs(),
                 "requester_name": "Kate",
                 "requester_email": "kate@example.com",
                 "dpop_jwk": {"kty": "oct", "k": "bad"},

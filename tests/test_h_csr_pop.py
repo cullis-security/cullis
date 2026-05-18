@@ -148,14 +148,15 @@ async def test_start_with_garbage_pop_rejected(proxy_app) -> None:
     assert resp.status_code == 400
 
 
-# ── Missing PoP: still works during transition (with warning) ────────
+# ── Missing PoP: rejected (transition window closed) ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_start_without_pop_accepted_during_transition(proxy_app) -> None:
-    """Pre-fix Connectors that don't ship pop_signature still enroll
-    during the transition window. The server logs a WARNING but
-    accepts the row so existing fleets don't break on upgrade."""
+async def test_start_without_pop_now_rejected(proxy_app) -> None:
+    """The transition window is closed. A Connector that does not ship
+    ``pop_signature`` is refused with 422 (Pydantic schema requires the
+    field) so an attacker cannot enroll by replaying a stolen public
+    key."""
     _, client = proxy_app
     _, pub_pem = _ec_keypair()
 
@@ -167,4 +168,10 @@ async def test_start_without_pop_accepted_during_transition(proxy_app) -> None:
             "requester_email": "legacy@acme.test",
         },
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    # Pydantic surfaces the missing required field in ``detail``.
+    assert any(
+        "pop_signature" in (str(err.get("loc")) + str(err.get("msg")))
+        for err in body.get("detail", [])
+    ), body

@@ -12,6 +12,8 @@ Complements ``tests/test_enrollment.py`` which exercises the JSON API.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json as _json
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -20,7 +22,7 @@ import pytest
 import pytest_asyncio
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.oid import NameOID
 from httpx import ASGITransport, AsyncClient
 
@@ -28,12 +30,40 @@ from httpx import ASGITransport, AsyncClient
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _ec_pubkey_pem() -> str:
+def _ec_keypair() -> tuple[ec.EllipticCurvePrivateKey, str]:
     key = ec.generate_private_key(ec.SECP256R1())
-    return key.public_key().public_bytes(
+    pem = key.public_key().public_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     ).decode()
+    return key, pem
+
+
+def _sign_pop(priv, pub_pem: str) -> str:
+    pub = serialization.load_pem_public_key(pub_pem.encode())
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    fp = hashlib.sha256(der).hexdigest()
+    canonical = f"enrollment-pop:v1|{fp}".encode("utf-8")
+    if isinstance(priv, ec.EllipticCurvePrivateKey):
+        sig = priv.sign(canonical, ec.ECDSA(hashes.SHA256()))
+    else:
+        sig = priv.sign(
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
+def _ec_pop_kwargs() -> dict[str, str]:
+    priv, pem = _ec_keypair()
+    return {"pubkey_pem": pem, "pop_signature": _sign_pop(priv, pem)}
 
 
 def _generate_self_signed_ca(org_id: str) -> tuple[str, str]:
@@ -115,7 +145,7 @@ async def _start_enrollment(client: AsyncClient, name: str = "Mario Rossi") -> s
     resp = await client.post(
         "/v1/enrollment/start",
         json={
-            "pubkey_pem": _ec_pubkey_pem(),
+            **_ec_pop_kwargs(),
             "requester_name": name,
             "requester_email": "mario@acme.com",
             "reason": "Onboarding via dashboard test",
