@@ -682,15 +682,34 @@ async def lifespan(app: FastAPI):
         # local_audit rows to the Court (mastio_audit_replica) so
         # cross-org disputes have a Mastio-attested source of truth
         # alongside the Court's broker-observed audit_log.
+        #
+        # Bug 3 follow-up to PR #759 — without leader gating, four
+        # uvicorn workers each read ``last_replicated_local_audit_id``,
+        # batch the same rows, POST four times and race on
+        # ``_write_cursor``. The Court enforces
+        # ``UNIQUE(mastio_org_id, chain_seq)`` so dupes are dropped,
+        # but the customer's Court quota burns 4x. Separate lock from
+        # the agent publisher: audit replication has a tighter
+        # freshness SLA so it should be free to land on a different
+        # worker if scheduling pins the publisher elsewhere.
         from mcp_proxy.federation.audit_publisher import run_audit_publisher
-        audit_stop = asyncio.Event()
-        audit_task = asyncio.create_task(
-            run_audit_publisher(app.state, stop_event=audit_stop),
-            name="federation_audit_publisher",
-        )
-        app.state.federation_audit_stop = audit_stop
-        app.state.federation_audit_task = audit_task
-        _log.info("federation audit publisher started (org=%s)", org_id)
+        audit_leader = _fed_get_leader("federation_audit_publisher")
+        if await audit_leader.acquire():
+            audit_stop = asyncio.Event()
+            audit_task = asyncio.create_task(
+                run_audit_publisher(app.state, stop_event=audit_stop),
+                name="federation_audit_publisher",
+            )
+            app.state.federation_audit_stop = audit_stop
+            app.state.federation_audit_task = audit_task
+            app.state.federation_audit_publisher_leader = audit_leader
+            _log.info("federation audit publisher started (org=%s)", org_id)
+        else:
+            _log.info(
+                "federation_audit_publisher: another worker holds the "
+                "leader lock — skipping (Court quota saved, org=%s)",
+                org_id,
+            )
 
     # ADR-013 layer 6 — DB latency tracker + circuit breaker state.
     # Started after init_db (need the engine) and after the federation
@@ -1056,6 +1075,16 @@ async def lifespan(app: FastAPI):
                 pass
         except ValueError as exc:
             _log.debug("audit publisher teardown loop mismatch (xdist): %s", exc)
+    audit_publisher_leader = getattr(
+        app.state, "federation_audit_publisher_leader", None,
+    )
+    if audit_publisher_leader is not None:
+        try:
+            await audit_publisher_leader.release()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.debug(
+                "federation_audit_publisher leader release failed: %s", exc,
+            )
 
     ws_manager = getattr(app.state, "local_ws_manager", None)
     if ws_manager is not None:
