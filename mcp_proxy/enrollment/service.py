@@ -220,12 +220,12 @@ async def start_enrollment(
     conn: AsyncConnection,
     *,
     pubkey_pem: str,
+    pop_signature: str,
     requester_name: str,
     requester_email: str,
     reason: str | None,
     device_info: str | None,
     dpop_jwk: dict | None = None,
-    pop_signature: str | None = None,
     attestation_nonce_id: str | None = None,
     tpm_quote_b64: str | None = None,
     tpm_manufacturer: str | None = None,
@@ -255,27 +255,25 @@ async def start_enrollment(
 
     fingerprint = _pubkey_fingerprint(pubkey_pem)
 
-    # H-csr-pop audit fix — verify proof-of-possession over the
-    # submitted public key. A pre-fix Connector that doesn't ship
-    # ``pop_signature`` is allowed through with a WARNING during the
-    # transition window so existing fleets keep working; a follow-up
-    # PR makes it required once Connector rollout is confirmed.
-    if pop_signature:
-        if not _verify_pop_signature(pubkey_pem, fingerprint, pop_signature):
-            raise EnrollmentError(
-                "pop_signature does not verify against pubkey_pem — "
-                "the submitter does not control the corresponding "
-                "private key (H-csr-pop audit).",
-                http_status=400,
-            )
-    else:
-        import logging
-        logging.getLogger("mcp_proxy.enrollment").warning(
-            "start_enrollment: legacy Connector submitted pubkey_pem "
-            "without pop_signature (fingerprint=%s). Accepted under "
-            "the transition window; a future release will make the "
-            "PoP signature required.",
-            fingerprint,
+    # H-csr-pop audit, verify proof-of-possession over the submitted
+    # public key. Required since v0.5 (transition window dropped):
+    # a pre-fix Connector that doesn't ship pop_signature fails enroll
+    # with HTTP 400, an attacker cannot enroll a stolen or observed
+    # public key whose private half they don't control.
+    if not pop_signature:
+        raise EnrollmentError(
+            "pop_signature is required. Connectors must sign "
+            "'enrollment-pop:v1|<pubkey-sha256-hex>' with the "
+            "enrollment private key. Pre-v0.4.4 Connectors are "
+            "unsupported.",
+            http_status=400,
+        )
+    if not _verify_pop_signature(pubkey_pem, fingerprint, pop_signature):
+        raise EnrollmentError(
+            "pop_signature does not verify against pubkey_pem, "
+            "the submitter does not control the corresponding "
+            "private key (H-csr-pop audit).",
+            http_status=400,
         )
 
     # ADR-032 F3 Phase 1: verify the optional TPM attestation half.

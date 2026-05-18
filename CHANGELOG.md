@@ -12,6 +12,26 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+### Breaking change
+
+- **`POST /v1/enrollment/start` now requires `pop_signature`** (H-csr-pop
+  audit fix). The `pop_signature` field on `StartEnrollmentRequest` was
+  Optional during the transition window: a Connector that did not sign
+  `"enrollment-pop:v1|<pubkey-sha256-hex>"` still enrolled, with the
+  server logging a WARNING. The transition window is closed and the
+  field is now mandatory. Pre-v0.4.4 Connectors that don't ship a PoP
+  signature fail enrollment with HTTP 400 and a structured detail.
+- **Why**: without proof-of-possession the server could not distinguish
+  the legitimate keypair owner from an attacker submitting an intercepted
+  or observed public key, the only defense was admin fingerprint
+  cross-check (out-of-band, human, non-cryptographic). Making
+  `pop_signature` mandatory closes the impersonation vector at the
+  protocol layer.
+- **Migration**: Connectors v0.4.4+ already ship `_build_pop_signature`
+  and sign by default. SDK callers building their own request body must
+  add a `pop_signature` over `"enrollment-pop:v1|<pubkey-sha256-hex>"`
+  (RSA-PSS or ECDSA-P256, base64url).
+
 ### Security
 
 - **Frontdesk shared-mode audit warning (ADR-033 Phase 1).** When the
