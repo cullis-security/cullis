@@ -35,6 +35,7 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         kms_backend="vault",  # H3 P0.1 — prod refuses local KMS backend
         vault_verify_tls=True,
         dashboard_signing_key="strong-signing-key",
+        db_encryption_key="x" * 48,  # 2026-05-18 three-tier hardening
     )
     base.update(overrides)
     return ProxySettings(**base)

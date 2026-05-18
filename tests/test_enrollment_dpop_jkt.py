@@ -253,6 +253,9 @@ async def agent_manager(db_engine):
     from mcp_proxy.egress.agent_manager import AgentManager
     mgr = AgentManager(org_id="acme", trust_domain="test.local")
     await mgr.generate_org_ca()
+    # Three-tier PKI hardening (audit 2026-05-18) — Intermediate needed
+    # for sign_external_pubkey post-fix.
+    await mgr.ensure_mastio_identity()
     return mgr
 
 

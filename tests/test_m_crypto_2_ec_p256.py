@@ -5,13 +5,19 @@ EC P-256, not RSA.
 The audit flagged ``mcp_proxy/egress/agent_manager.py`` for shipping
 RSA-2048 by default. RSA-2048 carries 112-bit security strength under
 NIST SP 800-57, which is below the recommended floor for keys with a
-10-year (Org CA) or 1-year (agent leaf) lifetime starting in 2026. EC
+15-year (Org CA) or 1-year (agent leaf) lifetime starting in 2026. EC
 P-256 hits 128-bit strength with smaller keys, faster signatures, and
 matches the convention already used by the Mastio identity, the DPoP
 keypair, and the ECDH ephemeral.
 
 Existing RSA agents and Org CAs keep working because the verifier
 stays dual-stack; this file just locks in that NEW material is EC.
+
+Note 2026-05-18 — after the three-tier PKI hardening
+(``fix/pki-three-tier-hardening``), agent leaves are signed by the
+Mastio Intermediate CA, not the Org Root. The chain-validation test
+below reflects that: leaves still verify under ECDSA, but the issuer
+key is the Intermediate's pubkey rather than the Org Root's.
 """
 from __future__ import annotations
 
@@ -92,18 +98,24 @@ async def test_agent_cert_signature_alg_is_ecdsa(proxy_app):
 
 
 @pytest.mark.asyncio
-async def test_agent_cert_chains_under_ec_org_ca(proxy_app):
-    """Sanity: agent cert verifies against the EC Org CA via ECDSA."""
+async def test_agent_cert_chains_under_intermediate_ca(proxy_app):
+    """Sanity: agent cert verifies against the EC Mastio Intermediate via ECDSA.
+
+    Three-tier PKI hardening (audit 2026-05-18) — agents are now
+    Intermediate-issued, not Org-Root-issued. The chain Root -> Intermediate
+    -> agent stays full-ECDSA; the only change is which CA pubkey
+    verifies the leaf signature.
+    """
     from cryptography import x509 as _x509
 
     app, _ = proxy_app
     mgr = app.state.agent_manager
     cert_pem, _ = mgr._generate_agent_cert("alice")
     cert = _x509.load_pem_x509_certificate(cert_pem.encode())
-    org_pub = mgr._org_ca_cert.public_key()
-    assert isinstance(org_pub, ec.EllipticCurvePublicKey)
+    int_pub = mgr._mastio_ca_cert.public_key()
+    assert isinstance(int_pub, ec.EllipticCurvePublicKey)
     # ECDSA verify path — raises on failure.
-    org_pub.verify(
+    int_pub.verify(
         cert.signature,
         cert.tbs_certificate_bytes,
         ec.ECDSA(cert.signature_hash_algorithm),

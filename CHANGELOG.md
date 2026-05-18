@@ -12,7 +12,7 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
-### Breaking change
+### Breaking changes
 
 - **`POST /v1/enrollment/start` now requires `pop_signature`** (H-csr-pop
   audit fix). The `pop_signature` field on `StartEnrollmentRequest` was
@@ -21,16 +21,39 @@ flow until the next `## ` heading.
   server logging a WARNING. The transition window is closed and the
   field is now mandatory. Pre-v0.4.4 Connectors that don't ship a PoP
   signature fail enrollment with HTTP 400 and a structured detail.
-- **Why**: without proof-of-possession the server could not distinguish
-  the legitimate keypair owner from an attacker submitting an intercepted
-  or observed public key, the only defense was admin fingerprint
-  cross-check (out-of-band, human, non-cryptographic). Making
-  `pop_signature` mandatory closes the impersonation vector at the
-  protocol layer.
-- **Migration**: Connectors v0.4.4+ already ship `_build_pop_signature`
-  and sign by default. SDK callers building their own request body must
-  add a `pop_signature` over `"enrollment-pop:v1|<pubkey-sha256-hex>"`
+  Connectors v0.4.4+ already ship `_build_pop_signature` and sign by
+  default. SDK callers building their own request body must add a
+  `pop_signature` over `"enrollment-pop:v1|<pubkey-sha256-hex>"`
   (RSA-PSS or ECDSA-P256, base64url).
+- **PKI three-tier chain rebuilt** so agent / Connector / nginx leaves
+  are signed by the Mastio Intermediate CA, not the Org Root. The Org
+  Root stays cold (private key not in memory at steady state) and is
+  only unsealed for rare operations: minting the Intermediate at first
+  boot, rotating the Intermediate, generating the CA bundle. Every
+  unseal lands a `pki.org_root_unsealed` audit row with the operator
+  and reason.
+- **Private CA keys are Fernet-encrypted at rest.** New table
+  `pki_key_store` (Alembic `0038_pki_key_store`) replaces the
+  historic plaintext `proxy_config.org_ca_key` /
+  `proxy_config.mastio_ca_key` rows. Envelope is PBKDF2-HMAC-SHA256
+  600k iterations + Fernet, keyed off the operator-supplied
+  `MCP_PROXY_DB_ENCRYPTION_KEY` passphrase.
+- **`MCP_PROXY_DB_ENCRYPTION_KEY` is now required in production.**
+  `validate_config` refuses to start when the value is empty or
+  shorter than 32 chars. Generate one with `openssl rand -hex 48`.
+- **Rebalanced cert validities**:
+  - Org Root: 10y to 15y (cold root, longer-lived).
+  - Mastio Intermediate: 3y to 5y (auto-rotation hooks make a wider
+    window safe).
+  - Mastio Leaf: 1y (unchanged).
+  - Agent leaf: 1y (unchanged; Wave 2 narrows further with
+    grace-period support).
+  - nginx server TLS: 1y to 90d (short-lived TLS, auto-renew via
+    `ensure_nginx_server_cert` boot pass).
+- The nginx trust bundle file (`org-ca.crt` inside `nginx_cert_dir`)
+  now holds the **full chain** (Org Root and Intermediate). Strict
+  path validation on the client side needs both certs since leaves
+  are no longer Org-Root-signed.
 
 ### Security
 
@@ -43,6 +66,26 @@ flow until the next `## ` heading.
   operators a baseline metric for alerting on anomalous impersonation
   patterns before the Phase 2 cryptographic fix ships.
   Opt-out for dev/test: `MCP_PROXY_FRONTDESK_AUDIT_WARNING_ENABLED=false`.
+- **Mastio Intermediate CA rotation** lands as `POST /v1/admin/mastio-ca/rotate`
+  (admin-secret gated, with `?dry_run=true`). A weekly leader-elected
+  background watcher (`mastio_ca_rotation_watcher`) warns at < 180
+  days to expiry, errors at < 60, auto-rotates at < 30.
+
+### Migration
+
+- **Hard wipe at first boot post-upgrade.** When legacy plaintext
+  rows are present in `proxy_config` and `MCP_PROXY_DB_ENCRYPTION_KEY`
+  is set, the lifespan archives them into `legacy_pki_archive` and
+  deletes from `proxy_config`. The Mastio re-issues the chain under
+  the encrypted `pki_key_store` schema on the same boot. Operators
+  who upgrade without setting the env var see a warning, the legacy
+  rows stay in place, and the wipe retries on the next boot.
+- All currently-issued agent and Connector certs become Org-Root-issued
+  *legacy* certs after the upgrade. They keep working until expiry
+  (1 year, the prior validity) because the verifier-side trust store
+  pins the Org Root, which still appears in the bundle alongside the
+  Intermediate. New issuances and renewals chain under the
+  Intermediate.
 
 ### Documentation
 
@@ -50,6 +93,13 @@ flow until the next `## ` heading.
   `docs/runbooks/frontdesk-shared-hardening.md`. Covers container
   security configuration, network isolation, monitoring, update cadence,
   compromise response procedure, and the Phase 2 WebAuthn roadmap.
+
+### Reference
+
+- ADR-033 PKI three-tier hardening (internal-only) records the threat
+  model, design decisions, and effort discovery for the chain rebuild.
+- ADR-033 Frontdesk threat model shared-mode (internal-only, separate
+  document) records Phase 1 audit baseline + Phase 2 WebAuthn roadmap.
 
 ---
 

@@ -49,6 +49,24 @@ class ProxySettings(BaseSettings):
     # fields ``key_pem`` + ``cert_pem``.
     vault_org_ca_path: str = "secret/data/cullis-mastio/org-ca"
 
+    # Vault KV v2 path for the Mastio Intermediate CA keypair
+    # (three-tier hardening, audit 2026-05-18). Used only when
+    # ``kms_backend == "vault"``. Empty default lets the provider
+    # derive the path from ``vault_org_ca_path``'s parent + the
+    # ``/intermediate-ca`` suffix (so a single env var covers both keys).
+    vault_intermediate_ca_path: str = ""
+
+    # PKI at-rest master passphrase. Required in production: the
+    # ``pki_key_store`` table wraps Org Root + Intermediate private
+    # keys in a Fernet envelope keyed off this value (PBKDF2-HMAC-
+    # SHA256 600k iterations, salt ``b"cullis-mastio-pki-v1"``). Empty
+    # in dev fails closed when ``mcp_proxy.kms.pki_at_rest`` is touched;
+    # validate_config refuses to start in production when missing.
+    # Aliased to ``MCP_PROXY_SECRET_ENCRYPTION_KEY_B64`` semantically
+    # (both wrap sensitive at-rest material) but kept separate so an
+    # operator can rotate one without touching the other.
+    db_encryption_key: str = ""
+
     # Secrets backend
     secret_backend: str = "env"  # "env" | "vault"
     vault_addr: str = ""
@@ -728,8 +746,35 @@ def validate_config(settings: ProxySettings) -> None:
                 "operate/vault-org-ca.md) or one of the enterprise cloud "
                 "KMS plugins (aws/azure/gcp). 'local' keeps the Org CA "
                 "private key in the Mastio database, with no HSM-grade "
-                "protection — dev/test only.",
+                "protection (dev/test only).",
                 settings.kms_backend,
+            )
+            raise SystemExit(1)
+
+        # Three-tier PKI hardening (audit 2026-05-18) — the
+        # ``pki_key_store`` table wraps Org Root + Mastio Intermediate
+        # private keys in a Fernet envelope. The master passphrase
+        # ``MCP_PROXY_DB_ENCRYPTION_KEY`` is operator-supplied and must
+        # be set in production. Length floor 32 chars matches the
+        # ``openssl rand -hex 48`` operator runbook recommendation.
+        # Without it, a DB-only leak surrenders the root-of-trust.
+        db_enc_key = (settings.db_encryption_key or "").strip()
+        if not db_enc_key:
+            _log.critical(
+                "MCP_PROXY_DB_ENCRYPTION_KEY is not set in production. "
+                "The pki_key_store at-rest envelope cannot operate "
+                "without it: a DB leak would surrender the Org Root + "
+                "Mastio Intermediate private keys. Set it to a strong "
+                "random value (e.g. ``openssl rand -hex 48``).",
+            )
+            raise SystemExit(1)
+        if len(db_enc_key) < 32:
+            _log.critical(
+                "MCP_PROXY_DB_ENCRYPTION_KEY is too short (got %d chars, "
+                "need >= 32) in production. Generate one with "
+                "``openssl rand -hex 48`` (96 hex chars = 48 bytes of "
+                "entropy after PBKDF2). Refusing to start.",
+                len(db_enc_key),
             )
             raise SystemExit(1)
 
