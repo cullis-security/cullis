@@ -37,7 +37,10 @@ def _pg_available():
     except OSError:
         return False
 
-pytestmark = pytest.mark.skipif(not _pg_available(), reason="Postgres not available")
+pytestmark = [
+    pytest.mark.skipif(not _pg_available(), reason="Postgres not available"),
+    pytest.mark.xdist_group(name="serial_postgres_integration"),
+]
 
 pg_engine = create_async_engine(POSTGRES_URL, echo=False, poolclass=NullPool)
 PgSession = async_sessionmaker(pg_engine, expire_on_commit=False)

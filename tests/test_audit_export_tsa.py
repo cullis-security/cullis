@@ -17,7 +17,10 @@ from app.db.audit import AuditLog, AuditTsaAnchor, log_event, log_event_cross_or
 from tests.conftest import TestSessionLocal
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_audit_export_tsa"),
+]
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "cullis-audit-verify.py"
 

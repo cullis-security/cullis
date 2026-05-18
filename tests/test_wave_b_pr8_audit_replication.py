@@ -25,6 +25,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from httpx import AsyncClient
@@ -33,7 +34,11 @@ from sqlalchemy import select
 from tests.cert_factory import get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.mastio_strict]
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.mastio_strict,
+    pytest.mark.xdist_group(name="serial_wave_b_pr8_audit_replication"),
+]
 
 
 def _gen_mastio_keypair():
@@ -453,6 +458,33 @@ async def test_org_without_pinned_pubkey_rejected(client: AsyncClient):
     )
     assert r.status_code == 403
     assert "pubkey" in r.text.lower() or "pinned" in r.text.lower()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drop_replica_triggers_after_test():
+    """Mirror of the cleanup in test_wave_b_pr5: drop the
+    ``mastio_audit_replica`` append-only triggers after each test so
+    they don't leak into other tests on the same xdist worker (which
+    would break any DELETE/UPDATE on the replica table).
+    """
+    yield
+    from sqlalchemy import text
+    from app.db.database import engine
+
+    is_pg = engine.dialect.name == "postgresql"
+    async with engine.begin() as conn:
+        if is_pg:
+            await conn.execute(text(
+                "DROP TRIGGER IF EXISTS mastio_audit_replica_no_update_or_delete "
+                "ON mastio_audit_replica"
+            ))
+        else:
+            await conn.execute(text(
+                "DROP TRIGGER IF EXISTS mastio_audit_replica_no_update"
+            ))
+            await conn.execute(text(
+                "DROP TRIGGER IF EXISTS mastio_audit_replica_no_delete"
+            ))
 
 
 async def _install_replica_triggers():

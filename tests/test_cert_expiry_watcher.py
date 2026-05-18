@@ -32,6 +32,8 @@ from cryptography.x509.oid import NameOID
 
 import mcp_proxy.lifespan.cert_expiry_watcher as watcher_mod
 
+pytestmark = pytest.mark.xdist_group(name="serial_cert_expiry_watcher")
+
 
 # ─── helpers ───────────────────────────────────────────────────────────
 

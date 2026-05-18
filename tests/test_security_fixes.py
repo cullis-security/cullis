@@ -22,7 +22,10 @@ from tests.cert_factory import (
 from app.broker.session import Session, SessionStatus, SessionStore
 from tests.conftest import seed_court_agent, seed_court_agent_sync
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_security_fixes"),
+]
 
 
 # ────────────────────────────────────────────────────────────────────────

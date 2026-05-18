@@ -21,6 +21,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+pytestmark = pytest.mark.xdist_group(name="serial_dashboard_api_tokens")
+
 
 @pytest_asyncio.fixture
 async def proxy_logged_in(tmp_path, monkeypatch):

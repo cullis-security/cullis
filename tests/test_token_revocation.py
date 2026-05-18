@@ -15,7 +15,10 @@ from httpx import AsyncClient
 from tests.cert_factory import make_assertion, get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_token_revocation"),
+]
 
 
 async def _setup_agent(client: AsyncClient, agent_id: str, org_id: str, dpop) -> str:

@@ -22,6 +22,8 @@ from app.spiffe import (
 from tests.cert_factory import make_agent_cert, make_assertion, get_org_ca_pem
 from tests.conftest import ADMIN_HEADERS, seed_court_agent
 
+pytestmark = pytest.mark.xdist_group(name="serial_spiffe")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Test mapping bidirezionale
 # ─────────────────────────────────────────────────────────────────────────────

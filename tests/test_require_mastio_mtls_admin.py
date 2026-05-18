@@ -15,7 +15,10 @@ from httpx import AsyncClient
 from app.config import get_settings
 from tests.cert_factory import get_org_ca_pem
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.xdist_group(name="serial_require_mastio_mtls_admin"),
+]
 
 ADMIN_SECRET = get_settings().admin_secret
 
