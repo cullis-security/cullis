@@ -91,6 +91,11 @@ services:
       MCP_PROXY_ALLOWED_ORIGINS:   ${MCP_PROXY_ALLOWED_ORIGINS:-}
       MCP_PROXY_NGINX_CERT_DIR:    ${MCP_PROXY_NGINX_CERT_DIR:-/var/lib/mastio/nginx-certs}
       MCP_PROXY_NGINX_SAN:         ${MCP_PROXY_NGINX_SAN:-mastio.local,localhost,host.docker.internal,mastio-nginx,mcp-proxy}
+      # Wave 2 fix 6 — runtime cert rotation watcher. Defaults are
+      # production-safe; operators only override when debugging.
+      MCP_PROXY_NGINX_CERT_WATCHER_ENABLED:           ${MCP_PROXY_NGINX_CERT_WATCHER_ENABLED:-true}
+      MCP_PROXY_NGINX_CERT_WATCHER_INTERVAL_SECONDS:  ${MCP_PROXY_NGINX_CERT_WATCHER_INTERVAL_SECONDS:-86400}
+      MCP_PROXY_NGINX_CERT_RENEW_WITHIN_DAYS:         ${MCP_PROXY_NGINX_CERT_RENEW_WITHIN_DAYS:-30}
       SSL_CERT_FILE:               ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       REQUESTS_CA_BUNDLE:          ${MCP_PROXY_BROKER_CA_BUNDLE:-}
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}
@@ -207,6 +212,20 @@ services:
     volumes:
       - ./nginx/mastio:/etc/nginx/conf.d:ro
       - ${MASTIO_NGINX_CERTS_DIR:-./nginx-certs}:/etc/nginx/certs:ro
+      # Wave 2 fix 6 — polling reload watcher script. Pairs with the
+      # Mastio-side ``nginx_cert_watcher`` lifespan task that rewrites
+      # ``mastio-server.crt`` when expiry approaches; the mtime change
+      # here triggers ``nginx -s reload`` without docker socket
+      # exposure or a custom image.
+      - ../nginx-reload-watcher/reload-watcher.sh:/usr/local/bin/nginx-reload-watcher.sh:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /usr/local/bin/nginx-reload-watcher.sh &
+        exec nginx -g 'daemon off;'
+    environment:
+      NGINX_RELOAD_POLL_SECONDS: "${NGINX_RELOAD_POLL_SECONDS:-60}"
     depends_on:
       mcp-proxy:
         condition: service_healthy

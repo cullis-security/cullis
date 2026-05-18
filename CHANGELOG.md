@@ -12,6 +12,17 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+### Added
+- nginx sidecar runtime cert rotation via leader-elected lifespan
+  watcher (default 24h tick). Pairs with a polling reload-watcher
+  script in the sidecar that detects mtime changes on
+  `mastio-server.crt` and triggers `nginx -s reload`. Mastio
+  containers up beyond the 90-day cert validity now rotate
+  automatically without restart. Tunable via
+  `MCP_PROXY_NGINX_CERT_WATCHER_INTERVAL_SECONDS` (default 86400)
+  and `NGINX_RELOAD_POLL_SECONDS` (default 60). Audit chain entry
+  `pki.nginx_server_cert_rotated` per rotation.
+
 ### Breaking changes
 
 - **`POST /v1/enrollment/start` now requires `pop_signature`** (H-csr-pop
