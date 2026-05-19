@@ -95,6 +95,35 @@ async def sign_csr(
             detail="cannot sign a CSR for a principal in a different org",
         )
 
+    # Security review F-001 (security-review-app-2026-05-14.md): port of
+    # the broker-side gate to the proxy sister router. Without this
+    # check, any DPoP-authenticated agent in the org could submit a CSR
+    # for ``<td>/<org>/user/<anyone>`` (including ``user/admin``) and
+    # get a proxy-CA-signed user cert valid for 1h, then present it at
+    # ``/auth/token`` with ``principal_type=user`` to bypass the ADR-009
+    # countersig + mTLS gates. The fix requires the caller to be a
+    # ``principal_type=workload`` (the Ambassador / Frontdesk) for any
+    # CSR whose principal_id segment is ``user``. CSRs for ``agent`` and
+    # ``workload`` principal-ids stay open to the legacy admin path.
+    principal_type_in_path = body.principal_id.split("/", 3)[2]
+    if (
+        principal_type_in_path == "user"
+        and token.principal_type != "workload"
+    ):
+        _log.warning(
+            "principals.csr: non-workload caller "
+            "[caller_agent_id=%s caller_principal_type=%s principal_id=%s] "
+            "refused to mint a user-principal cert",
+            token.agent_id, token.principal_type, body.principal_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "only a workload principal (Ambassador) may sign a "
+                "user-principal CSR"
+            ),
+        )
+
     agent_manager = getattr(request.app.state, "agent_manager", None)
     if agent_manager is None:
         raise HTTPException(
