@@ -325,15 +325,19 @@ def _start(
         body["reason"] = requester.reason
     if requester.device_info:
         body["device_info"] = requester.device_info
-    # Shared-mode flag (Frontdesk container): when ``AMBASSADOR_MODE=shared``
-    # is set on this Connector, the workload enrolls *itself* as a shared
-    # multi-user host. The proxy reads ``ambassador_mode`` out of
-    # ``device_info`` at approve() time to skip the auto-baseline binding —
-    # capabilities scoped to MCP resources belong on user principals, not
-    # on the container (see ADR-021 + memory note
+    # Frontdesk-bundle flag (multi-user container): triggered by either
+    # the legacy ``AMBASSADOR_MODE=shared`` (ADR-021 fake-SSO topology)
+    # or the modern ``FRONTDESK_BUNDLE=1`` marker the bundle's
+    # docker-compose.yml ships (ADR-025 ``AUTH_MODE=local`` real
+    # users.db + login form). Both make this Connector enroll *itself*
+    # as a multi-user host; the proxy reads ``ambassador_mode`` out of
+    # ``device_info`` at approve() time to skip the auto-baseline
+    # binding — capabilities scoped to MCP resources belong on user
+    # principals, not on the container (see ADR-021 + memory note
     # ``feedback_frontdesk_shared_mode_capability_model``).
     import os as _os
-    if _os.environ.get("AMBASSADOR_MODE", "").strip().lower() == "shared":
+    from cullis_connector.identity.auth_mode import is_frontdesk_bundle
+    if is_frontdesk_bundle():
         body["device_info"] = _wrap_device_info_with_shared_mode(
             body.get("device_info"),
         )

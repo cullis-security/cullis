@@ -858,7 +858,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
     @app.middleware("http")
     async def _setup_admin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
-        from cullis_connector.identity.auth_mode import is_shared_mode
+        from cullis_connector.identity.auth_mode import is_frontdesk_bundle
         from cullis_connector.setup_auth import (
             ENFORCEMENT_REQUIRED,
             verify_setup_request,
@@ -867,7 +867,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         path = request.url.path
         if not (path == "/setup" or path.startswith("/setup/")):
             return await call_next(request)
-        if not is_shared_mode():
+        if not is_frontdesk_bundle():
             return await call_next(request)
 
         # Read body once so HMAC verification + the downstream handler
@@ -1028,9 +1028,9 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         desktop, standalone PyPI Connector) keeps the legacy
         single-user wizard.
         """
-        from cullis_connector.identity.auth_mode import is_shared_mode
+        from cullis_connector.identity.auth_mode import is_frontdesk_bundle
 
-        return "setup_workload.html" if is_shared_mode() else "setup.html"
+        return "setup_workload.html" if is_frontdesk_bundle() else "setup.html"
 
     @app.get("/setup", response_class=HTMLResponse)
     def setup_get(
@@ -1528,9 +1528,9 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             # because ``mark_setup_completed`` is only read in shared
             # mode (see ``cullis_connector/setup_auth.py``).
             try:
-                from cullis_connector.identity.auth_mode import is_shared_mode
+                from cullis_connector.identity.auth_mode import is_frontdesk_bundle
                 from cullis_connector.setup_auth import mark_setup_completed
-                if is_shared_mode():
+                if is_frontdesk_bundle():
                     mark_setup_completed(config.config_dir)
             except Exception as exc:  # noqa: BLE001 — never block the
                 # approval response on setup-state housekeeping; the

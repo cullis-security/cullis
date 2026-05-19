@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from cullis_connector.identity.auth_mode import is_shared_mode
+from cullis_connector.identity.auth_mode import is_frontdesk_bundle
 
 _log = logging.getLogger("cullis_connector.setup_auth")
 
@@ -165,7 +165,7 @@ def read_or_generate_setup_bearer(
     Returns ``None`` in single mode (no bearer needed) or when setup
     is already completed (no further bearer should be served).
     """
-    if not is_shared_mode(env):
+    if not is_frontdesk_bundle(env):
         return None
     state = _load_state(config_dir)
     if state.get("setup_completed"):
@@ -291,7 +291,7 @@ def verify_setup_request(
     e = env if env is not None else os.environ
     enforcement = read_setup_auth_enforcement(e)
 
-    if not is_shared_mode(e):
+    if not is_frontdesk_bundle(e):
         return SetupAuthOutcome(True, "single_mode_bypass", enforcement)
 
     if is_setup_completed(config_dir):

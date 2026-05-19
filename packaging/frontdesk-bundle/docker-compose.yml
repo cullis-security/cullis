@@ -99,6 +99,17 @@ services:
       # frontdesk.env explicitly (also requires CULLIS_TRUSTED_PROXIES).
       AUTH_MODE: ${AUTH_MODE:-local}
       AMBASSADOR_MODE: ${AMBASSADOR_MODE:-}
+      # ADR-034 §1 — marker so the Connector knows it is running
+      # inside the Frontdesk bundle. The multi-user guards
+      # (admin-only ``/setup/*``, ``principal_type=workload`` at
+      # enrollment, Mastio version probe, ADR-033 audit warning)
+      # fire when this is set even if ``AMBASSADOR_MODE`` is empty —
+      # the modern ``AUTH_MODE=local`` Frontdesk deployment has the
+      # same multi-user blast radius as the legacy fake-SSO topology
+      # and must carry the same defences. Cullis Chat desktop and
+      # the standalone PyPI Connector ship without this env so they
+      # keep the single-user behaviour.
+      FRONTDESK_BUNDLE: "1"
       CULLIS_CONNECTOR_ADMIN_SECRET: ${CULLIS_CONNECTOR_ADMIN_SECRET:-}
       # Loopback enforcement is the right default on a laptop where the
       # Ambassador binds to 127.0.0.1, but on the Frontdesk bundle the
