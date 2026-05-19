@@ -26,7 +26,12 @@
 #  10. Login user against Frontdesk → assert
 #      ``provisioning=ok`` (ADR-025 Phase 3 + #816 chain), check
 #      ``previous`` cert pinning grace period intact
-#  11. Tear everything down
+#  11. Spin up Ollama on the shared bridge, warm a tiny model,
+#      configure Mastio AI Providers programmatically, then drive
+#      ``GET /v1/models`` + ``POST /v1/chat/completions`` from the
+#      Frontdesk SPA's vantage point (mario's cookie) and assert
+#      ``source=live`` + a non-empty assistant reply
+#  12. Tear everything down
 #
 # Why this lives next to ``demo.sh``: the existing sandbox demo
 # enrolls agents via the BYOCA bootstrap script (``sandbox/bootstrap/``)
@@ -103,6 +108,14 @@ MASTIO_HOST_PORT="${MASTIO_HOST_PORT:-19443}"
 FRONTDESK_HTTP_PORT="${FRONTDESK_HTTP_PORT:-18080}"
 FRONTDESK_TLS_PORT="${FRONTDESK_TLS_PORT:-18443}"
 
+# Ollama service — tiny model so the test stays under ~400MB pull and
+# the first inference call returns under ~10s on CPU. Override via env
+# to pin a different model (must be ``<name>:<tag>`` exactly as Ollama
+# names it). Default qwen2.5:0.5b is ~352MB.
+OLLAMA_IMAGE="${OLLAMA_IMAGE:-ollama/ollama:latest}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:0.5b}"
+OLLAMA_CONTAINER="dogfood-frontdesk-ollama"
+
 # Compose project names — keep distinct so a half-baked previous run
 # can be cleaned without nuking sandbox/demo.sh.
 MASTIO_PROJECT="dogfood-frontdesk-mastio"
@@ -136,6 +149,7 @@ wait_http() {
 
 cleanup_down() {
   log "tearing down ${FRONTDESK_PROJECT} + ${MASTIO_PROJECT}"
+  docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
   ( cd "$FRONTDESK_WORK" 2>/dev/null && \
       docker compose -p "$FRONTDESK_PROJECT" \
         --env-file frontdesk.env down --volumes --remove-orphans \
@@ -203,6 +217,26 @@ mkdir -p "$MASTIO_WORK" "$FRONTDESK_WORK"
 SHARED_NET="dogfood-frontdesk-bridge"
 docker network inspect "$SHARED_NET" >/dev/null 2>&1 \
   || docker network create "$SHARED_NET" >/dev/null
+
+# Kick off Ollama early so the model pull (~350MB for qwen2.5:0.5b)
+# overlaps with the Mastio + Frontdesk bring-up. By the time we get
+# to step 9 the model is warm and the chat assertion stays fast.
+# Container is attached to the shared bridge with alias ``ollama`` so
+# the Mastio resolves ``http://ollama:11434`` via Docker DNS — same
+# bridge pattern Mastio uses to reach the Frontdesk Ambassador admin.
+log "spawning Ollama (${OLLAMA_IMAGE}, alias=ollama)"
+docker run -d --name "$OLLAMA_CONTAINER" \
+  --network "$SHARED_NET" --network-alias ollama \
+  --pull=missing \
+  "$OLLAMA_IMAGE" >/dev/null \
+  || fail "could not start $OLLAMA_CONTAINER"
+# Pull the chat model in the background — runs concurrently with the
+# rest of the script. We block on completion in step 8b before
+# touching the AI Providers admin endpoint.
+log "pulling $OLLAMA_MODEL in background"
+docker exec -d "$OLLAMA_CONTAINER" \
+  sh -c "ollama pull '$OLLAMA_MODEL' > /tmp/ollama-pull.log 2>&1; echo \$? > /tmp/ollama-pull.rc"
+ok "Ollama spawned, model pull running in background"
 
 # Copy bundle templates first; THEN drop overrides on top so the
 # template's ``cp -r`` doesn't clobber them. (Subtle bug fix: the
@@ -283,7 +317,16 @@ MCP_PROXY_INITIAL_ADMIN_PASSWORD=${MASTIO_ADMIN_PASSWORD}
 MCP_PROXY_DASHBOARD_SIGNING_KEY=${MASTIO_DASHBOARD_SIGNING_KEY}
 MCP_PROXY_ENVIRONMENT=development
 MCP_PROXY_STANDALONE=true
-MCP_PROXY_PROXY_PUBLIC_URL=https://localhost:${MASTIO_HOST_PORT}
+# DPoP htu binding pins the proof to the *configured* public URL,
+# not the request's Host header. The Connector (inside the shared
+# bridge) reaches the Mastio at ``https://mastio-nginx:9443`` via
+# Docker DNS, so the public URL has to match that exact host:port
+# or every DPoP-bearing egress call 401s with "htu mismatch". Host-
+# side admin calls (curl https://localhost:${MASTIO_HOST_PORT}) still
+# work because dashboard cookie auth + X-Admin-Secret endpoints
+# don't carry DPoP. Caught dogfooding ${OLLAMA_MODEL} chat → 401 on
+# /v1/egress/models with htu='mastio-nginx' vs 'localhost' expected.
+MCP_PROXY_PROXY_PUBLIC_URL=https://mastio-nginx:9443
 MCP_PROXY_NGINX_SAN=mastio.local,localhost,host.docker.internal,mastio-nginx,mcp-proxy
 MCP_PROXY_PORT=${MASTIO_HOST_PORT}
 MASTIO_WORKERS=4
@@ -519,6 +562,65 @@ print(row[0] if row else 'MISSING')
   fail "pending row status expected 'approved' after POST, got '$APPROVED_STATUS' (CSRF / session may have failed)"
 ok "enrollment approved (verified pending.status='approved')"
 
+# ── 8b. Wait for Ollama model pull + configure Mastio AI Provider ────────────
+
+log "waiting for Ollama model pull to finish"
+# Block up to 5 min (CPU-only laptops at low bandwidth can stretch).
+# Memory feedback_no_polling: one fixed-cadence wait, no tight loops.
+pull_deadline=$((SECONDS + 300))
+while (( SECONDS < pull_deadline )); do
+  if docker exec "$OLLAMA_CONTAINER" sh -c '[ -f /tmp/ollama-pull.rc ]' 2>/dev/null; then
+    PULL_RC="$(docker exec "$OLLAMA_CONTAINER" cat /tmp/ollama-pull.rc 2>/dev/null | tr -d '[:space:]')"
+    break
+  fi
+  sleep 2
+done
+if [[ "${PULL_RC:-X}" != "0" ]]; then
+  echo "--- ollama pull log ---" >&2
+  docker exec "$OLLAMA_CONTAINER" cat /tmp/ollama-pull.log 2>/dev/null | tail -n40 >&2 || true
+  fail "ollama pull '$OLLAMA_MODEL' did not finish cleanly (rc=${PULL_RC:-timeout})"
+fi
+ok "$OLLAMA_MODEL pulled"
+
+log "registering Ollama in Mastio AI Providers (api_base=http://ollama:11434)"
+SAVE_HTTP="$(curl -sk -b "$WORK_DIR/mastio-cookies.txt" \
+  -D "$WORK_DIR/ai-save-headers.txt" \
+  -o "$WORK_DIR/ai-save-resp.html" \
+  -w '%{http_code}' \
+  -X POST "https://localhost:${MASTIO_HOST_PORT}/proxy/ai-providers/ollama/save" \
+  -H "Origin: https://localhost:${MASTIO_HOST_PORT}" \
+  --data-urlencode "csrf_token=${CSRF_TOK}" \
+  --data-urlencode "api_base=http://ollama:11434" \
+  --data-urlencode "enabled=on")"
+if [[ ! "$SAVE_HTTP" =~ ^30[37]$ ]]; then
+  echo "--- ai-provider save response ---" >&2
+  head -c 400 "$WORK_DIR/ai-save-resp.html" >&2 || true
+  echo >&2
+  fail "AI provider save expected 30x, got $SAVE_HTTP"
+fi
+# Confirm the row reached the Mastio DB (silent forward failure
+# protection — same pattern as the user-create assertion below).
+OLLAMA_ROW="$(docker exec "${MASTIO_PROJECT}-mcp-proxy-1" python -c "
+import sqlite3
+c = sqlite3.connect('/data/mcp_proxy.db')
+row = c.execute(\"SELECT enabled FROM ai_provider_credentials WHERE provider='ollama'\").fetchone()
+print(row[0] if row else 'MISSING')
+")"
+[[ "$OLLAMA_ROW" == "1" ]] \
+  || fail "ai_provider_credentials.ollama not stored or disabled (got '$OLLAMA_ROW')"
+ok "Mastio AI Providers: ollama enabled"
+
+# Sanity-check the Mastio can list models from Ollama — this is the
+# canary for shared-bridge DNS + LiteLLM provider catalog wiring.
+# ``/v1/admin/ai-providers/<p>/test`` mirrors the dashboard Test button
+# via the X-Admin-Secret header so we don't need to scrape the HTML.
+PROBE_JSON="$(curl -sk \
+  -H "X-Admin-Secret: ${MASTIO_ADMIN_SECRET}" \
+  -X POST "https://localhost:${MASTIO_HOST_PORT}/v1/admin/ai-providers/ollama/test")"
+echo "$PROBE_JSON" | grep -q '"status":"ok"' \
+  || fail "Mastio could not probe ollama (Docker DNS or provider wiring broken): $PROBE_JSON"
+ok "Mastio ↔ Ollama probe ok"
+
 # ── 9. Connector polls + saves identity ───────────────────────────────────────
 
 log "polling Connector /api/status to trigger save_identity"
@@ -645,6 +747,54 @@ echo "$LOGIN2" | grep -q '"provisioning":"ok"' \
   || fail "second login expected provisioning=ok, got: $LOGIN2 (chain or workload-cap regression)"
 ok "user login provisioning=ok (ADR-025 Phase 3 + #816 chain ok)"
 
+# ── 11b. Chat end-to-end via mario (SPA's view: cookie-authed) ───────────────
+
+# Stash mario's rotated password where the operator can read it
+# from the host: handy when a test fails mid-flight and we want to
+# re-drive the chat path interactively without restarting.
+echo "$NEW_PW" >"$WORK_DIR/mario-pw.txt"
+log "fetching /v1/models from Frontdesk as mario (pw stashed at .data/dogfood-frontdesk/mario-pw.txt)"
+MODELS_JSON="$(curl -sk -b "$WORK_DIR/mario-cookies.txt" \
+  "http://localhost:${FRONTDESK_HTTP_PORT}/v1/models")"
+echo "$MODELS_JSON" >"$WORK_DIR/models.json"
+SOURCE="$(echo "$MODELS_JSON" \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("cullis_meta",{}).get("source","?"))')"
+if [[ "$SOURCE" != "live" ]]; then
+  echo "--- /v1/models payload ---" >&2
+  head -c 800 "$WORK_DIR/models.json" >&2
+  echo >&2
+  fail "Frontdesk /v1/models cullis_meta.source expected 'live', got '$SOURCE'"
+fi
+# Ollama model must appear in the live list (live source proves the
+# Mastio AI gateway aggregated provider catalogs end-to-end).
+echo "$MODELS_JSON" | grep -q "ollama_chat/${OLLAMA_MODEL}" \
+  || fail "ollama_chat/${OLLAMA_MODEL} missing from live model list: $(head -c 600 "$WORK_DIR/models.json")"
+ok "/v1/models live, includes ollama_chat/${OLLAMA_MODEL}"
+
+log "POST /v1/chat/completions via Ollama"
+CHAT_HTTP="$(curl -sk -b "$WORK_DIR/mario-cookies.txt" \
+  -o "$WORK_DIR/chat.json" -w '%{http_code}' \
+  -X POST "http://localhost:${FRONTDESK_HTTP_PORT}/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://localhost:${FRONTDESK_HTTP_PORT}" \
+  -d "{\"model\":\"ollama_chat/${OLLAMA_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly the word: cullis\"}],\"max_tokens\":32}")"
+if [[ "$CHAT_HTTP" != "200" ]]; then
+  echo "--- chat response (HTTP $CHAT_HTTP) ---" >&2
+  head -c 800 "$WORK_DIR/chat.json" >&2
+  echo >&2
+  fail "chat completion expected 200, got $CHAT_HTTP"
+fi
+CHAT_CONTENT="$(python3 -c "
+import json, sys
+with open('$WORK_DIR/chat.json') as fh:
+    d = json.load(fh)
+content = d.get('choices', [{}])[0].get('message', {}).get('content', '')
+print(content)
+")"
+[[ -n "$CHAT_CONTENT" ]] \
+  || fail "chat completion returned empty content: $(head -c 400 "$WORK_DIR/chat.json")"
+ok "chat completion returned ${#CHAT_CONTENT} chars (preview: ${CHAT_CONTENT:0:60}…)"
+
 # ── 12. Done ──────────────────────────────────────────────────────────────────
 
 echo >&2
@@ -656,6 +806,8 @@ echo "  Mastio:    https://localhost:${MASTIO_HOST_PORT}/proxy/login" >&2
 echo "  Frontdesk: http://localhost:${FRONTDESK_HTTP_PORT}/login" >&2
 echo "  admin pw:  ${MASTIO_ADMIN_PASSWORD}" >&2
 echo "  mario pw:  ${NEW_PW}" >&2
+echo "  Ollama:    http://ollama:11434 (inside ${SHARED_NET} only)" >&2
+echo "  model:     ollama_chat/${OLLAMA_MODEL}" >&2
 echo "" >&2
 if [[ "$DO_KEEP" -eq 1 ]]; then
   echo "  --keep set: stack stays up. Tear down with:" >&2
