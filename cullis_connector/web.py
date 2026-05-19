@@ -842,6 +842,85 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     # token from ``statusline.token``); browsers never auto-attach
     # ``Authorization``, so the bearer path is not a CSRF vector.
 
+    # ── ADR-034 §1 — admin-only setup surface in shared mode ────────────
+    #
+    # In shared mode (``AMBASSADOR_MODE=shared``) the Frontdesk
+    # container sits at the boundary between the corporate LAN and
+    # Mastio. Without this middleware any host on the LAN could hit
+    # ``/setup/discover`` first and enrol the workload under an
+    # attacker-controlled Mastio. We accept three proofs:
+    # bootstrap bearer, HMAC signature, or completed-bypass-impossible
+    # (see ``cullis_connector/setup_auth.py`` for the proof shapes).
+    # The ``FRONTDESK_SETUP_AUTH_ENFORCEMENT={warn,required}`` knob
+    # (default ``warn``) mirrors the ADR-033 audit-warning pattern so
+    # the migration window doesn't break existing shared deployments
+    # the day they upgrade to v0.5.
+
+    @app.middleware("http")
+    async def _setup_admin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
+        from cullis_connector.identity.auth_mode import is_shared_mode
+        from cullis_connector.setup_auth import (
+            ENFORCEMENT_REQUIRED,
+            verify_setup_request,
+        )
+
+        path = request.url.path
+        if not (path == "/setup" or path.startswith("/setup/")):
+            return await call_next(request)
+        if not is_shared_mode():
+            return await call_next(request)
+
+        # Read body once so HMAC verification + the downstream handler
+        # see the same bytes. Starlette re-yields ``_body`` on later
+        # ``await request.body()`` calls, so the handler is unaffected.
+        body_bytes = b""
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            body_bytes = await request.body()
+        outcome = verify_setup_request(
+            config_dir=config.config_dir,
+            method=request.method,
+            path=path,
+            headers={k.lower(): v for k, v in request.headers.items()},
+            query_params=dict(request.query_params),
+            body_bytes=body_bytes,
+        )
+
+        if not outcome.allowed:
+            status_code = (
+                410 if outcome.reason == "completed_refused" else 403
+            )
+            detail = {
+                "completed_refused": (
+                    "setup is already completed for this container; "
+                    "redeploy with a fresh state to re-run /setup"
+                ),
+                "no_proof_refused": (
+                    "missing admin proof; pass FRONTDESK_SETUP_BEARER "
+                    "via Authorization or X-Cullis-Setup-Sig"
+                ),
+            }.get(outcome.reason, "forbidden")
+            _log.warning(
+                "setup_admin_guard: refused [reason=%s enforcement=%s "
+                "path=%s method=%s]",
+                outcome.reason, outcome.enforcement, path, request.method,
+            )
+            return JSONResponse(
+                {"detail": detail, "reason": outcome.reason},
+                status_code=status_code,
+            )
+
+        if outcome.reason == "no_proof_warn":
+            # ADR-034 §1 audit warning during the migration window.
+            # Same pattern as ADR-033 Phase 1 user-session warning.
+            _log.warning(
+                "setup_admin_guard: shared-mode /setup hit without "
+                "admin proof [path=%s method=%s enforcement=%s] — flip "
+                "%s=%s to refuse",
+                path, request.method, outcome.enforcement,
+                "FRONTDESK_SETUP_AUTH_ENFORCEMENT", ENFORCEMENT_REQUIRED,
+            )
+        return await call_next(request)
+
     @app.middleware("http")
     async def _csrf_origin_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
         # ADR-019 — Ambassador endpoints under /v1/* and /api/session/*

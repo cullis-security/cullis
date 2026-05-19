@@ -228,6 +228,83 @@ def _build_pop_signature(private_key, pubkey_pem: str) -> str:
     return _b64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
 
 
+_MIN_MASTIO_VERSION_FOR_WORKLOAD = (0, 5, 0)
+
+
+def _parse_semver(raw: str) -> tuple[int, int, int] | None:
+    """Return ``(major, minor, patch)`` or ``None`` for unparseable / dev."""
+    if not raw or raw == "dev":
+        return None
+    # Strip a leading ``v`` defensively in case CULLIS_MASTIO_VERSION
+    # diverges from the no-v image convention (memory note
+    # ``mastio-release-tag-convention``).
+    clean = raw.lstrip("v")
+    # Trim pre-release / build metadata (``0.5.0-rc1``, ``0.5.0+gha``).
+    head = clean.split("-", 1)[0].split("+", 1)[0]
+    try:
+        major, minor, patch = (int(part) for part in head.split("."))
+    except ValueError:
+        return None
+    return major, minor, patch
+
+
+def _check_mastio_version_for_shared_mode(
+    *,
+    site_url: str,
+    verify_tls: bool | str,
+    timeout_s: float,
+) -> None:
+    """Refuse the enrollment when the target Mastio is too old for
+    ADR-034 §2 workload identity. See ``_start`` for the call site.
+
+    Raises :class:`EnrollmentFailed` with a message the operator can
+    act on. The ``GET /health`` endpoint is unauthenticated and is the
+    same one Docker healthchecks already use, so the probe doesn't
+    require any setup work upstream.
+    """
+    health_url = f"{site_url.rstrip('/')}/health"
+    try:
+        response = httpx.get(
+            health_url, verify=verify_tls, timeout=timeout_s,
+        )
+    except httpx.HTTPError as exc:
+        raise EnrollmentFailed(
+            f"Could not probe Mastio /health at {health_url} for "
+            f"version compatibility: {exc}"
+        ) from exc
+
+    if response.status_code != 200:
+        raise EnrollmentFailed(
+            f"Mastio /health returned HTTP {response.status_code} — "
+            "expected 200 with a ``version`` field."
+        )
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise EnrollmentFailed(
+            f"Mastio /health returned a non-JSON body: {exc}"
+        ) from exc
+
+    version_raw = (body.get("version") or "").strip()
+    parsed = _parse_semver(version_raw)
+    if parsed is None:
+        # ``dev`` or unparseable — treat as a developer Mastio and let
+        # the operator proceed. Production Mastios always inject
+        # CULLIS_MASTIO_VERSION at image build time.
+        return
+    if parsed < _MIN_MASTIO_VERSION_FOR_WORKLOAD:
+        min_str = ".".join(str(p) for p in _MIN_MASTIO_VERSION_FOR_WORKLOAD)
+        raise EnrollmentFailed(
+            f"Mastio at {site_url} reports version {version_raw}, but "
+            f"shared-mode Frontdesk requires Mastio >= {min_str} for "
+            "workload principal-type enrollment (ADR-034 §2). Upgrade "
+            "Mastio first, or set FRONTDESK_SKIP_VERSION_PROBE=1 to "
+            "override (only for dev / staging where audit attribution "
+            "as ``agent`` is acceptable)."
+        )
+
+
 def _start(
     *,
     site_url: str,
@@ -272,6 +349,22 @@ def _start(
         )
         if principal_type in {"agent", "workload"}:
             body["principal_type"] = principal_type
+        # ADR-034 §6 / PR-A compat note — Pydantic ``extra="ignore"``
+        # on the Mastio enrollment schema means a pre-0.5 Mastio
+        # silently drops ``principal_type`` and lands the Frontdesk
+        # as ``agent``. Refuse to enroll against such a Mastio in
+        # shared mode so the workload identity isn't silently
+        # downgraded. Skip the check when ``FRONTDESK_SKIP_VERSION_PROBE``
+        # is set (dev workflow against a source-checkout Mastio that
+        # reports ``version=dev``).
+        if _os.environ.get(
+            "FRONTDESK_SKIP_VERSION_PROBE", "",
+        ).strip().lower() not in {"1", "true", "yes"}:
+            _check_mastio_version_for_shared_mode(
+                site_url=site_url,
+                verify_tls=verify_tls,
+                timeout_s=timeout_s,
+            )
     # F-B-11 Phase 3d — include the public DPoP JWK so Mastio can
     # compute + store its thumbprint on approve (wire added in #207).
     if dpop_jwk is not None:
