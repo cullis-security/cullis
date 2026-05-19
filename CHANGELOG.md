@@ -12,6 +12,73 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [v0.5.0] — Frontdesk Finding #16 closer, ADR-034 PR-A..F shipped — 2026-05-19
+
+### Added
+
+- **`sandbox/dogfood-frontdesk.sh` end-to-end gate** (#819, #820, #821).
+  Spawns Ollama on the shared docker bridge, brings up Mastio + the
+  Frontdesk bundle, drives `/setup` as a `workload`, approves enrollment
+  via the Mastio dashboard, creates user `mario`, logs in through the
+  SPA, and asserts `/v1/models` + `/v1/chat/completions` round-trip
+  live with a real local model. Moves Finding #16 from "manual VM
+  repro" to one command.
+- **Delete user action on the Mastio users list** (#818). Operator
+  can remove a `local_user_principal` row directly from
+  `/proxy/users` instead of poking the DB.
+- **`verify_tls` knob on Frontdesk-bridge admin actions** (#818).
+  When the Mastio dashboard reaches a Frontdesk container that fronts
+  itself with a self-signed cert, the admin can opt into trusting it
+  for the duration of the bridge call without weakening the global
+  TLS posture.
+
+### Fixed
+
+- **User-principal CSR response now carries `leaf + Mastio Intermediate`**
+  (#820). `mcp_proxy/registry/principals_csr.sign_user_csr` mirrors the
+  workload fix shipped in #816: nginx's `ssl_client_certificate`
+  (Org Root only) cannot walk leaf → root without the intermediate
+  the SDK ships at the TLS handshake, so user mTLS calls into
+  `/v1/(egress|agents|llm|chat)` 401'd on every modern Frontdesk
+  bundle. Closes the elusive "200 OK in subprocess, 401 in uvicorn
+  worker" reported by the sandbox.
+- **`/v1/models` honours the per-user cert in single-mode**
+  (#821). The single Ambassador router forked on
+  `request.state.user_credentials` for `chat_completions` already
+  (ADR-025 Phase 3), but `list_models` was still going through the
+  Connector workload `AmbassadorClient` — which is not a
+  UserPrincipal, so Mastio's mTLS gate dropped the request. Build a
+  per-request `CullisClient` from the bound credential, cache on
+  `principal_id`, and promote the fail-loud branch from
+  `is_shared_mode()` to `is_frontdesk_bundle()` so the modern bundle
+  (no `AMBASSADOR_MODE=shared`) gets the same 503 instead of
+  silently advertising hardcoded Claude defaults.
+- **`principal_type` propagated through enrolment UPDATE path** (#815).
+  Re-enrolling a workload after the first wizard pass kept the
+  `principal_type` empty on the `internal_agents` row, so downstream
+  capability gates treated the principal as an agent. The UPDATE path
+  now sets the column alongside the cert and DPoP fields.
+- **External pubkey responses include the Mastio Intermediate** (#816).
+  Same shape as the user-CSR fix above, but for the agent path
+  `sign_external_pubkey`. Pre-fix, `cullis_sdk._egress_http` could not
+  build a chain into the Mastio Intermediate without an extra
+  side-channel CA fetch.
+- **Admin password reset + initial-admin picker on the dashboard**
+  (#817). The "Admins" surface now lets the operator promote an
+  existing principal to admin and reset a known principal's password
+  inline, instead of relying on the auto-generated bootstrap password
+  the bundle prints to stderr on first start.
+
+### Security
+
+- **Three-tier PKI hardening, end of the leaf-only pocket**: with
+  #816 + #820 both the workload and user paths now ship the full
+  `leaf → Mastio Intermediate` chain. The Org Root stays cold-by-
+  default; the Mastio Intermediate is the one signing every
+  end-entity certificate. No more silent fallbacks to leaf-only PEMs.
+
+[v0.5.0]: https://github.com/cullis-security/cullis/releases/tag/mastio-v0.5.0
+
 ## [v0.4.7] — Connector wizard pop_signature + Frontdesk TLS sidecar Host port — 2026-05-19
 
 ### Fixed
