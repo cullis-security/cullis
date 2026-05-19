@@ -337,7 +337,22 @@ async def sign_user_csr(
         .sign(ca_key, hashes.SHA256())
     )
 
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+    leaf_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+    # Three-tier PKI hardening (audit 2026-05-18) mirror of
+    # ``sign_external_pubkey``: ship the Mastio Intermediate alongside
+    # the leaf so the Connector persists the full chain. The leaf is
+    # signed by the Mastio Intermediate, not the Org Root directly, so
+    # nginx's ``ssl_client_certificate /etc/nginx/certs/org-ca.crt``
+    # (Org Root only) cannot walk leaf → root without the intermediate
+    # the SDK ships at the TLS handshake. Without this concat every
+    # user-bound ``/v1/egress/*`` call 401s at nginx with the default
+    # HTML body — discovered in sandbox dogfood after the htu fix
+    # cleared the workload poller but mario's ``/v1/models`` stayed
+    # broken because the user cert path returned leaf-only.
+    intermediate_pem = ca_cert.public_bytes(
+        serialization.Encoding.PEM,
+    ).decode("utf-8")
+    cert_pem = leaf_pem + intermediate_pem
     thumbprint = _cert_thumbprint_sha256(cert)
     return cert_pem, thumbprint, csr_pubkey_thumb, not_after
 
