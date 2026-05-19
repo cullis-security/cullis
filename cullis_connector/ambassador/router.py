@@ -38,7 +38,7 @@ from cullis_connector.ambassador.streaming import (
     fake_stream,
 )
 from cullis_connector.ambassador.streaming_loop import stream_tool_use_loop
-from cullis_connector.identity.auth_mode import is_shared_mode
+from cullis_connector.identity.auth_mode import is_frontdesk_bundle
 
 _log = logging.getLogger("cullis_connector.ambassador.router")
 
@@ -220,41 +220,79 @@ def list_models(request: Request):
     state = _get_state(request)
     _enforce_bearer(request, state)
 
-    cache_key = state.get("agent_id") or "default"
+    # ADR-025 Phase 3 — when the cert middleware bound a per-user cert
+    # to the request (``request.state.user_credentials``), key the cache
+    # on ``principal_id`` and fetch live models via a per-user
+    # CullisClient. The workload-cred holder would 401 at the Mastio's
+    # ``location ~ ^/v1/(egress|agents|...)`` mTLS gate — the workload
+    # cert is not a UserPrincipal. Mirrors the chat_completions handler
+    # below and ``ambassador/shared/router.py::list_models``.
+    user_creds = _per_user_credentials(request)
+    cache_key = (
+        user_creds.principal_id if user_creds is not None
+        else state.get("agent_id") or "default"
+    )
     cached = _models_cache.get(cache_key)
     now = time.monotonic()
     if cached is not None and (now - cached[0]) < _MODELS_CACHE_TTL_S:
         return _models_response(cached[1], cached[2])
 
-    holder = state.get("client")
     data: list[dict] = []
     source = "live"
     error_reason: str | None = None
-    if holder is not None:
+    if user_creds is not None:
+        per_user_client = None
         try:
-            client = holder.get()
-            live = client.list_models()
+            per_user_client = _build_user_client(request, user_creds)
+            live = per_user_client.list_models()
             if live:
                 data = live
             else:
                 error_reason = "Mastio returned empty model list"
-        except Exception as exc:
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
             error_reason = str(exc) or exc.__class__.__name__
             _log.debug(
-                "Mastio /v1/models fetch failed: %s", exc,
+                "per-user /v1/models fetch failed for %s: %s",
+                user_creds.principal_id, exc,
             )
+        finally:
+            close = getattr(per_user_client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
     else:
-        error_reason = "Ambassador has no Mastio client wired"
+        holder = state.get("client")
+        if holder is not None:
+            try:
+                client = holder.get()
+                live = client.list_models()
+                if live:
+                    data = live
+                else:
+                    error_reason = "Mastio returned empty model list"
+            except Exception as exc:
+                error_reason = str(exc) or exc.__class__.__name__
+                _log.debug(
+                    "Mastio /v1/models fetch failed: %s", exc,
+                )
+        else:
+            error_reason = "Ambassador has no Mastio client wired"
 
     if not data:
         # Live fetch did not yield a usable list. ADR-034 §5: in
-        # shared mode fail loud so the SPA can banner the issue; in
-        # single mode keep the legacy fallback for desktop UX. The
-        # 503 path skips the cache write so a transient fetch error
-        # doesn't pin the dropdown to error for 30s.
-        if is_shared_mode():
+        # multi-user deployments (legacy ``AMBASSADOR_MODE=shared`` and
+        # modern ``FRONTDESK_BUNDLE=1`` modern bundle alike) fail loud so
+        # the SPA can banner the issue; in single-user desktop mode keep
+        # the legacy fallback for UX. The 503 path skips the cache write
+        # so a transient fetch error doesn't pin the dropdown to error
+        # for 30s.
+        if is_frontdesk_bundle():
             _log.warning(
-                "Mastio /v1/models unavailable in shared mode: %s",
+                "Mastio /v1/models unavailable in Frontdesk bundle: %s",
                 error_reason,
             )
             return JSONResponse(
