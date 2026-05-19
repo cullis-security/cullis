@@ -358,11 +358,8 @@ async def lifespan(app: FastAPI):
         # SAN-mismatched against the configured value.
         if settings.nginx_cert_dir:
             try:
-                sans = [
-                    s.strip()
-                    for s in (settings.nginx_san or "mastio.local").split(",")
-                    if s.strip()
-                ]
+                from mcp_proxy.lifespan._san_resolver import resolve_nginx_sans
+                sans = resolve_nginx_sans(settings)
                 await agent_mgr.ensure_nginx_server_cert(
                     out_dir=settings.nginx_cert_dir,
                     sans=sans,
@@ -513,14 +510,11 @@ async def lifespan(app: FastAPI):
     ):
         try:
             from mcp_proxy.lifespan import get_leader as _get_leader_nginx
+            from mcp_proxy.lifespan._san_resolver import resolve_nginx_sans
             from mcp_proxy.lifespan.nginx_cert_watcher import (
                 nginx_cert_watcher_loop,
             )
-            nginx_sans = [
-                s.strip()
-                for s in (settings.nginx_san or "mastio.local").split(",")
-                if s.strip()
-            ]
+            nginx_sans = resolve_nginx_sans(settings)
             nginx_leader = _get_leader_nginx("nginx_cert_watcher")
             if await nginx_leader.acquire():
                 nginx_stop = asyncio.Event()
