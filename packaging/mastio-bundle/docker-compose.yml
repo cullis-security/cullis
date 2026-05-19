@@ -148,6 +148,16 @@ services:
       # leave /proxy/users in read-only mode.
       MCP_PROXY_FRONTDESK_AMBASSADOR_URL: ${MCP_PROXY_FRONTDESK_AMBASSADOR_URL:-}
       MCP_PROXY_FRONTDESK_ADMIN_SECRET:   ${MCP_PROXY_FRONTDESK_ADMIN_SECRET:-}
+      # TLS verification for the Frontdesk Ambassador callback.
+      # ``true`` (default) — standard system trust store, the right
+      # default when the Ambassador is fronted by a corporate ingress
+      # with a real CA cert. ``false`` skips verification for the
+      # built-in sidecar's self-signed leaf (libvirt dogfood, local
+      # demos). ``MCP_PROXY_FRONTDESK_CA_BUNDLE`` (path inside the
+      # container, typically mounted via volume) pins a specific CA
+      # and overrides the boolean.
+      MCP_PROXY_FRONTDESK_VERIFY_TLS: ${MCP_PROXY_FRONTDESK_VERIFY_TLS:-true}
+      MCP_PROXY_FRONTDESK_CA_BUNDLE:   ${MCP_PROXY_FRONTDESK_CA_BUNDLE:-}
       # ADR-029 Phase C — tool-call PDP gate. When true, the Mastio's
       # ``run_tool_use_loop`` calls /v1/policy/tool-call for every tool
       # the model wants to invoke and refuses the tools the org's

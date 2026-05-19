@@ -543,6 +543,24 @@ class ProxySettings(BaseSettings):
     # page read-only (legacy behaviour).
     frontdesk_ambassador_url: str = ""
     frontdesk_admin_secret: str = ""
+    # When the Frontdesk Ambassador is reached over HTTPS with a
+    # self-signed TLS cert (the bundle's built-in sidecar, default),
+    # the Mastio cannot validate the leaf against any CA it knows.
+    # Two ways to bridge:
+    #   * ``frontdesk_verify_tls=false`` — skip verification entirely.
+    #     Cheap dogfood / dev path; fine inside a private libvirt
+    #     network where the only reason the leaf is unverifiable is
+    #     that the sidecar minted it locally.
+    #   * ``frontdesk_ca_bundle`` — path to the Frontdesk CA chain
+    #     (e.g. ``./frontdesk-ca.crt`` copied from the bundle's
+    #     ``tls/`` dir at deploy time). Use in production so the
+    #     Mastio still validates the leaf.
+    # If both are set the explicit CA bundle wins. Empty + verify=true
+    # (the default) means: standard system trust store, which is the
+    # right shape when the Frontdesk is terminated by a corporate
+    # ingress / oauth2-proxy fronting a real CA cert.
+    frontdesk_verify_tls: bool = True
+    frontdesk_ca_bundle: str = ""
 
     # ADR-032 Layer 1 (F2 spike) — Intune device attestation polling.
     # ``mdm_intune_enabled=false`` keeps the polling task off so

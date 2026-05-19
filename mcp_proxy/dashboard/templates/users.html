@@ -213,10 +213,29 @@
                         {{ u.created_at[:19] if u.created_at else '—' }}
                     </td>
                     <td class="px-5 py-4">
-                        <a href="/proxy/users/{{ u.principal_id|urlencode }}"
-                           class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-white transition-colors">
-                            Details
-                        </a>
+                        <div class="flex items-center gap-2">
+                            <a href="/proxy/users/{{ u.principal_id|urlencode }}"
+                               class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-gray-700 text-gray-400 rounded hover:bg-gray-800 hover:text-white transition-colors">
+                                Details
+                            </a>
+                            {# Inline delete — was only reachable from
+                               the per-user detail page before; the
+                               list lacked any action other than
+                               Details, so an admin who wanted to clean
+                               up a batch of pre-seeded rows had to
+                               drill into each one separately. Confirm
+                               dialog stays as the brake. #}
+                            <form method="post"
+                                  action="/proxy/users/{{ u.principal_id|urlencode }}/delete"
+                                  onsubmit="return confirm('Delete user {{ u.user_name }}? This wipes the principal row on the Mastio + the credential on the canale. Cannot be undone.')"
+                                  class="inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                                <button type="submit"
+                                        class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider border border-red-900/40 text-red-400/70 rounded hover:bg-red-500/10 hover:text-red-400 transition-colors">
+                                    Delete
+                                </button>
+                            </form>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}

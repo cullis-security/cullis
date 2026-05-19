@@ -3342,6 +3342,25 @@ def _frontdesk_admin_target() -> tuple[str, str] | None:
     return url, secret
 
 
+def _frontdesk_verify_arg():
+    """Return the ``verify=`` argument for the httpx call to the
+    Frontdesk Ambassador.
+
+    ``MCP_PROXY_FRONTDESK_CA_BUNDLE`` (path) wins when set; otherwise
+    ``MCP_PROXY_FRONTDESK_VERIFY_TLS`` (bool, default ``true``)
+    controls the standard-trust path. ``false`` means "skip
+    verification" — fine for the libvirt dogfood and any deployment
+    that fronts the Ambassador with a self-signed sidecar; production
+    deployments behind a real CA leave the default.
+    """
+    from mcp_proxy.config import get_settings
+    s = get_settings()
+    bundle = (s.frontdesk_ca_bundle or "").strip()
+    if bundle:
+        return bundle
+    return bool(s.frontdesk_verify_tls)
+
+
 async def _fetch_frontdesk_users() -> dict[str, dict] | None:
     """Pull the canale's user list. Keyed by ``user_name`` for join.
 
@@ -3354,7 +3373,9 @@ async def _fetch_frontdesk_users() -> dict[str, dict] | None:
         return None
     url, secret = target
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            timeout=5.0, verify=_frontdesk_verify_arg(),
+        ) as client:
             r = await client.get(
                 f"{url}/admin/users",
                 headers={"X-Admin-Secret": secret},
@@ -3391,7 +3412,9 @@ async def _frontdesk_admin_call(
         return 0, None, "frontdesk_not_configured"
     url, secret = target
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(
+            timeout=10.0, verify=_frontdesk_verify_arg(),
+        ) as client:
             r = await client.request(
                 method,
                 f"{url}{path}",
