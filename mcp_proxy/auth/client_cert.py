@@ -693,4 +693,10 @@ async def get_agent_from_client_cert(request: Request) -> InternalAgent:
         previous_grace_period_expires_at=agent_data.get(
             "previous_grace_period_expires_at"
         ),
+        # ADR-034 §2 — DB column is authoritative for enrolled rows.
+        # Migration 0041 backfills existing rows to ``agent``, so a
+        # row missing the field is impossible after upgrade; the
+        # ``or "agent"`` guard is belt-and-braces for any synthetic
+        # dict that omits it in tests.
+        principal_type=agent_data.get("principal_type") or "agent",
     )

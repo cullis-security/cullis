@@ -94,6 +94,15 @@ class InternalAgent(Base):
     previous_dpop_jkt = Column(Text, nullable=True)
     previous_grace_period_expires_at = Column(Text, nullable=True)
 
+    # ADR-034 §2 — principal taxonomy for the enrolled identity.
+    # Migration 0041 backfills existing rows to ``agent`` (the legacy
+    # default). Frontdesk shared bundles enroll with ``workload``; the
+    # auth dispatcher reads this column instead of guessing from the
+    # canonical_id prefix.
+    principal_type = Column(
+        Text, nullable=False, server_default="agent",
+    )
+
 
 class AuditLogEntry(Base):
     __tablename__ = "audit_log"
@@ -262,6 +271,13 @@ class PendingEnrollment(Base):
     # Connector ships a verified ``tpm_quote`` at start_enrollment time;
     # carried to ``internal_agents.device_attestation_json`` on approve.
     device_attestation_json = Column(Text, nullable=True)
+
+    # ADR-034 §2 — principal_type carried from start_enrollment so the
+    # approve handler can land it on ``internal_agents``. Default
+    # ``agent`` keeps legacy single-mode Connectors behaving as today.
+    principal_type = Column(
+        Text, nullable=False, server_default="agent",
+    )
 
     __table_args__ = (
         Index("idx_pending_enrollments_status", "status"),

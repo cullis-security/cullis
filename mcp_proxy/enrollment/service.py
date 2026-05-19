@@ -230,6 +230,7 @@ async def start_enrollment(
     tpm_quote_b64: str | None = None,
     tpm_manufacturer: str | None = None,
     tpm_ek_cert_present: bool = False,
+    principal_type: str = "agent",
 ) -> StartedEnrollment:
     """Create a new pending enrollment.
 
@@ -291,18 +292,29 @@ async def start_enrollment(
     now = _now()
     expires_at = now + ENROLLMENT_TTL
 
+    # ADR-034 §2: reject anything outside the {agent, workload} set so
+    # the dispatcher downstream can rely on the column. A typo would
+    # otherwise pin the row to an unrecognised string and confuse the
+    # audit chain semantics.
+    if principal_type not in {"agent", "workload"}:
+        raise EnrollmentError(
+            f"principal_type must be 'agent' or 'workload', got "
+            f"{principal_type!r}",
+            http_status=400,
+        )
+
     await conn.execute(
         text(
             """INSERT INTO pending_enrollments (
                 session_id, pubkey_pem, pubkey_fingerprint,
                 requester_name, requester_email, reason, device_info,
                 status, created_at, expires_at, dpop_jkt,
-                device_attestation_json
+                device_attestation_json, principal_type
             ) VALUES (
                 :sid, :pk, :fp,
                 :name, :email, :reason, :device,
                 'pending', :created, :expires, :dpop_jkt,
-                :dev_attest
+                :dev_attest, :ptype
             )"""
         ),
         {
@@ -317,6 +329,7 @@ async def start_enrollment(
             "expires": _iso(expires_at),
             "dpop_jkt": dpop_jkt,
             "dev_attest": attestation_json,
+            "ptype": principal_type,
         },
     )
 
@@ -526,11 +539,12 @@ async def approve(
                    (agent_id, display_name, capabilities,
                     cert_pem, created_at, is_active, device_info, dpop_jkt,
                     enrollment_method, enrolled_at, spiffe_id,
-                    federated, federated_at, reach, federation_revision)
+                    federated, federated_at, reach, federation_revision,
+                    principal_type)
                    VALUES (:aid, :dn, :caps, :cert, :created, 1,
                            :device, :dpop_jkt, 'connector', :created,
                            :spiffe_id,
-                           1, :created, 'both', 1)"""
+                           1, :created, 'both', 1, :ptype)"""
             ),
             {
                 "aid": canonical_id,
@@ -548,6 +562,10 @@ async def approve(
                 # flip to required mode (Phase 6).
                 "dpop_jkt": record.get("dpop_jkt"),
                 "spiffe_id": spiffe_id,
+                # ADR-034 §2 — carried from pending_enrollments. The
+                # server_default on both tables means a legacy Connector
+                # that doesn't set the field still lands as ``agent``.
+                "ptype": record.get("principal_type") or "agent",
             },
         )
         await conn.execute(

@@ -372,6 +372,122 @@ async def test_approve_registers_agent_in_internal_registry(db_engine):
 
 
 @pytest.mark.asyncio
+async def test_approve_lands_workload_principal_type_in_internal_agents(
+    db_engine,
+):
+    """ADR-034 §2 — when ``start_enrollment`` is called with
+    ``principal_type='workload'`` (the Frontdesk shared bundle path),
+    the value is persisted on ``pending_enrollments`` and carried to
+    ``internal_agents`` on approve. A legacy call that omits the field
+    keeps the row tagged ``agent`` via the server default.
+    """
+    from sqlalchemy import text as _text
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+    await manager.ensure_mastio_identity()
+
+    # Workload-typed enrollment.
+    _priv_w, pubkey_w = _rsa_keypair()
+    async with get_db() as conn:
+        started_w = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey_w,
+            pop_signature=_sign_pop(_priv_w, pubkey_w),
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+            principal_type="workload",
+        )
+
+    # Legacy agent-typed enrollment (no field set).
+    _priv_a, pubkey_a = _rsa_keypair()
+    async with get_db() as conn:
+        started_a = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey_a,
+            pop_signature=_sign_pop(_priv_a, pubkey_a),
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+        )
+
+    # Pending rows carry the right principal_type.
+    async with get_db() as conn:
+        pending = {
+            row["session_id"]: row["principal_type"]
+            for row in (await conn.execute(
+                _text(
+                    "SELECT session_id, principal_type "
+                    "FROM pending_enrollments"
+                ),
+            )).mappings().all()
+        }
+    assert pending[started_w.session_id] == "workload"
+    assert pending[started_a.session_id] == "agent"
+
+    # Approve both — internal_agents.principal_type follows.
+    async with get_db() as conn:
+        await service.approve(
+            conn,
+            session_id=started_w.session_id,
+            agent_id="frontdesk",
+            capabilities=[],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+        await service.approve(
+            conn,
+            session_id=started_a.session_id,
+            agent_id="legacy-bot",
+            capabilities=["test.read"],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    async with get_db() as conn:
+        agents = {
+            row["agent_id"]: row["principal_type"]
+            for row in (await conn.execute(
+                _text(
+                    "SELECT agent_id, principal_type FROM internal_agents"
+                ),
+            )).mappings().all()
+        }
+    assert agents["acme::frontdesk"] == "workload"
+    assert agents["acme::legacy-bot"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_start_enrollment_rejects_unknown_principal_type(db_engine):
+    """ADR-034 §2 — only ``agent`` and ``workload`` are accepted. A
+    typo (``user``, ``operator``, …) would otherwise land on the row
+    and confuse the downstream dispatcher; reject with 400 instead.
+    """
+    _priv, pubkey = _rsa_keypair()
+    async with get_db() as conn:
+        with pytest.raises(EnrollmentError) as excinfo:
+            await service.start_enrollment(
+                conn,
+                pubkey_pem=pubkey,
+                pop_signature=_sign_pop(_priv, pubkey),
+                requester_name="A",
+                requester_email="a@x.com",
+                reason=None,
+                device_info=None,
+                principal_type="user",
+            )
+    assert excinfo.value.http_status == 400
+    assert "agent" in str(excinfo.value).lower()
+    assert "workload" in str(excinfo.value).lower()
+
+
+@pytest.mark.asyncio
 async def test_approve_re_enroll_same_agent_id_updates_cert(db_engine):
     """Re-approving the same ``agent_id`` with a fresh keypair MUST update
     ``internal_agents.cert_pem`` to the newly-signed cert.

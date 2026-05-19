@@ -133,6 +133,7 @@ async def start_enrollment(
                 tpm_quote_b64=payload.tpm_quote_b64,
                 tpm_manufacturer=payload.tpm_manufacturer,
                 tpm_ek_cert_present=payload.tpm_ek_cert_present,
+                principal_type=payload.principal_type,
             )
     except service.EnrollmentError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
