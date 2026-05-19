@@ -1,4 +1,4 @@
-"""ADR-034 §1 — admin-only setup surface in shared mode.
+"""ADR-034 §1 + §3 — admin-only setup surface + wizard dispatcher.
 
 Covers:
 
@@ -9,6 +9,9 @@ Covers:
     persistence + invalidation lifecycle.
   * ``cullis_connector.enrollment._check_mastio_version_for_shared_mode``
     refuses Mastio < 0.5 (PR-A compat blocker).
+  * Setup wizard dispatcher (ADR-034 §3): ``/setup`` returns
+    ``setup.html`` in single mode and ``setup_workload.html`` in
+    shared mode so the wizard framing matches the deployment topology.
 """
 from __future__ import annotations
 
@@ -21,7 +24,9 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+from cullis_connector.config import ConnectorConfig
 from cullis_connector.enrollment import (
     EnrollmentFailed,
     _check_mastio_version_for_shared_mode,
@@ -41,6 +46,7 @@ from cullis_connector.setup_auth import (
     read_setup_auth_enforcement,
     verify_setup_request,
 )
+from cullis_connector.web import build_app
 
 
 # ── verify_setup_request ───────────────────────────────────────────
@@ -376,3 +382,124 @@ def test_parse_semver_handles_rc_and_v_prefix():
     assert _parse_semver("dev") is None
     assert _parse_semver("") is None
     assert _parse_semver("not-a-version") is None
+
+
+# ── Setup wizard dispatcher (ADR-034 §3) ────────────────────────────
+
+
+def _setup_dispatcher_client(tmp_path, monkeypatch) -> TestClient:
+    """Build the dashboard app with a clean tmp config_dir + identity
+    forced to absent so ``/setup`` lands on the wizard rather than
+    short-circuiting to ``/connected``.
+    """
+    import cullis_connector.web as _web
+
+    monkeypatch.setattr(_web, "has_identity", lambda _: False)
+    cfg = ConnectorConfig(
+        config_dir=tmp_path,
+        site_url="https://mastio.test:9443",
+        verify_tls=False,
+    )
+    return TestClient(build_app(cfg))
+
+
+def test_setup_get_renders_single_mode_template_by_default(
+    tmp_path, monkeypatch,
+):
+    """In single mode the wizard keeps the legacy ``setup.html`` page
+    with the "Your name / Work email" framing — the operator IS the
+    single user, so the labelling is honest.
+    """
+    monkeypatch.delenv("AMBASSADOR_MODE", raising=False)
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    client = _setup_dispatcher_client(tmp_path, monkeypatch)
+    resp = client.get("/setup", headers={"Origin": "http://testserver"})
+    assert resp.status_code == 200, resp.text
+    # Single-mode wizard advertises the personal framing.
+    assert "Your name" in resp.text
+    assert "Work email" in resp.text
+    # And does NOT carry the workload-only banner from the shared
+    # template — that copy is exclusive to ``setup_workload.html``.
+    assert "You are configuring the Frontdesk workload" not in resp.text
+
+
+def test_setup_get_renders_workload_template_in_shared_mode(
+    tmp_path, monkeypatch,
+):
+    """In shared mode the wizard switches to ``setup_workload.html``
+    so the operator sees workload-not-user framing. The
+    ``principal_type=workload`` lock and the "end-users sign in
+    separately" banner are the discriminators against single-mode
+    output.
+    """
+    monkeypatch.setenv("AMBASSADOR_MODE", "shared")
+    client = _setup_dispatcher_client(tmp_path, monkeypatch)
+    resp = client.get(
+        "/setup",
+        headers={
+            "Origin": "http://testserver",
+            # PR-B middleware is in warn mode by default, so we don't
+            # need a bearer to reach the handler. The test confirms
+            # the dispatcher chooses the right template, not the
+            # admin-proof check that PR-B already covers.
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert "Register this <em>workload</em>" in resp.text
+    assert "You are configuring the Frontdesk workload" in resp.text
+    assert "Workload name" in resp.text
+    assert "Operator admin email" in resp.text
+    # Principal type is locked + visible to the operator. The shared
+    # template carries the "End-users sign in separately" banner
+    # copy that the single-mode wizard never mentions; assert it as
+    # the discriminator instead of the more generic ``workload``
+    # token (which appears in single mode too via field hints).
+    assert "End-users sign in separately" in resp.text
+
+
+def test_setup_get_redirects_to_connected_when_identity_exists(
+    tmp_path, monkeypatch,
+):
+    """If the workload already enrolled, no wizard — the route 303s
+    to ``/connected``. Independent of mode: in either topology a
+    completed enrollment means the wizard is done.
+    """
+    import cullis_connector.web as _web
+
+    monkeypatch.setattr(_web, "has_identity", lambda _: True)
+    cfg = ConnectorConfig(
+        config_dir=tmp_path,
+        site_url="https://mastio.test:9443",
+        verify_tls=False,
+    )
+    client = TestClient(build_app(cfg))
+    resp = client.get(
+        "/setup",
+        headers={"Origin": "http://testserver"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/connected"
+
+
+def test_mark_setup_completed_is_wired_to_save_identity_branch():
+    """Regression for the gap left by PR-B (#810): the call site to
+    ``mark_setup_completed`` is supposed to fire after a successful
+    enrollment so the ``/setup/*`` middleware refuses any further
+    access. PR-B introduced the helper but didn't wire it; this test
+    pins the call site by reading the web.py source.
+
+    A real end-to-end test of the polling enrollment loop would
+    require a live Mastio fake — the source-level pin catches the
+    "orphaned helper" failure mode cheaply while leaving the wiring
+    visible to a future reader.
+    """
+    import inspect
+
+    from cullis_connector import web as _web
+
+    src = inspect.getsource(_web)
+    assert "mark_setup_completed(config.config_dir)" in src, (
+        "mark_setup_completed must be invoked from the save_identity "
+        "success branch in shared mode (ADR-034 §1)"
+    )

@@ -1021,6 +1021,17 @@ def build_app(config: ConnectorConfig) -> FastAPI:
             return RedirectResponse("/waiting", status_code=303)
         return RedirectResponse("/setup/discover", status_code=303)
 
+    def _setup_template_for_mode() -> str:
+        """ADR-034 §3 — pick the wizard variant that matches the
+        deployment topology. Shared mode (Frontdesk container) gets
+        the workload-identity framing; single mode (Cullis Chat
+        desktop, standalone PyPI Connector) keeps the legacy
+        single-user wizard.
+        """
+        from cullis_connector.identity.auth_mode import is_shared_mode
+
+        return "setup_workload.html" if is_shared_mode() else "setup.html"
+
     @app.get("/setup", response_class=HTMLResponse)
     def setup_get(
         request: Request,
@@ -1037,7 +1048,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         # form with a pre-filled URL and an already-pinned CA.
         return templates.TemplateResponse(
             request,
-            "setup.html",
+            _setup_template_for_mode(),
             {
                 "connector_status": "offline",
                 "connector_status_label": "Offline",
@@ -1095,7 +1106,7 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         except EnrollmentFailed as exc:
             return templates.TemplateResponse(
                 request,
-                "setup.html",
+                _setup_template_for_mode(),
                 {
                     "connector_status": "offline",
                     "connector_status_label": "Offline",
@@ -1505,6 +1516,30 @@ def build_app(config: ConnectorConfig) -> FastAPI:
                 metadata=metadata,
             )
             _clear_pending()
+            # ADR-034 §1 — shared-mode setup wizard is single-shot.
+            # After a successful enrollment the bootstrap bearer is no
+            # longer needed and ``/setup/*`` must refuse all further
+            # access. PR-B (#810) introduced ``mark_setup_completed`` +
+            # the 410 Gone refusal in ``_setup_admin_guard`` but never
+            # wired the completion hook; without this call site the
+            # wizard surface stays open after enrollment and the
+            # workload could be re-targeted by a stale ``docker logs``
+            # line. Single mode (Cullis Chat desktop) is a no-op here
+            # because ``mark_setup_completed`` is only read in shared
+            # mode (see ``cullis_connector/setup_auth.py``).
+            try:
+                from cullis_connector.identity.auth_mode import is_shared_mode
+                from cullis_connector.setup_auth import mark_setup_completed
+                if is_shared_mode():
+                    mark_setup_completed(config.config_dir)
+            except Exception as exc:  # noqa: BLE001 — never block the
+                # approval response on setup-state housekeeping; the
+                # operator can still run ``docker compose down + up`` to
+                # rotate the surface manually.
+                _log.warning(
+                    "ADR-034: mark_setup_completed failed (continuing): %s",
+                    exc,
+                )
             # First moment the identity exists on disk — kick the
             # inbox poller now so the operator sees notifications
             # without having to restart the dashboard. The next

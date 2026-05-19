@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Workload setup{% endblock %}
+{% block content %}
+
+{#
+   ADR-034 §3 — shared-mode wizard (Form W1).
+
+   In single mode the ``setup.html`` page asks the operator for "Your
+   name / Work email" because the single user IS the operator. In
+   shared mode that framing is wrong: this container is the Frontdesk
+   web tier serving many end-users behind it, and the wizard is
+   configuring the *workload identity*, not a person. The labels +
+   copy here reflect the three distinct subjects (Mastio admin,
+   workload, end-users) instead of collapsing them onto one form.
+#}
+
+<div class="steps" aria-label="Frontdesk setup progress">
+    <div class="step active">
+        <span class="step-circle">01</span>
+        <span class="step-label">Workload</span>
+    </div>
+    <div class="step-sep"></div>
+    <div class="step">
+        <span class="step-circle">02</span>
+        <span class="step-label">Approve</span>
+    </div>
+    <div class="step-sep"></div>
+    <div class="step">
+        <span class="step-circle">03</span>
+        <span class="step-label">Users</span>
+    </div>
+</div>
+
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+{% if ca_pinned_from_wizard %}
+<div class="alert" style="background: rgba(126,203,126,0.10); border: 1px solid rgba(126,203,126,0.25); color: #7ecb7e;">
+    <strong>✓ Mastio CA pinned from auto-discovery.</strong>
+    <span class="field-hint" style="margin-left: 6px;">Fill in the workload identity below and submit.</span>
+</div>
+{% else %}
+<p class="field-hint" style="text-align: right; margin-top: 0;">
+    <a href="/setup/discover">← Try auto-discovery instead</a>
+</p>
+{% endif %}
+
+<div class="alert" style="background: rgba(0,229,199,0.06); border: 1px solid rgba(0,229,199,0.18); color: #c9e9e3; margin-bottom: 16px;">
+    <strong>You are configuring the Frontdesk workload, not a user.</strong>
+    <p class="field-hint" style="margin-top: 6px;">
+        This wizard enrolls the container itself as a
+        <span class="mono">workload</span> principal on your Mastio.
+        End-users sign in separately at <span class="mono">/login</span>
+        and get their own user principals minted on first login
+        (ADR-021 §3 + ADR-034 §4). Capabilities and chat history
+        belong to those user principals, not to this container.
+    </p>
+</div>
+
+<form method="post" action="/setup" class="panel">
+    <div class="panel-head">
+        <div class="panel-eyebrow">Frontdesk setup · Step 01</div>
+        <h1 class="panel-title">Register this <em>workload</em> with Mastio</h1>
+        <p class="panel-sub">
+            The Mastio admin reviews this request and assigns the
+            container an x509 identity. Future end-user logins ride
+            this identity on the way upstream.
+        </p>
+    </div>
+
+    <div class="field">
+        <label class="field-label" for="site_url">Mastio URL</label>
+        <input
+            id="site_url"
+            name="site_url"
+            type="url"
+            required
+            placeholder="https://mastio.acme.corp:9443"
+            value="{{ site_url or '' }}"
+            class="input mono"
+            autofocus>
+        <span class="field-hint">The Mastio address your IT team gave you — typically ends with <span class="mono">:9443</span>.</span>
+    </div>
+
+    <div class="field" id="tofu-box">
+        <label class="field-label">Mastio CA fingerprint <span class="muted">(recommended)</span></label>
+        <p class="field-hint" style="margin-bottom: 8px;">
+            Compare with the value your admin gave you over a
+            separate channel. Pinning the CA closes the man-in-the-
+            middle window during TOFU bootstrap.
+        </p>
+        <div class="btn-row" style="margin-top: 4px; gap: 8px;">
+            <button type="button" id="tofu-fetch-btn" class="btn">Fetch fingerprint</button>
+            <button type="button" id="tofu-pin-btn" class="btn btn-primary" style="display: none;">Pin this CA</button>
+            <span id="tofu-status" class="field-hint" style="margin: 0; align-self: center;"></span>
+        </div>
+        <pre id="tofu-fingerprint" class="mono" style="display: none; margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; word-break: break-all; white-space: pre-wrap; font-size: 12px;"></pre>
+        <input type="hidden" id="tofu-fingerprint-value" name="ca_fingerprint" value="">
+    </div>
+    <script>
+    (function () {
+        const $url = document.getElementById('site_url');
+        const $fetch = document.getElementById('tofu-fetch-btn');
+        const $pin = document.getElementById('tofu-pin-btn');
+        const $status = document.getElementById('tofu-status');
+        const $print = document.getElementById('tofu-fingerprint');
+        const $hidden = document.getElementById('tofu-fingerprint-value');
+        let pendingFingerprint = '';
+
+        function setStatus(text, ok) {
+            $status.textContent = text;
+            $status.style.color = ok === true ? '#7ecb7e'
+                : ok === false ? '#e08585'
+                : '';
+        }
+
+        async function postForm(url, data) {
+            const body = new URLSearchParams(data);
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: body.toString(),
+            });
+            const json = await resp.json();
+            if (!resp.ok) throw new Error(json.error || ('HTTP ' + resp.status));
+            return json;
+        }
+
+        $fetch.addEventListener('click', async () => {
+            if (!$url.value.trim()) {
+                setStatus('Enter the Mastio URL first.', false);
+                return;
+            }
+            setStatus('Fetching…');
+            try {
+                const data = await postForm('/setup/preview-ca', {site_url: $url.value.trim()});
+                pendingFingerprint = data.fingerprint_sha256;
+                $print.textContent = data.fingerprint_short;
+                $print.style.display = 'block';
+                $pin.style.display = '';
+                setStatus('Compare ↑ with the value your admin gave you.', null);
+            } catch (e) {
+                setStatus(e.message, false);
+                $print.style.display = 'none';
+                $pin.style.display = 'none';
+            }
+        });
+
+        $pin.addEventListener('click', async () => {
+            setStatus('Pinning…');
+            try {
+                const data = await postForm('/setup/pin-ca', {
+                    site_url: $url.value.trim(),
+                    fingerprint_expected: pendingFingerprint,
+                });
+                $hidden.value = data.fingerprint_sha256;
+                $pin.style.display = 'none';
+                $fetch.disabled = true;
+                setStatus('✓ CA pinned — TLS will verify against this fingerprint.', true);
+            } catch (e) {
+                setStatus(e.message, false);
+            }
+        });
+    })();
+    </script>
+
+    <div class="field">
+        <label class="field-label" for="workload_name">Workload name</label>
+        <input
+            id="workload_name"
+            name="requester_name"
+            type="text"
+            required
+            placeholder="frontdesk"
+            value="{{ requester_name or 'frontdesk' }}"
+            class="input mono">
+        <span class="field-hint">
+            The identifier this container will carry on the Mastio
+            audit chain (e.g. <span class="mono">frontdesk</span>,
+            <span class="mono">frontdesk-eu-prod</span>). Appears
+            verbatim in every audit row downstream traffic produces.
+        </span>
+    </div>
+
+    <div class="field">
+        <label class="field-label" for="operator_admin_email">Operator admin email</label>
+        <input
+            id="operator_admin_email"
+            name="requester_email"
+            type="email"
+            required
+            placeholder="ops@acme.corp"
+            value="{{ requester_email or '' }}"
+            class="input mono">
+        <span class="field-hint">
+            The Mastio admin reviewing this enrollment uses it to
+            verify the request is genuine. Saved in
+            <span class="mono">internal_agents.device_info</span> as
+            <em>operator-of-record</em> for accountability — not as
+            the principal name. End-users have their own email at
+            login time.
+        </span>
+    </div>
+
+    <div class="field">
+        <label class="field-label" for="reason">Workload description <span class="muted">(optional)</span></label>
+        <textarea
+            id="reason"
+            name="reason"
+            placeholder="What this Frontdesk serves — e.g. 'support team shared chat'"
+            class="textarea">{{ reason or '' }}</textarea>
+        <span class="field-hint">Free-form context for the admin
+        approval queue. Visible on the Mastio dashboard.</span>
+    </div>
+
+    <div class="field" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 10px 12px;">
+        <label class="field-label" style="margin-bottom: 4px;">Principal type</label>
+        <div class="mono" style="font-size: 13px; color: #c9e9e3;">workload</div>
+        <span class="field-hint" style="margin-top: 6px;">
+            Locked to <span class="mono">workload</span> in shared
+            mode (ADR-034 §2). End-users that sign in at
+            <span class="mono">/login</span> get their own
+            <span class="mono">user</span> principals minted on first
+            login.
+        </span>
+    </div>
+
+    <label class="field" style="flex-direction: row; align-items: center; gap: 10px; margin-top: 4px;">
+        <input type="checkbox" name="verify_tls_off" value="1" {% if verify_tls_off %}checked{% endif %}>
+        <span class="field-hint" style="margin: 0;">
+            Disable TLS verification <span class="muted">(development only)</span>
+        </span>
+    </label>
+
+    <div class="btn-row btn-row-end">
+        <button type="submit" class="btn btn-primary">
+            Register workload
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+    </div>
+</form>
+
+<p class="footer-hint">
+    Once the Mastio admin approves, end-users can sign in at
+    <span class="mono">/login</span> with the credentials your team
+    provisioned. See <a href="https://cullis.io/docs/frontdesk" target="_blank" rel="noopener">the Frontdesk runbook</a>
+    for the multi-user onboarding flow.
+</p>
+
+{% endblock %}
