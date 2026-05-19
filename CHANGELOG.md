@@ -12,6 +12,35 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [v0.4.7] — Connector wizard pop_signature + Frontdesk TLS sidecar Host port — 2026-05-19
+
+### Fixed
+
+- **Connector in-browser setup wizard now signs `pop_signature` on `POST /v1/enrollment/start`.**
+  `cullis_connector/web.py:setup_post` generates a fresh keypair, hands the
+  public half to `_start(...)`, but pre-fix it left `private_key` at the
+  kwarg default `None`. The helper gates the proof-of-possession signature
+  behind `if private_key is not None` (`enrollment.py:267`), so the
+  body shipped without `pop_signature`. Mastio v0.4.5+ closed the
+  transition window for that field (PR #787), so every wizard-driven
+  enrollment against a current Mastio returned HTTP 422 `Field required:
+  pop_signature`. The CLI device-code path already passed the kwarg and
+  was unaffected. Customer-blocker surfaced during the 2026-05-19 dogfood
+  (Frontdesk first-boot wizard against the freshly released Mastio
+  v0.4.5).
+- **Frontdesk TLS sidecar preserves the request port on `Host` and
+  `X-Forwarded-Host`.** `packaging/frontdesk-bundle/nginx-tls/default.conf`
+  forwarded the inner nginx with `proxy_set_header Host $host`, which
+  strips the port. Any deployment reachable on a non-default HTTPS port
+  (the default `:8443` already qualifies, plus any custom port) saw
+  every POST from the in-browser enrollment wizard hit
+  `403 cross-origin request blocked`: the Connector CSRF middleware
+  (`cullis_connector/web.py:881-892`) built `expected_origins` from
+  `request.url.netloc` (port stripped by the sidecar) and the browser's
+  `Origin` header (port intact) failed to match. Switch to `$http_host`
+  on both `Host` and `X-Forwarded-Host` so the port survives both proxy
+  hops.
+
 ## [v0.4.5] — Mastio three-tier PKI + WebAuthn user sessions + dogfood UX fixes — 2026-05-19
 
 ### Added
