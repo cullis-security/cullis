@@ -420,6 +420,41 @@ TLS_MODE="${TLS_MODE_RAW:-enabled}"
 TLS_PORT="$(_load_env FRONTDESK_TLS_PORT)";           TLS_PORT="${TLS_PORT:-8443}"
 TLS_BIND="$(_load_env FRONTDESK_TLS_BIND)";           TLS_BIND="${TLS_BIND:-0.0.0.0}"
 TLS_SAN="${CLI_TLS_SAN:-$(_load_env FRONTDESK_TLS_SAN)}"
+# Auto-derive a SAN entry from ``CULLIS_FRONTDESK_PUBLIC_URL`` so the
+# bundle mints a cert that matches the URL employees actually reach
+# (mirror of the Mastio bundle's ``MCP_PROXY_PROXY_PUBLIC_URL`` →
+# ``MCP_PROXY_NGINX_SAN`` derivation in ``packaging/mastio-bundle/
+# deploy.sh``). Without this, the customer has to remember to set
+# ``FRONTDESK_TLS_SAN`` or pass ``--tls-san`` at every deploy; if
+# they forget, the cert carries only the default ``localhost`` +
+# docker hostnames and every browser on the LAN urla "hostname
+# mismatch". Strip scheme + port like the Mastio path does. Skip
+# the default hostnames + IP loopback (they're already in the
+# default SAN list inside ``mint-tls-cert.sh``).
+_frontdesk_public_url="$(_load_env CULLIS_FRONTDESK_PUBLIC_URL)"
+if [[ -n "$_frontdesk_public_url" ]]; then
+    _frontdesk_public_host="$(echo "$_frontdesk_public_url" | sed -E 's|^https?://||; s|:[0-9]+$||; s|/.*$||')"
+    if [[ -n "$_frontdesk_public_host" ]] \
+       && [[ "$_frontdesk_public_host" != "localhost" ]] \
+       && [[ "$_frontdesk_public_host" != "host.docker.internal" ]] \
+       && [[ "$_frontdesk_public_host" != "frontdesk.local" ]] \
+       && [[ "$_frontdesk_public_host" != "127.0.0.1" ]]; then
+        # Already in TLS_SAN? Skip — operator-pinned SAN list wins,
+        # we only add when missing. Crude substring match is enough:
+        # entries are comma-separated, the host name does not contain
+        # commas.
+        case ",${TLS_SAN}," in
+            *",${_frontdesk_public_host},"*) ;;
+            *)
+                if [[ -n "$TLS_SAN" ]]; then
+                    TLS_SAN="${TLS_SAN},${_frontdesk_public_host}"
+                else
+                    TLS_SAN="$_frontdesk_public_host"
+                fi
+                ;;
+        esac
+    fi
+fi
 # Export FRONTDESK_TLS_* so docker compose substitution picks them up
 # (compose reads from the process env *and* --env-file; we resolved
 # the precedence above and re-export the winners).
