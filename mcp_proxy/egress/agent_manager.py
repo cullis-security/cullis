@@ -1022,9 +1022,25 @@ class AgentManager:
             .sign(self._mastio_ca_key, hashes.SHA256())
         )
 
-        cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+        leaf_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+        # Three-tier PKI hardening (audit 2026-05-18) — the leaf is
+        # signed by the Mastio Intermediate, not the Org CA directly.
+        # Without the intermediate concatenated alongside the leaf,
+        # the SDK's ``build_client_assertion`` packs only the leaf into
+        # the JWT ``x5c`` header, and ``mcp_proxy/auth/challenge_response.py``
+        # (``/v1/auth/login-challenge-response``) cannot walk the
+        # chain back to the Org CA — every
+        # ``login_via_proxy_with_local_key`` call comes back HTTP 401
+        # ``x509 chain verification failed``. Discovered during ADR-034
+        # dogfood rc2 when the Frontdesk user-login provisioning
+        # surfaced the deferred state via the cert middleware.
+        intermediate_pem = self._mastio_ca_cert.public_bytes(
+            serialization.Encoding.PEM,
+        ).decode()
+        cert_pem = leaf_pem + intermediate_pem
         logger.info(
-            "Signed external pubkey for %s (SAN %s, issuer=Intermediate)",
+            "Signed external pubkey for %s (SAN %s, issuer=Intermediate, "
+            "chain=leaf+intermediate)",
             agent_id, spiffe_uri,
         )
         return cert_pem
