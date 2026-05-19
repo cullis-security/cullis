@@ -374,6 +374,52 @@ def test_version_probe_refuses_unreachable_mastio():
     assert "/health" in str(excinfo.value)
 
 
+def test_frontdesk_bundle_env_triggers_multi_user_guard(tmp_path):
+    """ADR-034 §1 fix — the modern bundle marker ``FRONTDESK_BUNDLE=1``
+    must trigger the same admin-only guard as the legacy
+    ``AMBASSADOR_MODE=shared`` path. Without this, a Frontdesk
+    container deployed with ``AUTH_MODE=local`` (ADR-025 SMB default)
+    would leave ``/setup/*`` reachable in warn mode, defeating the
+    point of PR-B.
+    """
+    env = {
+        "FRONTDESK_BUNDLE": "1",
+        ENV_ENFORCEMENT: ENFORCEMENT_REQUIRED,
+    }
+    outcome = verify_setup_request(
+        config_dir=tmp_path,
+        method="POST",
+        path="/setup/pin-ca",
+        headers={},
+        query_params={},
+        body_bytes=b"",
+        env=env,
+    )
+    assert outcome.allowed is False
+    assert outcome.reason == "no_proof_refused"
+
+
+def test_single_mode_still_bypasses_without_frontdesk_bundle(tmp_path):
+    """Negative case for the same fix: a Connector that doesn't carry
+    the ``FRONTDESK_BUNDLE`` marker AND no ``AMBASSADOR_MODE=shared``
+    (i.e. Cullis Chat desktop, standalone PyPI Connector) stays on the
+    single-mode bypass even when ``AUTH_MODE=local`` is set (the
+    default for both).
+    """
+    env = {"AUTH_MODE": "local"}
+    outcome = verify_setup_request(
+        config_dir=tmp_path,
+        method="GET",
+        path="/setup",
+        headers={},
+        query_params={},
+        body_bytes=b"",
+        env=env,
+    )
+    assert outcome.allowed is True
+    assert outcome.reason == "single_mode_bypass"
+
+
 def test_parse_semver_handles_rc_and_v_prefix():
     assert _parse_semver("0.5.0") == (0, 5, 0)
     assert _parse_semver("v0.5.0") == (0, 5, 0)

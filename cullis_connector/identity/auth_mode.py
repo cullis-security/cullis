@@ -33,6 +33,14 @@ _log = logging.getLogger("cullis_connector.identity.auth_mode")
 
 ENV_AUTH_MODE = "AUTH_MODE"
 ENV_AMBASSADOR_MODE = "AMBASSADOR_MODE"
+# ADR-034 §1 — explicit marker the Frontdesk bundle sets in its
+# docker-compose.yml so the multi-user guards (admin-only setup,
+# workload principal type, ADR-033 audit warning) fire for the modern
+# ADR-025 ``AUTH_MODE=local`` Frontdesk deployment, not only for the
+# legacy ADR-021 ``AMBASSADOR_MODE=shared`` fake-SSO path. Cullis Chat
+# desktop + standalone PyPI Connector ship without this marker and
+# stay on the single-user behaviour.
+ENV_FRONTDESK_BUNDLE = "FRONTDESK_BUNDLE"
 
 MODE_LOCAL = "local"
 MODE_OIDC = "oidc"
@@ -74,12 +82,43 @@ def is_shared_mode(env: Optional[dict] = None) -> bool:
     return read_auth_mode(env) == MODE_SHARED
 
 
+def is_frontdesk_bundle(env: Optional[dict] = None) -> bool:
+    """True when this Connector is launched inside the Frontdesk bundle.
+
+    ADR-034 §1: the legacy ``is_shared_mode()`` check matches only
+    ``AMBASSADOR_MODE=shared`` (the ADR-021 fake-SSO topology), but the
+    modern Frontdesk bundle ships with ``AUTH_MODE=local`` (ADR-025 SMB
+    multi-user, real ``users.db`` + login form, no IdP). Both
+    deployments are ``container-multi-user`` and must trigger the same
+    admin-only setup guard, workload principal-type enrollment, and
+    audit-warning visibility — single-user Cullis Chat desktop or the
+    standalone PyPI Connector must NOT.
+
+    ``FRONTDESK_BUNDLE`` is set to ``1`` in
+    ``packaging/frontdesk-bundle/docker-compose.yml`` so the bundle
+    always carries the marker; standalone deployments leave it unset
+    and stay on the single-user behaviour.
+
+    Accepts the legacy ``AMBASSADOR_MODE=shared`` path so a pre-rc1
+    deployment that already set the env explicitly keeps working
+    without flipping a new variable.
+    """
+    e = env if env is not None else os.environ
+    if (e.get(ENV_FRONTDESK_BUNDLE) or "").strip().lower() in {
+        "1", "true", "yes",
+    }:
+        return True
+    return is_shared_mode(e)
+
+
 __all__ = [
     "ENV_AMBASSADOR_MODE",
     "ENV_AUTH_MODE",
+    "ENV_FRONTDESK_BUNDLE",
     "MODE_LOCAL",
     "MODE_OIDC",
     "MODE_SHARED",
+    "is_frontdesk_bundle",
     "is_local_mode",
     "is_oidc_mode",
     "is_shared_mode",
