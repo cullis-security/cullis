@@ -12,6 +12,8 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [v0.4.5] — Mastio three-tier PKI + WebAuthn user sessions + dogfood UX fixes — 2026-05-19
+
 ### Added
 - nginx sidecar runtime cert rotation via leader-elected lifespan
   watcher (default 24h tick). Pairs with a polling reload-watcher
@@ -24,6 +26,35 @@ flow until the next `## ` heading.
   `pki.nginx_server_cert_rotated` per rotation.
 
 ### Fixed
+- **TLS server cert SAN now auto-includes the host of
+  `MCP_PROXY_PROXY_PUBLIC_URL`** (`mcp_proxy/lifespan/_san_resolver.py`,
+  customer-blocker fix). Pre-fix the SAN list came verbatim from
+  `MCP_PROXY_NGINX_SAN` (default `mastio.local,localhost,host.docker.internal,mastio-nginx,mcp-proxy`)
+  and no code path appended the operator-configured public hostname.
+  Operators who set `PROXY_PUBLIC_URL=https://<custom-fqdn-or-ip>:9443`
+  got a cert that did not match their own URL, so any TLS-strict client
+  (Frontdesk Connector, Python SDK, browser without `--insecure`) hit
+  `CERTIFICATE_VERIFY_FAILED / hostname doesn't match` on first
+  handshake. The new resolver parses `urlparse(public_url).hostname`,
+  splits IPv4/IPv6 literals into `IPAddress` SAN entries and DNS names
+  into `DNSName` entries, and idempotently appends them to the list
+  passed to `ensure_nginx_server_cert`. Surfaced during the 2026-05-19
+  dogfood on a VM at `192.168.122.62`.
+- **Org display name is now editable inline from the dashboard
+  overview card** (`mcp_proxy/dashboard/router.py`,
+  `_org_title_block.html` partial). Pre-fix the amber CTA "Set a
+  friendly display name" linked to `/proxy/setup`, the full broker
+  uplink wizard with six unrelated fields. The wizard's
+  `Organization ID` input also looked editable but was silently
+  ignored in standalone mode (derived from the Org CA pubkey,
+  ADR-006 §2.2), so an operator trying to rename the org typically
+  edited the wrong field, hit Save, and saw no change. Three new
+  endpoints (`GET /proxy/settings/org/display-name/edit`,
+  `POST /proxy/settings/org/display-name`, view fragment) drive an
+  HTMX inline edit on the overview title. The setup wizard's
+  `org_id` input is now `readonly` when the CA is loaded, with a
+  small note explaining the derivation. Surfaced during the
+  2026-05-19 dogfood.
 - `AgentManager.ensure_nginx_server_cert` now writes
   `mastio-server.crt` as a **full chain bundle** (leaf || Mastio
   Intermediate) instead of leaf-only. Pre-fix the file held only the
@@ -163,6 +194,18 @@ flow until the next `## ` heading.
 
 ### Documentation
 
+- **`packaging/mastio-bundle/proxy.env.example` AI gateway block
+  refreshed** to reflect the six-provider catalog (Anthropic, OpenAI,
+  Gemini, AWS Bedrock, Vertex AI, Ollama). The prior wording told
+  operators "only `anthropic` is wired (other providers return 501
+  `provider_not_implemented`, OpenAI / Gemini are roadmap)" which had
+  been stale since the catalog grew. New copy points operators at the
+  dashboard `Settings -> AI Providers` as the recommended config path,
+  reframes `MCP_PROXY_ANTHROPIC_API_KEY` as optional-legacy backward
+  compat, and clarifies that `MCP_PROXY_AI_GATEWAY_PROVIDER` is a
+  fallback tag rather than a hard whitelist. Surfaced during the
+  2026-05-19 dogfood (operator read env file before opening dashboard,
+  mentally ruled out Ollama as unsupported).
 - **Frontdesk shared-mode security hardening runbook** added at
   `docs/runbooks/frontdesk-shared-hardening.md`. Covers container
   security configuration, network isolation, monitoring, update cadence,
