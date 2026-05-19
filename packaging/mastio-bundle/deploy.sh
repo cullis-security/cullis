@@ -496,12 +496,22 @@ Options:
                               re-enroll. Mirrors ``docker compose down
                               --volumes`` semantics for bind mounts.
   --pull                      Force-pull the image before starting.
-  --upgrade <version>         Image-only bump: pin CULLIS_MASTIO_VERSION
-                              in proxy.env to <version>, pull the new
-                              image, recreate containers in-place. Bind-
-                              mount data is preserved. Scripts stay at
-                              the bundle's original version — use
-                              --upgrade-bundle for a full bundle refresh.
+  --upgrade <version>         Full upgrade (image + bundle files). Now
+                              an alias for --upgrade-bundle so the
+                              docker-compose.yml + helper scripts on
+                              disk stay in sync with the target image's
+                              expected surface (env vars, compose
+                              keys). Bind-mount data + proxy.env are
+                              preserved. Pair with --image-only below
+                              if you already synced the bundle files
+                              manually.
+  --image-only                Modifier for --upgrade. Skip the file
+                              refresh and only bump CULLIS_MASTIO_VERSION
+                              in proxy.env + pull the new image. Use
+                              only on air-gapped / forked deploys where
+                              the bundle files are managed out-of-band.
+                              Mismatched files vs image silently drop
+                              env vars added by newer releases.
   --upgrade-bundle <version>  Full bundle refresh: download the released
                               tarball, extract over the current bundle
                               (preserving proxy.env, ./data, ./nginx-
@@ -548,8 +558,9 @@ Examples:
   CULLIS_MASTIO_VERSION=0.4.2 ./deploy.sh        # pinned version
   ./deploy.sh --shared-broker                    # join Court on same host
   ./deploy.sh --prod                             # standalone, prod safety
-  ./deploy.sh --upgrade 0.4.2                    # image-only bump
-  ./deploy.sh --upgrade-bundle 0.4.2             # full bundle refresh
+  ./deploy.sh --upgrade 0.4.2                    # full bundle + image
+  ./deploy.sh --upgrade 0.4.2 --image-only       # legacy image-only bump
+  ./deploy.sh --upgrade-bundle 0.4.2             # explicit bundle refresh
   ./deploy.sh --migrate-volumes                  # one-shot bind migration
   ./deploy.sh --down                             # stop + remove (keep state)
   ./deploy.sh --down -v                          # stop + wipe bind dirs (reset)
@@ -562,6 +573,12 @@ SHARED_BROKER=0
 FORCE_PULL=0
 UPGRADE_TO=""
 UPGRADE_BUNDLE_TO=""
+# ``--image-only`` opts back into the legacy ``--upgrade`` semantics:
+# bump ``CULLIS_MASTIO_VERSION``, pull the image, recreate containers.
+# Operator promises the on-disk bundle (docker-compose.yml, deploy.sh,
+# helpers) is already aligned with the target version. Default is now
+# the safer ``--upgrade-bundle`` flow — see the dispatcher block below.
+UPGRADE_IMAGE_ONLY=0
 FROM_BANNER=0
 ACCEPT_DATA_LOSS=0
 # ``--down -v`` (alias ``--volumes`` / ``--wipe-data``) mirrors the
@@ -607,6 +624,7 @@ while [[ $# -gt 0 ]]; do
             ACTION="upgrade_bundle"
             shift
             ;;
+        --image-only)      UPGRADE_IMAGE_ONLY=1; shift ;;
         --migrate-volumes) ACTION="migrate_volumes"; shift ;;
         --from-banner)     FROM_BANNER=1; shift ;;
         --accept-data-loss) ACCEPT_DATA_LOSS=1; shift ;;
@@ -643,6 +661,22 @@ fi
 if [[ "$ACTION" == "migrate_volumes" ]]; then
     _cmd_migrate_volumes
     exit 0
+fi
+# ``--upgrade <version>`` now defaults to a full bundle refresh. The
+# legacy image-only behaviour kept docker-compose.yml + helpers frozen
+# at the bundle's original version, so any env passthrough added by the
+# target release (e.g. PR #818's MCP_PROXY_FRONTDESK_VERIFY_TLS) was
+# silently dropped: ``proxy.env`` carried the new var, the compose file
+# never propagated it, and the upgrade booted with the new image but
+# the old surface. Operators only learned at the next ``Frontdesk
+# unreachable`` flash. Promote to ``--upgrade-bundle`` here; keep the
+# image-only path reachable behind ``--upgrade --image-only`` for
+# operators who already syncronised the files by hand (e.g. air-gapped
+# deploys, custom forks).
+if [[ -n "$UPGRADE_TO" && $UPGRADE_IMAGE_ONLY -eq 0 ]]; then
+    UPGRADE_BUNDLE_TO="$UPGRADE_TO"
+    UPGRADE_TO=""
+    ACTION="upgrade_bundle"
 fi
 if [[ "$ACTION" == "upgrade_bundle" ]]; then
     _cmd_upgrade_bundle "$UPGRADE_BUNDLE_TO"
@@ -766,7 +800,10 @@ fi
 # does too — operators don't expect the version to silently revert if they
 # forget the env var on a later restart.
 if [[ -n "$UPGRADE_TO" ]]; then
-    step "Upgrading Cullis Mastio to ${UPGRADE_TO}"
+    step "Upgrading Cullis Mastio to ${UPGRADE_TO} (image-only)"
+    warn "  Bundle files (docker-compose.yml, helpers) stay at the current"
+    warn "  on-disk version. Drop --image-only to refresh them from the"
+    warn "  released tarball."
     if [[ ! -f "$SCRIPT_DIR/proxy.env" ]]; then
         die "proxy.env not found — run ./deploy.sh once before --upgrade"
     fi

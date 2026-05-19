@@ -280,23 +280,24 @@ Fix: allinea `MCP_PROXY_PROXY_PUBLIC_URL` al valore corretto, esegui
 
 ## Updating
 
-**Recommended — full bundle refresh (ADR-030):**
+**Default — full bundle refresh (ADR-030):**
 
 ```bash
-./deploy.sh --upgrade-bundle 0.4.0
+./deploy.sh --upgrade 0.5.0          # alias of --upgrade-bundle
+./deploy.sh --upgrade-bundle 0.5.0   # explicit
 ```
 
 Downloads the released tarball from GitHub, backs up `proxy.env` + `./data/` + `./nginx-certs/` to `./backups/pre-upgrade-<ts>/`, extracts the new bundle scripts in place (without touching your state), bumps `CULLIS_MASTIO_VERSION`, pulls the matching image, and restarts the stack with `compose up -d --wait`. The dashboard's "update available" banner shows the same command as a one-liner you can paste into the host shell.
 
-**Image-only bump (scripts stay at the bundle's original version):**
+**Image-only bump (advanced, scripts stay at the bundle's original version):**
 
 ```bash
-./deploy.sh --upgrade 0.4.0
+./deploy.sh --upgrade 0.5.0 --image-only
 # or:
 ./deploy.sh --pull
 ```
 
-Use this if you trust the new image but want to keep your current `deploy.sh` / compose / scripts. Note: future env vars introduced by a release will NOT reach `proxy.env` until you do a full bundle refresh.
+Use only on air-gapped / forked deploys where the bundle files are managed out-of-band and you've already synced them by hand. Env vars added by a newer release are silently dropped when the compose file does not propagate them — that is why this is the opt-in path, not the default.
 
 **Migrate from legacy named volumes (one-shot, v0.3.x → v0.4.x):**
 
