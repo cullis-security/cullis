@@ -1,53 +1,19 @@
-"""Wave B PR1 — G1 dashboard SSRF/XSS + G2 temp pwd URL leak.
+"""Wave B PR1 — G1 dashboard SSRF/XSS.
 
 Audit refs:
   - imp/audits/2026-05-11-track-7-owasp-frontend.md H-1 (SSRF + XSS
     in 3 dashboard test endpoints)
   - imp/audits/2026-05-11-track-6-ai-frontdesk.md H-1 (temp password
-    leak via URL query string)
+    leak via URL query string — G2 was the original fix via a
+    process-local ticket store; ADR-034 dogfood follow-up superseded
+    the whole approach by making the admin pick the password through
+    the form so there is no longer any server-side cleartext to
+    surface back. ``_pwd_tickets`` module deleted, its tests removed
+    along with it.)
 """
 from __future__ import annotations
 
 import pytest
-import time
-
-from mcp_proxy.dashboard import _pwd_tickets
-
-
-# ─── G2 — one-shot password ticket store ───
-
-
-def test_g2_ticket_round_trip_returns_cleartext_once():
-    ticket = _pwd_tickets.mint_password_ticket("hunter2-DEMO")
-    assert ticket
-    assert _pwd_tickets.consume_password_ticket(ticket) == "hunter2-DEMO"
-    # Single-consume: second call returns None.
-    assert _pwd_tickets.consume_password_ticket(ticket) is None
-
-
-def test_g2_unknown_ticket_returns_none():
-    assert _pwd_tickets.consume_password_ticket("not-a-real-ticket") is None
-    assert _pwd_tickets.consume_password_ticket(None) is None
-    assert _pwd_tickets.consume_password_ticket("") is None
-
-
-def test_g2_ticket_expires_after_ttl(monkeypatch):
-    """Pre-fix the cleartext in ``?new_pw=`` had an unbounded
-    lifetime (every refresh re-rendered it). Post-fix the ticket
-    expires after TICKET_TTL_SECONDS."""
-    monkeypatch.setattr(_pwd_tickets, "TICKET_TTL_SECONDS", 0.05)
-    ticket = _pwd_tickets.mint_password_ticket("expires-fast")
-    time.sleep(0.1)
-    assert _pwd_tickets.consume_password_ticket(ticket) is None
-
-
-def test_g2_ticket_id_is_unguessable():
-    """The ticket id is the only thing on the wire. ``token_urlsafe(24)``
-    yields ~144 bits of entropy."""
-    tickets = {_pwd_tickets.mint_password_ticket("p") for _ in range(50)}
-    assert len(tickets) == 50  # zero collisions
-    for t in tickets:
-        assert len(t) >= 30  # base64-urlsafe of 24 bytes is 32 chars
 
 
 # ─── G1 — _enforce_safe_outbound_url helper ───

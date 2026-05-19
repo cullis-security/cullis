@@ -91,29 +91,6 @@ def _install_fake_frontdesk(monkeypatch, *, responses):
     return calls
 
 
-# ── temp password generator ────────────────────────────────────────────
-
-
-def test_temp_password_alphabet_is_unambiguous():
-    from mcp_proxy.dashboard.router import _generate_temp_password
-    forbidden = set("0O1lI-_")
-    for _ in range(50):
-        pw = _generate_temp_password()
-        assert len(pw) == 16, f"want 16 chars, got {len(pw)}"
-        assert not (set(pw) & forbidden), (
-            f"temp pw {pw!r} contains forbidden char from {forbidden}"
-        )
-
-
-def test_temp_password_distinct_across_calls():
-    from mcp_proxy.dashboard.router import _generate_temp_password
-    seen = {_generate_temp_password() for _ in range(200)}
-    # 16 chars over a ~56-char alphabet, 200 draws: collision probability
-    # is astronomical. Anything less than 200 distinct values means the
-    # RNG is broken.
-    assert len(seen) == 200
-
-
 # ── degraded mode (no Frontdesk wired) ─────────────────────────────────
 
 
@@ -198,27 +175,32 @@ async def test_users_create_forwards_to_ambassador_and_redirects_to_detail(
         async with AsyncClient(transport=transport, base_url="http://test") as cli:
             await _login(cli)
             csrf = await _csrf(cli)
+            # ADR-034 follow-up — admin picks the password in the
+            # form (was: server auto-generated). The form fields are
+            # ``password`` + ``password_confirm`` so the handler can
+            # reject mismatches before forwarding to the Frontdesk.
             r = await cli.post(
                 "/proxy/users/create",
                 data={
                     "csrf_token": csrf,
                     "user_name": "alice",
                     "display_name": "Alice Rossi",
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
                 },
                 follow_redirects=False,
             )
             assert r.status_code == 303, r.text
             loc = r.headers["location"]
             assert "/proxy/users/" in loc
-            # Wave B G2 (audit 2026-05-11) — redirect now carries an
-            # opaque single-consume ticket instead of the cleartext
-            # password. The detail page resolves the ticket to the
-            # cleartext server-side; pre-fix the cleartext was in the
-            # URL and landed in nginx logs / browser history / Referer.
-            assert "new_pw_ticket=" in loc, (
-                "temp password ticket must be in redirect query"
-            )
-    # Forwarded call shape
+            # Redirect carries only ``?ok=...`` confirmation — no
+            # cleartext password, no ticket. The admin already knows
+            # the value they just typed.
+            assert "ok=User+alice+created" in loc
+            assert "new_pw_ticket=" not in loc
+            assert "new_pw=" not in loc
+    # Forwarded call shape — Mastio forwards the admin-input password
+    # verbatim to the Frontdesk admin API.
     assert len(calls) == 1
     c = calls[0]
     assert c["method"] == "POST"
@@ -227,7 +209,7 @@ async def test_users_create_forwards_to_ambassador_and_redirects_to_detail(
     assert body["user_name"] == "alice"
     assert body["display_name"] == "Alice Rossi"
     assert body["must_change_password"] is True
-    assert isinstance(body["password"], str) and len(body["password"]) == 16
+    assert body["password"] == "Welcome2026-dogfood!"
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
@@ -245,7 +227,12 @@ async def test_users_create_409_returns_already_exists(tmp_path, monkeypatch):
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/create",
-                data={"csrf_token": csrf, "user_name": "alice"},
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
@@ -269,11 +256,102 @@ async def test_users_create_transport_error_returns_unreachable(
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/create",
-                data={"csrf_token": csrf, "user_name": "alice"},
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
             assert "Frontdesk+unreachable" in r.headers["location"]
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+# ── ADR-034 follow-up — admin-input password validation ────────────────
+
+
+@pytest.mark.asyncio
+async def test_users_create_rejects_missing_password(tmp_path, monkeypatch):
+    """Admin omits the password field entirely → 303 to the list
+    with a clear error, no Frontdesk call.
+    """
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        calls = _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/create",
+                data={"csrf_token": csrf, "user_name": "alice"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "Initial+password+is+required" in r.headers["location"]
+    assert len(calls) == 0, "must not forward to Frontdesk on validation failure"
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_create_rejects_password_mismatch(tmp_path, monkeypatch):
+    """``password`` and ``password_confirm`` disagree → reject before
+    forwarding. Catches typos in the admin input.
+    """
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        calls = _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/create",
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-different!",
+                },
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "confirmation+does+not+match" in r.headers["location"]
+    assert len(calls) == 0
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_users_create_rejects_short_password(tmp_path, monkeypatch):
+    """Admin picks a < 12-char password → Mastio rejects before
+    forwarding. The Frontdesk Pydantic floor is 8, the Mastio raises
+    it to 12 for early feedback in the form.
+    """
+    app = await _spin(tmp_path, monkeypatch, frontdesk=True)
+    transport = ASGITransport(app=app)
+    async with app.router.lifespan_context(app):
+        calls = _install_fake_frontdesk(monkeypatch, responses=[])
+        async with AsyncClient(transport=transport, base_url="http://test") as cli:
+            await _login(cli)
+            csrf = await _csrf(cli)
+            r = await cli.post(
+                "/proxy/users/create",
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "alice",
+                    "password": "short1!",
+                    "password_confirm": "short1!",
+                },
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert "at+least+12+characters" in r.headers["location"]
+    assert len(calls) == 0
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
@@ -295,21 +373,28 @@ async def test_users_reset_password_forwards_and_surfaces_new_temp(
             await _login(cli)
             csrf = await _csrf(cli)
             pid = "td-org::user::alice"
+            # ADR-034 follow-up — admin picks the reset password in
+            # the form (was: server auto-generated).
             r = await cli.post(
                 f"/proxy/users/{pid}/reset-password",
-                data={"csrf_token": csrf},
+                data={
+                    "csrf_token": csrf,
+                    "password": "RotatedSecret-2026!",
+                    "password_confirm": "RotatedSecret-2026!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303, r.text
             loc = r.headers["location"]
-            # Wave B G2 — opaque ticket replaces cleartext password.
-            assert "reset_pw_ticket=" in loc
+            # Redirect carries only ``?ok=...`` confirmation.
+            assert "ok=Password+reset" in loc
+            assert "reset_pw_ticket=" not in loc
+            assert "reset_pw=" not in loc
     assert len(calls) == 1
     c = calls[0]
     assert c["method"] == "POST"
     assert c["path"] == "/admin/users/alice/reset-password"
-    assert isinstance(c["json_body"]["new_password"], str)
-    assert len(c["json_body"]["new_password"]) == 16
+    assert c["json_body"]["new_password"] == "RotatedSecret-2026!"
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
@@ -445,18 +530,22 @@ async def test_users_provision_to_frontdesk_happy_path(tmp_path, monkeypatch):
         async with AsyncClient(transport=transport, base_url="http://test") as cli:
             await _login(cli)
             csrf = await _csrf(cli)
+            # ADR-034 follow-up — admin picks the password in the form.
             r = await cli.post(
                 "/proxy/users/td-org::user::alice/provision-to-frontdesk",
-                data={"csrf_token": csrf},
+                data={
+                    "csrf_token": csrf,
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303, r.text
             loc = r.headers["location"]
             assert "/proxy/users/" in loc
-            assert "new_pw_ticket=" in loc, (
-                "ticket must be in redirect so the detail page surfaces "
-                "the cleartext exactly once"
-            )
+            assert "ok=User+provisioned" in loc
+            assert "new_pw_ticket=" not in loc
+            assert "new_pw=" not in loc
     # Forwarded call shape
     assert len(calls) == 1
     c = calls[0]
@@ -465,7 +554,7 @@ async def test_users_provision_to_frontdesk_happy_path(tmp_path, monkeypatch):
     body = c["json_body"]
     assert body["user_name"] == "alice"
     assert body["must_change_password"] is True
-    assert isinstance(body["password"], str) and len(body["password"]) == 16
+    assert body["password"] == "Welcome2026-dogfood!"
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
 
@@ -485,7 +574,11 @@ async def test_users_provision_to_frontdesk_409_already_in_frontdesk(
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/td-org::user::alice/provision-to-frontdesk",
-                data={"csrf_token": csrf},
+                data={
+                    "csrf_token": csrf,
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
@@ -509,7 +602,11 @@ async def test_users_provision_to_frontdesk_refuses_when_frontdesk_offline(
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/td-org::user::alice/provision-to-frontdesk",
-                data={"csrf_token": csrf},
+                data={
+                    "csrf_token": csrf,
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
@@ -533,7 +630,11 @@ async def test_users_provision_to_frontdesk_transport_error(
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/td-org::user::alice/provision-to-frontdesk",
-                data={"csrf_token": csrf},
+                data={
+                    "csrf_token": csrf,
+                    "password": "Welcome2026-dogfood!",
+                    "password_confirm": "Welcome2026-dogfood!",
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
@@ -670,21 +771,24 @@ async def test_users_reset_tofu_pin_requires_csrf(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_plaintext_temp_password_never_logged(tmp_path, monkeypatch):
-    """The dashboard mints a temp password and hands it to the admin via
-    the redirect query string. It must NEVER show up in the worker log
-    even at WARNING level when the Frontdesk rejects the request.
+async def test_admin_input_password_never_logged(tmp_path, monkeypatch):
+    """ADR-034 follow-up — admin types the password in the form, the
+    Mastio forwards it to the Frontdesk and never persists it. It
+    must NEVER show up in the worker log even at WARNING level when
+    the Frontdesk rejects the request.
 
-    We capture every call to ``_log.warning`` / ``_log.info`` /
-    ``_log.error`` on the dashboard router module and assert the
-    16-char value never appears in any formatted argument.
+    Pre-fix the password was server-generated and surfaced via a
+    one-shot ticket; the original incarnation of this test scanned
+    for the generated 16-char shape. Post-fix the password is a
+    known marker we plant in the POST body, so the check is exact
+    instead of heuristic.
     """
     app = await _spin(tmp_path, monkeypatch, frontdesk=True)
     transport = ASGITransport(app=app)
+    PROBE_PASSWORD = "DogfoodAudit-leakprobe-2026!"
     async with app.router.lifespan_context(app):
         # Force the Frontdesk to reject with 500 so the warning path
-        # fires (the happy path takes no log line). We also script a
-        # transport error path to cover that branch.
+        # fires (the happy path takes no log line).
         _install_fake_frontdesk(
             monkeypatch,
             responses=[(500, {"detail": "boom"}, None)],
@@ -707,39 +811,27 @@ async def test_plaintext_temp_password_never_logged(tmp_path, monkeypatch):
             csrf = await _csrf(cli)
             r = await cli.post(
                 "/proxy/users/create",
-                data={"csrf_token": csrf, "user_name": "audit-target"},
+                data={
+                    "csrf_token": csrf,
+                    "user_name": "audit-target",
+                    "password": PROBE_PASSWORD,
+                    "password_confirm": PROBE_PASSWORD,
+                },
                 follow_redirects=False,
             )
             assert r.status_code == 303
-            # The temp password lives in the redirect query string; pull it
-            # out so we know exactly what value to look for in the log.
+            # 500 path → redirect to list with error banner; no
+            # cleartext expected anywhere.
             loc = r.headers["location"]
-            # Either banner is acceptable here (500 path redirects to list
-            # with error), but for the leak check we just want to verify
-            # that whatever 16-char strings might exist NEVER end up in
-            # _log calls. So we synthesise a probe password too.
-            # Wave B G2 — opaque ticket replaces cleartext password.
-            assert (
-                "new_pw_ticket=" in loc or "Frontdesk+rejected" in loc
-            ), loc
+            assert "Frontdesk+rejected" in loc
+            assert PROBE_PASSWORD not in loc
 
-    # No log entry may carry a 16-char unambiguous string that matches
-    # the alphabet — that would be a leak. Heuristic: scan every arg
-    # for any 16-char substring made entirely of the alphabet.
-    alphabet = set(
-        "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-    )
-    leak_re = re.compile(
-        r"[ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789]{16}"
-    )
-    for msg, args, _kwargs in log_calls:
-        for piece in (msg, *args):
-            s = str(piece)
-            for candidate in leak_re.findall(s):
-                # Confirm it is purely alphabet chars (no padding).
-                assert not (set(candidate) <= alphabet and len(candidate) == 16 and
-                            candidate.isalnum()), (
-                    f"possible temp password leak in log: {s!r}"
-                )
+    # No log entry may carry the probe password verbatim, in any
+    # field (msg, positional args, kwargs values).
+    for msg, args, kwargs in log_calls:
+        for piece in (msg, *args, *kwargs.values()):
+            assert PROBE_PASSWORD not in str(piece), (
+                f"admin-input password leak in log: {piece!r}"
+            )
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()

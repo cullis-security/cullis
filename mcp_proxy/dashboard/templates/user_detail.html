@@ -15,26 +15,11 @@
         {{ action_message }}
     </div>
     {% endif %}
-    {% set _temp_pw = reset_temp_password or new_user_temp_password %}
-    {% if _temp_pw %}
-    <div class="mb-6 p-5 bg-amber-900/10 border border-amber-600/30 rounded-lg">
-        <p class="text-sm font-semibold text-amber-400 mb-2">
-            {% if new_user_temp_password %}User created · one-time temp credential
-            {% else %}Password reset · one-time temp credential{% endif %}
-        </p>
-        <p class="text-xs text-amber-500/80 mb-3">
-            Hand this to <span class="font-mono text-gray-300">{{ user.user_name }}</span> out-of-band. The user is forced to rotate at next sign-in. This value will not be shown again — if you lose it, use <em>Danger Zone → Reset Password</em> to mint a fresh one.
-        </p>
-        <div class="bg-surface-950 border border-amber-700/30 rounded p-3 flex items-center justify-between gap-3">
-            <code class="text-sm text-amber-300 font-mono break-all select-all">{{ _temp_pw }}</code>
-            <button type="button"
-                    data-copy="{{ _temp_pw|e }}"
-                    class="text-[10px] text-gray-400 hover:text-white uppercase tracking-wider border border-gray-700 rounded px-2 py-1">
-                copy
-            </button>
-        </div>
-    </div>
-    {% endif %}
+    {# ADR-034 follow-up — password is admin-input now, not
+       server-generated. The previous banner that showed the one-time
+       cleartext is gone: the admin already knows the value
+       (they typed it). Any URL still carrying the legacy
+       ``?new_pw_ticket`` / ``?reset_pw_ticket`` params is ignored. #}
     {% if error %}
     <div class="mb-6 p-3 bg-red-500/10 border border-red-500/20 rounded text-sm text-red-400">{{ error }}</div>
     {% endif %}
@@ -373,11 +358,26 @@
             <div class="border-t border-red-900/20 pt-5">
                 <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Provision to Frontdesk</p>
                 <p class="text-xs text-gray-500 mb-3">
-                    This user is registry-only (created while Frontdesk was offline, or never went through SSO). The Mastio knows the principal_id and can mint API tokens, but the user has no password to sign in via the Frontdesk SPA. Click to mint a 16-char temp credential, push it to the Frontdesk, and surface it here once.
+                    This user is registry-only (created while Frontdesk was offline, or never went through SSO). The Mastio knows the principal_id and can mint API tokens, but the user has no password to sign in via the Frontdesk SPA. Set an initial password below; the user is forced to rotate it at next sign-in.
                 </p>
                 <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/provision-to-frontdesk"
-                      onsubmit="return confirm('Provision this user to the Frontdesk? A temp password will be minted, pushed to the Frontdesk, and shown to you once. Hand it over out-of-band and the user is forced to rotate at next sign-in.')">
+                      onsubmit="return confirm('Provision this user to the Frontdesk? Communicate the password to the user out-of-band — the Mastio never displays it again.')"
+                      class="space-y-3">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-medium text-gray-500 mb-1 uppercase tracking-wider">Initial Password</label>
+                            <input type="password" name="password" required
+                                   autocomplete="new-password" minlength="12"
+                                   class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-sm text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-medium text-gray-500 mb-1 uppercase tracking-wider">Confirm</label>
+                            <input type="password" name="password_confirm" required
+                                   autocomplete="new-password" minlength="12"
+                                   class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-sm text-white font-mono">
+                        </div>
+                    </div>
                     <button type="submit"
                             class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-emerald-600/20 border border-emerald-600/30 text-emerald-400 rounded hover:bg-emerald-600/30 transition-colors">
                         Provision to Frontdesk
@@ -389,11 +389,26 @@
             <div class="border-t border-red-900/20 pt-5">
                 <p class="text-xs font-medium text-gray-300 uppercase tracking-wider mb-1">Reset Password</p>
                 <p class="text-xs text-gray-500 mb-3">
-                    The Mastio mints a 20-char temp credential, forwards it to the Frontdesk, and shows it to you here once. The user is forced to change it at next sign-in.
+                    You set the new password here; the Mastio forwards it to the Frontdesk and the user is forced to rotate it at the next sign-in. Communicate it to the user out-of-band — the Mastio never displays it again.
                 </p>
                 <form method="post" action="/proxy/users/{{ user.principal_id|urlencode }}/reset-password"
-                      onsubmit="return confirm('Reset this user\'s password? They will need the new value to sign back in.')">
+                      onsubmit="return confirm('Reset this user\'s password? They will need the new value to sign back in.')"
+                      class="space-y-3">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[10px] font-medium text-gray-500 mb-1 uppercase tracking-wider">New Password</label>
+                            <input type="password" name="password" required
+                                   autocomplete="new-password" minlength="12"
+                                   class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-sm text-white font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-medium text-gray-500 mb-1 uppercase tracking-wider">Confirm</label>
+                            <input type="password" name="password_confirm" required
+                                   autocomplete="new-password" minlength="12"
+                                   class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-sm text-white font-mono">
+                        </div>
+                    </div>
                     <button type="submit"
                             class="px-4 py-2 text-xs font-medium uppercase tracking-wider bg-amber-600/20 border border-amber-600/30 text-amber-400 rounded hover:bg-amber-600/30 transition-colors">
                         Reset Password
