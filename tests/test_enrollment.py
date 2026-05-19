@@ -464,6 +464,85 @@ async def test_approve_lands_workload_principal_type_in_internal_agents(
 
 
 @pytest.mark.asyncio
+async def test_approve_reenroll_updates_principal_type_on_existing_row(
+    db_engine,
+):
+    """ADR-034 §2 follow-up — re-enrollment of an existing ``agent_id``
+    must propagate the new ``principal_type`` from the freshly
+    approved pending row. Without this, an operator who re-enrolls a
+    Frontdesk that the Alembic 0041 backfill tagged ``agent`` leaves
+    the audit chain attributing to the wrong taxonomy even after the
+    workload-typed enrollment. Discovered during dogfood rc2.
+    """
+    from sqlalchemy import text as _text
+    from mcp_proxy.egress.agent_manager import AgentManager
+    manager = AgentManager(org_id="acme", trust_domain="cullis.local")
+    ca_key, ca_cert_pem = _generate_self_signed_ca("acme")
+    await manager.load_org_ca(ca_key, ca_cert_pem)
+    await manager.ensure_mastio_identity()
+
+    # First enrollment lands as ``agent`` (legacy default path).
+    _priv1, pubkey1 = _rsa_keypair()
+    async with get_db() as conn:
+        started1 = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey1,
+            pop_signature=_sign_pop(_priv1, pubkey1),
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+        )
+        await service.approve(
+            conn,
+            session_id=started1.session_id,
+            agent_id="frontdesk",
+            capabilities=[],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    # Second enrollment of the same canonical_id, this time as
+    # ``workload`` (the Frontdesk bundle now declares itself
+    # workload-typed via ``is_frontdesk_bundle()``).
+    _priv2, pubkey2 = _rsa_keypair()
+    async with get_db() as conn:
+        started2 = await service.start_enrollment(
+            conn,
+            pubkey_pem=pubkey2,
+            pop_signature=_sign_pop(_priv2, pubkey2),
+            requester_name="A",
+            requester_email="a@x.com",
+            reason=None,
+            device_info=None,
+            principal_type="workload",
+        )
+        await service.approve(
+            conn,
+            session_id=started2.session_id,
+            agent_id="frontdesk",
+            capabilities=[],
+            groups=[],
+            admin_name="admin",
+            agent_manager=manager,
+        )
+
+    async with get_db() as conn:
+        rows = (await conn.execute(
+            _text(
+                "SELECT agent_id, principal_type FROM internal_agents "
+                "WHERE agent_id = 'acme::frontdesk'"
+            ),
+        )).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["principal_type"] == "workload", (
+        "re-enrollment must propagate principal_type to internal_agents "
+        "via the UPDATE path, not just the INSERT path"
+    )
+
+
+@pytest.mark.asyncio
 async def test_start_enrollment_rejects_unknown_principal_type(db_engine):
     """ADR-034 §2 — only ``agent`` and ``workload`` are accepted. A
     typo (``user``, ``operator``, …) would otherwise land on the row
