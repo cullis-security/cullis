@@ -113,14 +113,19 @@ def _fake_agent_manager(
     ca_cert: x509.Certificate,
     org_id: str = "acme",
 ):
-    """sign_user_csr only reads ``.org_id``, ``.ca_loaded``,
-    ``._org_ca_key``, ``._org_ca_cert`` — a SimpleNamespace covers it
-    without dragging the full AgentManager bootstrap."""
+    """sign_user_csr reads ``.org_id``, ``.ca_loaded`` and (ADR three-tier
+    PKI hardening, 2026-05-18) ``._mastio_ca_key`` / ``._mastio_ca_cert``
+    so user-principal leaves chain ``leaf → Mastio Intermediate``. The
+    ``_org_ca_*`` aliases stay for callers (e.g. agent enrollment) that
+    still walk to the Org Root directly. A single SimpleNamespace covers
+    both surfaces without dragging the full AgentManager bootstrap."""
     return SimpleNamespace(
         org_id=org_id,
         ca_loaded=True,
         _org_ca_key=ca_key,
         _org_ca_cert=ca_cert,
+        _mastio_ca_key=ca_key,
+        _mastio_ca_cert=ca_cert,
     )
 
 

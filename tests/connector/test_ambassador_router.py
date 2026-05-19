@@ -348,6 +348,119 @@ def test_models_live_passes_through_in_shared_mode(
     assert ids == ["qwen3.5:2b"]
 
 
+def test_models_503_in_frontdesk_bundle_when_mastio_unreachable(
+    client, bearer, monkeypatch,
+):
+    """ADR-034 §5 — Modern Frontdesk bundle (``FRONTDESK_BUNDLE=1``,
+    ``AUTH_MODE=local``, ``AMBASSADOR_MODE`` empty) must fail loud the
+    same way the legacy ``AMBASSADOR_MODE=shared`` shared topology does:
+    silently falling back to ``advertised_models`` would advertise
+    hardcoded Claude defaults instead of the Ollama provider an admin
+    actually wired into the Mastio dashboard.
+    """
+    monkeypatch.setenv("FRONTDESK_BUNDLE", "1")
+    from cullis_connector.ambassador.router import _models_cache
+
+    _models_cache.clear()
+
+    resp = client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["detail"] == "mastio_unavailable"
+    assert body["cullis_meta"]["source"] == "error"
+
+
+def test_models_uses_per_user_client_when_user_credentials_bound(
+    client, bearer, monkeypatch,
+):
+    """ADR-025 Phase 3 — when the cert middleware bound a per-user cert
+    to the request, ``/v1/models`` must fetch the live list via a
+    per-user ``CullisClient`` (mirror ``ambassador/shared/router.py``).
+    The workload-cred holder would 401 at Mastio's mTLS gate (it is not
+    a UserPrincipal). Cache is keyed on ``principal_id`` so concurrent
+    users do not poison each other's dropdown.
+    """
+    import sys
+
+    from cullis_connector.ambassador.router import _models_cache
+
+    # ``cullis_connector.ambassador.__init__`` re-binds the ``router``
+    # attribute to the APIRouter instance, so the dotted path
+    # ``cullis_connector.ambassador.router`` resolves to the router, not
+    # the module. Pull the module out of ``sys.modules`` to monkeypatch
+    # module-level helpers.
+    router_mod = sys.modules["cullis_connector.ambassador.router"]
+    _models_cache.clear()
+
+    class _Cred:
+        principal_id = "acme.test/acme/user/mario"
+        cert_pem = "stub-cert"
+        key_pem = "stub-key"
+        cert_not_after = None  # unused by the router branch under test
+
+    workload_calls: list[bool] = []
+    user_calls: list[str] = []
+
+    class _PerUserClient:
+        def __init__(self, principal: str) -> None:
+            self._principal = principal
+
+        def list_models(self) -> list[dict]:
+            user_calls.append(self._principal)
+            return [{
+                "id": "qwen3.5:2b", "object": "model",
+                "owned_by": "ollama", "created": 0,
+            }]
+
+        def close(self) -> None:
+            pass
+
+    def _fake_build_user_client(_request, cred):  # noqa: ARG001
+        return _PerUserClient(cred.principal_id)
+
+    cred = _Cred()
+    monkeypatch.setattr(
+        router_mod, "_per_user_credentials", lambda req: cred,
+    )
+    monkeypatch.setattr(
+        router_mod, "_build_user_client", _fake_build_user_client,
+    )
+
+    # Sentinel on the workload holder: if the router ever falls back to
+    # the workload path it would dereference state["client"], so a
+    # missing-attr is a hard signal we hit the wrong branch.
+    monkeypatch.setattr(
+        FakeCullisClient,
+        "list_models",
+        lambda self: workload_calls.append(True) or [
+            {"id": "should-not-appear", "object": "model",
+             "owned_by": "workload", "created": 0},
+        ],
+        raising=False,
+    )
+
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cullis_meta"]["source"] == "live"
+    ids = [m["id"] for m in body["data"]]
+    assert ids == ["qwen3.5:2b"]
+    assert user_calls == [cred.principal_id]
+    assert workload_calls == []
+
+    # Cache is keyed on principal_id (not agent_id) — second call hits
+    # cache without rebuilding the per-user client.
+    resp2 = client.get("/v1/models")
+    assert resp2.status_code == 200
+    assert user_calls == [cred.principal_id], (
+        "second call must serve from cache, not re-invoke per-user client"
+    )
+    assert cred.principal_id in _models_cache
+
+
 def test_chat_completions_rejects_wrong_bearer(client):
     resp = client.post(
         "/v1/chat/completions",
