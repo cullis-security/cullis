@@ -12,6 +12,38 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [v0.5.1] — Mastio bundle: `--upgrade` defaults to bundle refresh — 2026-05-20
+
+### Fixed
+
+- **`./deploy.sh --upgrade <ver>` now refreshes the bundle files**, not only
+  the image (#823). Pre-fix, the upgrade rewrote `CULLIS_MASTIO_VERSION` in
+  `proxy.env` and pulled the new image, but left `docker-compose.yml` +
+  helpers at the version the operator originally installed. Env
+  passthrough added by newer releases (e.g. PR #818's
+  `MCP_PROXY_FRONTDESK_VERIFY_TLS` and `MCP_PROXY_FRONTDESK_CA_BUNDLE`)
+  silently disappeared between `proxy.env` and the running container,
+  surfacing as "Frontdesk unreachable" on the dashboard for any operator
+  who upgraded a v0.4.x bundle to v0.5.0. `--upgrade` is now an alias
+  for `--upgrade-bundle`, which downloads the released tarball, extracts
+  the new helpers in place (preserving `proxy.env`, `./data`,
+  `./nginx-certs`, `./backups`), bumps the version pin, pulls the
+  matching image, and restarts the stack with `compose up -d --wait`.
+
+### Changed
+
+- New opt-in `./deploy.sh --upgrade <ver> --image-only` preserves the
+  legacy image-only behaviour for air-gapped / forked deploys where the
+  operator manages bundle files out-of-band. Default is now the safer
+  full refresh; the image-only path is reachable but documented as
+  advanced.
+- `README.md` ("Updating" section) and `--help` text rewritten to
+  reflect the new default. The dashboard's update-available banner
+  one-liner (`./deploy.sh --upgrade <ver>`) now genuinely does what
+  operators expect.
+
+[v0.5.1]: https://github.com/cullis-security/cullis/releases/tag/mastio-v0.5.1
+
 ## [v0.5.0] — Frontdesk Finding #16 closer, ADR-034 PR-A..F shipped — 2026-05-19
 
 ### Added
