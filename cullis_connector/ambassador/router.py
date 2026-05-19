@@ -38,6 +38,7 @@ from cullis_connector.ambassador.streaming import (
     fake_stream,
 )
 from cullis_connector.ambassador.streaming_loop import stream_tool_use_loop
+from cullis_connector.identity.auth_mode import is_shared_mode
 
 _log = logging.getLogger("cullis_connector.ambassador.router")
 
@@ -199,7 +200,22 @@ def _fallback_models(state: dict) -> list[dict]:
 
 
 @router.get("/v1/models")
-def list_models(request: Request) -> dict:
+def list_models(request: Request):
+    """List the models reachable through Cullis.
+
+    Single mode (Cullis Chat desktop, ``AMBASSADOR_MODE != "shared"``):
+    fall back to ``advertised_models`` when the live Mastio fetch
+    fails. The desktop user keeps a usable dropdown when Mastio is
+    momentarily unreachable, which matches the consumer UX baseline.
+
+    Shared mode (Frontdesk container, ``AMBASSADOR_MODE=shared``):
+    fail loud with a 503 instead of returning a hardcoded list. In
+    multi-user deployments the admin configures providers via the
+    Mastio dashboard; a fallback list would advertise models that
+    aren't actually configured and the user would click chat only to
+    get ``provider not configured`` from Mastio. ADR-034 §5 promotes
+    the inconsistency upstream.
+    """
     _enforce_loopback(request)
     state = _get_state(request)
     _enforce_bearer(request, state)
@@ -211,8 +227,8 @@ def list_models(request: Request) -> dict:
         return _models_response(cached[1], cached[2])
 
     holder = state.get("client")
-    data = _fallback_models(state)
-    source = "fallback"
+    data: list[dict] = []
+    source = "live"
     error_reason: str | None = None
     if holder is not None:
         try:
@@ -220,17 +236,39 @@ def list_models(request: Request) -> dict:
             live = client.list_models()
             if live:
                 data = live
-                source = "live"
             else:
                 error_reason = "Mastio returned empty model list"
         except Exception as exc:
             error_reason = str(exc) or exc.__class__.__name__
             _log.debug(
-                "Mastio /v1/models fetch failed, using advertised fallback: %s",
-                exc,
+                "Mastio /v1/models fetch failed: %s", exc,
             )
     else:
         error_reason = "Ambassador has no Mastio client wired"
+
+    if not data:
+        # Live fetch did not yield a usable list. ADR-034 §5: in
+        # shared mode fail loud so the SPA can banner the issue; in
+        # single mode keep the legacy fallback for desktop UX. The
+        # 503 path skips the cache write so a transient fetch error
+        # doesn't pin the dropdown to error for 30s.
+        if is_shared_mode():
+            _log.warning(
+                "Mastio /v1/models unavailable in shared mode: %s",
+                error_reason,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "mastio_unavailable",
+                    "cullis_meta": {
+                        "source": "error",
+                        "error": error_reason or "mastio_unavailable",
+                    },
+                },
+            )
+        data = _fallback_models(state)
+        source = "fallback"
 
     _models_cache[cache_key] = (now, data, source)
     return _models_response(data, source, error=error_reason)
@@ -245,6 +283,8 @@ def _models_response(
     drop-in for `api.openai.com/v1/models`. The Cullis SPA reads
     ``cullis_meta.source`` to render a banner when the live fetch
     failed and the dropdown is showing the hardcoded fallback list.
+    Shared-mode failure no longer reaches this helper — see ADR-034
+    §5 and the 503 branch in ``list_models``.
     """
     body: dict = {"object": "list", "data": data}
     meta: dict = {"source": source}

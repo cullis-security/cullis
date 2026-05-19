@@ -275,6 +275,79 @@ def test_models_lists_default_three(client, bearer):
     assert len(ids) == 3
 
 
+# ── ADR-034 §5 — /v1/models live-only in shared mode ───────────────
+
+
+def test_models_503_in_shared_mode_when_mastio_unreachable(
+    client, bearer, monkeypatch,
+):
+    """ADR-034 §5: shared mode (Frontdesk) must fail loud when the
+    live Mastio fetch fails. Returning a hardcoded ``advertised_models``
+    list would advertise models the admin never configured and the
+    user would only learn at chat time. The 503 lets the SPA banner
+    "Cannot reach Mastio" up front.
+
+    Single-mode (Cullis Chat desktop) behaviour is covered by
+    ``test_models_lists_default_three`` above — the fallback there is
+    intentional consumer UX baseline.
+    """
+    monkeypatch.setenv("AMBASSADOR_MODE", "shared")
+    # Bust the in-process cache so the previous single-mode test's
+    # cached fallback list doesn't bleed in.
+    from cullis_connector.ambassador.router import _models_cache
+
+    _models_cache.clear()
+
+    resp = client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["detail"] == "mastio_unavailable"
+    assert body["cullis_meta"]["source"] == "error"
+    assert body["cullis_meta"]["error"]
+    # Second call must also 503 — the cache write is gated past the
+    # fallback branch, so a transient fetch failure doesn't pin the
+    # dropdown to "error" for 30s.
+    resp2 = client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert resp2.status_code == 503, resp2.text
+
+
+def test_models_live_passes_through_in_shared_mode(
+    client, bearer, monkeypatch,
+):
+    """The 503 only fires when the live fetch yields no models.
+    A working Mastio reply still goes through with ``source: live``.
+    """
+    monkeypatch.setenv("AMBASSADOR_MODE", "shared")
+    monkeypatch.setattr(
+        FakeCullisClient,
+        "list_models",
+        lambda self: [
+            {"id": "qwen3.5:2b", "object": "model", "owned_by": "ollama",
+             "created": 0},
+        ],
+        raising=False,
+    )
+    from cullis_connector.ambassador.router import _models_cache
+
+    _models_cache.clear()
+
+    resp = client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["cullis_meta"]["source"] == "live"
+    ids = [m["id"] for m in body["data"]]
+    assert ids == ["qwen3.5:2b"]
+
+
 def test_chat_completions_rejects_wrong_bearer(client):
     resp = client.post(
         "/v1/chat/completions",

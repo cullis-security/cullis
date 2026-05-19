@@ -107,8 +107,8 @@ export default function ModelPicker() {
           aria-live="polite"
           title={
             fetchError
-              ? `Live model list unavailable: ${fetchError}. Showing cached defaults.`
-              : 'Live model list unavailable. Showing cached defaults.'
+              ? `Cannot reach Mastio — live model list unavailable (${fetchError})`
+              : 'Cannot reach Mastio — live model list unavailable'
           }
         >
           offline

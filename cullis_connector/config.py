@@ -81,7 +81,15 @@ class AmbassadorConfig:
             "claude-opus-4-7",
         ]
     )
-    """Models surfaced via /v1/models. Must be supported by Mastio's egress."""
+    """Single-mode fallback list surfaced via ``/v1/models`` when Mastio
+    is unreachable. Used by Cullis Chat desktop so the dropdown stays
+    usable while the live fetch retries.
+
+    Shared mode (``AMBASSADOR_MODE=shared``) ignores this list: per
+    ADR-034 §5, an unreachable Mastio yields HTTP 503 instead of a
+    fallback list, so the SPA can banner the failure honestly rather
+    than offering models the admin never configured.
+    """
 
     require_local_only: bool = True
     """Reject any non-loopback peer regardless of bind. Defence-in-depth
