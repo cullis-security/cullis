@@ -230,20 +230,33 @@ def _cert_der_digest(cert: x509.Certificate) -> bytes:
 
 
 def _pem_der_digest(pem: str) -> bytes | None:
-    """SHA-256 of a PEM-encoded cert's DER bytes.
+    """SHA-256 of the leaf cert's DER bytes.
 
-    Robust to whitespace and the ``-----BEGIN/END-----`` markers — we
-    decode the base64 body directly so the comparison doesn't break
-    on ``\\r\\n`` vs ``\\n`` line endings the cert went through on its
-    way into the database.
+    Three-tier PKI hardening (audit 2026-05-18) made
+    ``internal_agents.cert_pem`` carry the full chain
+    (``leaf + intermediate``) so the SDK's
+    ``build_client_assertion`` can pack the chain into the JWT
+    ``x5c`` header for ``/v1/auth/login-challenge-response``. The
+    cert pin must still compare against the **leaf** DER digest —
+    the presented mTLS handshake only ships the leaf, and hashing
+    the raw concatenated PEM body would always mismatch. Load the
+    PEM properly and digest the first (leaf) cert's DER bytes.
+
+    Robust to whitespace and ``\\r\\n`` line endings via the
+    standard PEM parser (which tolerates both); legacy callers
+    that stored a single-cert PEM still get the same digest as
+    before the chain hardening.
     """
     if not pem:
         return None
     try:
-        body = re.sub(r"-----.*?-----|\s", "", pem)
-        return hashlib.sha256(base64.b64decode(body)).digest()
-    except (ValueError, TypeError):
+        certs = x509.load_pem_x509_certificates(pem.encode())
+    except ValueError:
         return None
+    if not certs:
+        return None
+    der = certs[0].public_bytes(serialization.Encoding.DER)
+    return hashlib.sha256(der).digest()
 
 
 def _cert_serial_hex(cert: x509.Certificate) -> str:

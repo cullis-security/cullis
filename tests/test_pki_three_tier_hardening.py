@@ -107,6 +107,85 @@ async def test_external_pubkey_chains_under_intermediate(proxy_app):
 
 
 @pytest.mark.asyncio
+async def test_external_pubkey_returns_leaf_and_intermediate_chain(proxy_app):
+    """ADR-034 dogfood rc2 finding — ``sign_external_pubkey`` MUST
+    return the concatenated chain ``leaf + intermediate``, not just
+    the leaf. The SDK's ``build_client_assertion`` packs every PEM
+    block in ``cert_pem`` into the JWT ``x5c`` header, and
+    ``/v1/auth/login-challenge-response`` walks that chain back to the
+    Org CA. A leaf-only return value drops the bridge and every
+    ``login_via_proxy_with_local_key`` call comes back HTTP 401
+    ``x509 chain verification failed`` — the user-login provisioning
+    on Frontdesk then deferred silently and chat broke.
+    """
+    app, _ = proxy_app
+    mgr = app.state.agent_manager
+
+    ext_key = ec.generate_private_key(ec.SECP256R1())
+    pub_pem = ext_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    chain_pem = mgr.sign_external_pubkey(pubkey_pem=pub_pem, agent_name="ext")
+    chain = x509.load_pem_x509_certificates(chain_pem.encode())
+    assert len(chain) == 2, (
+        f"expected leaf + intermediate, got {len(chain)} cert(s)"
+    )
+    leaf, intermediate = chain
+    leaf_issuer = leaf.issuer.get_attributes_for_oid(
+        x509.NameOID.COMMON_NAME,
+    )[0].value
+    intermediate_subject = intermediate.subject.get_attributes_for_oid(
+        x509.NameOID.COMMON_NAME,
+    )[0].value
+    assert leaf_issuer == intermediate_subject, (
+        f"chain not stitched: leaf.issuer={leaf_issuer!r} != "
+        f"intermediate.subject={intermediate_subject!r}"
+    )
+    assert "Mastio CA" in intermediate_subject
+
+
+@pytest.mark.asyncio
+async def test_pem_der_digest_pins_leaf_when_chain_stored(proxy_app):
+    """ADR-034 dogfood rc2 — the cert-pinning verifier must compare
+    the **leaf** DER digest, not the digest of the raw concatenated
+    PEM bytes. After ``sign_external_pubkey`` started returning the
+    chain (above), ``internal_agents.cert_pem`` carries
+    ``leaf + intermediate``; the presented mTLS handshake only ships
+    the leaf, so ``_pem_der_digest`` MUST parse the PEM properly and
+    digest the first cert. The pre-fix raw-base64 path computed
+    ``sha256(b64(leaf_body || intermediate_body))`` and always
+    mismatched.
+    """
+    import hashlib
+    from cryptography.hazmat.primitives import serialization as _ser
+    from mcp_proxy.auth.client_cert import _pem_der_digest
+
+    app, _ = proxy_app
+    mgr = app.state.agent_manager
+    ext_key = ec.generate_private_key(ec.SECP256R1())
+    pub_pem = ext_key.public_key().public_bytes(
+        _ser.Encoding.PEM, _ser.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    chain_pem = mgr.sign_external_pubkey(pubkey_pem=pub_pem, agent_name="ext")
+    chain = x509.load_pem_x509_certificates(chain_pem.encode())
+    leaf = chain[0]
+    expected_leaf_digest = hashlib.sha256(
+        leaf.public_bytes(_ser.Encoding.DER),
+    ).digest()
+    assert _pem_der_digest(chain_pem) == expected_leaf_digest, (
+        "_pem_der_digest must pin the leaf cert's DER, not the raw "
+        "PEM body — otherwise the mTLS handshake (which only ships "
+        "the leaf) cannot match the stored chain"
+    )
+    leaf_only_pem = leaf.public_bytes(_ser.Encoding.PEM).decode()
+    assert _pem_der_digest(leaf_only_pem) == expected_leaf_digest, (
+        "_pem_der_digest must keep the same result for a legacy "
+        "single-cert PEM (no chain) so pre-rc2 pins keep matching"
+    )
+
+
+@pytest.mark.asyncio
 async def test_nginx_server_cert_chains_under_intermediate(proxy_app, tmp_path):
     app, _ = proxy_app
     mgr = app.state.agent_manager
