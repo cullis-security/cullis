@@ -260,6 +260,18 @@ def _start(
         body["device_info"] = _wrap_device_info_with_shared_mode(
             body.get("device_info"),
         )
+        # ADR-034 §2 — declare the Frontdesk bundle as a ``workload``
+        # principal so Mastio audit + reach policy treat the container
+        # as the web-tier broker it is, not as an AI agent. Operators
+        # who need to override (e.g. a one-off agent-only bundle in
+        # shared topology) can set ``FRONTDESK_PRINCIPAL_TYPE=agent``
+        # in the env explicitly.
+        principal_type = (
+            _os.environ.get("FRONTDESK_PRINCIPAL_TYPE", "").strip().lower()
+            or "workload"
+        )
+        if principal_type in {"agent", "workload"}:
+            body["principal_type"] = principal_type
     # F-B-11 Phase 3d — include the public DPoP JWK so Mastio can
     # compute + store its thumbprint on approve (wire added in #207).
     if dpop_jwk is not None:

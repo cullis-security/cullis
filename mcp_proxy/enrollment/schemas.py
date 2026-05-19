@@ -110,6 +110,21 @@ class EnrollmentStartRequest(BaseModel):
             " typically report ``False`` and stay at ``hw_isolated``."
         ),
     )
+    # ── ADR-034 §2: workload vs agent principal type ─────────────────
+    principal_type: Literal["agent", "workload"] = Field(
+        "agent",
+        description=(
+            "Principal taxonomy for this Connector. ``agent`` is the"
+            " single-mode default (Cullis Chat desktop, standalone"
+            " PyPI Connector). ``workload`` marks the Frontdesk shared"
+            " bundle as a web-tier identity broker so the audit chain"
+            " and reach policies treat it as the Ambassador it is"
+            " rather than as an AI agent. Set automatically by the"
+            " Connector when ``AMBASSADOR_MODE=shared``; the legacy"
+            " single-mode caller never sends this field and the"
+            " server-side default keeps the behaviour identical."
+        ),
+    )
 
 
 class EnrollmentStartResponse(BaseModel):
