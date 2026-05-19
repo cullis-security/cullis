@@ -64,26 +64,7 @@
     <!-- Org identity card -->
     <div class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg">
         <div class="flex items-start justify-between mb-4">
-            <div>
-                <p class="text-[10px] text-gray-600 uppercase tracking-[0.2em] mb-1">Organization</p>
-                <h2 class="text-xl font-semibold text-white" style="font-family: 'Chakra Petch', sans-serif;">
-                    {{ display_name or org_id or "Unconfigured" }}
-                </h2>
-                {% if org_id and display_name %}
-                {# Title is the friendly name; hex stays as a small reference subtitle. #}
-                <p class="text-xs text-gray-500 mt-1" style="font-family: 'JetBrains Mono', monospace;">
-                    {{ org_id }}
-                </p>
-                {% elif org_id and not display_name %}
-                {# Title fell back to the deterministic hex; nudge the operator
-                   to set a friendly display name so audit logs and SSO surfaces
-                   show "Acme Corporation" instead of the 16-char hash. #}
-                <p class="text-[11px] text-amber-400/80 mt-1.5">
-                    Hex above is the deterministic Org ID (ADR-006 §2.2).
-                    <a href="/proxy/setup" class="underline hover:text-amber-300">Set a friendly display name →</a>
-                </p>
-                {% endif %}
-            </div>
+            {% with mode='view' %}{% include "_org_title_block.html" %}{% endwith %}
             {% if org_status %}
             <span class="px-2 py-1 rounded text-[10px] uppercase tracking-wider
                 {% if org_status == 'active' %}bg-emerald-500/10 text-emerald-400 border border-emerald-500/30
