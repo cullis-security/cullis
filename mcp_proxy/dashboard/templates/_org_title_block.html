@@ -1,0 +1,65 @@
+{# Inline-editable Org title block, rendered both inside overview.html and as
+   the HTMX swap target for /proxy/settings/org/display-name endpoints.
+   Variables: mode ("view" | "edit"), org_id, display_name, csrf_token.
+#}
+<div id="org-title-block" class="space-y-1">
+    <p class="text-[10px] text-gray-600 uppercase tracking-[0.2em]">Organization</p>
+
+    {% if mode == 'edit' %}
+    <form hx-post="/proxy/settings/org/display-name"
+          hx-target="#org-title-block"
+          hx-swap="outerHTML"
+          hx-vals='{"csrf_token": "{{ csrf_token }}"}'
+          class="flex flex-wrap items-center gap-2">
+        <input type="text" name="display_name" value="{{ display_name }}"
+               maxlength="255" autofocus
+               placeholder="Acme Corporation"
+               class="flex-1 min-w-[12rem] bg-surface-950 border border-gray-700/60 rounded px-3 py-1.5 text-sm text-white placeholder-gray-600">
+        <button type="submit"
+                class="px-3 py-1.5 text-[11px] uppercase tracking-wider bg-accent-500/10 text-accent-400 border border-accent-400/30 rounded hover:bg-accent-500/20">
+            Save
+        </button>
+        <button type="button"
+                hx-get="/proxy/settings/org/display-name"
+                hx-target="#org-title-block"
+                hx-swap="outerHTML"
+                class="px-3 py-1.5 text-[11px] uppercase tracking-wider text-gray-500 border border-gray-700/40 rounded hover:text-gray-300">
+            Cancel
+        </button>
+    </form>
+    {% else %}
+    <div class="flex items-center gap-2">
+        <h2 class="text-xl font-semibold text-white" style="font-family: 'Chakra Petch', sans-serif;">
+            {{ display_name or org_id or "Unconfigured" }}
+        </h2>
+        {% if org_id %}
+        <button type="button"
+                hx-get="/proxy/settings/org/display-name/edit"
+                hx-target="#org-title-block"
+                hx-swap="outerHTML"
+                class="px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-gray-500 hover:text-accent-400 border border-gray-700/40 rounded">
+            {% if display_name %}Rename{% else %}Set name{% endif %}
+        </button>
+        {% endif %}
+    </div>
+    {% if org_id and display_name %}
+    {# Title is the friendly name; hex stays as a small reference subtitle. #}
+    <p class="text-xs text-gray-500" style="font-family: 'JetBrains Mono', monospace;">
+        {{ org_id }}
+    </p>
+    {% elif org_id and not display_name %}
+    {# Title fell back to the deterministic hex; nudge the operator to set a
+       friendly display name via the inline-edit swap (no wizard detour). #}
+    <p class="text-[11px] text-amber-400/80 mt-1.5">
+        Hex above is the deterministic Org ID (ADR-006 §2.2).
+        <a href="#"
+           hx-get="/proxy/settings/org/display-name/edit"
+           hx-target="#org-title-block"
+           hx-swap="outerHTML"
+           class="underline hover:text-amber-300 cursor-pointer">
+            Set a friendly display name &rarr;
+        </a>
+    </p>
+    {% endif %}
+    {% endif %}
+</div>

@@ -108,11 +108,18 @@
             <div class="space-y-4">
                 <div>
                     <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Organization ID</label>
+                    {% if derived_org_id %}
+                    <input type="text" name="org_id" value="{{ org_id }}"
+                           readonly
+                           class="w-full bg-surface-950/60 border border-gray-800/60 rounded px-3 py-2.5 text-sm text-gray-400 font-mono cursor-not-allowed">
+                    <p class="text-[10px] text-gray-500 mt-1">Derived from the Org CA public key (ADR-006 §2.2), so it stays stable across restarts and cannot be changed here.</p>
+                    {% else %}
                     <input type="text" name="org_id" value="{{ org_id }}"
                            placeholder="acme-corp"
                            pattern="[a-z][a-z0-9_-]*"
                            class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2.5 text-sm text-white placeholder-gray-600 font-mono transition-all">
                     <p class="text-[10px] text-gray-600 mt-1">Lowercase letters, digits, hyphens, underscores. Must start with a letter.</p>
+                    {% endif %}
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wider">Display Name</label>

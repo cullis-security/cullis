@@ -1216,6 +1216,88 @@ async def setup_test_connection(request: Request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Org settings — inline-edit display name (overview card)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DISPLAY_NAME_MAX_LEN = 255
+
+
+async def _render_org_title_block(
+    request: Request,
+    session: ProxyDashboardSession,
+    *,
+    mode: str,
+) -> HTMLResponse:
+    from mcp_proxy.db import get_config
+
+    org_id = await get_config("org_id") or ""
+    display_name = await get_config("display_name") or ""
+    return templates.TemplateResponse(
+        "_org_title_block.html",
+        _ctx(
+            request, session,
+            mode=mode,
+            org_id=org_id,
+            display_name=display_name,
+        ),
+    )
+
+
+@router.get("/settings/org/display-name", response_class=HTMLResponse)
+async def org_display_name_view(request: Request):
+    """HTMX endpoint: return the static title partial (used by Cancel)."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return await _render_org_title_block(request, session, mode="view")
+
+
+@router.get("/settings/org/display-name/edit", response_class=HTMLResponse)
+async def org_display_name_edit(request: Request):
+    """HTMX endpoint: swap the title partial into inline-edit mode."""
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return await _render_org_title_block(request, session, mode="edit")
+
+
+@router.post("/settings/org/display-name", response_class=HTMLResponse)
+async def org_display_name_update(request: Request):
+    """Persist a new friendly display name for the org.
+
+    The org_id is derived from the Org CA pubkey in standalone (ADR-006
+    §2.2) and immutable here; only the human-facing label is editable.
+    Empty input clears the label, falling back to the hex org_id in the
+    UI.
+    """
+    session = require_login(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    if not await verify_csrf(request, session):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    from mcp_proxy.db import set_config, log_audit
+
+    form = await request.form()
+    raw = str(form.get("display_name", "")).strip()
+    if len(raw) > _DISPLAY_NAME_MAX_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Display name must be at most {_DISPLAY_NAME_MAX_LEN} characters.",
+        )
+
+    await set_config("display_name", raw)
+    await log_audit(
+        agent_id="admin",
+        action="org.display_name.update",
+        status="success",
+        detail=f"display_name={raw}" if raw else "display_name=<cleared>",
+    )
+
+    return await _render_org_title_block(request, session, mode="view")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Agents
 # ─────────────────────────────────────────────────────────────────────────────
 
