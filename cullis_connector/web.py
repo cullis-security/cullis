@@ -999,12 +999,19 @@ def build_app(config: ConnectorConfig) -> FastAPI:
 
         try:
             from cullis_connector.config import verify_arg_for
+            # ``private_key`` MUST flow into ``_start`` so the body
+            # carries ``pop_signature``. Without it ``start_enrollment``
+            # gates the signature behind ``if private_key is not None``
+            # and Mastio v0.4.5+ rejects the bare body with HTTP 422
+            # ``Field required: pop_signature`` (PR #787 closed the
+            # transition window where the field was Optional).
             start_resp = _start(
                 site_url=site_url,
                 pubkey_pem=pubkey_pem,
                 requester=requester,
                 verify_tls=verify_arg_for(verify_tls, config.ca_chain_path),
                 timeout_s=config.request_timeout_s,
+                private_key=private_key,
             )
         except EnrollmentFailed as exc:
             return templates.TemplateResponse(
