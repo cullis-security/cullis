@@ -638,7 +638,8 @@ async def approve(
                        federation_revision = COALESCE(federation_revision, 0) + 1,
                        previous_cert_pem = :prev_cert,
                        previous_dpop_jkt = :prev_jkt,
-                       previous_grace_period_expires_at = :grace_expiry
+                       previous_grace_period_expires_at = :grace_expiry,
+                       principal_type = :ptype
                    WHERE agent_id = :aid"""
             ),
             {
@@ -651,6 +652,15 @@ async def approve(
                 "prev_cert": old_cert_pem,
                 "prev_jkt": old_dpop_jkt,
                 "grace_expiry": grace_expiry,
+                # ADR-034 §2 follow-up: re-enrollment must propagate
+                # the principal_type from the freshly-approved
+                # pending row, otherwise an operator who re-enrolls a
+                # Frontdesk that was previously registered as
+                # ``agent`` (legacy backfill from Alembic 0041) leaves
+                # the audit chain attributing to the wrong taxonomy.
+                # Scoperto durante dogfood rc2 (re-enrollment of an
+                # ``agent``-typed row with a fresh ``workload`` pending).
+                "ptype": record.get("principal_type") or "agent",
             },
         )
         await conn.execute(
