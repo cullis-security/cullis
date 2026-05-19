@@ -1547,6 +1547,17 @@ def _agent_row_to_dict(row: RowMapping) -> dict:
     ):
         if key in row.keys():
             out[key] = row[key]
+    # ADR-034 §2 — principal_type column (migration 0041). Optional at
+    # read time so legacy fixtures pre-migration don't blow up; the
+    # auth deps (``client_cert.py``, ``local_agent_dep.py``) fall back
+    # to the dataclass default ``"agent"`` when absent. Without this
+    # entry, ``get_agent()`` was silently dropping the column even
+    # though the SQL ``SELECT *`` returned it — every downstream
+    # consumer that called ``record.get("principal_type")`` got
+    # ``None`` and the F-001 gate on ``/v1/principals/csr`` refused
+    # workload-typed Frontdesk callers. Sandbox dogfood caught this.
+    if "principal_type" in row.keys() and row["principal_type"]:
+        out["principal_type"] = row["principal_type"]
     return out
 
 

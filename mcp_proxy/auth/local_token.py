@@ -242,10 +242,10 @@ async def issue_local_token(body: TokenRequest, request: Request) -> TokenRespon
     # stamp it into the token's ``cnf.jkt`` claim. Replay of a leaked
     # LOCAL_TOKEN without the bound private key is then rejected by the
     # ingress dep (``_maybe_local_token``).
-    extra_claims: dict[str, Any] | None = None
+    extra_claims: dict[str, Any] = {}
     cnf_jkt = await _maybe_extract_dpop_jkt_at_mint(request)
     if cnf_jkt is not None:
-        extra_claims = {"cnf": {"jkt": cnf_jkt}}
+        extra_claims["cnf"] = {"jkt": cnf_jkt}
     else:
         from mcp_proxy.config import get_settings as _gs
         if _gs().local_token_require_dpop:
@@ -260,8 +260,30 @@ async def issue_local_token(body: TokenRequest, request: Request) -> TokenRespon
             "the SDK has rolled out to enforce.", agent_id,
         )
 
+    # ADR-034 §2 — stamp the agent's ``principal_type`` into the JWT so
+    # downstream auth deps (``_get_authenticated_agent_dpop``) read
+    # it back via ``TokenPayload(**raw)`` instead of falling through to
+    # the dataclass default ``"agent"``. Without this, a Frontdesk
+    # workload (``principal_type='workload'`` on internal_agents) gets
+    # ``token.principal_type='agent'`` and the F-001 gate on
+    # ``/v1/principals/csr`` refuses every user-cert mint. Sandbox
+    # dogfood caught this — local_agent_dep.py was already fixed for
+    # the Bearer LOCAL_TOKEN path, this is the JWT-mint counterpart.
+    try:
+        from mcp_proxy.db import get_agent as _get_agent
+        record = await _get_agent(agent_id)
+        if record and record.get("principal_type"):
+            extra_claims["principal_type"] = record["principal_type"]
+            extra_claims["org"] = record.get("agent_id", agent_id).split("::", 1)[0]
+    except Exception as exc:  # noqa: BLE001 — defensive
+        _log.warning(
+            "local /auth/token: principal_type lookup failed for %s: %s",
+            agent_id, exc,
+        )
+
     token = issuer.issue(
-        agent_id=agent_id, ttl_seconds=ttl, extra_claims=extra_claims,
+        agent_id=agent_id, ttl_seconds=ttl,
+        extra_claims=extra_claims if extra_claims else None,
     )
     _log.info(
         "local /auth/token issued sub=%s iss=%s kid=%s ttl=%ds dpop=%s",
