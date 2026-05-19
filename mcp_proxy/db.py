@@ -935,6 +935,31 @@ async def set_config(key: str, value: str) -> None:
         )
 
 
+async def set_config_if_absent(key: str, value: str) -> bool:
+    """Insert a config row only when the key is absent. Returns ``True``
+    when the value was inserted, ``False`` when the row already existed.
+
+    Used by multi-worker initialisation paths that mint a once-and-only-
+    once secret (e.g. the Mastio Intermediate CA): if two workers race
+    to mint at lifespan boot, only the winner's value lands in the DB
+    and the losers re-read the winning value via ``get_config`` instead
+    of overwriting it. Prevents the cert/key pair drift that the
+    plain ``set_config`` upsert otherwise produces between workers.
+    """
+    async with get_db() as conn:
+        result = await conn.execute(
+            text(
+                """INSERT INTO proxy_config (key, value) VALUES (:key, :value)
+                   ON CONFLICT(key) DO NOTHING"""
+            ),
+            {"key": key, "value": value},
+        )
+        # rowcount is 1 when the INSERT actually wrote, 0 when the
+        # ON CONFLICT branch fired. Both SQLite and Postgres asyncpg
+        # report it consistently here.
+        return (getattr(result, "rowcount", 0) or 0) > 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Mastio keys (ADR-012 Phase 2.0 multi-key store, issue #261)
 # ─────────────────────────────────────────────────────────────────────────────

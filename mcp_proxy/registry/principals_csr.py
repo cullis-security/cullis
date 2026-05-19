@@ -274,20 +274,28 @@ async def sign_user_csr(
         raise RuntimeError(
             "Org CA not loaded on this proxy — cannot sign principal CSRs",
         )
-    ca_key = agent_manager._org_ca_key  # type: ignore[attr-defined]
-    if ca_key is None:
-        raise RuntimeError("Org CA key missing despite ca_loaded=True")
-    # Use the *real* Org CA cert subject as the issuer so the resulting
-    # cert chains cleanly through nginx's ``ssl_verify_client``. The
-    # fallback ``_build_issuer`` would emit a synthetic
-    # ``CN=Cullis Mastio Broker CA, O=<org>`` Name that does NOT match
-    # the registered org_ca subject; OpenSSL then refuses the chain
-    # with "unable to get issuer cert" and nginx returns the generic
-    # 400 SSL certificate error page. Caught dogfooding 2026-05-06.
-    ca_cert = agent_manager._org_ca_cert  # type: ignore[attr-defined]
-    issuer_name = ca_cert.subject if ca_cert is not None else _build_issuer(
-        expected_org,
-    )
+    # Three-tier PKI hardening (audit 2026-05-18) — user-principal
+    # certs sign under the **Mastio Intermediate**, NOT the Org Root.
+    # The Org Root key is cold-by-default (unsealed only briefly to
+    # mint the Intermediate then scrubbed from memory); reaching for
+    # ``agent_manager._org_ca_key`` here returned ``None`` at steady
+    # state and the endpoint replied 503 ``Org CA temporarily
+    # unavailable`` for every Connector user-CSR call. Sandbox
+    # dogfood caught this. Mirror the ``sign_external_pubkey``
+    # pattern (``agent_manager._mastio_ca_key`` /
+    # ``agent_manager._mastio_ca_cert``) so user certs chain
+    # ``leaf → Mastio Intermediate → Org Root`` and nginx's
+    # ``ssl_client_certificate`` (Org Root) verifies them via the
+    # intermediate the Connector ships in ``x5c`` /
+    # ``ssl_client_certificate_chain``.
+    ca_key = agent_manager._mastio_ca_key  # type: ignore[attr-defined]
+    ca_cert = agent_manager._mastio_ca_cert  # type: ignore[attr-defined]
+    if ca_key is None or ca_cert is None:
+        raise RuntimeError(
+            "Mastio Intermediate CA not loaded — ensure_mastio_identity() "
+            "must complete before user-principal CSRs can be signed",
+        )
+    issuer_name = ca_cert.subject
 
     now = datetime.now(timezone.utc)
     not_before = now - CLOCK_SKEW
