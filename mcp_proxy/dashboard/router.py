@@ -3342,21 +3342,6 @@ def _frontdesk_admin_target() -> tuple[str, str] | None:
     return url, secret
 
 
-def _generate_temp_password() -> str:
-    """16-char unambiguous random temp password.
-
-    The admin reads this off the dashboard banner and dictates it to
-    the user out-of-band, so the alphabet excludes characters that
-    are easy to confuse visually: ``0/O``, ``1/l/I``, ``-/_``. 16 chars
-    over an alphabet of ~50 distinct symbols still gives ~90 bits of
-    entropy, well over what a one-shot bcrypt-hashed temp credential
-    needs (the user is forced to rotate at first sign-in anyway).
-    """
-    import secrets
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-    return "".join(secrets.choice(alphabet) for _ in range(16))
-
-
 async def _fetch_frontdesk_users() -> dict[str, dict] | None:
     """Pull the canale's user list. Keyed by ``user_name`` for join.
 
@@ -3537,8 +3522,9 @@ async def users_page(request: Request):
     users, fd_enabled = await _build_user_view()
 
     # Banners survive one render via query string (POST-redirect-GET).
-    new_user_name = request.query_params.get("new_user")
-    new_user_temp_password = request.query_params.get("new_pw")
+    # ADR-034 follow-up — removed ``new_user_temp_password``: the
+    # admin types the initial password themselves now, no server-
+    # generated cleartext to surface.
     action_message = request.query_params.get("ok")
     error = request.query_params.get("error")
 
@@ -3547,8 +3533,6 @@ async def users_page(request: Request):
         active="users",
         users=users,
         frontdesk_enabled=fd_enabled,
-        new_user_name=new_user_name,
-        new_user_temp_password=new_user_temp_password,
         action_message=action_message,
         error=error,
     ))
@@ -3665,13 +3649,46 @@ async def users_create(request: Request):
                 status_code=303,
             )
 
-    temp_password = _generate_temp_password()
+    # ADR-034 dogfood follow-up — the admin now picks the initial
+    # password themselves (was: auto-generated 20-char temp). Rationale:
+    # the previous flow stored the cleartext in a process-local ticket
+    # store so the redirect could render it once on the detail page;
+    # multi-worker uvicorn (F0.1 ship 2026-05-18) made that store
+    # unreliable because POST and GET land on different workers and
+    # the in-memory dict is per-process. Admin-input password
+    # eliminates the shared state altogether: the password lives only
+    # in the POST body (HTTPS) and the Frontdesk's bcrypt hash; the
+    # admin already knows it (they typed it) and communicates it
+    # out-of-band. ``must_change_password=True`` still forces the user
+    # to rotate at first sign-in.
+    admin_password = (form.get("password") or "").strip()
+    admin_password_confirm = (form.get("password_confirm") or "").strip()
+    if not admin_password:
+        return RedirectResponse(
+            "/proxy/users?error=Initial+password+is+required",
+            status_code=303,
+        )
+    if admin_password != admin_password_confirm:
+        return RedirectResponse(
+            "/proxy/users?error=Password+confirmation+does+not+match",
+            status_code=303,
+        )
+    # The Frontdesk admin API enforces ``min_length=8`` via Pydantic
+    # (``cullis_connector/admin/users_router.py:54``); raise the floor
+    # to 12 chars here so the admin gets immediate feedback before the
+    # round-trip rather than a generic 400 back from the Ambassador.
+    if len(admin_password) < 12:
+        return RedirectResponse(
+            "/proxy/users?error=Password+must+be+at+least+12+characters",
+            status_code=303,
+        )
+
     status_code, body, transport_err = await _frontdesk_admin_call(
         "POST",
         "/admin/users",
         json_body={
             "user_name": user_name,
-            "password": temp_password,
+            "password": admin_password,
             "must_change_password": True,
             "display_name": display_name,
         },
@@ -3726,20 +3743,17 @@ async def users_create(request: Request):
     except Exception as exc:  # noqa: BLE001 — pre-seed is best-effort
         _log.warning("users_create: mastio pre-seed failed: %s", exc)
 
-    # Redirect to the per-user detail page rather than the list — the
-    # banner with the one-time temp password lands where the admin is
-    # most likely to dwell. Wave B G2 (audit 2026-05-11): the cleartext
-    # password used to ride in ``?new_pw=`` and landed in nginx logs +
-    # browser history + Referer headers. Now the redirect carries an
-    # opaque single-consume ticket; the detail page resolves it
-    # server-side and renders the password without ever putting it on
-    # the wire as a URL parameter.
+    # Redirect to the per-user detail page rather than the list so
+    # the admin lands on a page that confirms the user state and lets
+    # them mint API tokens / inspect audit immediately. No banner
+    # carries the password anymore — admin already knows it
+    # (it was typed in the form they just submitted) and the redirect
+    # URL stays free of any cleartext credential.
     from urllib.parse import quote
-    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
     target_pid = f"{org_id}::user::{user_name}" if org_id else f"::user::{user_name}"
-    ticket = mint_password_ticket(temp_password)
     return RedirectResponse(
-        f"/proxy/users/{quote(target_pid, safe='')}?new_pw_ticket={quote(ticket)}",
+        f"/proxy/users/{quote(target_pid, safe='')}"
+        f"?ok=User+{quote(user_name)}+created+-+communicate+the+initial+password+out-of-band",
         status_code=303,
     )
 
@@ -3788,32 +3802,14 @@ async def user_detail_page(principal_id: str, request: Request):
     except Exception:
         org_id, trust_domain = "", "cullis.local"
 
-    # Wave B G2 (audit 2026-05-11) — resolve the single-consume tickets
-    # carried in the redirect URL. Tickets pop on read; a refresh of
-    # this page does not re-render the cleartext. Pre-fix the
-    # cleartext rode in ``?new_pw=`` / ``?reset_pw=`` and landed in
-    # nginx logs / browser history / Referer headers.
-    from mcp_proxy.dashboard._pwd_tickets import consume_password_ticket
-    reset_temp_password = consume_password_ticket(
-        request.query_params.get("reset_pw_ticket")
-    )
-    new_user_temp_password = consume_password_ticket(
-        request.query_params.get("new_pw_ticket")
-    )
-    # Back-compat: if a stale page has the old URL shape, still render
-    # the cleartext but log a warning so operators notice.
-    if reset_temp_password is None and request.query_params.get("reset_pw"):
-        _log.warning(
-            "user_detail_page: legacy reset_pw URL parameter received "
-            "(post-G2 the create-user/reset-pwd handlers should redirect "
-            "with reset_pw_ticket instead)",
-        )
-        reset_temp_password = request.query_params.get("reset_pw")
-    if new_user_temp_password is None and request.query_params.get("new_pw"):
-        _log.warning(
-            "user_detail_page: legacy new_pw URL parameter received",
-        )
-        new_user_temp_password = request.query_params.get("new_pw")
+    # ADR-034 follow-up — passwords are admin-input now, not
+    # server-generated. The Wave B G2 ticket store + ``?new_pw_ticket``
+    # / ``?reset_pw_ticket`` redirect params are removed: the admin
+    # already knows the password (they typed it in the form), so
+    # there is nothing to surface back on this page. Any stale URL
+    # with the legacy params is silently ignored — the bookmark
+    # rendered nothing useful anyway because the ticket store would
+    # have popped on first read.
     action_message = request.query_params.get("ok")
     error = request.query_params.get("error")
 
@@ -3840,8 +3836,6 @@ async def user_detail_page(principal_id: str, request: Request):
         org_id=org_id,
         trust_domain=trust_domain,
         frontdesk_enabled=fd_enabled,
-        reset_temp_password=reset_temp_password,
-        new_user_temp_password=new_user_temp_password,
         action_message=action_message,
         error=error,
         api_tokens=api_tokens,
@@ -3874,7 +3868,28 @@ async def users_reset_password(principal_id: str, request: Request):
             status_code=303,
         )
 
-    new_pw = _generate_temp_password()
+    # ADR-034 follow-up — admin picks the reset password from the
+    # form instead of receiving a server-generated one through a
+    # ticket store (broke under multi-worker uvicorn, F0.1).
+    form = await request.form()
+    new_pw = (form.get("password") or "").strip()
+    new_pw_confirm = (form.get("password_confirm") or "").strip()
+    if not new_pw:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=New+password+is+required",
+            status_code=303,
+        )
+    if new_pw != new_pw_confirm:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Password+confirmation+does+not+match",
+            status_code=303,
+        )
+    if len(new_pw) < 12:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Password+must+be+at+least+12+characters",
+            status_code=303,
+        )
+
     status_code, body, transport_err = await _frontdesk_admin_call(
         "POST",
         f"/admin/users/{user_name}/reset-password",
@@ -3900,12 +3915,14 @@ async def users_reset_password(principal_id: str, request: Request):
             status_code=303,
         )
 
-    # Wave B G2 — single-consume ticket instead of cleartext in URL.
+    # No cleartext in the redirect URL — admin already knows the
+    # password (they typed it). ``must_change_password=True`` (set
+    # implicitly by the Frontdesk reset endpoint) forces rotation
+    # at the user's next sign-in.
     from urllib.parse import quote
-    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
-    ticket = mint_password_ticket(new_pw)
     return RedirectResponse(
-        f"/proxy/users/{quote(principal_id)}?reset_pw_ticket={quote(ticket)}",
+        f"/proxy/users/{quote(principal_id)}"
+        "?ok=Password+reset+-+communicate+the+new+password+out-of-band",
         status_code=303,
     )
 
@@ -3953,7 +3970,29 @@ async def users_provision_to_frontdesk(principal_id: str, request: Request):
             status_code=303,
         )
 
-    new_pw = _generate_temp_password()
+    # ADR-034 follow-up — admin picks the password from the form, same
+    # rationale as users_create + users_reset_password above (no
+    # multi-worker ticket store, no cleartext on the wire beyond the
+    # POST body + Frontdesk bcrypt hash).
+    form = await request.form()
+    new_pw = (form.get("password") or "").strip()
+    new_pw_confirm = (form.get("password_confirm") or "").strip()
+    if not new_pw:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Initial+password+is+required",
+            status_code=303,
+        )
+    if new_pw != new_pw_confirm:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Password+confirmation+does+not+match",
+            status_code=303,
+        )
+    if len(new_pw) < 12:
+        return RedirectResponse(
+            f"/proxy/users/{principal_id}?error=Password+must+be+at+least+12+characters",
+            status_code=303,
+        )
+
     status_code, body, transport_err = await _frontdesk_admin_call(
         "POST",
         "/admin/users",
@@ -4005,15 +4044,12 @@ async def users_provision_to_frontdesk(principal_id: str, request: Request):
             principal_id, exc,
         )
 
+    # No banner on redirect — admin already knows the password they
+    # just typed in the form.
     from urllib.parse import quote
-    from mcp_proxy.dashboard._pwd_tickets import mint_password_ticket
-    ticket = mint_password_ticket(new_pw)
-    # Reuse the new_pw_ticket query the create-user happy path already
-    # surfaces — the user_detail page renders the cleartext + copy
-    # button when it sees this ticket on GET, then burns the ticket so
-    # a refresh does not re-render.
     return RedirectResponse(
-        f"/proxy/users/{quote(principal_id)}?new_pw_ticket={quote(ticket)}",
+        f"/proxy/users/{quote(principal_id)}"
+        "?ok=User+provisioned+to+Frontdesk+-+communicate+the+password+out-of-band",
         status_code=303,
     )
 
