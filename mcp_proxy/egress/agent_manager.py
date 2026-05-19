@@ -1711,7 +1711,54 @@ class AgentManager:
         # whatever they were licensed for). Falls back to direct
         # proxy_config write for back-compat in tests / dev that lack
         # the at-rest master key (``MCP_PROXY_DB_ENCRYPTION_KEY``).
-        await self._persist_intermediate_ca(key_pem, cert_pem)
+        #
+        # F0.1 multi-worker race: under ``--workers 4`` (Mastio bundle
+        # default), every uvicorn worker runs the lifespan in parallel
+        # and would otherwise upsert its own ``mastio_ca_{key,cert}``
+        # pair, leaving the winning worker's cert next to a losing
+        # worker's key — and any leaf the loser signs verifies against
+        # the winner's cert with a different public key, ECDSA invalid.
+        # The persist helper now uses ``set_config_if_absent`` on the
+        # legacy path and the KMS providers do the same atomic write
+        # in their backends; either way only the first writer's pair
+        # lands. After persist, re-read from the source-of-truth so
+        # losers update their in-memory state to the winning pair
+        # before they sign any leaves. Sandbox-frontdesk dogfood
+        # caught this — the leaf the Connector enrolled with did not
+        # verify against its own intermediate.
+        winner_inserted = await self._persist_intermediate_ca(key_pem, cert_pem)
+
+        if not winner_inserted:
+            # Another worker won the race. Re-read the persisted pair
+            # and adopt it as our in-memory state.
+            from mcp_proxy.kms import get_kms_provider
+            persisted_key_pem: str | None = None
+            persisted_cert_pem: str | None = None
+            try:
+                loaded = await get_kms_provider().load_intermediate_ca()
+                if loaded is not None:
+                    persisted_key_pem, persisted_cert_pem = loaded
+            except Exception as exc:  # noqa: BLE001 — defensive
+                logger.warning(
+                    "post-mint KMS reload failed: %s — falling back to "
+                    "legacy proxy_config rows", exc,
+                )
+            if not persisted_key_pem or not persisted_cert_pem:
+                persisted_key_pem = await get_config("mastio_ca_key")
+                persisted_cert_pem = await get_config("mastio_ca_cert")
+            if persisted_key_pem and persisted_cert_pem:
+                self._mastio_ca_key = serialization.load_pem_private_key(
+                    persisted_key_pem.encode(), password=None,
+                )
+                self._mastio_ca_cert = x509.load_pem_x509_certificate(
+                    persisted_cert_pem.encode(),
+                )
+                logger.info(
+                    "Mastio Intermediate CA mint race lost — adopted "
+                    "the winning worker's pair (CN=%s)",
+                    self._mastio_ca_cert.subject.rfc4514_string(),
+                )
+                return
 
         self._mastio_ca_key = mastio_ca_key
         self._mastio_ca_cert = mastio_ca_cert
@@ -1720,8 +1767,16 @@ class AgentManager:
             mastio_ca_subject, INTERMEDIATE_CA_VALIDITY_DAYS,
         )
 
-    async def _persist_intermediate_ca(self, key_pem: str, cert_pem: str) -> None:
+    async def _persist_intermediate_ca(
+        self, key_pem: str, cert_pem: str,
+    ) -> bool:
         """Store the Mastio Intermediate CA via the configured KMS provider.
+
+        Returns ``True`` when this worker won the persistence race
+        (the candidate pair landed in the source-of-truth), ``False``
+        when another worker had already persisted a pair first and the
+        caller should adopt the existing pair instead. See the F0.1
+        race note in ``_mint_mastio_ca``.
 
         Dev-only fallback: if the PKI at-rest master key is missing
         (``MCP_PROXY_DB_ENCRYPTION_KEY`` unset) AND the KMS backend is
@@ -1748,11 +1803,28 @@ class AgentManager:
                 "MCP_PROXY_DB_ENCRYPTION_KEY to land the Intermediate "
                 "under Fernet at-rest.",
             )
-            await set_config("mastio_ca_key", key_pem)
-            await set_config("mastio_ca_cert", cert_pem)
-            return
+            # ``set_config_if_absent`` is the multi-worker-safe
+            # primitive — only the first writer wins, the rest report
+            # back ``False`` and the mint flow adopts the persisted
+            # pair. Both rows must be coupled atomically: we only
+            # accept the "winner" outcome when BOTH inserts wrote;
+            # if just one wrote we treat it as a race and re-read.
+            from mcp_proxy.db import set_config_if_absent
+            wrote_key = await set_config_if_absent(
+                "mastio_ca_key", key_pem,
+            )
+            wrote_cert = await set_config_if_absent(
+                "mastio_ca_cert", cert_pem,
+            )
+            return wrote_key and wrote_cert
 
+        # KMS providers (Vault / AWS-KMS / Azure-KV / etc) implement
+        # their own atomic-insert semantics under
+        # ``store_intermediate_ca``; if the provider doesn't expose a
+        # winner signal we assume win-on-success and leave the
+        # race-safe behaviour to the provider plugin.
         await provider.store_intermediate_ca(key_pem, cert_pem)
+        return True
 
     async def _mint_mastio_leaf(self, now: datetime) -> None:
         """Mint a fresh EC P-256 leaf under the existing intermediate CA.

@@ -243,6 +243,9 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
             jti=payload.jti,
             scope=[],
             cnf=None,
+            principal_type=(
+                "user" if "::user::" in payload.agent_id else "workload"
+            ),
         )
 
     record = await get_agent(payload.agent_id)
@@ -271,6 +274,14 @@ async def _maybe_local_token(request: Request) -> TokenPayload | None:
         jti=payload.jti,
         scope=list(capabilities),
         cnf=None,
+        # ADR-034 §2 — propagate principal_type from the DB row so
+        # downstream gates (F-001 on /v1/principals/csr) see the
+        # workload classification. Without this the dataclass
+        # default ``"agent"`` always wins and the Connector workload
+        # cannot mint user-principal certs. Sandbox dogfood caught
+        # this on the Bearer LOCAL_TOKEN ingress path; the JWT-mint
+        # counterpart is in local_token.py (issue_local_token).
+        principal_type=record.get("principal_type") or "agent",
     )
 
 
@@ -396,6 +407,16 @@ async def _maybe_local_internal_agent(request: Request) -> InternalAgent | None:
         # reach. The mTLS path (client_cert.py:333) already does
         # this correctly; mirror it here for parity.
         reach=record.get("reach") or "both",
+        # ADR-034 §2 — same parity for principal_type. Without this,
+        # a Frontdesk workload that authenticates over LOCAL_TOKEN
+        # (the ADR-012 Phase 4 fast path that the Connector's
+        # ``login_via_proxy_with_local_key`` lands on) ends up with
+        # ``principal_type=agent`` from the dataclass default, then
+        # the F-001 gate on ``/v1/principals/csr`` refuses to mint
+        # user-principal certs because the caller "is not a workload".
+        # client_cert.py:714 already pulls this from the DB row;
+        # mirror it here. Sandbox-frontdesk dogfood caught this.
+        principal_type=record.get("principal_type") or "agent",
     )
 
 
