@@ -37,11 +37,19 @@ def _make_csr(
     cn: str = "principal",
     key_type: str = "ec",
     key_size: int = 256,
+    ec_curve: ec.EllipticCurve | None = None,
     extra_uris: list[str] | None = None,
 ) -> tuple[x509.CertificateSigningRequest, str]:
-    """Build a CSR + return PEM. ``spiffe_uri`` None = no SAN extension."""
+    """Build a CSR + return PEM. ``spiffe_uri`` None = no SAN extension.
+
+    When ``ec_curve`` is provided it overrides the ``key_size`` mapping;
+    F-A-102 tests use this to inject specific non-whitelisted curves
+    (SECP256K1, BrainpoolP256R1).
+    """
     if key_type == "ec":
-        if key_size == 256:
+        if ec_curve is not None:
+            curve = ec_curve
+        elif key_size == 256:
             curve = ec.SECP256R1()
         elif key_size == 384:
             curve = ec.SECP384R1()
@@ -172,6 +180,42 @@ async def test_sign_user_csr_weak_rsa_raises():
     )
     with pytest.raises(CsrValidationError, match="too small"):
         await sign_user_csr(csr_pem, "acme.test/acme/user/mario")
+
+
+# F-A-102 (audit 2026-05-20, CWE-326). The CSR signer must refuse any
+# EC curve that the downstream ``x509_verifier`` does not whitelist.
+# Parametrised over the two non-NIST 256-bit curves ``cryptography``
+# ships out of the box (SECP256K1 — Bitcoin; BrainpoolP256R1 — RFC 5639).
+@pytest.mark.parametrize(
+    "curve_factory",
+    [ec.SECP256K1, ec.BrainpoolP256R1],
+    ids=["secp256k1", "brainpoolp256r1"],
+)
+async def test_sign_user_csr_rejects_non_nist_ec_curves(curve_factory):
+    _, csr_pem = _make_csr(
+        "spiffe://acme.test/acme/user/mario",
+        key_type="ec",
+        ec_curve=curve_factory(),
+    )
+    with pytest.raises(CsrValidationError, match="not allowed"):
+        await sign_user_csr(csr_pem, "acme.test/acme/user/mario")
+
+
+async def test_sign_user_csr_accepts_p384():
+    """Positive control: P-384 is on the whitelist and passes the
+    curve gate (signing still fails downstream when the broker CA is
+    not booted in this unit test, but only after the gate)."""
+    from app.registry.principals_csr import _validate_public_key
+
+    csr, _ = _make_csr(
+        "spiffe://acme.test/acme/user/mario",
+        key_type="ec",
+        ec_curve=ec.SECP384R1(),
+    )
+    # The gate alone must not raise. Full sign_user_csr() would need
+    # the KMS bootstrapped, which the rest of this module already
+    # exercises in the happy-path tests.
+    _validate_public_key(csr)
 
 
 async def test_sign_user_csr_malformed_pem_raises():
