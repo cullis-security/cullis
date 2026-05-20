@@ -76,9 +76,17 @@ def _decode_key(key: str) -> bytes:
         padded = key + "=" * (-len(key) % 4)
         return base64.urlsafe_b64decode(padded)
     except (binascii.Error, ValueError) as exc:
+        # Audit F-B-119 — base64 decoder messages occasionally interpolate
+        # input fragments. The key itself is a Guardian secret; even a
+        # 4-char prefix in the error message is too much.
+        from mcp_proxy._http_safety import safe_http_detail
         raise GuardianTicketError(
             "malformed_key",
-            detail=f"GUARDIAN_TICKET_KEY base64url decode failed: {exc}",
+            detail=safe_http_detail(
+                exc,
+                public_hint="GUARDIAN_TICKET_KEY base64url decode failed",
+                log_context="guardian.ticket._decode_key",
+            ),
         ) from exc
 
 

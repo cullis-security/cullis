@@ -29,6 +29,7 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from cullis_connector._http_safety import safe_http_detail
 from cullis_connector.ambassador.loop import run_tool_use_loop
 from cullis_connector.ambassador.models import ChatCompletionRequest
 from cullis_connector.ambassador.shared.cookie import (
@@ -136,7 +137,18 @@ async def _require_credentials(
         )
     except MastioCsrError as exc:
         _log.exception("provisioning failed for %s", payload.principal_id)
-        raise HTTPException(502, f"user provisioning failed: {exc}") from exc
+        # Audit F-B-402 — MastioCsrError carries the upstream Mastio
+        # error body (cert chain DN, CSR validation reason). Redact at
+        # the boundary; ops grep the log for the trace id.
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="user provisioning failed",
+                log_context="ensure_credentials.provisioner",
+                extra={"principal": payload.principal_id},
+            ),
+        ) from exc
     return cred
 
 
@@ -382,7 +394,15 @@ async def chat_completions(
         client = _build_user_client(state, cred)
     except Exception as exc:
         _log.exception("shared ambassador SDK login failed for %s", cred.principal_id)
-        raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="Cullis cloud login failed",
+                log_context="shared.chat_completions.build_user_client",
+                extra={"principal": cred.principal_id},
+            ),
+        ) from exc
 
     # P1 Tier B F2b — streaming tool-use loop opt-in. Same gate the
     # ambassador router uses (cullis_connector/ambassador/router.py),
@@ -414,7 +434,18 @@ async def chat_completions(
         _log.exception(
             "shared ambassador tool-use loop failed for %s", cred.principal_id,
         )
-        raise HTTPException(502, f"Cullis cloud call failed: {exc}") from exc
+        # Audit F-B-402 — in Frontdesk shared mode the SPA renders the
+        # detail field directly. Without redaction, user-A's error
+        # context could surface PII bound to user-B's principal.
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="Cullis cloud call failed",
+                log_context="shared.chat_completions.tool_use_loop",
+                extra={"principal": cred.principal_id},
+            ),
+        ) from exc
 
     model_out = body.get("model") or "claude-haiku-4-5"
 
@@ -504,7 +535,15 @@ async def inbox_list(
         raise
     except Exception as exc:
         _log.exception("inbox login failed for %s", cred.principal_id)
-        raise HTTPException(502, f"broker login failed: {exc}") from exc
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="broker login failed",
+                log_context="shared.inbox_list.broker_login",
+                extra={"principal": cred.principal_id},
+            ),
+        ) from exc
 
     params: dict[str, Any] = {"limit": limit}
     if since is not None:

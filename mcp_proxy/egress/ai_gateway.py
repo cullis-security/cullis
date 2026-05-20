@@ -296,10 +296,19 @@ async def _call_portkey(
     try:
         parsed = ChatCompletionResponse.model_validate(payload)
     except Exception as exc:  # pydantic ValidationError or similar
+        # Audit F-B-119 — pydantic ValidationError ``str()`` interpolates
+        # the offending input into the message. The input is the raw
+        # upstream response — model output, tool args, conversation
+        # context — and must not echo back to the OpenAI-shape caller.
+        from mcp_proxy._http_safety import safe_http_detail
         raise GatewayError(
             502,
             "schema_mismatch",
-            detail=f"Upstream payload failed Mastio schema: {exc}",
+            detail=safe_http_detail(
+                exc,
+                public_hint="upstream payload failed Mastio schema",
+                log_context="ai_gateway.portkey.parse_response",
+            ),
         ) from exc
 
     upstream_request_id = (
@@ -506,10 +515,18 @@ async def _call_litellm_embedded(
     try:
         parsed = ChatCompletionResponse.model_validate(payload)
     except Exception as exc:
+        # Audit F-B-119 — LiteLLM payload echoes through pydantic
+        # ValidationError ``str()``. Same redaction posture as the
+        # portkey branch above.
+        from mcp_proxy._http_safety import safe_http_detail
         raise GatewayError(
             502,
             "schema_mismatch",
-            detail=f"LiteLLM response failed Mastio schema: {exc}",
+            detail=safe_http_detail(
+                exc,
+                public_hint="LiteLLM response failed Mastio schema",
+                log_context="ai_gateway.litellm.parse_response",
+            ),
         ) from exc
 
     upstream_request_id = (

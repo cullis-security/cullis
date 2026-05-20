@@ -28,6 +28,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from cullis_connector._http_safety import safe_http_detail
 from cullis_connector.ambassador.auth import require_bearer, require_loopback
 from cullis_connector.ambassador.client import AmbassadorClient
 from cullis_connector.ambassador.loop import run_tool_use_loop
@@ -377,14 +378,27 @@ def chat_completions(req: ChatCompletionRequest, request: Request):
                 user_creds.principal_id,
             )
             raise HTTPException(
-                502, f"per-user Cullis cloud login failed: {exc}",
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="per-user Cullis cloud login failed",
+                    log_context="chat_completions.user_client",
+                    extra={"principal": user_creds.principal_id},
+                ),
             ) from exc
     else:
         try:
             client = client_holder.get()
         except Exception as exc:
             _log.exception("ambassador SDK login failed")
-            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+            raise HTTPException(
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="Cullis cloud login failed",
+                    log_context="chat_completions.ambassador_login",
+                ),
+            ) from exc
 
     # ADR-029 Phase D, opt-in PDP gate on each tool call inside the loop.
     # Off by default so existing deployments keep dispatching tools
@@ -466,7 +480,19 @@ def chat_completions(req: ChatCompletionRequest, request: Request):
         if user_creds is None:
             client_holder.invalidate()
         _log.exception("tool-use loop failed")
-        raise HTTPException(502, f"Cullis cloud call failed: {exc}") from exc
+        # Audit F-B-402 — defensive try/except wrap can catch
+        # SQLAlchemy/httpx/cryptography exceptions whose ``str()``
+        # carries bound parameters, upstream response bodies, cert
+        # subject DNs. Redact at the HTTPException boundary.
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="Cullis cloud call failed",
+                log_context="chat_completions.tool_use_loop",
+                extra={"principal": _principal_id or "agent-bound"},
+            ),
+        ) from exc
 
     model_out = body.get("model") or "claude-haiku-4-5"
 
@@ -595,7 +621,14 @@ def inbox_send(request: Request, body: dict):
             client = client_holder.get()
         except Exception as exc:
             _log.exception("ambassador SDK login failed (inbox send)")
-            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+            raise HTTPException(
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="Cullis cloud login failed",
+                    log_context="inbox_send.ambassador_login",
+                ),
+            ) from exc
     else:
         try:
             client = _build_user_client(request, user_creds)
@@ -607,7 +640,13 @@ def inbox_send(request: Request, body: dict):
                 user_creds.principal_id,
             )
             raise HTTPException(
-                502, f"per-user Cullis cloud login failed: {exc}",
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="per-user Cullis cloud login failed",
+                    log_context="inbox_send.user_client",
+                    extra={"principal": user_creds.principal_id},
+                ),
             ) from exc
 
     recipient_id = body.get("recipient_id")
@@ -632,7 +671,19 @@ def inbox_send(request: Request, body: dict):
         )
     except Exception as exc:
         _log.exception("inbox send failed for recipient=%s", recipient_id)
-        raise HTTPException(502, f"inbox send failed: {exc}") from exc
+        # Audit F-B-402 — Mastio response bodies leak through
+        # ``CullisClient.send_oneshot`` exceptions; redact at the
+        # boundary so a Frontdesk shared deploy never surfaces user-A
+        # error text into user-B's session.
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="inbox send failed",
+                log_context="inbox_send.client_call",
+                extra={"recipient": recipient_id},
+            ),
+        ) from exc
     return result
 
 
@@ -653,7 +704,14 @@ def inbox_list(
             client = client_holder.get()
         except Exception as exc:
             _log.exception("ambassador SDK login failed (inbox list)")
-            raise HTTPException(502, f"Cullis cloud login failed: {exc}") from exc
+            raise HTTPException(
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="Cullis cloud login failed",
+                    log_context="inbox_list.ambassador_login",
+                ),
+            ) from exc
     else:
         try:
             client = _build_user_client(request, user_creds)
@@ -665,7 +723,13 @@ def inbox_list(
                 user_creds.principal_id,
             )
             raise HTTPException(
-                502, f"per-user Cullis cloud login failed: {exc}",
+                502,
+                safe_http_detail(
+                    exc,
+                    public_hint="per-user Cullis cloud login failed",
+                    log_context="inbox_list.user_client",
+                    extra={"principal": user_creds.principal_id},
+                ),
             ) from exc
 
     params: dict[str, Any] = {"limit": int(limit)}
@@ -675,9 +739,27 @@ def inbox_list(
         resp = client._authed_request("GET", "/v1/egress/message/inbox", params=params)
     except Exception as exc:
         _log.exception("inbox list HTTP failed")
-        raise HTTPException(502, f"inbox list failed: {exc}") from exc
+        raise HTTPException(
+            502,
+            safe_http_detail(
+                exc,
+                public_hint="inbox list failed",
+                log_context="inbox_list.client_call",
+            ),
+        ) from exc
     if resp.status_code >= 400:
-        raise HTTPException(resp.status_code, detail=resp.text[:400])
+        # Audit F-B-402 — Mastio response body could carry PII bound
+        # to other user principals on a shared deployment. Truncating
+        # at 400 chars is not enough; redact the body and surface a
+        # stable detail string.
+        _log.warning(
+            "inbox list upstream rejected status=%d body=%s",
+            resp.status_code, resp.text,
+        )
+        raise HTTPException(
+            resp.status_code,
+            detail="inbox list rejected by Mastio",
+        )
     return resp.json()
 
 
