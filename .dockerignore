@@ -33,6 +33,7 @@ __pycache__/
 imp/
 drafts/
 demo/
+.data/
 
 # Build outputs (keep the Docker build context small; the connector
 # Dockerfile builds the wheel fresh inside the builder stage).

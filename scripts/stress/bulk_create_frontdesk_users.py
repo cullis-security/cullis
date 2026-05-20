@@ -108,28 +108,36 @@ async def _delete_prefix(
 
     connector = aiohttp.TCPConnector(limit=concurrency, ssl=ssl_ctx)
     async with aiohttp.ClientSession(connector=connector) as session:
-        # List first, then delete each matching user. We paginate by
-        # asking for a large batch; /admin/users returns everything in
-        # one go for the sizes we work with here.
+        # List first, then delete each matching user. /admin/users
+        # paginates at default 200 / max 500 per call; loop until the
+        # batch comes back short so very large prior runs still wipe.
+        all_users: list[dict] = []
+        offset = 0
         try:
-            async with session.get(
-                f"{base_url}/admin/users",
-                headers={"X-Admin-Secret": admin_secret},
-                timeout=timeout_s,
-            ) as resp:
-                if resp.status != 200:
-                    sys.stderr.write(
-                        f"  wipe: GET /admin/users returned {resp.status}, "
-                        "skipping wipe\n",
-                    )
-                    return 0
-                body = await resp.json()
+            while True:
+                async with session.get(
+                    f"{base_url}/admin/users?limit=500&offset={offset}",
+                    headers={"X-Admin-Secret": admin_secret},
+                    timeout=timeout_s,
+                ) as resp:
+                    if resp.status != 200:
+                        sys.stderr.write(
+                            f"  wipe: GET /admin/users returned {resp.status}, "
+                            "skipping wipe\n",
+                        )
+                        return 0
+                    body = await resp.json()
+                batch = body.get("users", [])
+                all_users.extend(batch)
+                if len(batch) < 500:
+                    break
+                offset += 500
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write(f"  wipe: list call failed: {exc}\n")
             return 0
 
         targets = [
-            u["user_name"] for u in body.get("users", [])
+            u["user_name"] for u in all_users
             if u["user_name"].startswith(f"{prefix}-")
         ]
         if not targets:

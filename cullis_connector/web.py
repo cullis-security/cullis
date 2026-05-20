@@ -997,15 +997,23 @@ def build_app(config: ConnectorConfig) -> FastAPI:
     # ── Routes ────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    def root() -> Response:
+    def root(request: Request) -> Response:
         """Dispatch to the correct screen based on current state.
 
         When identity is present AND the Cullis Chat SPA is mounted at
         /chat (ADR-019 Phase 8c), the root sends users straight to the
-        chat surface — that is the consumer-facing destination of the
-        desktop installer. The /connected dashboard is still reachable
-        directly (or via the tray menu in the desktop wrapper) for
-        admin / maintenance flows.
+        chat surface, the consumer-facing destination of the desktop
+        installer. The /connected dashboard is still reachable directly
+        (or via the tray menu in the desktop wrapper) for admin and
+        maintenance flows.
+
+        In the Frontdesk bundle the workload identity is provisioned at
+        admin setup, so ``has_identity()`` is True for every visitor.
+        Per-user auth still requires a local session cookie; without
+        one, send the visitor to ``/login`` instead of ``/chat/`` (the
+        SPA would render as the workload principal and the backend
+        would refuse the actual chat call, leaving the user stuck on
+        a logged-in-looking surface they cannot use).
 
         First-boot default is the auto-discovery wizard at
         ``/setup/discover``: it probes a few local addresses for a
@@ -1014,6 +1022,16 @@ def build_app(config: ConnectorConfig) -> FastAPI:
         on the wizard page.
         """
         if has_identity(config.config_dir):
+            from cullis_connector.identity.auth_mode import is_frontdesk_bundle
+            from cullis_connector.identity.local_session import (
+                LOCAL_SESSION_COOKIE_NAME,
+            )
+
+            if (
+                is_frontdesk_bundle()
+                and not request.cookies.get(LOCAL_SESSION_COOKIE_NAME)
+            ):
+                return RedirectResponse("/login", status_code=303)
             if getattr(app.state, "cullis_chat_mounted", False):
                 return RedirectResponse("/chat/", status_code=303)
             return RedirectResponse("/connected", status_code=303)
