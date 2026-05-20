@@ -73,13 +73,38 @@ class VaultKMSProvider:
         self._private_key_pem: str | None = None
         self._public_key_pem: str | None = None
 
-        # Enforce TLS — Vault token is the most sensitive credential
+        # Enforce TLS, Vault token is the most sensitive credential
+        # in the deploy. The VAULT_ALLOW_HTTP override exists for local
+        # dev workflows where Vault runs in -dev mode without TLS; in
+        # production environments the override is refused so a stale
+        # dev flag carried over to a prod .env cannot silently leak the
+        # token over plaintext HTTP. Mirrors the production gate pattern
+        # used by app/kms/local.py for loose key perms.
         if not self._vault_addr.startswith("https://"):
             allow_http = os.environ.get("VAULT_ALLOW_HTTP", "").lower() == "true"
+            from app.config import get_settings
+            is_production = getattr(get_settings(), "environment", "") == "production"
+            if allow_http and is_production:
+                _log.critical(
+                    "Refusing VAULT_ALLOW_HTTP=true in production for vault_addr '%s' "
+                    "(plaintext Vault token transport is rejected regardless of operator opt-in)",
+                    self._vault_addr,
+                )
+                raise ValueError(
+                    "VAULT_ALLOW_HTTP=true is rejected in production. "
+                    f"Configure Vault behind TLS (https://) before promoting (got '{self._vault_addr}')."
+                )
             if allow_http:
-                _log.warning("Vault address uses HTTP (TLS disabled via VAULT_ALLOW_HTTP=true) — NOT safe for production")
+                _log.warning(
+                    "Vault address uses HTTP (TLS disabled via VAULT_ALLOW_HTTP=true) "
+                    "for vault_addr '%s', DEV ONLY, NOT safe for production",
+                    self._vault_addr,
+                )
             else:
-                _log.critical("Vault address '%s' does not use HTTPS — refusing to send token over plaintext", self._vault_addr)
+                _log.critical(
+                    "Vault address '%s' does not use HTTPS, refusing to send token over plaintext",
+                    self._vault_addr,
+                )
                 raise ValueError(
                     f"Vault address must use https:// (got '{self._vault_addr}'). "
                     "Set VAULT_ALLOW_HTTP=true to override for development only."

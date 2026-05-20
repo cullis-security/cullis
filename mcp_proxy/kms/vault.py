@@ -69,16 +69,34 @@ class VaultKMSProvider:
             self._intermediate_ca_path = f"{parent}/intermediate-ca"
 
         # TLS enforcement: refuse plaintext HTTP unless the operator
-        # explicitly opts in for dev. Mirrors app/kms/vault.py.
+        # explicitly opts in for dev. In production environments the
+        # override is rejected so a stale dev flag promoted via .env
+        # cannot leak the Vault token over plaintext HTTP. Mirrors
+        # app/kms/vault.py and the production gate pattern in
+        # mcp_proxy/auth/dpop_jti_store.py.
         if not self._vault_addr.startswith("https://"):
             allow_http = os.environ.get("VAULT_ALLOW_HTTP", "").lower() == "true"
+            from mcp_proxy.config import get_settings
+            is_production = getattr(get_settings(), "environment", "") == "production"
+            if allow_http and is_production:
+                _log.critical(
+                    "Refusing VAULT_ALLOW_HTTP=true in production for vault_addr %r "
+                    "(plaintext Vault token transport is rejected regardless of operator opt-in)",
+                    self._vault_addr,
+                )
+                raise ValueError(
+                    "VAULT_ALLOW_HTTP=true is rejected in production. "
+                    f"Configure Vault behind TLS (https://) before promoting (got {self._vault_addr!r}).",
+                )
             if not allow_http:
                 raise ValueError(
                     f"Vault address must use https:// (got {self._vault_addr!r}). "
                     "Set VAULT_ALLOW_HTTP=true to override for development only.",
                 )
             _log.warning(
-                "Vault address uses HTTP (VAULT_ALLOW_HTTP=true) — NOT safe for production",
+                "Vault address uses HTTP (VAULT_ALLOW_HTTP=true) for vault_addr %r, "
+                "DEV ONLY, NOT safe for production",
+                self._vault_addr,
             )
 
         # When ca_cert_path is provided, httpx uses it as the CA bundle;
