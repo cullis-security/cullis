@@ -101,3 +101,96 @@ async def _load_display_name() -> str:
         return (await get_config("display_name")) or ""
     except Exception:
         return ""
+
+
+def generate_org_ca(org_id: str) -> tuple[str, str]:
+    """Generate self-signed Org CA. Returns (cert_pem, key_pem).
+
+    10-year validity: this is an offline-held root (NIST SP 800-57
+    Part 1 §5.3.6 — root CAs held offline with long lifetimes).
+    All online signing is done by the Mastio intermediate CA minted
+    underneath this root; the intermediate rotates on a shorter cycle.
+    """
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, f"{org_id} CA"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, org_id),
+    ])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=3650))
+        # pathLen=1 because this Org CA signs a Mastio intermediate
+        # (_mint_mastio_ca) which then signs agent leaves. RFC 5280
+        # §4.2.1.9: pathLen=0 would forbid the intermediate and any
+        # stdlib verifier (OpenSSL, Go crypto/x509, webpki, browser)
+        # would reject the full chain at federation/mTLS time. See #280.
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True, key_cert_sign=True, crl_sign=True,
+                content_commitment=False, key_encipherment=False,
+                data_encipherment=False, key_agreement=False,
+                encipher_only=False, decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
+
+
+async def _test_vault_connectivity(vault_addr: str, vault_token: str) -> tuple[bool, str]:
+    """Test Vault connectivity. Returns (success, message)."""
+    import httpx
+    from mcp_proxy.config import get_settings, vault_tls_verify
+    try:
+        async with httpx.AsyncClient(
+            verify=vault_tls_verify(get_settings()), timeout=5.0,
+        ) as client:
+            resp = await client.get(
+                f"{vault_addr.rstrip('/')}/v1/sys/health",
+                headers={"X-Vault-Token": vault_token},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("sealed"):
+                    return False, "Vault is sealed"
+                return True, "Connected"
+            return False, f"HTTP {resp.status_code}"
+    except Exception as exc:
+        return False, f"Connection failed: {exc}"
+
+
+async def _store_ca_key_in_vault(vault_addr: str, vault_token: str, org_id: str, key_pem: str) -> None:
+    """Store Org CA private key in Vault."""
+    import httpx
+    from mcp_proxy.config import get_settings, vault_tls_verify
+    path = f"secret/data/mcp-proxy/{org_id}/org-ca"
+    url = f"{vault_addr.rstrip('/')}/v1/{path}"
+    async with httpx.AsyncClient(
+        verify=vault_tls_verify(get_settings()), timeout=5.0,
+    ) as client:
+        resp = await client.post(
+            url,
+            json={"data": {"key_pem": key_pem}},
+            headers={"X-Vault-Token": vault_token},
+        )
+        resp.raise_for_status()
