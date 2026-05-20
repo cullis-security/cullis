@@ -12,6 +12,71 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [Connector v0.5.1] — Per-user auth gate, bcrypt knob, dir-norm HTTPS — 2026-05-20
+
+### Fixed
+
+- **Per-user auth gate at the Frontdesk root URL** (#827, #828). A fresh
+  visitor (new phone on the LAN, fresh incognito tab) used to land on
+  the chat surface as the workload principal — the backend refused
+  every actual chat call, leaving the user stuck on a logged-in-looking
+  shell. The Connector now redirects to `/login` when no
+  `cullis_local_session` cookie is present (defence-in-depth alongside
+  the nginx gate in the bundle below). Standalone desktop Connector
+  unchanged (`is_frontdesk_bundle()` gates the new branch).
+- **`/admin/users` paginates** (#828). The endpoint now accepts
+  `offset: int = Query(0, ge=0)` and passes it through to
+  `list_users(..., offset=int(offset))`, so dev scripts walking the
+  table in 500-row pages (`scripts/stress/bulk_create_frontdesk_users.py`)
+  actually advance instead of returning the same first 500 rows
+  forever.
+
+### Added
+
+- **`CULLIS_BCRYPT_COST` env knob** (#827), clamped `[10, 14]`, default
+  `12`. Drop to `10` (~62 ms vs ~250 ms / verify, ~4x faster) when the
+  deployment expects bursts of concurrent morning logins above the
+  ~16 logins/s ceiling on a 4-worker box at cost 12. Verified
+  end-to-end: cost 10 → 67 ms login mediana, cost 12 → 222 ms. Floor
+  at 10 to avoid an accidental footgun, cap at 14 to bound worker
+  monopoly. Values are read once at module import; bundle env file
+  carries an example commented block.
+
+[Connector v0.5.1]: https://github.com/cullis-security/cullis/releases/tag/connector-v0.5.1
+
+## [Frontdesk bundle v0.2.10] — Cookie gate, $effective_scheme, bcrypt knob passthrough — 2026-05-20
+
+### Fixed
+
+- **Inner nginx `location = /` gates on the session cookie** (#827, #828).
+  Without a non-empty `cullis_local_session` cookie value, the inner
+  nginx now returns `303 /login` instead of proxying the visitor to the
+  static SPA shell. Path-only `Location` header (`absolute_redirect
+  off`) so the redirect resolves against the operator's actual host:port
+  (LAN deployments where the published port differs from the default).
+  Tightened in #828 to require a non-empty value after `=` so an empty
+  cookie does not tunnel past the gate.
+- **`$effective_scheme` map honours `X-Forwarded-Proto: https`** (#827).
+  The catch-all `proxy_redirect` that rewrites absolute upstream
+  `Location` headers from the SPA's dir-norm 301s now stays on HTTPS
+  when the TLS sidecar fronts the bundle. Previously the rewrite used
+  `$scheme` which evaluated to `http` (the sidecar→inner hop is plain
+  HTTP), producing `http://<host>:8443/login/` and a `400 The plain
+  HTTP request was sent to HTTPS port` on the follow-up.
+
+### Changed
+
+- **`CULLIS_BCRYPT_COST` passthrough** in the bundle's
+  `docker-compose.yml`. Drop to 10 in `frontdesk.env` when expecting
+  morning-login bursts above the cost-12 ceiling. See
+  `frontdesk.env.example` for the security tradeoff and the
+  2026-05-20 load-test reference.
+- **`deploy.sh` defaults to `CONNECTOR_VERSION=0.5.1`** (was `0.4.6`,
+  stale since the v0.5.0 release). Fresh installs now pull the new
+  Connector image without needing the operator to override the env.
+
+[Frontdesk bundle v0.2.10]: https://github.com/cullis-security/cullis/releases/tag/frontdesk-bundle-v0.2.10
+
 ## [v0.5.1] — Mastio bundle: `--upgrade` defaults to bundle refresh — 2026-05-20
 
 ### Fixed
