@@ -49,6 +49,42 @@ class TestVaultTLSEnforcement:
             with pytest.raises(ValueError, match="must use https://"):
                 VaultKMSProvider("http://vault:8200", "s.token", "secret/data/broker")
 
+    def test_http_override_refused_in_production(self, monkeypatch):
+        """F-A-103: VAULT_ALLOW_HTTP=true must be rejected when
+        environment=production. The override is a dev-only escape
+        hatch; promoting a stale dev .env to prod must not leak the
+        Vault token over plaintext HTTP."""
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("ADMIN_SECRET", "test-secret-not-default")
+        monkeypatch.setenv("DASHBOARD_SIGNING_KEY", "x" * 32)
+        monkeypatch.setenv("VAULT_ALLOW_HTTP", "true")
+        from app.config import get_settings
+        get_settings.cache_clear()
+        try:
+            from app.kms.vault import VaultKMSProvider
+            with pytest.raises(ValueError, match="rejected in production"):
+                VaultKMSProvider(
+                    "http://vault:8200", "s.token", "secret/data/broker",
+                )
+        finally:
+            get_settings.cache_clear()
+
+    def test_http_override_allowed_in_development(self, monkeypatch):
+        """Mirror of the production refuse: development must still
+        accept the override so the dev workflow keeps working."""
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        monkeypatch.setenv("VAULT_ALLOW_HTTP", "true")
+        from app.config import get_settings
+        get_settings.cache_clear()
+        try:
+            from app.kms.vault import VaultKMSProvider
+            provider = VaultKMSProvider(
+                "http://vault:8200", "s.token", "secret/data/broker",
+            )
+            assert provider._vault_addr == "http://vault:8200"
+        finally:
+            get_settings.cache_clear()
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # #21 — HKDF random salt per-encryption

@@ -231,6 +231,44 @@ def test_init_allows_http_when_override_set(monkeypatch):
     assert provider.name == "vault"
 
 
+def test_init_refuses_http_override_in_production(monkeypatch):
+    """F-A-103: VAULT_ALLOW_HTTP=true must be rejected when the Mastio
+    is configured for production. The override exists for local dev
+    flows; promoting a stale dev .env to prod must not silently leak
+    the Vault token over plaintext HTTP."""
+    monkeypatch.setenv("VAULT_ALLOW_HTTP", "true")
+    monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "production")
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="rejected in production"):
+            VaultKMSProvider(
+                vault_addr="http://vault.internal:8200",
+                vault_token=_TOKEN,
+                org_ca_path=_PATH,
+            )
+    finally:
+        get_settings.cache_clear()
+
+
+def test_init_allows_http_override_in_development(monkeypatch):
+    """Mirror of the production refuse: development must still
+    accept the override so dev/test workflows keep working."""
+    monkeypatch.setenv("VAULT_ALLOW_HTTP", "true")
+    monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", "development")
+    from mcp_proxy.config import get_settings
+    get_settings.cache_clear()
+    try:
+        provider = VaultKMSProvider(
+            vault_addr="http://vault.internal:8200",
+            vault_token=_TOKEN,
+            org_ca_path=_PATH,
+        )
+        assert provider._vault_addr == "http://vault.internal:8200"
+    finally:
+        get_settings.cache_clear()
+
+
 def test_init_requires_addr():
     with pytest.raises(ValueError, match="vault_addr"):
         VaultKMSProvider(vault_addr="", vault_token=_TOKEN, org_ca_path=_PATH)
