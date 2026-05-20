@@ -90,6 +90,16 @@ router.include_router(_auth_routes.router)
 from app.dashboard import admin_settings_routes as _admin_settings_routes  # noqa: E402
 router.include_router(_admin_settings_routes.router)
 
+# F-B-202 PR-4: include badges (HTMX nav auto-refresh fragments) and
+# SSE (real-time dashboard updates). Overview (``GET /dashboard``)
+# stays inline in this file because FastAPI rejects sub-router routes
+# with an empty path; extracting it would change the URL to
+# ``/dashboard/`` and break linkage.
+from app.dashboard import badges_routes as _badges_routes  # noqa: E402
+from app.dashboard import sse_routes as _sse_routes  # noqa: E402
+router.include_router(_badges_routes.router)
+router.include_router(_sse_routes.router)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Login / Logout
@@ -140,6 +150,11 @@ _CAPABILITY_MAX_COUNT = 50
 # ─────────────────────────────────────────────────────────────────────────────
 # Overview
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# F-B-202 PR-4 footnote: this is the one route in the dashboard that
+# can't move to a sub-router because FastAPI rejects sub-router routes
+# with an empty path (the bare ``/dashboard`` landing page). It stays
+# inline; the rest of PR-4 (badges + sse) is extracted.
 
 @router.get("", response_class=HTMLResponse)
 async def overview(request: Request, db: AsyncSession = Depends(get_db)):
@@ -731,109 +746,8 @@ async def rfq_approve(request: Request, rfq_id: str, db: AsyncSession = Depends(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HTMX badge fragments — auto-refreshed every 10s
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/badge/pending-orgs", response_class=HTMLResponse)
-async def badge_pending_orgs(request: Request, db: AsyncSession = Depends(get_db)):
-    session = get_session(request)
-    if not session.logged_in or not session.is_admin:
-        return ""
-    count = (await db.execute(
-        select(func.count(OrganizationRecord.org_id))
-        .where(OrganizationRecord.status == "pending")
-    )).scalar() or 0
-    if count > 0:
-        return f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-yellow-500/20 text-yellow-400">{count}</span>'
-    return ""
-
-
-@router.get("/badge/pending-sessions", response_class=HTMLResponse)
-async def badge_pending_sessions(request: Request, db: AsyncSession = Depends(get_db)):
-    session = get_session(request)
-    if not session.logged_in:
-        return ""
-    count_q = select(func.count(SessionRecord.session_id)).where(SessionRecord.status == "pending")
-    count = (await db.execute(count_q)).scalar() or 0
-    if count > 0:
-        return f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-yellow-500/20 text-yellow-400">{count}</span>'
-    return ""
-
-
-# ``_count_chip`` lives in ``app.dashboard._helpers`` since F-B-202 PR-1.
-
-
-@router.get("/badge/users-count", response_class=HTMLResponse)
-async def badge_users_count(request: Request):
-    session = get_session(request)
-    if not session.logged_in:
-        return ""
-    return _count_chip(len(_demo_cast.users_cast()))
-
-
-@router.get("/badge/agents-count", response_class=HTMLResponse)
-async def badge_agents_count(request: Request, db: AsyncSession = Depends(get_db)):
-    session = get_session(request)
-    if not session.logged_in:
-        return ""
-    count = (await db.execute(select(func.count(AgentRecord.agent_id)))).scalar() or 0
-    if count == 0:
-        # During demo recording the registry may not yet be populated.
-        # Fall back to the cast count so the badge is screenshot-ready.
-        count = len(_demo_cast.agent_extras_keys())
-    return _count_chip(int(count))
-
-
-@router.get("/badge/workloads-count", response_class=HTMLResponse)
-async def badge_workloads_count(request: Request):
-    session = get_session(request)
-    if not session.logged_in:
-        return ""
-    return _count_chip(len(_demo_cast.workloads_cast()))
-
-
-@router.get("/badge/resources-count", response_class=HTMLResponse)
-async def badge_resources_count(request: Request):
-    session = get_session(request)
-    if not session.logged_in:
-        return ""
-    return _count_chip(len(_demo_cast.resources_cast()))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SSE — real-time dashboard updates
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/sse")
-async def dashboard_sse(request: Request):
-    session = get_session(request)
-    if not session.logged_in:
-        raise HTTPException(status_code=401)
-
-    from app.dashboard.sse import sse_manager
-
-    client_id, queue = sse_manager.connect(org_id=None, is_admin=True)
-
-    async def event_stream():
-        try:
-            yield "event: connected\ndata: ok\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    data = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    yield f"event: update\ndata: {data}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            sse_manager.disconnect(client_id)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+# Badge endpoints moved to ``app/dashboard/badges_routes.py`` and the
+# SSE endpoint moved to ``app/dashboard/sse_routes.py`` (F-B-202 PR-4).
 
 
 # ═════════════════════════════════════════════════════════════════════════════
