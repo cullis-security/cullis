@@ -23,7 +23,7 @@ import pathlib
 import httpx
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse
 from starlette.responses import RedirectResponse
 
 from mcp_proxy.dashboard.session import (
@@ -38,7 +38,6 @@ from mcp_proxy.dashboard.session import (
     MIN_PASSWORD_LENGTH,
 )
 from mcp_proxy.admin.approval_hook import (
-    ACTION_AGENT_ENROLL,
     ACTION_AGENTS_DELETE,
     ACTION_LICENSE_IMPORT,
     ACTION_USERS_DELETE,
@@ -62,8 +61,6 @@ from mcp_proxy.dashboard._helpers import (  # noqa: E402
     _login_client_ip,
     _post_login_redirect,
 )
-from mcp_proxy import license as _license_mod  # noqa: E402
-
 templates = build_templates(_TEMPLATE_DIR)
 
 router = APIRouter(prefix="/proxy", tags=["dashboard"])
@@ -108,6 +105,17 @@ router.include_router(_oidc_routes.router)
 # F-B-201 PR-10: include the mastio-key sub-router (rotation lifecycle).
 from mcp_proxy.dashboard import mastio_key_routes as _mastio_key_routes  # noqa: E402
 router.include_router(_mastio_key_routes.router)
+
+# F-B-201 PR-12: include the enrollments sub-router (admin review queue
+# for pending Connector enrollment requests).
+from mcp_proxy.dashboard import enrollments_routes as _enrollments_routes  # noqa: E402
+router.include_router(_enrollments_routes.router)
+
+# F-B-201 PR-12: include the badges sub-router (sidebar HTMX status
+# indicators for agents / enrollments / users / approvals / audit /
+# updates / version).
+from mcp_proxy.dashboard import badges_routes as _badges_routes  # noqa: E402
+router.include_router(_badges_routes.router)
 
 
 # Helpers (_ctx, _enforce_safe_outbound_url, _login_client_ip,
@@ -364,296 +372,13 @@ async def org_display_name_update(request: Request):
 # ``mcp_proxy/dashboard/vault_routes.py`` since F-B-201 PR-9.
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Connector enrollments (Phase 2c — admin review UI)
-#
-# The JSON API lives under /v1/admin/enrollments/* (mcp_proxy.enrollment.router).
-# These routes render the HTML dashboard page and accept form-based POST
-# submissions so the approve/reject flow matches the prevailing form+CSRF
-# pattern used by the rest of the dashboard (agents/create, vault/save, etc).
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _resolve_agent_manager(request: Request):
-    """Return a usable AgentManager for enrollment approval.
-
-    Prefers ``app.state.agent_manager`` (set in tests), then the one
-    embedded in ``app.state.broker_bridge``, then falls back to
-    constructing one on the fly and loading the Org CA from config.
-    """
-    from mcp_proxy.egress.agent_manager import AgentManager
-
-    mgr = getattr(request.app.state, "agent_manager", None)
-    if mgr is not None:
-        return mgr
-
-    bridge = getattr(request.app.state, "broker_bridge", None)
-    if bridge is not None:
-        embedded = getattr(bridge, "_agent_manager", None)
-        if embedded is not None:
-            return embedded
-
-    # Fallback: construct from config. ``load_org_ca_from_config`` is a
-    # no-op when no CA is stored; the enrollment service will then raise a
-    # clean 503 that we surface in the page.
-    from mcp_proxy.config import get_settings
-
-    settings = get_settings()
-    return AgentManager(org_id=settings.org_id, trust_domain=settings.trust_domain)
+# Connector enrollments (/proxy/enrollments + approve + reject) moved to
+# ``mcp_proxy/dashboard/enrollments_routes.py`` since F-B-201 PR-12.
 
 
-@router.get("/enrollments", response_class=HTMLResponse)
-async def enrollments_page(request: Request):
-    """Admin-only list of pending Connector enrollment requests."""
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-
-    from mcp_proxy.db import get_db as _get_db
-    from mcp_proxy.enrollment import service as _enrollment_service
-
-    async with _get_db() as conn:
-        pending = await _enrollment_service.list_pending(conn)
-
-    flash = request.query_params.get("flash")
-    flash_kind = request.query_params.get("flash_kind", "success")
-    error = request.query_params.get("error")
-
-    return templates.TemplateResponse("enrollments.html", _ctx(
-        request, session,
-        active="enrollments",
-        pending=pending,
-        flash=flash,
-        flash_kind=flash_kind,
-        error=error,
-    ))
-
-
-def _enroll_error_response(
-    request: Request,
-    message: str,
-    *,
-    status_code: int = 400,
-) -> Response:
-    """Content-negotiated error response for dashboard enrollment form handlers.
-
-    Browsers (`Accept: text/html...`) keep the 303 redirect + flash error so
-    the form page re-renders with the message inline. CLI/script callers
-    (curl default `*/*`, `application/json`, fetch JS) get a structured
-    `400` with `{"detail": <message>}` instead of a 303 they would silently
-    follow into a 200 page with the real error buried in the query string.
-    """
-    accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        from urllib.parse import quote
-        return RedirectResponse(
-            url=f"/proxy/enrollments?error={quote(message)}",
-            status_code=303,
-        )
-    return JSONResponse(
-        status_code=status_code,
-        content={"detail": message},
-    )
-
-
-@router.post("/enrollments/{session_id}/approve")
-async def enrollments_approve(request: Request, session_id: str):
-    """Form-based approve handler. Calls the service and redirects back."""
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not await verify_csrf(request, session):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    from mcp_proxy.db import get_db as _get_db
-    from mcp_proxy.enrollment import service as _enrollment_service
-
-    form = await request.form()
-    agent_id = str(form.get("agent_id", "")).strip()
-    capabilities_raw = str(form.get("capabilities", "")).strip()
-    groups_raw = str(form.get("groups", "")).strip()
-
-    if not agent_id:
-        return _enroll_error_response(request, "agent_id is required")
-
-    capabilities = [c.strip() for c in capabilities_raw.split(",") if c.strip()]
-    groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
-
-    # H3 P0.5 — 4-eyes intercept. When the enterprise rbac_multi_admin
-    # plugin is loaded and policy-gated, this submits the action for a
-    # second admin signoff and redirects the submitter to the approvals
-    # page. When no plugin opts in (community / single-admin deploys),
-    # the helper returns None and the endpoint proceeds unchanged.
-    intercept = await maybe_intercept_for_approval(
-        session=session,
-        action_type=ACTION_AGENT_ENROLL,
-        payload={
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "capabilities": capabilities,
-            "groups": groups,
-        },
-        request=request,
-    )
-    if intercept is not None:
-        return intercept
-
-    agent_manager = _resolve_agent_manager(request)
-
-    try:
-        async with _get_db() as conn:
-            record = await _enrollment_service.approve(
-                conn,
-                session_id=session_id,
-                agent_id=agent_id,
-                capabilities=capabilities,
-                groups=groups,
-                admin_name=session.role or "admin",
-                agent_manager=agent_manager,
-            )
-    except _enrollment_service.EnrollmentError as exc:
-        return _enroll_error_response(request, str(exc))
-
-    _log.info(
-        "enrollment_approved via dashboard: session=%s agent=%s admin=%s",
-        session_id, record.get("agent_id_assigned"), session.role,
-    )
-    from urllib.parse import quote
-    msg = f"Approved enrollment — agent {record.get('agent_id_assigned', agent_id)} issued"
-    return RedirectResponse(
-        url=f"/proxy/enrollments?flash={quote(msg)}",
-        status_code=303,
-    )
-
-
-@router.post("/enrollments/{session_id}/reject")
-async def enrollments_reject(request: Request, session_id: str):
-    """Form-based reject handler. Calls the service and redirects back."""
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not await verify_csrf(request, session):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    from mcp_proxy.db import get_db as _get_db
-    from mcp_proxy.enrollment import service as _enrollment_service
-
-    form = await request.form()
-    reason = str(form.get("reason", "")).strip()
-    if not reason:
-        return _enroll_error_response(request, "Rejection reason is required")
-
-    try:
-        async with _get_db() as conn:
-            await _enrollment_service.reject(
-                conn,
-                session_id=session_id,
-                reason=reason,
-                admin_name=session.role or "admin",
-            )
-    except _enrollment_service.EnrollmentError as exc:
-        return _enroll_error_response(request, str(exc))
-
-    _log.info(
-        "enrollment_rejected via dashboard: session=%s admin=%s",
-        session_id, session.role,
-    )
-    return RedirectResponse(
-        url="/proxy/enrollments?flash=Enrollment+rejected&flash_kind=success",
-        status_code=303,
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HTMX badge fragments
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/badge/agents")
-async def badge_agents(request: Request):
-    """Return agent count badge fragment."""
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-
-    from mcp_proxy.db import list_agents
-    agents = await list_agents()
-    active = sum(1 for a in agents if a["is_active"])
-    if active:
-        return HTMLResponse(
-            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-teal-500/20 text-teal-400">{active}</span>'
-        )
-    return HTMLResponse("")
-
-
-@router.get("/badge/enrollments")
-async def badge_enrollments(request: Request):
-    """Return pending enrollment count badge fragment."""
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-
-    from mcp_proxy.db import get_db as _get_db
-    from mcp_proxy.enrollment import service as _enrollment_service
-
-    try:
-        async with _get_db() as conn:
-            pending = await _enrollment_service.list_pending(conn)
-    except Exception:  # table may not exist in pre-migrated setups
-        return HTMLResponse("")
-
-    count = len(pending)
-    if count:
-        return HTMLResponse(
-            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-amber-500/20 text-amber-400">{count}</span>'
-        )
-    return HTMLResponse("")
-
-
-@router.get("/badge/users")
-async def badge_users(request: Request):
-    """Return user-principal count badge fragment for the sidebar."""
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-    try:
-        from mcp_proxy.db import count_user_principals
-        n = await count_user_principals()
-    except Exception:  # table may not exist in pre-migrated setups
-        return HTMLResponse("")
-    if n:
-        return HTMLResponse(
-            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-accent-500/15 text-accent-400">{n}</span>'
-        )
-    return HTMLResponse("")
-
-
-@router.get("/badge/approvals")
-async def badge_approvals(request: Request):
-    """Pending 4-eyes approvals count for the sidebar.
-
-    Empty in community mode (no ``rbac_multi_admin`` feature in the
-    license) or when the enterprise plugin is not installed on this
-    deploy — the late import keeps the open-core build independent of
-    the enterprise package. Anything unexpected on the read path
-    degrades silently to "no badge" rather than breaking the nav.
-    """
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-    if not _license_mod.has_feature("rbac_multi_admin"):
-        return HTMLResponse("")
-    try:
-        from cullis_enterprise.mastio.rbac_multi_admin import (
-            models as _approvals_models,
-        )
-        pending = await _approvals_models.list_pending_approvals()
-    except Exception:
-        return HTMLResponse("")
-    count = len(pending)
-    if count:
-        return HTMLResponse(
-            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-amber-500/20 text-amber-400">{count}</span>'
-        )
-    return HTMLResponse("")
+# HTMX badge fragments for agents / enrollments / users / approvals /
+# audit / updates / version moved to
+# ``mcp_proxy/dashboard/badges_routes.py`` since F-B-201 PR-13.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1665,87 +1390,8 @@ async def api_update_status_dismiss(request: Request):
     return RedirectResponse(referer, status_code=303)
 
 
-@router.get("/badge/audit")
-async def badge_audit(request: Request):
-    """Return recent audit count badge fragment."""
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-
-    from sqlalchemy import text
-
-    from mcp_proxy.db import get_db
-
-    async with get_db() as db:
-        result = await db.execute(
-            text("SELECT COUNT(*) as cnt FROM audit_log WHERE timestamp > datetime('now', '-1 hour')")
-        )
-        row = result.mappings().first()
-        count = row["cnt"] if row else 0
-
-    if count:
-        return HTMLResponse(
-            f'<span class="px-1.5 py-0.5 rounded-full text-xs bg-teal-500/20 text-teal-400">{count}</span>'
-        )
-    return HTMLResponse("")
-
-
-@router.get("/badge/updates")
-async def badge_updates(request: Request):
-    """Return federation-update pending count badge fragment.
-
-    Tint encodes the most severe pending criticality on the proxy:
-      - red  → at least one ``critical`` pending migration.
-      - amber → only ``warning`` / ``info`` migrations pending.
-      - empty → no pending migrations.
-
-    Counts all pending migrations regardless of severity so operators
-    see the workload at a glance; the tint signals urgency.
-    """
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-
-    try:
-        from mcp_proxy.db import get_pending_updates
-        from mcp_proxy.updates import discover
-    except Exception:
-        return HTMLResponse("")
-
-    migrations = discover()
-    try:
-        rows_by_id = {
-            r["migration_id"]: r for r in await get_pending_updates()
-        }
-    except Exception:
-        # Table may not exist yet on a pre-0019 deploy; the badge is
-        # observability, not a correctness signal — degrade silent.
-        return HTMLResponse("")
-
-    critical_pending = 0
-    other_pending = 0
-    for m in migrations:
-        row = rows_by_id.get(m.migration_id)
-        if row is None or row["status"] != "pending":
-            continue
-        if m.criticality == "critical":
-            critical_pending += 1
-        else:
-            other_pending += 1
-
-    total = critical_pending + other_pending
-    if not total:
-        return HTMLResponse("")
-
-    tint_cls = (
-        "bg-red-500/20 text-red-400"
-        if critical_pending
-        else "bg-amber-500/20 text-amber-400"
-    )
-    return HTMLResponse(
-        f'<span class="px-1.5 py-0.5 rounded-full text-xs {tint_cls}">'
-        f'{total}</span>'
-    )
+# /badge/audit, /badge/updates and /badge/version moved to
+# ``mcp_proxy/dashboard/badges_routes.py`` since F-B-201 PR-13.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1776,50 +1422,6 @@ async def api_version_status(request: Request):
 
     status = await check_for_updates()
     return JSONResponse(_asdict(status))
-
-
-@router.get("/badge/version")
-async def badge_version(request: Request):
-    """HTMX fragment — single-pixel-thin banner that says "Update
-    available: 0.3.0-rc3" and links to the modal with the copy-paste
-    install command. Empty response when no update is pending so the
-    sidebar stays clean.
-
-    M-dash-3 audit fix: every interpolated value is HTML-escaped
-    before reaching the response. ``release_url``, ``latest``, and
-    ``install_command`` come from the GitHub Releases API (or a tag
-    name that an attacker who compromises the GHCR repo could craft)
-    and used to be embedded raw in ``href=...`` / ``title=...`` /
-    text-content positions, giving a stored-XSS surface against any
-    operator viewing the dashboard.
-    """
-    import html as _html
-
-    session = get_session(request)
-    if not session.logged_in:
-        return HTMLResponse("")
-
-    from mcp_proxy.version_check import check_for_updates
-    status = await check_for_updates()
-    if not status.update_available or not status.install_command:
-        return HTMLResponse("")
-
-    # ``quote=True`` escapes ``"`` so attribute-context interpolations
-    # cannot break out into new attributes.
-    cmd = _html.escape(status.install_command, quote=True)
-    latest = _html.escape(status.latest or "", quote=True)
-    current = _html.escape(str(status.current), quote=True)
-    release_url = _html.escape(status.release_url or "", quote=True)
-    return HTMLResponse(
-        f'<a href="{release_url}" target="_blank" rel="noopener" '
-        f'class="block px-3 py-2 rounded text-xs font-mono '
-        f'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 transition" '
-        f'title="Run ``{cmd}`` on the Mastio host to upgrade. '
-        f'See release notes on GitHub.">'
-        f'⤴ Update: <span class="font-semibold">{latest}</span> '
-        f'<span class="opacity-60">(running {current})</span>'
-        f'</a>'
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
