@@ -11,11 +11,15 @@ Threat model:
     over the raw body (same primitive as ``federation/publish.py``).
     Pinned in ``organizations.mastio_pubkey`` at onboarding. A Mastio
     cannot deny it published a given batch.
-  * **Forgery** — the Mastio's per-org hash chain (each row carries
-    ``previous_hash``) provides forward integrity within the chain.
-    The receiver also enforces ``previous_hash[i] == entry_hash[i-1]``
-    on inbound rows so an attacker can't inject a synthetic row
-    without breaking the chain.
+  * **Forgery** — the receiver recomputes each ``entry_hash`` from
+    the canonical inputs (timestamp + event_type + agent_id +
+    session_id + ... + previous_hash + chain_seq) and rejects on
+    mismatch. Without this step the chain would be self-referential:
+    a compromised Mastio could mutate any row's content, recompute
+    its own entry_hash, and forward-fix the next row's previous_hash
+    in batch — continuity intact, content silently diverged from
+    the Mastio's actual local_audit. F-A-401 (audit 2026-05-20)
+    closed this gap.
   * **Replay** — ``UNIQUE(mastio_org_id, chain_seq)`` makes the
     receiver idempotent: re-submitting the same batch produces a
     200 with ``stored=0, already_present=N`` instead of duplicate
@@ -40,7 +44,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.mastio_countersig import COUNTERSIG_HEADER, verify_mastio_countersig
 from app.auth.mastio_mtls import enforce_if_required as enforce_mastio_mtls
-from app.db.audit import MastioAuditReplica, log_event
+from app.db.audit import (
+    HASH_FORMAT_V2,
+    MastioAuditReplica,
+    compute_entry_hash_v2,
+    log_event,
+)
 from app.db.database import get_db
 from app.rate_limit.limiter import get_client_ip, rate_limiter
 from app.registry.org_store import get_org_by_id
@@ -136,6 +145,83 @@ async def replicate_audit_batch(
         signature_b64=mastio_signature,
         mastio_pubkey_pem=org.mastio_pubkey,
     )
+
+    # F-A-401 (audit 2026-05-20). Recompute each ``entry_hash`` from
+    # the canonical inputs and reject the batch on mismatch. Without
+    # this step the chain becomes self-referential: a compromised
+    # Mastio (or insider with the Mastio's leaf key) can mutate any
+    # row's content, recompute the hash for the mutated row, and
+    # forward-fix ``previous_hash`` on the chain tail — the receiver
+    # would accept and the replica would diverge silently from the
+    # Mastio's actual ``local_audit`` (defeating the dispute-grade
+    # evidence claim that the replica is supposed to provide).
+    #
+    # Only v2 rows are recomputed: v1 rows include the Mastio-local
+    # ``entry_id`` which is not present on the wire (the column was
+    # removed exactly to enable atomic INSERT, see migration 0031 +
+    # ``compute_entry_hash_v2`` rationale). Legacy v1 rows are logged
+    # but accepted; new rows must be v2 to land in the replica with
+    # full canonical-binding semantics.
+    for e in body.entries:
+        row_format = e.hash_format or "v1"
+        if row_format != HASH_FORMAT_V2:
+            # Legacy row predating the v2 canonical. Skip recompute,
+            # log so operators can see the share of v1 traffic still
+            # arriving (and chase the source Mastio to upgrade).
+            _log.warning(
+                "audit replicate: skipping recompute for v1 row "
+                "(mastio_org_id=%s, chain_seq=%d) — legacy canonical "
+                "includes Mastio-local entry_id not present on the wire",
+                body.mastio_org_id, e.chain_seq,
+            )
+            continue
+        try:
+            ts = datetime.fromisoformat(e.timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            await log_event(
+                db, "federation.audit_replicate_rejected", "denied",
+                org_id=body.mastio_org_id,
+                details={
+                    "reason": "entry_hash_recompute_mismatch",
+                    "chain_seq": e.chain_seq,
+                    "detail": "timestamp parse failed",
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"timestamp parse failed at chain_seq={e.chain_seq}: {exc}"
+                ),
+            ) from exc
+        recomputed = compute_entry_hash_v2(
+            timestamp=ts,
+            event_type=e.event_type,
+            agent_id=e.agent_id,
+            session_id=e.session_id,
+            org_id=body.mastio_org_id,
+            result=e.result,
+            details=e.details,
+            previous_hash=e.previous_hash,
+            chain_seq=e.chain_seq,
+            peer_org_id=None,
+            principal_type=e.principal_type,
+        )
+        if recomputed != e.entry_hash:
+            await log_event(
+                db, "federation.audit_replicate_rejected", "denied",
+                org_id=body.mastio_org_id,
+                details={
+                    "reason": "entry_hash_recompute_mismatch",
+                    "chain_seq": e.chain_seq,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"entry_hash recompute mismatch at "
+                    f"chain_seq={e.chain_seq} (F-A-401)"
+                ),
+            )
 
     # 4. Sort entries by chain_seq and enforce continuity within the
     #    batch (previous_hash[i] == entry_hash[i-1]).

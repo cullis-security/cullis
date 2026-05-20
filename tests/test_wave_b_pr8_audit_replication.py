@@ -85,9 +85,16 @@ def _make_entry(
 ) -> dict:
     """Build a mock local_audit-shaped entry. ``entry_hash`` is a
     deterministic hash so the test can chain entries by feeding the
-    prior entry's hash into the next entry's previous_hash."""
+    prior entry's hash into the next entry's previous_hash.
+
+    PR #5 audit 2026-05-20 (F-A-401): use ONE timestamp instance both
+    inside the canonical input and on the entry wire field, so the
+    receiver's recompute matches. Prior version called
+    ``datetime.now()`` twice and got two slightly different timestamps,
+    which the new recompute step would reject."""
+    ts = datetime.now(timezone.utc).isoformat()
     canonical = (
-        f"v2|{datetime.now(timezone.utc).isoformat()}|{event_type}|"
+        f"v2|{ts}|{event_type}|"
         f"|{session_id or ''}|{org_id}|ok|{details or ''}|"
         f"{previous_hash or 'genesis'}|seq={chain_seq}|peer="
     )
@@ -96,7 +103,7 @@ def _make_entry(
         "chain_seq": chain_seq,
         "entry_hash": entry_hash,
         "previous_hash": previous_hash,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": ts,
         "event_type": event_type,
         "agent_id": None,
         "session_id": session_id,
