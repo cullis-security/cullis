@@ -49,7 +49,21 @@ templates = build_templates(_TEMPLATE_DIR)
 router = APIRouter(tags=["dashboard-agents-credentials"])
 
 
-@router.get("/agents/{agent_id:path}", response_class=HTMLResponse)
+# NB: ``{agent_id}`` (default str converter) — NOT ``{agent_id:path}``.
+# Routes are evaluated in declaration order, and this detail handler is
+# declared above the sub-action routes (``/upload-cert``, ``/rotate-cert``,
+# ``/credentials``, ``/bundle``). With the ``:path`` converter the
+# detail route greedily captured ``orga::agent-a/rotate-cert`` as
+# agent_id, looked it up in the registry, found nothing, and returned
+# 404 ``Agent not found`` for every sub-action page — silently breaking
+# every cert-management button in the dashboard.
+#
+# The default str converter refuses to cross a ``/`` so the detail
+# handler can no longer eat sub-action suffixes. Agent IDs never
+# contain ``/`` (canonical form is ``<org>::<name>``), so no real path
+# is lost. Sister-file: declare the most specific routes first OR use
+# the default converter on broad ones — pick one rule.
+@router.get("/agents/{agent_id}", response_class=HTMLResponse)
 async def agent_detail(request: Request, agent_id: str,
                        db: AsyncSession = Depends(get_db)):
     """Developer portal page for a single agent."""
@@ -169,17 +183,34 @@ async def agent_upload_cert(request: Request, agent_id: str,
 
     # Verify cert is signed by the org's CA (if CA is uploaded). Use the
     # org record we already fetched above for the sealed check.
+    #
+    # Sister-file with the rotate-cert verifier (same file, lines below):
+    # ``public_key().verify`` is keytype-specific — RSA needs a padding
+    # argument, EC needs an ECDSA(hash) wrapper. The shipped code only
+    # handled RSA, so any tenant with an ECDSA org CA (the 2026-era
+    # bootstrap default) silently failed verification on every upload.
     if owner_org and owner_org.ca_certificate:
         try:
             from cryptography.x509 import load_pem_x509_certificate as _load_cert
-            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
             ca_cert = _load_cert(owner_org.ca_certificate.encode())
-            ca_cert.public_key().verify(
-                cert.signature,
-                cert.tbs_certificate_bytes,
-                padding.PKCS1v15(),
-                cert.signature_hash_algorithm,
-            )
+            ca_pub = ca_cert.public_key()
+            if isinstance(ca_pub, rsa.RSAPublicKey):
+                ca_pub.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    cert.signature_hash_algorithm,
+                )
+            elif isinstance(ca_pub, ec.EllipticCurvePublicKey):
+                ca_pub.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    ec.ECDSA(cert.signature_hash_algorithm),
+                )
+            else:
+                return _render_error(
+                    "Unsupported organization CA key type.")
         except Exception:
             return _render_error(
                 "Certificate signature verification failed. "
@@ -465,7 +496,7 @@ async def cert_rotate_submit(request: Request, agent_id: str, db: AsyncSession =
     # Validate the certificate
     from cryptography import x509 as crypto_x509
     from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
     from cryptography.x509.oid import NameOID
 
     try:
@@ -485,13 +516,33 @@ async def cert_rotate_submit(request: Request, agent_id: str, db: AsyncSession =
 
     # Verify signed by org CA (if CA is configured). Reuse owner_org from
     # the sealed-check step above so we don't hit the DB twice.
+    #
+    # ``public_key().verify(...)`` is keytype-specific: RSA wants a
+    # padding argument, EC wants an ECDSA(hash) wrapper. The earlier
+    # shipped code hard-coded the RSA shape (``padding.PKCS1v15()``)
+    # which made every EC-CA tenant fall into the generic
+    # ``except Exception`` branch and saw "Certificate verification
+    # failed" no matter how good the cert was. Bootstrap CAs in
+    # 2026-era stacks are ECDSA P-256 by default, so this affected
+    # every modern org.
     if owner_org and owner_org.ca_certificate:
         try:
             org_ca = crypto_x509.load_pem_x509_certificate(owner_org.ca_certificate.encode())
-            org_ca.public_key().verify(
-                cert.signature, cert.tbs_certificate_bytes,
-                padding.PKCS1v15(), cert.signature_hash_algorithm,
-            )
+            ca_pub = org_ca.public_key()
+            if isinstance(ca_pub, rsa.RSAPublicKey):
+                ca_pub.verify(
+                    cert.signature, cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(), cert.signature_hash_algorithm,
+                )
+            elif isinstance(ca_pub, ec.EllipticCurvePublicKey):
+                ca_pub.verify(
+                    cert.signature, cert.tbs_certificate_bytes,
+                    ec.ECDSA(cert.signature_hash_algorithm),
+                )
+            else:
+                return templates.TemplateResponse("cert_rotate.html",
+                    _ctx(request, session, active="agents", agent=agent,
+                         error="Unsupported organization CA key type.", success=None))
         except InvalidSignature:
             return templates.TemplateResponse("cert_rotate.html",
                 _ctx(request, session, active="agents", agent=agent,
