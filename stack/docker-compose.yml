@@ -1,0 +1,555 @@
+# Modern dogfood stack — Court + 2 Mastios + 2 agents + MCP+DB
+# (Frontdesk Connector + Ollama wiring are layered on by up.sh after
+# the compose stack is healthy. See GUIDE.md.)
+#
+# Build contexts intentionally reference ../sandbox/ for the broker-ca,
+# bootstrap and proxy-init images — those are stable, ship-tested
+# helpers that we DON'T want to fork into stack/. Hard-copy would
+# create drift. Project name is set by up.sh (COMPOSE_PROJECT_NAME)
+# so the stack does not collide with sandbox/demo.sh.
+
+networks:
+  orga-internal:
+    name: cullis-stack-orga
+    driver: bridge
+  orgb-internal:
+    name: cullis-stack-orgb
+    driver: bridge
+  public-wan:
+    name: cullis-stack-wan
+    driver: bridge
+
+volumes:
+  broker-ca:
+  postgres-data:
+  bootstrap-state:
+  proxy-a-data:
+  proxy-b-data:
+  mastio-a-nginx-certs:
+  mastio-b-nginx-certs:
+  mcp-messages-data:
+  frontdesk-connector-data:
+
+services:
+
+  broker-ca-init:
+    build: ../sandbox/broker-ca-init
+    environment:
+      ORG_ID: broker
+    volumes:
+      - broker-ca:/broker-certs
+    networks: [public-wan]
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER:     atn
+      POSTGRES_PASSWORD: atn-stack
+      POSTGRES_DB:       agent_trust
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [public-wan]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atn -d agent_trust"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    networks: [public-wan]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  # ── Court (federation broker) ─────────────────────────────────────────────
+
+  court:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      broker-ca-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ADMIN_SECRET: "stack-admin-secret-change-me"
+      KMS_BACKEND: "local"
+      BROKER_CA_KEY_PATH: /broker-certs/broker-ca-key.pem
+      BROKER_CA_CERT_PATH: /broker-certs/broker-ca.pem
+      DATABASE_URL: "postgresql+asyncpg://atn:atn-stack@postgres:5432/agent_trust"
+      REDIS_URL: "redis://redis:6379"
+      POLICY_BACKEND: "webhook"
+      POLICY_ENFORCEMENT: "true"
+      POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
+      TRUST_DOMAIN: "broker.stack"
+      OTEL_ENABLED: "false"
+      ENVIRONMENT: "development"
+      FORWARDED_ALLOW_IPS: "172.16.0.0/12"
+      MASTIO_MTLS_TRUSTED_PROXY_CIDRS: "172.16.0.0/12"
+    tmpfs:
+      - /app/certs:uid=999,gid=999
+    volumes:
+      - broker-ca:/broker-certs:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 172.16.0.0/12
+    networks:
+      public-wan:
+        aliases: [court, broker]
+    expose: ["8000"]
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  # ── Bootstrap: register both orgs + mint agent certs ─────────────────────
+
+  bootstrap:
+    build:
+      context: ./bootstrap
+    depends_on:
+      court:
+        condition: service_healthy
+    environment:
+      BROKER_URL:       "http://court:8000"
+      ADMIN_SECRET:     "stack-admin-secret-change-me"
+      STATE_DIR:        /state
+      POSTGRES_DSN:     "postgresql://atn:atn-stack@postgres:5432/agent_trust"
+      BOOTSTRAP_SCOPE:  "full"
+      # PDP webhooks live on the Mastio dashboard /pdp/policy endpoint
+      # via the public-wan alias (one Mastio per org).
+      ORGA_PDP_WEBHOOK: "http://mastio-a:9100/pdp/policy"
+      ORGB_PDP_WEBHOOK: "http://mastio-b:9100/pdp/policy"
+    volumes:
+      - bootstrap-state:/state
+    networks: [public-wan]
+    restart: "no"
+
+  # ── Mastio A (orga) — runs in Frontdesk shared mode (set by up.sh) ───────
+
+  mastio-a-init:
+    build:
+      context: ..
+      dockerfile: sandbox/proxy-init/Dockerfile
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ORG_ID:              "orga"
+      BROKER_URL:          "http://court:8000"
+      PROXY_PUBLIC_URL:    "http://localhost:9100"
+      PROXY_DB_PATH:       /data/mcp_proxy.db
+      STATE_DIR:           /state
+      # Skip OIDC: stack uses Mastio local users (ADR-025 local-auth)
+      OIDC_ISSUER_URL:     ""
+      OIDC_CLIENT_ID:      ""
+      OIDC_CLIENT_SECRET:  ""
+      SEED_MCP_RESOURCES:  "1"
+      # Both orga agents reach mcp-messages on the shared internal network.
+      SEED_MCP_0_NAME:     "send_message"
+      SEED_MCP_0_ENDPOINT: "http://mcp-messages:9500/"
+      SEED_MCP_0_AGENTS:   "orga::agent-a,orga::byoca-bot"
+      SEED_MCP_1_NAME:     "list_messages"
+      SEED_MCP_1_ENDPOINT: "http://mcp-messages:9500/"
+      SEED_MCP_1_AGENTS:   "orga::agent-a,orga::byoca-bot"
+    volumes:
+      - bootstrap-state:/state:ro
+      - proxy-a-data:/data
+    networks: [orga-internal, public-wan]
+    restart: "no"
+
+  mastio-a:
+    build:
+      context: ..
+      dockerfile: mcp_proxy/Dockerfile
+    depends_on:
+      mastio-a-init:
+        condition: service_completed_successfully
+    environment:
+      MCP_PROXY_STANDALONE: "false"
+      MCP_PROXY_BROKER_URL:        "http://court:8000"
+      MCP_PROXY_BROKER_JWKS_URL:   "http://court:8000/.well-known/jwks.json"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-a-nginx:9443"
+      MCP_PROXY_ADMIN_SECRET:      "stack-mastio-a-admin"
+      # Dashboard admin password — enables /proxy/login (cookie + CSRF
+      # flow needed to approve enrollments + create users via
+      # /proxy/users/create that forward to Frontdesk).
+      MCP_PROXY_INITIAL_ADMIN_PASSWORD: "stack-mastio-a-dashboard"
+      # Pin signing key so cookies survive worker restart (default
+      # bundle runs --workers 4; without this the second admin POST
+      # bounces through /proxy/login because worker B can't verify
+      # the cookie worker A signed).
+      MCP_PROXY_DASHBOARD_SIGNING_KEY: "stack-mastio-a-dashboard-signing-key-not-secure"
+      MCP_PROXY_DB_ENCRYPTION_KEY: "stack-dev-key-not-secure-must-be-32-chars-or-longer"
+      MCP_PROXY_ANTHROPIC_API_KEY: ""
+      MCP_PROXY_AI_GATEWAY_BACKEND: "litellm_embedded"
+      MCP_PROXY_AI_GATEWAY_PROVIDER: "ollama"
+      PROXY_TRUST_DOMAIN: "orga.test"
+      MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
+      MCP_PROXY_ORG_ID:            "orga"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9100,https://localhost:9443,http://frontdesk-connector:7777"
+      MCP_PROXY_ENVIRONMENT:       "development"
+      MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      PROXY_INTRA_ORG: "true"
+      PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "true"
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "mastio-a-nginx,mastio-a,localhost,host.docker.internal"
+      MCP_PROXY_TOOL_PDP_ENABLED: "true"
+      MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orgb": "http://mastio-b:9100/v1/policy/tool-call"}'
+      MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
+      # Frontdesk bridge — Mastio forwards /proxy/users/create to
+      # the Connector Ambassador admin endpoint so the Frontdesk
+      # users.db gets the password hash. URL + admin secret get
+      # filled by up.sh after the Connector boots (pre-baked here
+      # so the container picks them up at restart time without an
+      # env file edit).
+      MCP_PROXY_FRONTDESK_AMBASSADOR_URL: "http://frontdesk-connector:7777"
+      MCP_PROXY_FRONTDESK_ADMIN_SECRET:   "stack-frontdesk-admin-secret"
+      MCP_PROXY_FRONTDESK_VERIFY_TLS:     "false"
+    volumes:
+      - proxy-a-data:/data
+      - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
+    extra_hosts:
+      # Reach Ollama on the host (qwen2.5 etc) without extra container.
+      - "host.docker.internal:host-gateway"
+    networks:
+      orga-internal:
+        aliases: [mastio-a, mcp-proxy]
+      public-wan:
+        aliases: [mastio-a]
+    expose: ["9100"]
+    ports: ["9100:9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  mastio-a-nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      mastio-a:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-a-nginx-certs:/etc/nginx/certs:ro
+      - ../packaging/nginx-reload-watcher/reload-watcher.sh:/usr/local/bin/nginx-reload-watcher.sh:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /usr/local/bin/nginx-reload-watcher.sh &
+        exec nginx -g 'daemon off;'
+    environment:
+      NGINX_RELOAD_POLL_SECONDS: "5"
+    networks:
+      orga-internal:
+        aliases: [mastio-a-nginx]
+    expose: ["9443"]
+    ports: ["9443:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # ── Mastio B (orgb) — classic mode (no Frontdesk) ────────────────────────
+
+  mastio-b-init:
+    build:
+      context: ..
+      dockerfile: sandbox/proxy-init/Dockerfile
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      ORG_ID:              "orgb"
+      BROKER_URL:          "http://court:8000"
+      PROXY_PUBLIC_URL:    "http://localhost:9200"
+      PROXY_DB_PATH:       /data/mcp_proxy.db
+      STATE_DIR:           /state
+      OIDC_ISSUER_URL:     ""
+      OIDC_CLIENT_ID:      ""
+      OIDC_CLIENT_SECRET:  ""
+      SEED_MCP_RESOURCES:  "1"
+      SEED_MCP_0_NAME:     "send_message"
+      SEED_MCP_0_ENDPOINT: "http://mcp-messages:9500/"
+      SEED_MCP_0_AGENTS:   "orgb::agent-b"
+      SEED_MCP_1_NAME:     "list_messages"
+      SEED_MCP_1_ENDPOINT: "http://mcp-messages:9500/"
+      SEED_MCP_1_AGENTS:   "orgb::agent-b"
+    volumes:
+      - bootstrap-state:/state:ro
+      - proxy-b-data:/data
+    networks: [orgb-internal, public-wan]
+    restart: "no"
+
+  mastio-b:
+    build:
+      context: ..
+      dockerfile: mcp_proxy/Dockerfile
+    depends_on:
+      mastio-b-init:
+        condition: service_completed_successfully
+    environment:
+      MCP_PROXY_STANDALONE: "false"
+      MCP_PROXY_BROKER_URL:        "http://court:8000"
+      MCP_PROXY_BROKER_JWKS_URL:   "http://court:8000/.well-known/jwks.json"
+      MCP_PROXY_PROXY_PUBLIC_URL:  "https://mastio-b-nginx:9443"
+      MCP_PROXY_ADMIN_SECRET:      "stack-mastio-b-admin"
+      MCP_PROXY_DB_ENCRYPTION_KEY: "stack-dev-key-not-secure-must-be-32-chars-or-longer"
+      MCP_PROXY_DATABASE_URL:      "sqlite+aiosqlite:////data/mcp_proxy.db"
+      MCP_PROXY_ORG_ID:            "orgb"
+      MCP_PROXY_ALLOWED_ORIGINS:   "http://localhost:9200,https://localhost:9543"
+      MCP_PROXY_ENVIRONMENT:       "development"
+      MCP_PROXY_FEDERATION_POLL_INTERVAL_S: "2"
+      PROXY_INTRA_ORG: "true"
+      PROXY_TRANSPORT_INTRA_ORG: "mtls-only"
+      MCP_PROXY_LOCAL_AUTH_ENABLED: "false"
+      MCP_PROXY_NGINX_CERT_DIR: "/var/lib/mastio/nginx-certs"
+      MCP_PROXY_NGINX_SAN: "mastio-b-nginx,mastio-b,localhost"
+      MCP_PROXY_TOOL_PDP_ENABLED: "true"
+      MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orga": "http://mastio-a:9100/v1/policy/tool-call"}'
+      MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
+      PROXY_TRUST_DOMAIN: "orgb.test"
+    volumes:
+      - proxy-b-data:/data
+      - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw
+    networks:
+      orgb-internal:
+        aliases: [mastio-b, mcp-proxy]
+      public-wan:
+        aliases: [mastio-b]
+    expose: ["9100"]
+    ports: ["9200:9100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  mastio-b-nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      mastio-b:
+        condition: service_healthy
+    volumes:
+      - ../nginx/mastio:/etc/nginx/conf.d:ro
+      - mastio-b-nginx-certs:/etc/nginx/certs:ro
+      - ../packaging/nginx-reload-watcher/reload-watcher.sh:/usr/local/bin/nginx-reload-watcher.sh:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        /usr/local/bin/nginx-reload-watcher.sh &
+        exec nginx -g 'daemon off;'
+    environment:
+      NGINX_RELOAD_POLL_SECONDS: "5"
+    networks:
+      orgb-internal:
+        aliases: [mastio-b-nginx]
+    expose: ["9443"]
+    ports: ["9543:9443"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /etc/nginx/certs/mastio-server.crt &&
+          test -s /etc/nginx/certs/mastio-server.key &&
+          test -s /etc/nginx/certs/org-ca.crt &&
+          test -s /var/run/nginx.pid
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  # ── Post-proxy-boot wiring: pin mastio_pubkey + seed agents ──────────────
+
+  bootstrap-mastio:
+    build:
+      context: ./bootstrap
+    depends_on:
+      court:
+        condition: service_healthy
+      mastio-a:
+        condition: service_healthy
+      mastio-b:
+        condition: service_healthy
+    entrypoint: ["python", "/app/bootstrap_mastio.py"]
+    environment:
+      BROKER_URL:            "http://court:8000"
+      ADMIN_SECRET:          "stack-admin-secret-change-me"
+      PROXY_A_URL:           "http://mastio-a:9100"
+      PROXY_A_ADMIN_SECRET:  "stack-mastio-a-admin"
+      PROXY_B_URL:           "http://mastio-b:9100"
+      PROXY_B_ADMIN_SECRET:  "stack-mastio-b-admin"
+      BOOTSTRAP_SCOPE:       "full"
+    volumes:
+      - bootstrap-state:/state
+    networks: [public-wan, orga-internal, orgb-internal]
+    restart: "no"
+
+  # ── Agents (BYOCA) ───────────────────────────────────────────────────────
+
+  agent-a:
+    build:
+      context: ..
+      dockerfile: sandbox/agent/Dockerfile
+    depends_on:
+      bootstrap-mastio:
+        condition: service_completed_successfully
+      mastio-a-nginx:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "https://mastio-a-nginx:9443"
+      ORG_ID: "orga"
+      AGENT_NAME: "agent-a"
+      PEERS_FILE: "/state/peers.json"
+    volumes:
+      - bootstrap-state:/state:ro
+    networks: [orga-internal]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 20s
+
+  agent-b:
+    build:
+      context: ..
+      dockerfile: sandbox/agent/Dockerfile
+    depends_on:
+      bootstrap-mastio:
+        condition: service_completed_successfully
+      mastio-b-nginx:
+        condition: service_healthy
+    environment:
+      BROKER_URL: "https://mastio-b-nginx:9443"
+      ORG_ID: "orgb"
+      AGENT_NAME: "agent-b"
+      PEERS_FILE: "/state/peers.json"
+    volumes:
+      - bootstrap-state:/state:ro
+    networks: [orgb-internal]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 20s
+
+  # ── MCP server (tools + persistent SQLite DB) ────────────────────────────
+
+  mcp-messages:
+    build:
+      context: ./mcp-messages
+      dockerfile: ../../sandbox/mcp-server.Dockerfile
+    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "9500"]
+    environment:
+      MCP_MESSAGES_DB: "/data/messages.db"
+    volumes:
+      - mcp-messages-data:/data
+    networks:
+      orga-internal:
+        aliases: [mcp-messages]
+      orgb-internal:
+        aliases: [mcp-messages]
+    expose: ["9500"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9500/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Frontdesk Connector (ADR-019 + ADR-025 local-auth) ────────────────────
+  #
+  # Joins orga-internal so it can talk to mastio-a-nginx:9443 via mTLS.
+  # First-boot enters /setup mode; up.sh drives the workload enrollment +
+  # admin approve, then the Connector mints the workload identity and
+  # /setup flips 410. Users then login at POST /api/auth/login.
+
+  frontdesk-connector-init:
+    image: busybox:stable
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data && echo ok"]
+    volumes:
+      - frontdesk-connector-data:/data
+    restart: "no"
+
+  frontdesk-connector:
+    build:
+      context: ..
+      dockerfile: packaging/docker/Dockerfile
+    depends_on:
+      frontdesk-connector-init:
+        condition: service_completed_successfully
+      mastio-a-nginx:
+        condition: service_healthy
+    command:
+      - dashboard
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "7777"
+      - --no-open-browser
+      - --profile
+      - frontdesk
+    environment:
+      AUTH_MODE: "local"
+      FRONTDESK_BUNDLE: "1"
+      CULLIS_CONNECTOR_ADMIN_SECRET: "stack-frontdesk-admin-secret"
+      # Loopback enforcement off: Mastio reaches us from a docker
+      # bridge IP, not 127.0.0.1.
+      CULLIS_AMBASSADOR_LOOPBACK_ONLY: "false"
+      CULLIS_FRONTDESK_ORG_ID: "orga"
+      CULLIS_FRONTDESK_TRUST_DOMAIN: "orga.test"
+      CULLIS_TRUSTED_PROXIES: "127.0.0.1/32,::1/128,172.16.0.0/12"
+      CULLIS_FRONTDESK_COOKIE_TTL_S: "3600"
+      # Cookie cleartext OK on this private bridge (no TLS sidecar in
+      # front for v1). Lets login via http://localhost:7777 succeed.
+      CULLIS_CONNECTOR_DEV: "1"
+      CULLIS_FRONTDESK_MASTIO_URL: "https://mastio-a-nginx:9443"
+      CULLIS_SITE_URL: "https://mastio-a-nginx:9443"
+      CULLIS_REQUEST_TIMEOUT_S: "60"
+      # CA bundle for the Mastio TLS handshake. Mastio writes the
+      # Org CA to the shared nginx-certs volume; mount read-only.
+      SSL_CERT_FILE: "/etc/cullis-ca/org-ca.crt"
+      REQUESTS_CA_BUNDLE: "/etc/cullis-ca/org-ca.crt"
+    volumes:
+      - frontdesk-connector-data:/home/cullis/.cullis
+      - mastio-a-nginx-certs:/etc/cullis-ca:ro
+    networks:
+      orga-internal:
+        aliases: [frontdesk-connector]
+    expose: ["7777"]
+    ports: ["7777:7777"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7777/api/status')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
