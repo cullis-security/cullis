@@ -79,15 +79,12 @@ def bootstrap_cookie_secret(config_dir: Path) -> bytes:
             "regenerating", path, len(raw),
         )
     secret = secrets.token_bytes(SECRET_LEN_BYTES)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(secret)
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        _log.info(
-            "could not chmod 0600 on %s (filesystem may not support it)", tmp,
-        )
-    os.replace(tmp, path)
+    # Audit F-B-401 — the cookie secret is the HMAC key for every
+    # Frontdesk shared-mode session cookie. Atomic 0600 write so the
+    # 64 random bytes don't sit on disk world-readable for the chmod
+    # window.
+    from cullis_connector._atomic_write import write_with_mode
+    write_with_mode(path, data=secret, mode=0o600)
     _log.info("shared cookie secret generated at %s (0600)", path)
     return secret
 

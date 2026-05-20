@@ -113,10 +113,11 @@ class UserKeyStore:
             priv = ec.generate_private_key(ec.SECP256R1())
             pem = _key_pem_from_priv(priv)
             self._base_dir.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(pem, encoding="utf-8")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, path)
+            # Audit F-B-401 — atomic 0600 write so the PEM never hits
+            # disk under the default umask before chmod closes the
+            # window. Same helper used by the single-mode keystore.
+            from cullis_connector._atomic_write import write_text_with_mode
+            write_text_with_mode(path, text=pem, mode=0o600)
             _log.info(
                 "keystore created principal_id=%s path=%s",
                 principal_id, path,
