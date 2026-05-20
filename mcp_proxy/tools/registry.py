@@ -71,7 +71,30 @@ class ToolRegistry:
         description: str = "",
         parameters_schema: dict | None = None,
     ) -> Callable:
-        """Decorator to register a tool handler function."""
+        """Decorator to register a builtin tool handler function.
+
+        F-A-304 fail-closed contract (audit 2026-05-20): ``capability``
+        must be a non-empty string. Builtins have no binding row in
+        ``local_agent_resource_bindings``, so an empty capability would
+        collapse the executor's capability gate into a silent allow
+        for every authenticated principal. Refuse at registration so
+        the regression is caught at import time, not in production.
+
+        MCP resources loaded from ``local_mcp_resources`` go through
+        :meth:`register_definition` instead, where empty capability is
+        permitted (the binding table is the authoritative authz path
+        per ADR-007). The executor emits an explicit audit subtype
+        when an MCP resource with empty capability is invoked so SOC
+        can detect misconfigured rows.
+        """
+        if not isinstance(capability, str) or not capability.strip():
+            raise ValueError(
+                f"Tool '{name}' registered without a non-empty "
+                "required_capability. Builtins must declare a "
+                "capability; an empty value would silently bypass "
+                "the capability gate for every authenticated "
+                "principal (F-A-304, ADR-007)."
+            )
 
         def decorator(fn: Callable[[ToolContext], Awaitable[Any]]) -> Callable:
             if name in self._tools:
@@ -127,17 +150,31 @@ class ToolRegistry:
     def has_capability(self, tool_name: str, agent_capabilities: list[str]) -> bool:
         """Check whether the agent has the capability required by the tool.
 
-        Tools with an empty ``required_capability`` (``""``) are treated
-        as having no capability gate — any authenticated agent passes.
-        This matches MCP-resource semantics from ADR-007 where the
-        binding table is the primary authz; capability stays optional
-        metadata for discovery filtering.
+        Semantics (F-A-304 fail-closed contract, audit 2026-05-20):
+
+        * Unknown tool name → ``False``.
+        * Builtin (``is_mcp_resource is False``) with empty
+          ``required_capability`` → ``False``. Registration-time guard
+          should prevent this state from existing in the first place;
+          treating it as fail-closed here is defense-in-depth for any
+          callsite that bypassed the decorator (e.g. direct
+          :meth:`register_definition` from tests or future migrations).
+        * MCP resource with empty ``required_capability`` → ``True``.
+          The binding table is the authoritative authz path per
+          ADR-007; capability stays optional discovery metadata.
+        * Tool with declared capability → membership check.
+
+        Note: the executor (``mcp_proxy/tools/executor.py``) is the
+        runtime enforcement point. This helper exists for
+        discovery-time filtering and is exercised by aggregator code
+        paths; the executor must independently enforce the same
+        contract.
         """
         tool = self._tools.get(tool_name)
         if tool is None:
             return False
         if not tool.required_capability:
-            return True
+            return bool(tool.is_mcp_resource)
         return tool.required_capability in agent_capabilities
 
     # ------------------------------------------------------------------
@@ -190,7 +227,26 @@ class ToolRegistry:
                 if "description" in spec and spec["description"]:
                     existing.description = spec["description"]
                 if "capability" in spec:
-                    existing.required_capability = spec["capability"]
+                    # F-A-304: refuse YAML overrides that blank out the
+                    # capability on a builtin. ``is_mcp_resource`` is False
+                    # for everything loaded via YAML (MCP resources come
+                    # from the DB), so the gate would collapse silently.
+                    new_cap = spec["capability"]
+                    if (
+                        not existing.is_mcp_resource
+                        and (
+                            not isinstance(new_cap, str)
+                            or not new_cap.strip()
+                        )
+                    ):
+                        _log.error(
+                            "Tool '%s' YAML override sets empty "
+                            "required_capability — ignored (F-A-304 "
+                            "fail-closed). Existing capability '%s' kept.",
+                            tool_name, existing.required_capability,
+                        )
+                    else:
+                        existing.required_capability = new_cap
                 if "allowed_domains" in spec:
                     existing.allowed_domains = spec["allowed_domains"]
             else:
