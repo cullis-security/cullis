@@ -162,6 +162,92 @@ async def run(
         )
     )
 
+    # F-A-304 fail-closed gate (audit 2026-05-20).
+    #
+    # Pre-fix, ``if capability_gate_applies and tool_def.required_capability``
+    # silently SKIPPED the gate when a builtin was registered (or
+    # mutated) to carry an empty ``required_capability``. That is a
+    # default-allow on a code path that intends default-deny — the
+    # exact failure mode F-A-304 catalogues.
+    #
+    # Defense in depth: :meth:`ToolRegistry.register` raises at
+    # import time when a builtin lacks a capability, but the executor
+    # MUST NOT trust that invariant — anything routed through
+    # :meth:`ToolRegistry.register_definition` (DB migrations, test
+    # scaffolding, future plugin paths) can land an empty-capability
+    # builtin in the live registry. Reject here so the runtime path
+    # is the load-bearing default-deny.
+    #
+    # MCP resources are deliberately exempted: ADR-007 makes the
+    # binding table the authoritative authz path; empty capability
+    # on a resource is supported by design, but step 2b still gates
+    # execution behind ``has_active_binding``. We emit an explicit
+    # audit subtype just below so SOC can spot the
+    # default-allow-by-capability shape and confirm a binding gate
+    # is enforcing.
+    if (
+        capability_gate_applies
+        and not tool_def.is_mcp_resource
+        and not tool_def.required_capability
+    ):
+        duration_ms = _elapsed_ms(t0)
+        _log.error(
+            "Tool '%s' has no required_capability declared but is a "
+            "builtin (is_mcp_resource=False) — refusing execution. "
+            "Registration-time guard should prevent this; if you see "
+            "this in production, audit how the tool was registered.",
+            tool_name,
+        )
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="tool_execute",
+            tool_name=tool_name,
+            status="denied",
+            detail=(
+                "Tool missing capability declaration "
+                f"(principal_type={principal_type}); fail-closed "
+                "per F-A-304"
+            ),
+            request_id=request_id,
+            duration_ms=duration_ms,
+        )
+        return ToolExecuteResponse(
+            request_id=request_id,
+            tool=tool_name,
+            status="error",
+            error=(
+                f"Forbidden: tool '{tool_name}' has no capability "
+                "declaration"
+            ),
+            execution_time_ms=duration_ms,
+            denied_reason_code=CAPABILITY_DENIED,
+        )
+
+    # F-A-304 recommendation #2: when an MCP resource carries no
+    # ``required_capability``, the binding gate at step 2b is the only
+    # RBAC check. Emit an explicit informational audit row so SOC can
+    # detect misconfigured resources whose authz collapses to binding
+    # alone. The decision is "allow" (the binding gate may still
+    # deny), but the row makes the default-allow-by-capability
+    # explicit instead of silent.
+    if (
+        capability_gate_applies
+        and tool_def.is_mcp_resource
+        and not tool_def.required_capability
+    ):
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="policy.no_capability_required",
+            tool_name=tool_name,
+            status="allow",
+            detail=(
+                f"MCP resource '{tool_def.resource_id}' has no "
+                f"required_capability; authz delegated to binding "
+                f"table (principal_type={principal_type})"
+            ),
+            request_id=request_id,
+        )
+
     if capability_gate_applies and tool_def.required_capability:
         try:
             principal_caps = await _load_principal_capabilities(
