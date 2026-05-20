@@ -347,6 +347,64 @@ def validate_config(settings: "Settings") -> None:
             )
             raise SystemExit(1)
 
+        # F-A-101 (audit 2026-05-20). The federation mTLS pass-through path
+        # (`app/auth/mastio_mtls.py`) accepts the X-Cullis-Mastio-Cert
+        # header only when the peer falls inside this allowlist. Empty
+        # allowlist in production lets any peer with reachable network
+        # access forge the header with a self-signed cert matching the
+        # target org's pinned SPKI (public material) and bypass the
+        # mTLS layer entirely. Refuse-to-start; mastio_mtls.py also
+        # fail-closes at request time as defense-in-depth.
+        if not (settings.mastio_mtls_trusted_proxy_cidrs or "").strip():
+            _startup_logger.critical(
+                "MASTIO_MTLS_TRUSTED_PROXY_CIDRS is empty in production. "
+                "The federation mTLS pass-through path "
+                "(X-Cullis-Mastio-Cert) requires an explicit CIDR "
+                "allowlist for the reverse-proxy fleet that may forward "
+                "the header. Set the env to your nginx/LoadBalancer "
+                "subnet (e.g. '172.18.0.0/16') or disable the federation "
+                "router (F-A-101).",
+            )
+            raise SystemExit(1)
+
+        # F-A-513 (audit 2026-05-20). POLICY_WEBHOOK_HMAC_SECRET protects
+        # outbound PDP webhook calls with X-ATN-Signature (audit
+        # 2026-04-30 lane 3 H3). Empty secret in production silently
+        # ships unsigned PDP webhook calls, defeating the
+        # X-ATN-Signature defence the CISO posture advertises.
+        if not (settings.policy_webhook_hmac_secret or "").strip():
+            _startup_logger.critical(
+                "POLICY_WEBHOOK_HMAC_SECRET is empty in production. "
+                "Outbound PDP webhook calls go unsigned, defeating the "
+                "X-ATN-Signature defence (audit 2026-04-30 lane 3 H3). "
+                "Set the shared secret matching the PDP receiver and "
+                "mirror MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET on the "
+                "Mastio side (F-A-513).",
+            )
+            raise SystemExit(1)
+
+        # F-A-406 (audit 2026-05-20). AUDIT_TSA_BACKEND=mock with
+        # AUDIT_TSA_ENABLED=true persists deterministic broker-internal
+        # blobs as "external" timestamps. Mock backend is
+        # trust-equivalent to the broker database itself (per docstring
+        # in app/audit/tsa_client.py) and provides no third-party
+        # evidence. Production deploys must declare intent: either no
+        # anchoring (AUDIT_TSA_ENABLED=false) or real RFC 3161
+        # (AUDIT_TSA_BACKEND=rfc3161 with a valid TSA URL).
+        if (
+            settings.audit_tsa_enabled
+            and settings.audit_tsa_backend.lower() == "mock"
+        ):
+            _startup_logger.critical(
+                "AUDIT_TSA_BACKEND=mock is not permitted in production "
+                "with AUDIT_TSA_ENABLED=true. The mock backend is "
+                "trust-equivalent to the broker database and provides "
+                "no third-party evidence. Set AUDIT_TSA_BACKEND=rfc3161 "
+                "with a real TSA URL, or AUDIT_TSA_ENABLED=false to "
+                "disable anchoring (F-A-406).",
+            )
+            raise SystemExit(1)
+
     # ── Fatal checks (all environments) ─────────────────────────────────────
     if not is_production and settings.admin_secret == _INSECURE_DEFAULT_SECRET:
         _startup_logger.critical(

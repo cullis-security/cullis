@@ -940,6 +940,96 @@ def validate_config(settings: ProxySettings) -> None:
                 )
                 raise SystemExit(1)
 
+        # F-A-205 (audit 2026-05-20). ADR-033 Phase 1 shipped webauthn
+        # enforcement="warn" as the default for migration grace. In that
+        # mode the X-Cullis-On-Behalf-Of-User header attribution rests
+        # only on the bearer session_token (no user cryptographic
+        # assertion required), so any session-token theft (XSS, log
+        # scrape, container fs read) lets the attacker emit egress
+        # calls attributed to the victim user. Production must enforce
+        # WebAuthn or explicitly accept the risk via opt-in flag.
+        if enforcement in {"warn", "off"}:
+            insecure_ok = (
+                os.environ.get("MCP_PROXY_WEBAUTHN_WARN_INSECURE_OK", "")
+                .strip()
+                .lower()
+            ) in {"1", "true", "yes"}
+            if not insecure_ok:
+                _log.critical(
+                    "MCP_PROXY_WEBAUTHN_ENFORCEMENT=%r is not permitted "
+                    "in production: on-behalf-of attribution is "
+                    "forgeable on bearer session_token theft alone. "
+                    "Set MCP_PROXY_WEBAUTHN_ENFORCEMENT=required (ADR-033 "
+                    "Phase 2) or, for the legacy migration window, "
+                    "explicitly opt in via "
+                    "MCP_PROXY_WEBAUTHN_WARN_INSECURE_OK=true and track "
+                    "a sunset date (F-A-205).",
+                    enforcement,
+                )
+                raise SystemExit(1)
+
+        # F-A-202 (audit 2026-05-20). PDP webhook HMAC secret protects
+        # /pdp/policy + /v1/policy/tool-call inbound calls with
+        # X-ATN-Signature (audit 2026-04-30 lane 3 H3). Empty secret
+        # in production skips the HMAC check entirely and accepts
+        # any POST body from any caller that can reach the endpoint.
+        if not (settings.pdp_webhook_hmac_secret or "").strip():
+            _log.critical(
+                "MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET is empty in "
+                "production. Inbound PDP webhook calls are accepted "
+                "without X-ATN-Signature verification (audit "
+                "2026-04-30 lane 3 H3). Set the shared secret matching "
+                "the broker POLICY_WEBHOOK_HMAC_SECRET (F-A-202)."
+            )
+            raise SystemExit(1)
+
+        # F-A-501 (audit 2026-05-20). MCP_PROXY_AUDIT_FAIL_DENY=false
+        # silently swallows audit-log persistence failures while
+        # verify_audit_chain still passes on the surviving rows.
+        # Threat-model claim in enterprise-kit/compliance-posture.md
+        # advertises tamper-evident append-only audit; allowing the
+        # operator-side flip to false in production turns that claim
+        # silently false without any startup signal.
+        if not settings.audit_fail_deny:
+            _log.critical(
+                "MCP_PROXY_AUDIT_FAIL_DENY=false is not permitted in "
+                "production. Threat-model claim (compliance-posture.md) "
+                "requires audit-log fail-deny semantics: silent row "
+                "drops contradict the CISO-facing 'tamper-evident' "
+                "posture. Set MCP_PROXY_AUDIT_FAIL_DENY=true (the "
+                "default) or refuse to deploy (F-A-501)."
+            )
+            raise SystemExit(1)
+
+        # F-A-502 (audit 2026-05-20). allow_inmemory_security_stores=true
+        # in production allows per-process DPoP JTI + login challenge
+        # nonce stores. Single-worker deploys can opt in safely, but
+        # the multi-worker default (4 workers in the Mastio bundle
+        # compose) gives RFC 9449 replay up to N times silently.
+        # Refuse outright in production; single-worker deploys declare
+        # intent via MCP_PROXY_DEPLOYMENT_TOPOLOGY=single-worker-vertical
+        # (mirrors the explicit POLICY_DEFAULT_DECISION pattern in
+        # app/config.py).
+        if settings.allow_inmemory_security_stores:
+            topology = (
+                os.environ.get("MCP_PROXY_DEPLOYMENT_TOPOLOGY", "")
+                .strip()
+                .lower()
+            )
+            if topology != "single-worker-vertical":
+                _log.critical(
+                    "MCP_PROXY_ALLOW_INMEMORY_SECURITY_STORES=true is "
+                    "not permitted in production unless "
+                    "MCP_PROXY_DEPLOYMENT_TOPOLOGY=single-worker-vertical "
+                    "is also declared. Multi-worker deploys without a "
+                    "shared Redis allow DPoP replay up to N times per "
+                    "worker (RFC 9449 violation) and silently multiply "
+                    "the advertised per-agent rate budget. Set "
+                    "MCP_PROXY_REDIS_URL or declare single-worker "
+                    "topology explicitly (F-A-502)."
+                )
+                raise SystemExit(1)
+
     # Warnings for any environment
     if settings.admin_secret == _INSECURE_DEFAULT_SECRET:
         _log.warning(

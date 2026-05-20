@@ -101,7 +101,14 @@ services:
       MCP_PROXY_SECRET_BACKEND:    ${MCP_PROXY_SECRET_BACKEND:-env}
       MCP_PROXY_VAULT_ADDR:        ${MCP_PROXY_VAULT_ADDR:-}
       MCP_PROXY_VAULT_TOKEN:       ${MCP_PROXY_VAULT_TOKEN:-}
-      MCP_PROXY_KMS_BACKEND:       ${MCP_PROXY_KMS_BACKEND:-local}
+      # F-A-503 (audit 2026-05-20): enterprise bundle audience is paid
+      # customers with license JWT, by-definition want HSM-backed KMS.
+      # Default to vault so operators setting MCP_PROXY_ENVIRONMENT=production
+      # without overriding KMS_BACKEND no longer crash-loop on "local KMS not
+      # supported in production" (mcp_proxy/config.py:867). Operators who
+      # genuinely want local KMS in dev/staging override with
+      # MCP_PROXY_KMS_BACKEND=local in their proxy.env.
+      MCP_PROXY_KMS_BACKEND:       ${MCP_PROXY_KMS_BACKEND:-vault}
       MCP_PROXY_ANTHROPIC_API_KEY: ${MCP_PROXY_ANTHROPIC_API_KEY:-}
       MCP_PROXY_TOOL_PDP_ENABLED:        ${MCP_PROXY_TOOL_PDP_ENABLED:-}
       MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET: ${MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET:-}

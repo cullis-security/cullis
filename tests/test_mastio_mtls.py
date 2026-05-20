@@ -65,6 +65,10 @@ def _request_with_header(value: str | None) -> Request:
         "path": "/v1/federation/publish-agent",
         "headers": headers,
         "query_string": b"",
+        # F-A-101 fix: pass-through path requires the peer host fall inside
+        # MASTIO_MTLS_TRUSTED_PROXY_CIDRS. The autouse fixture below pins
+        # 127.0.0.0/8 so this loopback stub matches.
+        "client": ("127.0.0.1", 12345),
         # No "transport" key — extract should fall through to the header.
     }
     return Request(scope=scope)
@@ -85,8 +89,25 @@ def _request_with_transport_cert(cert_der: bytes | None) -> Request:
         "headers": [],
         "query_string": b"",
         "transport": transport,
+        # F-A-101 fix: header-fallthrough path needs trusted-peer CIDR
+        # match if the transport branch returns no cert.
+        "client": ("127.0.0.1", 12345),
     }
     return Request(scope=scope)
+
+
+@pytest.fixture(autouse=True)
+def _trust_loopback_proxy(monkeypatch):
+    """PR #1 audit 2026-05-20: F-A-101 fix made empty CIDR allowlist
+    fail-closed at the runtime _peer_is_trusted_proxy boundary.
+    Pre-fix these tests relied on the default empty allowlist
+    accepting any peer. Pin 127.0.0.0/8 so the loopback stub host
+    used by _request_with_header / _request_with_transport_cert
+    matches and the pass-through path stays exercised."""
+    from app.config import get_settings
+    monkeypatch.setattr(
+        get_settings(), "mastio_mtls_trusted_proxy_cidrs", "127.0.0.0/8",
+    )
 
 
 # ─── extract_mastio_cert ─────────────────────────────────────────────
@@ -143,6 +164,8 @@ def test_extract_transport_no_peer_cert_falls_through_to_header():
         ],
         "query_string": b"",
         "transport": transport,
+        # F-A-101 fix: header pass-through requires trusted-peer CIDR match.
+        "client": ("127.0.0.1", 12345),
     }
     req = Request(scope=scope)
     parsed = extract_mastio_cert(req)
