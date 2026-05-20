@@ -426,3 +426,84 @@ async def test_adr020_cross_org_propagates_principal_type(audit_db):
     )
     assert row_a.principal_type == "user"
     assert row_b.principal_type == "user"
+
+
+# ── F-A-410 — caller-controlled details payload cap ───────────────
+
+async def test_fa410_details_under_cap_accepted(audit_db):
+    """Payloads below the 16 KiB cap append normally."""
+    from app.db.audit import AUDIT_DETAILS_MAX_BYTES
+
+    # 8 KiB is well under the 16 KiB hard cap.
+    payload = {"blob": "x" * (8 * 1024)}
+    entry = await log_event(
+        audit_db, "test.under_cap", "ok",
+        org_id="acme", details=payload,
+    )
+    assert entry.entry_hash is not None
+    assert entry.details is not None
+    assert len(entry.details.encode("utf-8")) < AUDIT_DETAILS_MAX_BYTES
+
+
+async def test_fa410_details_above_cap_rejected(audit_db):
+    """Oversized details are rejected with a clear RuntimeError.
+
+    Reject (not truncate) — silent truncation destroys forensic data
+    and lets an attacker amplify the audit chain via 10 MB rows that
+    every ``verify_chain`` walk has to re-hash.
+    """
+    from sqlalchemy import select, func
+
+    from app.db.audit import AUDIT_DETAILS_MAX_BYTES
+
+    # 32 KiB payload, well above the 16 KiB cap.
+    oversized = {"blob": "x" * (32 * 1024)}
+    rows_before = await audit_db.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.org_id == "acme",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="audit details too large"):
+        await log_event(
+            audit_db, "test.over_cap", "ok",
+            org_id="acme", details=oversized,
+        )
+
+    # No row was written on rejection — the call must fail BEFORE the
+    # chain append. This is the property ``audit_fail_deny`` relies on
+    # to turn the RuntimeError into a 5xx with no orphan audit row.
+    rows_after = await audit_db.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.org_id == "acme",
+        )
+    )
+    assert rows_after == rows_before
+    # Cap constant is exported for sister-file alignment.
+    assert AUDIT_DETAILS_MAX_BYTES == 16 * 1024
+
+
+async def test_fa410_cross_org_oversized_details_rejected(audit_db):
+    """Cross-org dual-write enforces the same cap before either append."""
+    from sqlalchemy import select, func
+
+    from app.db.audit import log_event_cross_org
+
+    oversized = {"blob": "x" * (32 * 1024)}
+    rows_before = await audit_db.scalar(
+        select(func.count()).select_from(AuditLog)
+    )
+
+    with pytest.raises(RuntimeError, match="audit details too large"):
+        await log_event_cross_org(
+            audit_db, "test.cross_over_cap", "ok",
+            org_a="acme", org_b="bravo",
+            details=oversized,
+        )
+
+    # Neither side appended — the gate sits BEFORE the locks so a
+    # rejection cannot leave one chain with a partial row.
+    rows_after = await audit_db.scalar(
+        select(func.count()).select_from(AuditLog)
+    )
+    assert rows_after == rows_before

@@ -68,7 +68,15 @@ class ReplicaEntry(BaseModel):
     event_type: str = Field(..., max_length=128)
     agent_id: str | None = Field(None, max_length=256)
     session_id: str | None = Field(None, max_length=128)
-    details: str | None = None
+    # F-A-410 (audit 2026-05-20) — defence-in-depth cap mirroring
+    # ``app/db/audit.py::AUDIT_DETAILS_MAX_BYTES``. Pydantic measures
+    # ``max_length`` in characters; for the worst-case multi-byte case
+    # this is still bounded by the per-row 16 KiB byte cap once the
+    # Mastio publisher passes the local boundary, so accepting up to
+    # 16 384 characters here stays consistent with that policy. Keeps
+    # a compromised or buggy Mastio from sneaking unbounded payloads
+    # past the publisher-side guard.
+    details: str | None = Field(None, max_length=16 * 1024)
     result: str = Field(..., max_length=32)
     principal_type: str | None = Field(None, max_length=32)
     hash_format: str | None = Field(None, max_length=8)

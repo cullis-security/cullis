@@ -118,3 +118,50 @@ async def test_concurrent_appends_keep_chain_monotonic(fresh_db):
     assert seqs == list(range(1, 21))
     ok, reason = await verify_local_chain("acme")
     assert ok is True, reason
+
+
+# ── F-A-410 — caller-controlled details payload cap ───────────────
+
+@pytest.mark.asyncio
+async def test_fa410_local_audit_oversized_details_rejected(fresh_db):
+    """``append_local_audit`` rejects details > 16 KiB.
+
+    Sister of ``app/db/audit.py::log_event`` — same cap, same reject
+    semantics, no orphan row on rejection.
+    """
+    from mcp_proxy.local.audit import AUDIT_DETAILS_MAX_BYTES
+
+    # 32 KiB blob — well above the 16 KiB cap.
+    oversized = {"blob": "x" * (32 * 1024)}
+
+    # Seed one valid row so we can prove no extra row landed.
+    seed = await append_local_audit(event_type="seed", org_id="acme")
+
+    with pytest.raises(RuntimeError, match="audit details too large"):
+        await append_local_audit(
+            event_type="over_cap",
+            org_id="acme",
+            details=oversized,
+        )
+
+    async with get_db() as conn:
+        cnt = (await conn.execute(
+            text("SELECT COUNT(*) FROM local_audit WHERE org_id = :o"),
+            {"o": "acme"},
+        )).scalar_one()
+    assert cnt == 1, "rejected call must not write a row"
+    assert seed["chain_seq"] == 1
+    assert AUDIT_DETAILS_MAX_BYTES == 16 * 1024
+
+
+@pytest.mark.asyncio
+async def test_fa410_local_audit_under_cap_accepted(fresh_db):
+    """8 KiB details payload appends normally (well under the cap)."""
+    payload = {"blob": "x" * (8 * 1024)}
+    entry = await append_local_audit(
+        event_type="under_cap",
+        org_id="acme",
+        details=payload,
+    )
+    assert entry["chain_seq"] == 1
+    assert entry["entry_hash"] is not None

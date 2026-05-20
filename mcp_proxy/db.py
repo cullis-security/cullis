@@ -357,6 +357,35 @@ _audit_chain_lock = _asyncio.Lock()
 _AUDIT_CHAIN_GENESIS = "genesis"
 _AUDIT_CHAIN_MAX_RETRIES = 5
 
+# F-A-410 (audit 2026-05-20) — hard cap on the ``detail`` payload that
+# callers may attach to an audit row. Sister of
+# ``app/db/audit.py::AUDIT_DETAILS_MAX_BYTES`` and
+# ``mcp_proxy/local/audit.py::AUDIT_DETAILS_MAX_BYTES``. Keep the three
+# in sync so cross-component audit semantics stay identical. The
+# canonical-form ``detail`` field flows into the per-row hash AND each
+# verify-chain walk, so an uncapped payload becomes a CPU + storage DoS
+# amplifier on an append-only table the operator cannot prune. CWE-770.
+AUDIT_DETAILS_MAX_BYTES = 16 * 1024
+
+
+def _enforce_audit_detail_size(detail: str | None, *, where: str) -> None:
+    """Raise ``RuntimeError`` if ``detail`` exceeds the boundary cap.
+
+    No part of ``detail`` is included in the error message — callers may
+    have packed user-controlled content (exception messages, tool
+    inputs) into it, and the error path lands on stderr / structured
+    logs. The audit ``fail_deny`` policy turns the ``RuntimeError`` into
+    a 5xx so the caller cannot succeed without a matching audit row.
+    """
+    if detail is None:
+        return
+    size = len(detail.encode("utf-8"))
+    if size > AUDIT_DETAILS_MAX_BYTES:
+        raise RuntimeError(
+            f"audit details too large for {where}: "
+            f"{size} bytes (max {AUDIT_DETAILS_MAX_BYTES})"
+        )
+
 
 def compute_audit_row_hash(
     *,
@@ -461,6 +490,12 @@ async def log_audit(
         detail = json.dumps(
             dict(details), separators=(",", ":"), sort_keys=True, default=str,
         )
+
+    # F-A-410 — enforce the cap at the boundary before any chain work.
+    # Apply once after the dict-to-JSON serialisation above so both the
+    # ``detail`` string path and the ``details`` dict path go through
+    # the same gate.
+    _enforce_audit_detail_size(detail, where="log_audit")
 
     # P1.2 — fall back to the per-request contextvar stamped by the
     # DPoP auth deps so DPoP-bound paths populate the column without
