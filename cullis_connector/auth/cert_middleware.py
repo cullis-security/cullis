@@ -74,6 +74,16 @@ _GUARDED_PREFIXES = (
     # the SDK call to Mastio's ``/v1/egress/message/{send,inbox}`` is
     # authenticated as the user principal, not the Connector-agent.
     "/v1/inbox",
+    # 2026-05-20 CRITICAL — /v1/conversations was unguarded, so the
+    # ``_authenticate`` helper in ``conversations_router.py`` fell
+    # back to the Connector-wide ``agent_id`` for every request, and
+    # all enrolled Frontdesk users collapsed onto the same
+    # ``principal_id``. End result: cross-user READ + WRITE of chat
+    # history. Now guarded so the middleware binds
+    # ``request.state.user_credentials`` from the per-user cookie and
+    # ``conversations_router._authenticate`` resolves the correct
+    # ``creds.principal_id`` per user.
+    "/v1/conversations",
 )
 
 

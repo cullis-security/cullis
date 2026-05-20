@@ -321,3 +321,102 @@ def test_distinct_users_get_distinct_principals(tmp_path):
     # Each user triggers exactly one CSR call.
     seen = sorted(p for p, _ in mastio.calls)
     assert seen == ["td.test/acme/user/anna", "td.test/acme/user/mario"]
+
+
+# ── 2026-05-20 CRITICAL regression: /v1/conversations cross-user leak ──
+
+
+def test_guarded_prefixes_includes_v1_conversations():
+    """Sentinel: ``/v1/conversations`` MUST stay in ``_GUARDED_PREFIXES``.
+
+    Before 2026-05-20 the prefix was missing. Effect: the middleware
+    skipped binding ``request.state.user_credentials`` on
+    ``/v1/conversations*`` requests, so
+    ``conversations_router._authenticate`` fell back to the Connector
+    agent_id (one shared identity for the whole process) for every
+    enrolled Frontdesk user. All chat history collapsed onto the same
+    ``principal_id``, leaking READ + WRITE across users.
+
+    Removing this prefix again would silently re-introduce the leak.
+    """
+    from cullis_connector.auth.cert_middleware import _GUARDED_PREFIXES
+
+    assert "/v1/conversations" in _GUARDED_PREFIXES, (
+        "CRITICAL regression — /v1/conversations dropped from "
+        "_GUARDED_PREFIXES; cross-user chat history leak resurfaces"
+    )
+
+
+def test_v1_conversations_binds_per_user_principal(tmp_path):
+    """End-to-end: with the guard in place, two distinct cookies on
+    ``/v1/conversations`` must resolve to two distinct
+    ``request.state.user_credentials.principal_id``s.
+
+    Pre-fix this test would PASS the gate (no 401 — middleware is
+    silent) but FAIL the assertion because both users got
+    ``principal_id=None`` (middleware skipped the path) and the
+    downstream router's fallback to ``state.agent_id`` would collapse
+    them. Post-fix both users get their own principal_id.
+    """
+    mastio = _StubMastio()
+    app, *_ = _build_app(tmp_path, mastio=mastio)
+
+    @app.get("/v1/conversations")
+    async def probe_conv(request: Request):
+        cred = getattr(request.state, "user_credentials", None)
+        return JSONResponse({
+            "principal_id": cred.principal_id if cred else None,
+        })
+
+    tc_alice = TestClient(app)
+    tc_alice.cookies.set(LOCAL_SESSION_COOKIE_NAME, _login_cookie("alice"))
+    tc_bob = TestClient(app)
+    tc_bob.cookies.set(LOCAL_SESSION_COOKIE_NAME, _login_cookie("bob"))
+
+    r_alice = tc_alice.get("/v1/conversations")
+    r_bob = tc_bob.get("/v1/conversations")
+
+    assert r_alice.status_code == 200
+    assert r_bob.status_code == 200
+    pid_alice = r_alice.json()["principal_id"]
+    pid_bob = r_bob.json()["principal_id"]
+    assert pid_alice is not None, (
+        "/v1/conversations not guarded by cert middleware — "
+        "user_credentials not bound"
+    )
+    assert pid_bob is not None
+    assert pid_alice != pid_bob, (
+        "CRITICAL — distinct users got SAME principal_id on "
+        "/v1/conversations (cross-user leak)"
+    )
+    assert pid_alice == "td.test/acme/user/alice"
+    assert pid_bob == "td.test/acme/user/bob"
+
+
+def test_v1_conversations_subpaths_also_guarded(tmp_path):
+    """``/v1/conversations/{id}`` and ``/v1/conversations/{id}/messages``
+    must also be guarded (prefix match)."""
+    mastio = _StubMastio()
+    app, *_ = _build_app(tmp_path, mastio=mastio)
+
+    @app.get("/v1/conversations/{conv_id}")
+    async def probe_conv_id(conv_id: str, request: Request):
+        cred = getattr(request.state, "user_credentials", None)
+        return JSONResponse({
+            "principal_id": cred.principal_id if cred else None,
+        })
+
+    @app.post("/v1/conversations/{conv_id}/messages")
+    async def probe_conv_messages(conv_id: str, request: Request):
+        cred = getattr(request.state, "user_credentials", None)
+        return JSONResponse({
+            "principal_id": cred.principal_id if cred else None,
+        })
+
+    tc = TestClient(app)
+    tc.cookies.set(LOCAL_SESSION_COOKIE_NAME, _login_cookie("carol"))
+
+    r_get = tc.get("/v1/conversations/abc123")
+    r_post = tc.post("/v1/conversations/abc123/messages")
+    assert r_get.json()["principal_id"] == "td.test/acme/user/carol"
+    assert r_post.json()["principal_id"] == "td.test/acme/user/carol"
