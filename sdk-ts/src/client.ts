@@ -1,7 +1,7 @@
 /**
- * BrokerClient — main class for agent-to-broker communication.
+ * BrokerClient: main class for agent-to-broker communication.
  *
- * Mirrors agents/sdk.py BrokerClient, including:
+ * Exposes the 2025-Q4 session-based wire path:
  * - x509 + DPoP authentication
  * - Session lifecycle (open, accept, close, list)
  * - E2E encrypted messaging (send + poll with auto-decrypt)
@@ -9,6 +9,16 @@
  * - RFQ flow
  * - Transaction tokens
  * - Automatic DPoP nonce handling with retry
+ *
+ * STATUS: legacy session API. The Python equivalents
+ * (`CullisClient.login` / `open_session` / `send` / `close_session`)
+ * are deprecated and scheduled for removal in `cullis-sdk` v0.5
+ * (~2026-08-15). The canonical A2A surface is one-shot messaging
+ * (ADR-008: `send_oneshot` + `receive_oneshot` + ACK), which this
+ * SDK does not yet expose (tracked as F-B-301; see the README
+ * "Surface gaps" and "Roadmap" sections). New TypeScript
+ * integrations that can wait for parity should prefer `cullis_sdk`
+ * (Python) and its `send_oneshot()` flow.
  */
 import { readFile } from "node:fs/promises";
 import type { KeyObject } from "node:crypto";

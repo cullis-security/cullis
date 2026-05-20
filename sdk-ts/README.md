@@ -31,6 +31,19 @@ npm install @agent-trust/sdk
 
 ## Quick Start
 
+> **Status: legacy session API.** The session-based flow shown below
+> (`openSession` / `send` / `poll` / `closeSession`) mirrors the Python
+> SDK's `open_session()` / `send()` surface, which is deprecated as of
+> `cullis-sdk` v0.4.x and will be **removed in v0.5 (~2026-08-15)**.
+> The canonical A2A surface in the wider Cullis ecosystem is one-shot
+> messaging (ADR-008): `send_oneshot` + `receive_oneshot` + ACK, no
+> session lifecycle. The TS SDK has not yet ported one-shot (tracked
+> as F-B-301 / the [Surface gaps](#surface-gaps-vs-python-sdk) table
+> below). Until that ships, the quickstart documents what the SDK
+> actually does today; new TypeScript integrations that can wait for
+> parity should prefer `cullis_sdk` (Python) and its `send_oneshot`
+> flow, see the [Roadmap](#roadmap) section.
+
 ### 1. Create a client and authenticate
 
 ```typescript
@@ -106,6 +119,34 @@ for (const quote of updated.quotes) {
 ```typescript
 await client.closeSession(sessionId);
 ```
+
+## Roadmap
+
+The TS SDK trails the Python SDK on several surfaces. Priority order
+for parity (subject to change, tracked in the Cullis issue tracker):
+
+1. **One-shot messaging (ADR-008)**: `sendOneshot`, `replyOneshot`,
+   inbox poll, ACK. This is the canonical A2A flow and the one the
+   Python SDK's `send_oneshot()` already implements. Required so the
+   TS quickstart can switch off the session API before the Python
+   `v0.5` removal lands (~2026-08-15).
+2. **Proxy-mediated login (ADR-014 / ADR-004)**: `loginViaProxy`,
+   `loginViaProxyWithLocalKey`. Lets a TS agent reuse a Connector or
+   Mastio enrollment instead of carrying raw cert + key.
+3. **Enrollment factories (ADR-011)**: `fromConnector`,
+   `fromIdentityDir`, `fromEnrollment`, `fromApiKeyFile`,
+   `enrollViaByoca`, `enrollViaSpiffe`, `fromUserPrincipalPem`,
+   `fromSpiffeWorkloadApi`.
+4. **AI gateway (ADR-017)**: `chatCompletion`,
+   `chatCompletionStream`, `listModels`, `listMcpTools`, `callMcpTool`,
+   `evaluateToolCallPolicy`.
+
+Migration guidance once one-shot ships: the wire bytes for one-shot
+messages are already stable on the broker side, so a TS port will be
+behaviour-preserving. Existing TS integrations that wait for `v0.2`
+of this SDK will be able to delete the `openSession` / `send` /
+`closeSession` ceremony and replace it with a single `sendOneshot`
+call mirroring the Python `cullis_sdk` quickstart.
 
 ## Architecture
 

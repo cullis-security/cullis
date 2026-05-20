@@ -1,6 +1,18 @@
 /**
  * Example: Basic buyer agent using the TypeScript SDK.
  *
+ * STATUS: legacy session API. The flow demonstrated below
+ * (login + openSession + send + poll + closeSession) mirrors the
+ * Python SDK's deprecated `open_session()` / `send()` surface, which
+ * emits `DeprecationWarning` and will be removed in `cullis-sdk` v0.5
+ * (~2026-08-15). The canonical Cullis A2A flow is one-shot messaging
+ * (ADR-008: `send_oneshot` + `receive_oneshot` + ACK), which the TS
+ * SDK does not yet expose (tracked as F-B-301 in the audit /
+ * Roadmap section of sdk-ts/README.md). This example documents what
+ * the TS SDK can actually do today; new TypeScript integrations that
+ * can wait for parity should prefer `cullis_sdk` (Python) and its
+ * `send_oneshot()` flow.
+ *
  * Demonstrates:
  *  1. Authenticating with the broker
  *  2. Discovering supplier agents
