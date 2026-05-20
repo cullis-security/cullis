@@ -2,9 +2,21 @@
 
 TypeScript SDK for Cullis.
 
-Provides a `BrokerClient` class that handles all agent-to-broker communication,
-including x509 + DPoP authentication (RFC 9449), E2E encryption
-(AES-256-GCM + RSA-OAEP), message signing (RSA-PSS-SHA256), and session management.
+> **Status: BETA — session-based path only.** This SDK ships the
+> 2025-Q4 wire surface (x509+DPoP login, session open/send/poll, RFQ).
+> The Python SDK (`cullis_sdk`) has since added one-shot messaging
+> (ADR-008), proxy-mediated login (ADR-014), enrollment factories
+> (ADR-011), AI gateway (ADR-017), user-principal attribution
+> (ADR-020/032), MCP tool routing, Guardian, WebAuthn, and SPIFFE
+> Workload API integration — **none of those are available in this
+> SDK yet**. See [Surface gaps vs Python SDK](#surface-gaps-vs-python-sdk)
+> below for the explicit delta. Production deployments standardise on
+> `cullis_sdk` until parity lands.
+
+Provides a `BrokerClient` class that handles a subset of agent-to-broker
+communication: x509 + DPoP authentication (RFC 9449), E2E encryption
+(AES-256-GCM + RSA-OAEP), message signing (RSA-PSS-SHA256), and the
+session-based message path.
 
 ## Requirements
 
@@ -126,6 +138,41 @@ npm test         # Run tests
 
 ## Protocol Compatibility
 
-This SDK implements the exact same wire protocol as the Python SDK
-(`agents/sdk.py`). TypeScript and Python agents can communicate
-transparently through the same broker.
+This SDK implements a **subset** of the Cullis wire protocol — the
+2025-Q4 session-based path. Where it exposes a method, the wire bytes
+match the Python SDK byte-for-byte, so a TypeScript agent calling
+`openSession` / `send` / `poll` interoperates with a Python peer
+through the same broker. Anything the Python SDK has added since then
+(one-shot messaging, proxy login, AI gateway, enrollment factories,
+user attribution, MCP routing) is **not** mirrored here yet.
+
+> The closing line of older revisions claimed "the exact same wire
+> protocol as the Python SDK (`agents/sdk.py`)". That path no longer
+> exists (the Python SDK moved to `cullis_sdk/` in 2026-02), and the
+> claim was incorrect at face value once the Python SDK grew past the
+> session path. Audit F-B-301 (2026-05-20) flagged the misleading
+> framing; this section is the corrected statement.
+
+## Surface gaps vs Python SDK
+
+The Python `cullis_sdk` carries these surfaces that the TS SDK does
+not. Listed here so an integrator can decide whether the TS gap blocks
+their use case before they invest in a port:
+
+| Capability                                       | Python SDK            | TS SDK | ADR    |
+|---|---|---|---|
+| Session-based send / poll / RFQ                  | ✅                    | ✅     | (2025-Q4 baseline) |
+| One-shot messaging (`sendOneshot`, `replyOneshot`, inbox poll, ACK) | ✅ | ❌ | ADR-008 |
+| Proxy-mediated login (`loginViaProxy`, `loginViaProxyWithLocalKey`) | ✅ | ❌ | ADR-014 / ADR-004 |
+| Enrollment factories (`fromConnector`, `fromEnrollment`, `fromIdentityDir`, `fromApiKeyFile`, `enrollViaByoca`, `enrollViaSpiffe`, `fromUserPrincipalPem`, `fromSpiffeWorkloadApi`) | ✅ | ❌ | ADR-011 |
+| AI gateway (`chatCompletion`, `chatCompletionStream`, `listModels`, `listMcpTools`, `callMcpTool`, `evaluateToolCallPolicy`) | ✅ | ❌ | ADR-017 |
+| User-principal attribution (`attachUserSession`, `detachUserSession`, `attachDeviceAttestation`) | ✅ | ❌ | ADR-020 / ADR-032 |
+| Network onboarding (`joinNetwork`)               | ✅                    | ❌     | ADR-011 |
+| Guardian + WebAuthn step-up                      | ✅                    | ❌     | ADR-033 |
+| SPIFFE Workload API integration                  | ✅                    | ❌     | ADR-001 |
+
+Roadmap for parity is tracked in
+[issue #TODO-sdk-ts-parity](https://github.com/cullis-security/cullis/issues)
+(to be filed). Until parity lands, prefer `cullis_sdk` for new work
+and treat this SDK as a stable but feature-limited build for the
+session-path use case.
