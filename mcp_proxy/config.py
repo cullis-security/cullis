@@ -221,6 +221,15 @@ class ProxySettings(BaseSettings):
     # the broker via ``POLICY_WEBHOOK_HMAC_SECRET`` to enable.
     pdp_webhook_hmac_secret: str = ""
 
+    # SSRF escape hatch — PR #2 audit 2026-05-20.
+    # When False (the production default) outbound URL helpers
+    # (mcp_proxy/utils/url_safety.assert_safe_outbound_url) refuse any
+    # hostname that resolves to private/loopback/link-local/reserved
+    # ranges. Set to True ONLY for local docker compose / e2e / sandbox
+    # stacks where the Mastio reaches a service on the same private
+    # network (federation PDP, MCP resources on the docker bridge, etc.).
+    policy_webhook_allow_private_ips: bool = False
+
     # ADR-029 Phase C, tool-level PDP gate. When true, exposes the
     # POST /v1/policy/tool-call endpoint that the Connector ambassador
     # calls before executing each MCP tool the model emits in a chat

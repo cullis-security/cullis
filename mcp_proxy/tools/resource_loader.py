@@ -73,8 +73,34 @@ async def _fetch_upstream_schema(endpoint_url: str, tool_name: str) -> dict | No
     advertises ``{sql: string}``). Without this, the proxy aggregator
     advertises an empty inputSchema and the LLM has no idea how to
     invoke the tool.
+
+    F-A-301 (audit 2026-05-20): re-validate the endpoint URL here too.
+    The dashboard CRUD validates at registration but a row in the DB
+    (sandbox migration, manual insert, schema drift) may bypass it;
+    this is defence-in-depth on the startup-time fetch path. The
+    forwarder (mcp_resource_forwarder) hits the same URL on every
+    tool invocation so the dashboard gate is the primary defense
+    on the runtime path.
     """
     import httpx as _httpx
+    from mcp_proxy.utils.url_safety import (
+        UnsafeUrlError,
+        assert_safe_outbound_url,
+    )
+    from mcp_proxy.config import get_settings
+
+    allow_private = bool(
+        getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+    )
+    try:
+        assert_safe_outbound_url(endpoint_url, allow_private=allow_private)
+    except UnsafeUrlError as exc:
+        _log.warning(
+            "upstream schema fetch refused unsafe endpoint %s: %s",
+            endpoint_url, exc,
+        )
+        return None
+
     try:
         async with _httpx.AsyncClient(timeout=3.0) as client:
             r = await client.post(

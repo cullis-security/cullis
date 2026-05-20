@@ -42,6 +42,32 @@ class WhitelistedTransport(httpx.AsyncHTTPTransport):
             raise ToolExecutionError(
                 f"Domain '{hostname}' not in whitelist: {sorted(self._allowed)}"
             )
+        # F-A-301 (audit 2026-05-20): defense-in-depth IP block on top of
+        # the hostname allowlist. The dashboard already refuses SSRF
+        # endpoints at registration, but the per-request check guards
+        # against allowlist entries that resolve to internal IPs (an
+        # operator who whitelists ``internal-mcp`` and forgets it points
+        # to a cloud-metadata side-channel).
+        from mcp_proxy.utils.url_safety import (
+            UnsafeUrlError,
+            assert_safe_outbound_url,
+        )
+        from mcp_proxy.config import get_settings
+
+        allow_private = bool(
+            getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+        )
+        try:
+            assert_safe_outbound_url(str(request.url), allow_private=allow_private)
+        except UnsafeUrlError as exc:
+            _log.warning(
+                "WhitelistedTransport refused unsafe URL %s: %s",
+                request.url, exc,
+            )
+            raise ToolExecutionError(
+                f"Refused URL {request.url!s}: {exc}"
+            ) from exc
+
         return await super().handle_async_request(request)
 
     def _is_allowed(self, hostname: str) -> bool:

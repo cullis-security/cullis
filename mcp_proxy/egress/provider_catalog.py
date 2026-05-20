@@ -189,6 +189,13 @@ def validate_creds(provider: str, creds: dict[str, Any]) -> dict[str, str]:
     """Strip unknown keys, enforce required ones, return a clean dict.
 
     The returned dict is what the admin endpoint stores in the DB.
+
+    F-A-302 (audit 2026-05-20): the ``api_base`` override on OpenAI /
+    Ollama / similar providers is admin-supplied and travels with the
+    API key into LiteLLM. Pre-fix, an admin (or compromised admin role)
+    could point ``api_base`` at cloud metadata / RFC 1918 and leak the
+    upstream API key plus user prompts on every chat call. The SSRF
+    helper refuses those URLs at admin-write time.
     """
     spec = get_spec(provider)
     if spec is None:
@@ -207,6 +214,26 @@ def validate_creds(provider: str, creds: dict[str, Any]) -> dict[str, str]:
                 f"{provider}.{fld.name} must be a string, got {type(raw).__name__}",
             )
         cleaned[fld.name] = raw.strip()
+
+    # F-A-302: SSRF gate on every URL-shaped field. Today only
+    # ``api_base`` qualifies (OpenAI + Ollama); future providers should
+    # mark their URL fields here too.
+    if "api_base" in cleaned and cleaned["api_base"]:
+        from mcp_proxy.utils.url_safety import (
+            UnsafeUrlError,
+            assert_safe_outbound_url,
+        )
+        from mcp_proxy.config import get_settings
+
+        allow_private = bool(
+            getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+        )
+        try:
+            assert_safe_outbound_url(cleaned["api_base"], allow_private=allow_private)
+        except UnsafeUrlError as exc:
+            raise InvalidCredentialsError(
+                f"{provider}.api_base refused: {exc}"
+            ) from exc
     return cleaned
 
 
@@ -326,9 +353,32 @@ async def fetch_ollama_models(api_base: str, *, timeout_s: float = 2.0) -> list[
     Returns ``[]`` (and logs a debug line) on any failure: the dashboard
     treats Ollama as "not reachable" and the admin can hit the Test
     button for a verbose error.
+
+    F-A-302 (audit 2026-05-20): defense-in-depth SSRF gate on the
+    runtime path. ``validate_creds`` already refuses unsafe URLs at
+    admin-write time; this re-check catches drift (DB row predating
+    the helper, manual SQL, schema migration) before the model-list
+    refresh fires a GET against the saved endpoint.
     """
     if not api_base:
         return []
+    from mcp_proxy.utils.url_safety import (
+        UnsafeUrlError,
+        assert_safe_outbound_url,
+    )
+    from mcp_proxy.config import get_settings
+
+    allow_private = bool(
+        getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+    )
+    try:
+        assert_safe_outbound_url(api_base, allow_private=allow_private)
+    except UnsafeUrlError as exc:
+        _log.warning(
+            "ollama tag fetch refused unsafe api_base %s: %s", api_base, exc,
+        )
+        return []
+
     url = api_base.rstrip("/") + "/api/tags"
     try:
         async with httpx.AsyncClient(timeout=timeout_s) as client:

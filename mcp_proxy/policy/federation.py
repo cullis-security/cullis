@@ -77,6 +77,35 @@ async def call_remote_tool_call_policy(
         ).hexdigest()
         headers["X-ATN-Signature"] = sig
 
+    # F-A-203 (audit 2026-05-20). Validate the federation URL against
+    # the SSRF block list before issuing the POST. An operator-configured
+    # entry pointing at cloud metadata or internal services would
+    # otherwise leak cross-org principal_id / tool_name / model id to
+    # the attacker-controlled destination on every PDP call.
+    from mcp_proxy.utils.url_safety import (
+        UnsafeUrlError,
+        assert_safe_outbound_url,
+    )
+    from mcp_proxy.config import get_settings
+
+    allow_private = bool(
+        getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+    )
+    try:
+        assert_safe_outbound_url(federation_url, allow_private=allow_private)
+    except UnsafeUrlError as exc:
+        _log.warning(
+            "federation tool-call refused unsafe URL target=%s url=%s err=%s",
+            target_org, federation_url, exc,
+        )
+        return FederationResult(
+            decision=ToolCallDecision(
+                allowed=False,
+                reason=f"federation to org '{target_org}' refused: unsafe URL",
+            ),
+            reached_remote=False,
+        )
+
     try:
         async with httpx.AsyncClient(
             timeout=_FEDERATION_TIMEOUT, follow_redirects=False,
