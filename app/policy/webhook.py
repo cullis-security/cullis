@@ -90,20 +90,36 @@ def _validate_response_ip(resp: httpx.Response) -> None:
 
     httpx does not expose the remote IP in all transports; when unavailable,
     we rely on the pre-request DNS validation as a best-effort defense.
+
+    F-A-204 (audit 2026-05-20) fix: distinguish "cannot determine the
+    server address" (accept, defer to pre-request validation) from
+    "address determined and unsafe" (raise). The previous broad
+    ``except (TypeError, ValueError, IndexError)`` clause was swallowing
+    the very ``ValueError`` this function raises on a private-IP hit,
+    turning the post-request belt-and-braces into a no-op.
     """
     if _allow_private_webhooks():
         return
-    # httpx stores network info in response.extensions when using httpcore
     network_stream = resp.extensions.get("network_stream")
-    if network_stream is not None:
-        try:
-            server_addr = network_stream.get_extra_info("server_addr")
-            if server_addr:
-                ip = ipaddress.ip_address(server_addr[0])
-                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                    raise ValueError(f"Response came from private/reserved IP: {ip}")
-        except (TypeError, ValueError, IndexError):
-            pass  # cannot determine — fall through to pre-request validation
+    if network_stream is None:
+        return
+    # Stage 1: extract the peer address. Broad except: any failure here
+    # means "cannot determine", which is the documented accept path.
+    try:
+        server_addr = network_stream.get_extra_info("server_addr")
+    except (TypeError, AttributeError):
+        return
+    if not server_addr:
+        return
+    # Stage 2: parse the address. Malformed → cannot determine → accept.
+    try:
+        ip = ipaddress.ip_address(server_addr[0])
+    except (ValueError, IndexError, TypeError):
+        return
+    # Stage 3: refuse private/reserved. ValueError raised here is the
+    # safety signal the caller must surface — do NOT catch it locally.
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        raise ValueError(f"Response came from private/reserved IP: {ip}")
 
 
 def _validate_and_resolve_webhook_url(url: str) -> str:

@@ -95,12 +95,31 @@ def _parse_allowed_domains(raw: str) -> list[str]:
 
 
 def _validate_endpoint_url(url: str) -> str:
+    """F-A-301 (audit 2026-05-20): refuse SSRF endpoints (cloud metadata,
+    RFC 1918, loopback) at the dashboard CRUD boundary.
+
+    Pre-fix the dashboard only checked the http(s) scheme — an org
+    admin (or compromised admin role) could register an MCP resource
+    pointing at 169.254.169.254 and have the Mastio fire a POST against
+    cloud IMDS on every tool invocation. ``allow_private`` is wired to
+    the Mastio escape ``policy_webhook_allow_private_ips`` so dev /
+    sandbox stacks reaching MCP servers on the docker bridge keep
+    working.
+    """
+    from mcp_proxy.utils.url_safety import (
+        UnsafeUrlError,
+        assert_safe_outbound_url,
+    )
+    from mcp_proxy.config import get_settings
+
     url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(
-            status_code=400,
-            detail="endpoint_url must start with http:// or https://",
-        )
+    allow_private = bool(
+        getattr(get_settings(), "policy_webhook_allow_private_ips", False)
+    )
+    try:
+        assert_safe_outbound_url(url, allow_private=allow_private)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=f"endpoint_url: {exc}") from exc
     return url
 
 

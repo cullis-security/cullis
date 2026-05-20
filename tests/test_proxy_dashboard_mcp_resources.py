@@ -24,6 +24,11 @@ async def proxy_logged_in(tmp_path, monkeypatch):
     monkeypatch.setenv("MCP_PROXY_ORG_ID", "acme")
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "test.local")
     monkeypatch.delenv("MCP_PROXY_BROKER_URL", raising=False)
+    # PR #2 audit 2026-05-20: SSRF helper refuses RFC 1918 endpoints
+    # at registration unless the dev escape is set. These tests use
+    # 10.0.0.5 stubs in docker-bridge style addresses; flip the dev
+    # flag so the dashboard CRUD accepts them.
+    monkeypatch.setenv("MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS", "true")
 
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
@@ -54,11 +59,11 @@ async def _create_resource(
     client,
     *,
     name: str,
-    endpoint_url: str = "http://mcp-svc:8080/",
+    endpoint_url: str = "http://10.0.0.5:8080/",
     auth_type: str = "none",
     org_id: str = "acme",
     enabled: str = "1",
-    allowed_domains: str = '["mcp-svc:8080"]',
+    allowed_domains: str = '["10.0.0.5:8080"]',
     required_capability: str = "",
     auth_secret_ref: str = "",
     description: str = "",
@@ -129,7 +134,7 @@ async def test_list_page_renders_empty(proxy_logged_in):
 async def test_create_resource_persists(proxy_logged_in):
     resp = await _create_resource(
         proxy_logged_in, name="github-mcp",
-        endpoint_url="https://api.example.com/mcp",
+        endpoint_url="http://10.0.0.6:8080/mcp",
         auth_type="bearer", auth_secret_ref="env://GH_TOKEN",
     )
     assert resp.status_code == 303
@@ -141,7 +146,7 @@ async def test_create_resource_persists(proxy_logged_in):
                  "FROM local_mcp_resources WHERE name='github-mcp'")
         )).mappings().first()
     assert row is not None
-    assert row["endpoint_url"] == "https://api.example.com/mcp"
+    assert row["endpoint_url"] == "http://10.0.0.6:8080/mcp"
     assert row["auth_type"] == "bearer"
     assert row["auth_secret_ref"] == "env://GH_TOKEN"
     assert row["enabled"] == 1
@@ -196,7 +201,7 @@ async def test_update_changes_fields(proxy_logged_in):
         data={
             "csrf_token": csrf,
             "description": "updated",
-            "endpoint_url": "https://new.example.com/mcp",
+            "endpoint_url": "http://10.0.0.7:8080/mcp",
             "auth_type": "api_key",
             "auth_secret_ref": "env://NEW",
             "required_capability": "x.read",
@@ -214,7 +219,7 @@ async def test_update_changes_fields(proxy_logged_in):
             {"r": rid},
         )).mappings().first()
     assert row["description"] == "updated"
-    assert row["endpoint_url"] == "https://new.example.com/mcp"
+    assert row["endpoint_url"] == "http://10.0.0.7:8080/mcp"
     assert row["auth_type"] == "api_key"
     assert row["required_capability"] == "x.read"
 

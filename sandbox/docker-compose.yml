@@ -339,6 +339,11 @@ services:
       # and the cross-org federation against proxy-b.
       MCP_PROXY_TOOL_PDP_ENABLED: "true"
       MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orgb": "http://proxy-b:9100/v1/policy/tool-call"}'
+      # PR #2 audit 2026-05-20 — F-A-203 SSRF gate refuses RFC 1918
+      # federation URLs by default. Sandbox proxies live on docker bridge
+      # (172.x.x.x); enable the dev escape so the federation tool-PDP
+      # path stays exercised.
+      MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
     volumes:
       - proxy-a-data:/data
       - mastio-a-nginx-certs:/var/lib/mastio/nginx-certs:rw
@@ -658,6 +663,8 @@ services:
       # and the cross-org federation against proxy-a.
       MCP_PROXY_TOOL_PDP_ENABLED: "true"
       MCP_PROXY_TOOL_PDP_FEDERATION_URLS: '{"orga": "http://proxy-a:9100/v1/policy/tool-call"}'
+      # PR #2 audit 2026-05-20 — F-A-203 SSRF gate (see proxy-a comment).
+      MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS: "true"
     volumes:
       - proxy-b-data:/data
       - mastio-b-nginx-certs:/var/lib/mastio/nginx-certs:rw

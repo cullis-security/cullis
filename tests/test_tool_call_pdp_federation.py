@@ -35,9 +35,14 @@ async def proxy_app(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
     monkeypatch.setenv("MCP_PROXY_TOOL_PDP_ENABLED", "true")
     monkeypatch.setenv("MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET", "")
+    # PR #2 audit 2026-05-20: federation URL is mock-transported (never
+    # hits the wire), but the SSRF helper validates the URL before
+    # dispatching. Use IP literal in a sandboxed range + flip the dev
+    # escape so the test doesn't depend on DNS resolution.
+    monkeypatch.setenv("MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS", "true")
     monkeypatch.setenv(
         "MCP_PROXY_TOOL_PDP_FEDERATION_URLS",
-        json.dumps({"competitor": "https://mastio.competitor.local/v1/policy/tool-call"}),
+        json.dumps({"competitor": "http://10.0.0.10:9100/v1/policy/tool-call"}),
     )
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
@@ -66,6 +71,7 @@ async def proxy_app_phaseg(tmp_path, monkeypatch):
     monkeypatch.setenv("PROXY_TRUST_DOMAIN", "cullis.local")
     monkeypatch.setenv("MCP_PROXY_TOOL_PDP_ENABLED", "true")
     monkeypatch.setenv("MCP_PROXY_PDP_WEBHOOK_HMAC_SECRET", "")
+    monkeypatch.setenv("MCP_PROXY_POLICY_WEBHOOK_ALLOW_PRIVATE_IPS", "true")
     monkeypatch.setenv("MCP_PROXY_TOOL_PDP_FEDERATION_URLS", "{}")
     from mcp_proxy.config import get_settings
     get_settings.cache_clear()
@@ -425,9 +431,9 @@ async def test_phaseg_court_catalog_publishes_url(proxy_app_phaseg, monkeypatch)
         if url.endswith("/v1/federation/orgs/competitor/mastio-url"):
             return httpx.Response(200, json={
                 "org_id": "competitor",
-                "mastio_url": "https://mastio.competitor.dynamic/v1/policy/tool-call",
+                "mastio_url": "https://10.0.0.11:9100/v1/policy/tool-call",
             })
-        if "mastio.competitor.dynamic" in url:
+        if "10.0.0.11:9100" in url:
             captured["peer_url"] = url
             captured["peer_body"] = json.loads(request.content)
             return httpx.Response(200, json={
@@ -460,7 +466,7 @@ async def test_phaseg_court_catalog_publishes_url(proxy_app_phaseg, monkeypatch)
     body = resp.json()
     assert body["decision"] == "allow", body
     # The catalog-resolved peer received the call.
-    assert "mastio.competitor.dynamic" in captured["peer_url"]
+    assert "10.0.0.11:9100" in captured["peer_url"]
     assert captured["peer_body"]["target"]["org"] == "competitor"
 
 
