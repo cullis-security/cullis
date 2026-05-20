@@ -307,4 +307,175 @@ async def test_disabled_flag_keeps_per_row_path(proxy_app, monkeypatch):
     finally:
         set_batched_chain(previous)
         monkeypatch.delenv("MCP_PROXY_AUDIT_CHAIN_DISABLED", raising=False)
+
+
+# ── Audit F-A-404 — background flush fail-deny ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_background_fail_deny_marks_chain_unhealthy(proxy_app, monkeypatch):
+    """When a background flush exhausts its retry budget under
+    ``background_fail_deny=True``, the process-wide unhealthy flag must
+    be set so ``/readyz`` returns 503 — pre-2026-05-20 the rows were
+    dropped with only a ``_log.critical`` line, invisible inside the
+    lifespan logger window (cullis-enterprise#11)."""
+    from mcp_proxy import audit_chain as ac
+    from mcp_proxy import db as _db
+
+    ac._reset_unhealthy_for_tests()
+    assert ac.is_audit_chain_unhealthy() is False
+
+    chain = ac.BatchedAuditChain(
+        batch_size=100,
+        flush_interval_s=60.0,
+        background_fail_deny=True,
+    )
+    await chain.append(_row(detail="will-drop"))
+
+    # Force the retry loop to exhaust immediately by zeroing the budget.
+    monkeypatch.setattr(_db, "_AUDIT_CHAIN_MAX_RETRIES", 0)
+    written = await chain.flush_now(propagate=False)
+    assert written == 0
+    assert ac.is_audit_chain_unhealthy() is True
+
+    ac._reset_unhealthy_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_background_fail_open_preserves_legacy_drop(proxy_app, monkeypatch):
+    """With explicit ``background_fail_deny=False`` (legacy opt-out)
+    the exhaustion path drops the rows and emits a critical log line
+    but does NOT mark the chain unhealthy. Operators that picked the
+    fail-open knob accept silent audit loss under contention."""
+    from mcp_proxy import audit_chain as ac
+    from mcp_proxy import db as _db
+
+    ac._reset_unhealthy_for_tests()
+    assert ac.is_audit_chain_unhealthy() is False
+
+    chain = ac.BatchedAuditChain(
+        batch_size=100,
+        flush_interval_s=60.0,
+        background_fail_deny=False,
+    )
+    await chain.append(_row(detail="legacy-drop"))
+
+    monkeypatch.setattr(_db, "_AUDIT_CHAIN_MAX_RETRIES", 0)
+    written = await chain.flush_now(propagate=False)
+    assert written == 0
+    # Legacy posture — flag stays clean.
+    assert ac.is_audit_chain_unhealthy() is False
+
+
+@pytest.mark.asyncio
+async def test_synchronous_path_still_raises_under_fail_deny(proxy_app, monkeypatch):
+    """The size-triggered (synchronous) path was already correct
+    pre-F-A-404: it raises ``AuditChainExhausted`` so ``log_audit`` can
+    apply ``audit_fail_deny``. This test pins that behaviour so a
+    future refactor doesn't accidentally re-route the propagate-True
+    path through the new unhealthy-marker code."""
+    from mcp_proxy import audit_chain as ac
+    from mcp_proxy import db as _db
+
+    ac._reset_unhealthy_for_tests()
+
+    chain = ac.BatchedAuditChain(
+        batch_size=100,
+        flush_interval_s=60.0,
+        background_fail_deny=True,
+    )
+    await chain.append(_row(detail="sync-propagate"))
+    monkeypatch.setattr(_db, "_AUDIT_CHAIN_MAX_RETRIES", 0)
+    with pytest.raises(ac.AuditChainExhausted):
+        await chain.flush_now(propagate=True)
+    # Synchronous propagation — the unhealthy flag is reserved for
+    # background-flush exhaustion that the caller can't surface.
+    assert ac.is_audit_chain_unhealthy() is False
+
+    ac._reset_unhealthy_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_readyz_returns_503_when_audit_chain_unhealthy(proxy_app):
+    """End-to-end: with the unhealthy flag set, ``/readyz`` answers 503
+    so a load balancer kicks the worker out of rotation."""
+    from mcp_proxy import audit_chain as ac
+
+    app, client = proxy_app
+    ac._reset_unhealthy_for_tests()
+
+    resp_ok = await client.get("/readyz")
+    assert resp_ok.status_code == 200
+
+    ac._UNHEALTHY = True
+    try:
+        resp_unhealthy = await client.get("/readyz")
+        assert resp_unhealthy.status_code == 503
+        body = resp_unhealthy.json()
+        assert body["status"] == "not_ready"
+        assert "audit_chain" in body["checks"]
+    finally:
+        ac._reset_unhealthy_for_tests()
+
+
+def test_validate_config_rejects_both_audit_chain_knobs_true(monkeypatch):
+    """Production with both ``audit_chain_background_fail_deny`` AND
+    ``audit_chain_background_fail_open`` true is a copy-paste mistake;
+    refuse to boot rather than letting an ambiguous setting through."""
+    from mcp_proxy.config import ProxySettings, validate_config
+
+    s = ProxySettings(
+        environment="production",
+        admin_secret="strong-admin-XYZ-1234567890",
+        broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
+        secret_backend="vault",
+        kms_backend="vault",
+        broker_verify_tls=True,
+        vault_verify_tls=True,
+        dashboard_signing_key="x" * 64,
+        db_encryption_key="x" * 64,
+        webauthn_enforcement="warn",
+        webauthn_rp_id="mastio.example.com",
+        webauthn_expected_origin="https://mastio.example.com",
+        allowed_origins="https://mastio.example.com",
+        pdp_webhook_hmac_secret="strong-pdp-hmac",
+        mastio_mtls_trusted_proxy_cidrs="10.0.0.0/8",
+        audit_chain_disabled=False,
+        audit_fail_deny=True,
+        audit_chain_background_fail_deny=True,
+        audit_chain_background_fail_open=True,
+    )
+    with pytest.raises(SystemExit):
+        validate_config(s)
+
+
+def test_validate_config_requires_explicit_audit_chain_background_choice(monkeypatch):
+    """Production with batched chain + fail-deny must declare intent
+    on the background-flush failure mode. Mirroring the H4 anti-pattern
+    rule from the 2026-05-20 audit."""
+    from mcp_proxy.config import ProxySettings, validate_config
+
+    s = ProxySettings(
+        environment="production",
+        admin_secret="strong-admin-XYZ-1234567890",
+        broker_jwks_url="https://broker.example.com/.well-known/jwks.json",
+        secret_backend="vault",
+        kms_backend="vault",
+        broker_verify_tls=True,
+        vault_verify_tls=True,
+        dashboard_signing_key="x" * 64,
+        db_encryption_key="x" * 64,
+        webauthn_enforcement="warn",
+        webauthn_rp_id="mastio.example.com",
+        webauthn_expected_origin="https://mastio.example.com",
+        allowed_origins="https://mastio.example.com",
+        pdp_webhook_hmac_secret="strong-pdp-hmac",
+        mastio_mtls_trusted_proxy_cidrs="10.0.0.0/8",
+        audit_chain_disabled=False,
+        audit_fail_deny=True,
+        audit_chain_background_fail_deny=False,
+        audit_chain_background_fail_open=False,
+    )
+    with pytest.raises(SystemExit):
+        validate_config(s)
         get_settings.cache_clear()

@@ -41,8 +41,49 @@ from sqlalchemy.exc import IntegrityError
 # batched flush path. Pinning the symbols at import time would freeze
 # pre-patched references and silently bypass the fail-deny tests.
 from mcp_proxy import db as _db  # noqa: F401 — used dynamically below
+from mcp_proxy._lifespan_log import emit_lifespan_log
 
 _log = logging.getLogger("mcp_proxy.audit_chain")
+
+
+# Audit F-A-404 — process-wide unhealthy flag set when a background
+# flush exhausts its retry budget under ``audit_chain_background_fail_deny``.
+# ``/readyz`` reads it through ``is_audit_chain_unhealthy()`` and
+# returns 503 to kick the worker out of LB rotation. Module-level
+# rather than per-instance so a Mastio that rebuilds the singleton
+# (test harness, reload) doesn't accidentally clear the flag.
+_UNHEALTHY: bool = False
+
+
+def is_audit_chain_unhealthy() -> bool:
+    """Return True if a background flush has reported irrecoverable
+    UNIQUE(chain_seq) exhaustion since process start. Consumed by
+    ``/readyz`` in production deploys (audit F-A-404)."""
+    return _UNHEALTHY
+
+
+def _mark_unhealthy(reason: str) -> None:
+    """Set the process-wide unhealthy flag and emit via the lifespan-
+    safe log channel. ``emit_lifespan_log`` bypasses the standard
+    logger which can be silently muted inside the uvicorn lifespan
+    window (cullis-enterprise#11) — exactly the path where the
+    background flush task runs.
+    """
+    global _UNHEALTHY
+    _UNHEALTHY = True
+    emit_lifespan_log(
+        level="CRITICAL",
+        logger="mcp_proxy.audit_chain",
+        message=f"AUDIT_CHAIN_UNHEALTHY: {reason}",
+    )
+
+
+def _reset_unhealthy_for_tests() -> None:
+    """Test-only: clear the unhealthy flag between cases. Never call
+    from production code — once set, the flag stays set until the
+    process restarts (the whole point of audit F-A-404)."""
+    global _UNHEALTHY
+    _UNHEALTHY = False
 
 
 class AuditChainExhausted(RuntimeError):
@@ -88,6 +129,7 @@ class BatchedAuditChain:
         *,
         batch_size: int = 100,
         flush_interval_s: float = 1.0,
+        background_fail_deny: bool = True,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
@@ -95,6 +137,10 @@ class BatchedAuditChain:
             raise ValueError("flush_interval_s must be > 0")
         self._batch_size = batch_size
         self._flush_interval_s = flush_interval_s
+        # Audit F-A-404 — controls whether a background-flush exhaustion
+        # only logs critical (legacy fail-open) or also marks the worker
+        # unhealthy via ``_mark_unhealthy`` so ``/readyz`` returns 503.
+        self._background_fail_deny = background_fail_deny
         self._pending: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task[None] | None = None
@@ -223,19 +269,29 @@ class BatchedAuditChain:
             # caller (log_audit) can apply ``audit_fail_deny``.
             raise AuditChainExhausted(msg)
         # Background-flush path (periodic loop, shutdown drain): the
-        # caller can't surface a 5xx anyway, so we log critical and
-        # drop the rows. Operators that need fail-deny semantics on
-        # background flushes should set audit_chain_disabled=true and
-        # fall back to the legacy per-row path.
-        _log.critical(
-            "%s. Dropped %d row(s) on background flush; "
-            "first row agent_id=%s action=%s status=%s",
-            msg,
-            len(batch),
-            batch[0].get("agent_id"),
-            batch[0].get("action"),
-            batch[0].get("status"),
+        # caller can't surface a 5xx anyway. Two failure modes:
+        #
+        #   background_fail_deny=True (audit F-A-404 default) — emit
+        #     the critical line through the lifespan-safe channel AND
+        #     set a process-wide unhealthy flag that ``/readyz`` reads
+        #     to return 503, kicking the worker out of LB rotation
+        #     until restart. Existing rows still drop (we cannot
+        #     undo the chain advance) but no new requests land on a
+        #     worker with broken audit semantics.
+        #
+        #   background_fail_deny=False — legacy drop-and-continue
+        #     posture. Critical log only. Operators that pick this
+        #     are accepting silent audit loss under sustained
+        #     contention (pre-2026-05-20 behaviour).
+        critical_msg = (
+            f"{msg}. Dropped {len(batch)} row(s) on background flush; "
+            f"first row agent_id={batch[0].get('agent_id')} "
+            f"action={batch[0].get('action')} status={batch[0].get('status')}"
         )
+        if self._background_fail_deny:
+            _mark_unhealthy(critical_msg)
+        else:
+            _log.critical("%s", critical_msg)
         return 0
 
     async def start(self) -> None:
@@ -332,9 +388,19 @@ async def build_and_start_from_settings() -> BatchedAuditChain | None:
         return None
 
     await shutdown_singleton()
+    # Audit F-A-404 — explicit fail_open overrides the default deny.
+    # validate_config refuses both-true; here the two booleans give a
+    # clean tri-state (deny=True default, deny=False+open=True legacy,
+    # both False in dev-mode pre-config-sweep).
+    background_fail_deny = bool(
+        getattr(settings, "audit_chain_background_fail_deny", True)
+    ) and not bool(
+        getattr(settings, "audit_chain_background_fail_open", False)
+    )
     chain = BatchedAuditChain(
         batch_size=settings.audit_chain_batch_size,
         flush_interval_s=settings.audit_chain_flush_interval_s,
+        background_fail_deny=background_fail_deny,
     )
     await chain.start()
     set_batched_chain(chain)

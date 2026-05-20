@@ -2239,6 +2239,17 @@ async def readyz():
     """Readiness probe — checks DB writable and JWKS cache age."""
     checks: dict[str, str] = {}
 
+    # Audit F-A-404 — batched audit chain background flush exhaustion
+    # sets a process-wide unhealthy flag. Fail readyz so the LB kicks
+    # this worker out of rotation rather than continuing to accept
+    # traffic against a daemon with broken audit semantics.
+    from mcp_proxy.audit_chain import is_audit_chain_unhealthy
+    if is_audit_chain_unhealthy():
+        checks["audit_chain"] = "unhealthy (background flush exhausted)"
+        return JSONResponse(
+            {"status": "not_ready", "checks": checks}, status_code=503,
+        )
+
     # Database writable
     try:
         async with get_db() as db:

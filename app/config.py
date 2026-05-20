@@ -191,6 +191,16 @@ class Settings(BaseSettings):
     audit_tsa_url: str = "http://timestamp.digicert.com"
     audit_tsa_interval_seconds: int = 3600  # default: hourly anchor
 
+    # Audit F-A-405 — dispute-grade RFC 3161 verify requires a PEM bundle
+    # of trusted TSA root(s). Without it, the verifier cannot walk the
+    # signing cert chain and treats every token as unverified.
+    # ``audit_tsa_max_clock_skew_seconds`` bounds how far the TSA's
+    # ``genTime`` may drift from the broker's wall clock at anchor issue —
+    # default 1 day matches typical TSA SLAs and tolerates leap-second
+    # / time-zone misconfig without blowing the gate.
+    audit_tsa_trust_anchor_path: str = ""
+    audit_tsa_max_clock_skew_seconds: int = 86400
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -331,6 +341,46 @@ def validate_config(settings: "Settings") -> None:
                 settings.kms_backend,
             )
             raise SystemExit(1)
+
+        # Audit F-A-405 — RFC 3161 TSA anchors are claimed as
+        # dispute-grade evidence: a verifier must be able to walk the
+        # signing certificate chain to a trusted root. Without a trust
+        # anchor configured the verifier degenerates to "imprint
+        # matches", which any holder of the row hash can forge. Also
+        # refuse the H4 anti-pattern of leaving ``audit_tsa_backend=mock``
+        # in production when anchoring is enabled — the mock backend is
+        # explicitly NOT dispute-grade per its own docstring.
+        if settings.audit_tsa_enabled:
+            if settings.audit_tsa_backend.lower() == "mock":
+                _startup_logger.critical(
+                    "AUDIT_TSA_ENABLED=true with AUDIT_TSA_BACKEND='mock' "
+                    "in production. The mock backend produces broker-"
+                    "signed tokens — not dispute-grade. Set "
+                    "AUDIT_TSA_BACKEND=rfc3161 and configure "
+                    "AUDIT_TSA_URL + AUDIT_TSA_TRUST_ANCHOR_PATH "
+                    "(audit F-A-405 / F-A-406).",
+                )
+                raise SystemExit(1)
+            if settings.audit_tsa_backend.lower() == "rfc3161":
+                if not settings.audit_tsa_trust_anchor_path:
+                    _startup_logger.critical(
+                        "AUDIT_TSA_BACKEND=rfc3161 requires "
+                        "AUDIT_TSA_TRUST_ANCHOR_PATH to point at a PEM "
+                        "bundle of trusted TSA root(s). Without it, "
+                        "verify() cannot establish a cert chain and "
+                        "every anchor is treated as unverified — the "
+                        "dispute-grade claim collapses (audit F-A-405).",
+                    )
+                    raise SystemExit(1)
+                if not pathlib.Path(
+                    settings.audit_tsa_trust_anchor_path
+                ).is_file():
+                    _startup_logger.critical(
+                        "AUDIT_TSA_TRUST_ANCHOR_PATH=%r does not exist "
+                        "on disk (audit F-A-405).",
+                        settings.audit_tsa_trust_anchor_path,
+                    )
+                    raise SystemExit(1)
 
         # Audit F-E-04 — DPoP replay protection requires a shared JTI store
         # across workers. An empty REDIS_URL in production silently falls
