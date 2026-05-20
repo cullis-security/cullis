@@ -46,4 +46,8 @@ PyYAML>=6.0
 # RFC 3161 TSA client for audit chain anchoring (opt-in via
 # audit_tsa_backend=rfc3161). The broker boots without this dep when
 # the default mock backend is used; import is lazy in app/audit/tsa_client.py.
+# asn1crypto is required for dispute-grade verify (audit F-A-405): parses
+# the TimeStampToken + signedAttrs DER so the CMS signature can be
+# verified end-to-end against the operator-configured trust anchor.
 rfc3161-client>=1.0.3
+asn1crypto>=1.5.1

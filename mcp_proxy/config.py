@@ -367,6 +367,30 @@ class ProxySettings(BaseSettings):
     audit_chain_flush_interval_s: float = 1.0
     audit_chain_disabled: bool = False
 
+    # Audit F-A-404 — background flush retry exhaustion.
+    # The size-triggered flush from ``append()`` raises
+    # ``AuditChainExhausted`` so a caller under ``audit_fail_deny=True``
+    # surfaces a 500. The time-triggered background flush (every
+    # ``flush_interval_s``) and the shutdown drain cannot reach any
+    # caller, so the legacy code logs CRITICAL and dropped the rows.
+    # Under sustained UNIQUE(chain_seq) contention this lets the daemon
+    # silently lose audit evidence while every HTTP request continues
+    # to return 200 — the exact thing ``audit_fail_deny=True`` is meant
+    # to prevent.
+    #
+    #   audit_chain_background_fail_deny → when True (default), a
+    #     background-flush exhaustion sets a process-wide unhealthy
+    #     flag that ``/readyz`` reads to return 503, kicking the worker
+    #     out of LB rotation until restart. Also emits via
+    #     ``mcp_proxy._lifespan_log.emit_lifespan_log`` so the critical
+    #     line lands on stderr even when the standard logger is muted
+    #     (cullis-enterprise#11).
+    #   audit_chain_background_fail_open → explicit operator opt-out
+    #     that preserves the pre-2026-05-20 drop-and-continue behaviour.
+    #     Both knobs cannot be true; validate_config rejects the conflict.
+    audit_chain_background_fail_deny: bool = True
+    audit_chain_background_fail_open: bool = False
+
     # Audit L1-H1 / Ultra U-DD-1: in production the DPoP JTI store and the
     # login-challenge nonce store both refuse to fall back to in-memory
     # when Redis is unavailable, because a multi-worker deploy without a
@@ -1036,6 +1060,43 @@ def validate_config(settings: ProxySettings) -> None:
                     "the advertised per-agent rate budget. Set "
                     "MCP_PROXY_REDIS_URL or declare single-worker "
                     "topology explicitly (F-A-502)."
+                )
+                raise SystemExit(1)
+
+        # Audit F-A-404 — background flush retry exhaustion must surface.
+        # ``audit_chain_background_fail_deny`` and
+        # ``audit_chain_background_fail_open`` are mutually exclusive: the
+        # operator either accepts the safe default (deny → kick worker
+        # out of LB on exhaustion) or explicitly opts into the legacy
+        # drop-and-continue posture. Both true means an operator copy-
+        # pasted a knob without understanding the trade-off; refuse to
+        # boot. Both false is acceptable in non-production (legacy
+        # behaviour), but in production the operator must declare intent.
+        if (
+            settings.audit_chain_background_fail_deny
+            and settings.audit_chain_background_fail_open
+        ):
+            _log.critical(
+                "MCP_PROXY_AUDIT_CHAIN_BACKGROUND_FAIL_DENY and "
+                "MCP_PROXY_AUDIT_CHAIN_BACKGROUND_FAIL_OPEN are both true. "
+                "Pick exactly one — fail-deny (default) kicks the worker "
+                "out of LB rotation on retry exhaustion; fail-open keeps "
+                "the legacy drop-and-continue behaviour. Audit F-A-404.",
+            )
+            raise SystemExit(1)
+        if not settings.audit_chain_disabled and settings.audit_fail_deny:
+            if not (
+                settings.audit_chain_background_fail_deny
+                or settings.audit_chain_background_fail_open
+            ):
+                _log.critical(
+                    "MCP_PROXY_AUDIT_FAIL_DENY=true with the batched audit "
+                    "chain enabled requires an explicit decision on the "
+                    "background-flush failure mode. Set "
+                    "MCP_PROXY_AUDIT_CHAIN_BACKGROUND_FAIL_DENY=true "
+                    "(recommended — surfaces as 503 on /readyz) or "
+                    "MCP_PROXY_AUDIT_CHAIN_BACKGROUND_FAIL_OPEN=true "
+                    "(legacy drop-and-continue). Audit F-A-404.",
                 )
                 raise SystemExit(1)
 

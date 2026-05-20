@@ -89,7 +89,10 @@ async def _persist_anchor(
         row_hash=row_hash,
         tsa_token=ts.token,
         tsa_url=ts.tsa_url,
-        tsa_cert_chain=None,
+        # Audit F-A-405 — persist the TSA signing cert chain so an
+        # offline dispute verifier can walk the chain to a trusted
+        # root. ``None`` for the mock backend.
+        tsa_cert_chain=ts.cert_chain_pem,
         created_at=ts.created_at,
     )
     db.add(record)
