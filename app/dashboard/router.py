@@ -85,6 +85,11 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 from app.dashboard import auth_routes as _auth_routes  # noqa: E402
 router.include_router(_auth_routes.router)
 
+# F-B-202 PR-3: include the admin_settings sub-router (change-password
+# + policy-toggle). Same pattern as PR-2.
+from app.dashboard import admin_settings_routes as _admin_settings_routes  # noqa: E402
+router.include_router(_admin_settings_routes.router)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Login / Logout
@@ -101,83 +106,9 @@ router.include_router(_auth_routes.router)
 # of router.py.
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Admin Settings (change admin password)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/admin/settings", response_class=HTMLResponse)
-async def admin_settings_page(request: Request):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        return RedirectResponse(url="/dashboard", status_code=303)
-
-    from app.kms.admin_secret import get_admin_secret_hash
-    from app.config import get_settings
-    stored_hash = await get_admin_secret_hash()
-    return templates.TemplateResponse("admin_settings.html",
-        _ctx(request, session, active="admin_settings", error=None, success=None,
-             kms_backend=get_settings().kms_backend, hash_present=stored_hash is not None))
-
-
-@router.post("/admin/settings/password", response_class=HTMLResponse)
-async def admin_change_password(request: Request, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        return RedirectResponse(url="/dashboard", status_code=303)
-    if not await verify_csrf(request, session):
-        return RedirectResponse(url="/dashboard/admin/settings", status_code=303)
-
-    from app.config import get_settings
-    settings = get_settings()
-
-    form = await request.form()
-    current_password = form.get("current_password", "")
-    new_password = form.get("new_password", "")
-    confirm_password = form.get("confirm_password", "")
-
-    def _err(msg: str):
-        return templates.TemplateResponse("admin_settings.html",
-            _ctx(request, session, active="admin_settings", error=msg, success=None,
-                 kms_backend=settings.kms_backend, hash_present=True))
-
-    if not current_password or not new_password or not confirm_password:
-        return _err("All fields are required.")
-
-    if new_password != confirm_password:
-        return _err("New passwords do not match.")
-
-    if len(new_password) < 12:
-        return _err("Password must be at least 12 characters.")
-
-    # Verify current password
-    from app.kms.admin_secret import get_admin_secret_hash, verify_admin_password, set_admin_secret_hash
-    stored_hash = await get_admin_secret_hash()
-    if not verify_admin_password(current_password, stored_hash):
-        # Fallback to .env if no hash in backend
-        if stored_hash is not None:
-            return _err("Current password is incorrect.")
-        import hmac as _hmac
-        if not _hmac.compare_digest(current_password, settings.admin_secret):
-            return _err("Current password is incorrect.")
-
-    # Hash and store
-    import bcrypt
-    new_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt(rounds=12)).decode()
-    await set_admin_secret_hash(new_hash)
-
-    await log_event(db, "admin.password_changed", "ok",
-                    details={"source": "dashboard"})
-
-    return templates.TemplateResponse("admin_settings.html",
-        _ctx(request, session, active="admin_settings", error=None,
-             success="Admin password updated successfully.",
-             kms_backend=settings.kms_backend, hash_present=True))
-
-
+# Admin Settings (change-password) routes moved to
+# ``app/dashboard/admin_settings_routes.py`` since F-B-202 PR-3.
+#
 # Org-tenant self-service settings (CA upload, CA generate, OIDC role mapping)
 # were removed in the network-admin-only refactor (ADR-001). Admin still
 # manages per-org CA via /dashboard/orgs/{org_id}/upload-ca.
@@ -202,26 +133,8 @@ _CAPABILITY_MAX_LEN = 64
 _CAPABILITY_MAX_COUNT = 50
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Policy enforcement toggle (admin only, demo mode)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/admin/policy-toggle", response_class=HTMLResponse)
-async def admin_policy_toggle(request: Request, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        return RedirectResponse(url="/dashboard", status_code=303)
-    if not await verify_csrf(request, session):
-        return RedirectResponse(url="/dashboard", status_code=303)
-
-    from app.config import is_policy_enforced, set_policy_enforcement
-    new_state = not is_policy_enforced()
-    set_policy_enforcement(new_state)
-    state_label = "enabled" if new_state else "disabled"
-    await log_event(db, "admin.policy_toggle", "ok", details={"enforcement": state_label})
-    return RedirectResponse(url="/dashboard", status_code=303)
+# Policy enforcement toggle moved to admin_settings_routes.py since
+# F-B-202 PR-3 (co-located with the rest of the admin-settings surface).
 
 
 # ─────────────────────────────────────────────────────────────────────────────
