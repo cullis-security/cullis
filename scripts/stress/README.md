@@ -12,16 +12,19 @@
 | `health-throughput.js` | TLS edge + nginx → mcp-proxy plumbing (cheap read) | live |
 | `soak-stability.js` | Same path, 50 VUs sustained 1h — memory leak detection | live |
 | `intra-org-mastio-burst.js` | Full intra-org auth+audit chain at 50→5k VUs | live (C2.A.1) |
+| `frontdesk-multiuser-mock.js` | Frontdesk user-path (login + list_models) w/o LLM | live |
+| `frontdesk-multiuser-ollama.js` | Same shape + chat_completions against real Ollama | live |
 | `dpop-egress.js` | DPoP signature verification + token issuance | TODO |
 | `a2a-routing.js` | Intra-org A2A message dispatch via PDP + broker | TODO |
 | `enrollment-burst.js` | Concurrent CSR issuance + DB insert | TODO |
 
-`health-throughput.js`, `soak-stability.js`, and `intra-org-mastio-
-burst.js` are wired today. The remaining scenarios are listed so
-future work can land in one place. Each new scenario should keep the
-same conventions: human-readable `handleSummary` for the maintainer +
-a JSON dump (`summary.json`, `soak-summary.json`,
-`intra-org-summary.json`) for diffable artefacts.
+`health-throughput.js`, `soak-stability.js`, `intra-org-mastio-
+burst.js`, and the two `frontdesk-multiuser-*.js` scenarios are wired
+today. The remaining scenarios are listed so future work can land in
+one place. Each new scenario should keep the same conventions:
+human-readable `handleSummary` for the maintainer + a JSON dump
+(`summary.json`, `soak-summary.json`, `intra-org-summary.json`,
+`frontdesk-summary-*.json`) for diffable artefacts.
 
 ## How to run
 
@@ -295,6 +298,74 @@ single-uvicorn-worker GIL + global asyncio audit-chain lock cap
 throughput well below Tier 2+ targets. Architectural changes
 (multi-worker uvicorn, Postgres backend, Redis JTI) are required
 before re-running this scenario for Tier 2+ feasibility.
+
+## Frontdesk multi-user benchmark
+
+`frontdesk-multiuser-mock.js` and `frontdesk-multiuser-ollama.js`
+stress the **Frontdesk** bundle (not Mastio). Each VU is a pre-seeded
+Frontdesk user; the cycle is login → list_models (mock) or login →
+chat_completions (ollama). Login is a one-shot per VU; the per-VU
+cookie jar carries the session through subsequent iterations.
+
+The mock variant isolates Frontdesk software overhead — auth, per-user
+credential fork via `LocalUserProvisioner`, nginx TLS sidecar,
+Frontdesk→Mastio mTLS hop — because `/v1/models` is a cheap read that
+forwards to Mastio without touching an LLM. The ollama variant adds
+`/v1/chat/completions` against the real LLM upstream, so latency
+includes inference time and reflects the demo end-to-end.
+
+### Setup
+
+```bash
+# 1. Bring up the Frontdesk + Mastio stack. The sandbox dogfood spins
+#    both bundles + Ollama on the shared bridge and runs the workload
+#    enrollment + AI provider configuration end-to-end.
+bash sandbox/dogfood-frontdesk.sh
+
+# 2. Seed N test users directly into the Frontdesk users.db. Same
+#    shared bcrypt hash for all N (test only; checkpw still runs on
+#    the hot path so the auth code path is exercised). --warmup
+#    runs a parallel pre-login on all users to populate the
+#    LocalUserProvisioner cert cache before the k6 stages start.
+nix-shell -p python311Packages.bcrypt python311Packages.aiohttp --run \
+    "python scripts/stress/bulk_create_frontdesk_users.py \
+        --n 100 --wipe --warmup \
+        --base-url http://localhost:18080"
+```
+
+`stress_frontdesk_users.json` (carrying the shared cleartext password)
+is gitignored alongside `stress_agents.json`. NEVER commit.
+
+### Run
+
+```bash
+# Mock (no LLM) — pure Frontdesk perf, default stages 50→200→500 VUs
+nix-shell -p k6 --run "K6_SKIP_NDJSON=1 \
+    bash scripts/stress/_run-k6.sh frontdesk-multiuser-mock.js"
+
+# Ollama (full LLM path) — customer-realistic, default stages 10→30→50 VUs
+nix-shell -p k6 --run "K6_SKIP_NDJSON=1 \
+    bash scripts/stress/_run-k6.sh frontdesk-multiuser-ollama.js"
+
+# Short triage:
+STAGE_OVERRIDE='[{"duration":"60s","target":50}]' \
+    nix-shell -p k6 --run "bash scripts/stress/_run-k6.sh \
+        frontdesk-multiuser-mock.js"
+```
+
+The mock script writes `frontdesk-summary-mock.json`; the ollama
+variant writes `frontdesk-summary-ollama.json`. Both are gitignored.
+
+### When to re-run
+
+- Before a Frontdesk-impacting release (anything touching
+  `packaging/frontdesk-bundle/`, `cullis_connector/auth/`,
+  `cullis_connector/ambassador/`, or the nginx sidecar in
+  `packaging/frontdesk-bundle/nginx-tls/`).
+- After any change to `LocalUserProvisioner` / `UserCredentialCache`
+  semantics — per-user fork is the dominant overhead on the Frontdesk
+  user-path.
+- When a customer reports latency spikes at >10 concurrent users.
 
 ## Historical baselines
 
