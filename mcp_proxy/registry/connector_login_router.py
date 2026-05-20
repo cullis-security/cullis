@@ -41,6 +41,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from mcp_proxy.auth.dependencies import get_authenticated_agent
+from mcp_proxy.auth.rate_limit import get_agent_rate_limiter
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import (
     create_user_session,
@@ -58,6 +59,85 @@ router = APIRouter(prefix="/v1/principals", tags=["principals"])
 # Default TTL aligned with ADR-032 decision D — 1h idle banking-grade
 # default, tunable via env.
 _DEFAULT_TTL_SECONDS = 3600
+
+# F-A-208 (audit 2026-05-20, OWASP A05 / CWE-307). The endpoint is
+# write-heavy (upsert ``local_user_principals`` + insert ``user_sessions``)
+# and trusts the body's ``user_subject_sso`` after the device-cert gate.
+# Without a rate limit a compromised Connector can:
+#   1. Enumerate which SSO subjects exist by flooding logins + observing
+#      the resulting ``local_user_principals`` rows it can read back.
+#   2. Flood-mint ``user_sessions`` rows until the table degrades.
+# Three buckets, all backed by the same sliding-window limiter:
+#   - per-agent_id   : 60/min — well above legit re-login (token TTL ~1h),
+#                       below useful enumeration speed.
+#   - per-client-IP  : 30/min — second axis when the agent identity is
+#                       under attacker control but the source IP is not.
+#   - per (agent_id, body subject) : 5/min — closes targeted enumeration
+#                       of a *specific* subject ("is alice provisioned?").
+_CONNECTOR_LOGIN_AGENT_PER_MINUTE = 60
+_CONNECTOR_LOGIN_IP_PER_MINUTE = 30
+_CONNECTOR_LOGIN_SUBJECT_PER_MINUTE = 5
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort source IP for the per-IP throttle bucket.
+
+    Honors a single-hop ``X-Forwarded-For`` (the nginx sidecar in the
+    Frontdesk bundle / Court reverse-proxy sets exactly one), otherwise
+    falls back to the TCP peer. The string is only used as a rate-limit
+    key, never echoed back to the client.
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    client = request.client
+    return client.host if client is not None else "unknown"
+
+
+async def _enforce_connector_login_rate_limit(
+    *, agent_id: str, client_ip: str, subject: str, endpoint: str,
+) -> None:
+    """Three-bucket rate-limit gate shared by both connector-login routes.
+
+    Raises ``HTTPException(429)`` and emits a structured warning when any
+    of the per-agent / per-IP / per-(agent,subject) windows is exhausted.
+    The warning is the audit signal (see ADR-013 layer 3): the broker's
+    hash-chain audit row is written by downstream code only on success,
+    so over-limit calls deliberately leave a *log* trail, not a DB one,
+    so the attacker can't fill the audit table either.
+    """
+    limiter = get_agent_rate_limiter()
+    checks = (
+        (
+            f"connector-login:agent:{agent_id}",
+            _CONNECTOR_LOGIN_AGENT_PER_MINUTE,
+            "agent",
+        ),
+        (
+            f"connector-login:ip:{client_ip}",
+            _CONNECTOR_LOGIN_IP_PER_MINUTE,
+            "ip",
+        ),
+        (
+            f"connector-login:subject:{agent_id}:{subject}",
+            _CONNECTOR_LOGIN_SUBJECT_PER_MINUTE,
+            "subject",
+        ),
+    )
+    for key, ceiling, bucket in checks:
+        if not await limiter.check(key, ceiling):
+            _log.warning(
+                "connector-login rate limit exceeded "
+                "(endpoint=%s bucket=%s agent=%s ip=%s subject_prefix=%s)",
+                endpoint, bucket, agent_id, client_ip, subject[:16],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="connector-login rate limit exceeded",
+                headers={"Retry-After": "60"},
+            )
 
 # RFC-friendly user_name slug: lower-case alphanumerics + a couple of
 # separators. Anything else is replaced. The full SSO sub stays in
@@ -226,6 +306,17 @@ async def connector_login(
         bound_thumbprint = server_thumbprint
     else:
         bound_thumbprint = body.device_cert_thumbprint
+
+    # F-A-208 — rate-limit the write-heavy + body-trusted path. Placed
+    # AFTER the thumbprint gate so a mismatched body still 400s fast
+    # without consuming budget, and BEFORE the user/session upsert so
+    # over-limit floods never reach the DB.
+    await _enforce_connector_login_rate_limit(
+        agent_id=token.agent_id,
+        client_ip=_client_ip(request),
+        subject=body.user_subject_sso,
+        endpoint="connector-login",
+    )
 
     user_name = _slug_from_sso(
         body.user_subject_sso,
