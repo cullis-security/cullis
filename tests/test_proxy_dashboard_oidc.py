@@ -388,7 +388,7 @@ async def test_settings_renders_change_admin_password_section(proxy_app):
 
 def test_oidc_redirect_uri_prefers_dedicated_setting(monkeypatch):
     from mcp_proxy import config as _config
-    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+    from mcp_proxy.dashboard.oidc_routes import _oidc_redirect_uri
 
     s = _config.get_settings()
     monkeypatch.setattr(s, "oidc_redirect_uri_base", "http://localhost:9100")
@@ -400,7 +400,7 @@ def test_oidc_redirect_uri_prefers_dedicated_setting(monkeypatch):
 
 def test_oidc_redirect_uri_falls_back_to_proxy_public_url(monkeypatch):
     from mcp_proxy import config as _config
-    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+    from mcp_proxy.dashboard.oidc_routes import _oidc_redirect_uri
 
     s = _config.get_settings()
     monkeypatch.setattr(s, "oidc_redirect_uri_base", "")
@@ -412,7 +412,7 @@ def test_oidc_redirect_uri_falls_back_to_proxy_public_url(monkeypatch):
 
 def test_oidc_redirect_uri_falls_back_to_request_base_url(monkeypatch):
     from mcp_proxy import config as _config
-    from mcp_proxy.dashboard.router import _oidc_redirect_uri
+    from mcp_proxy.dashboard.oidc_routes import _oidc_redirect_uri
 
     s = _config.get_settings()
     monkeypatch.setattr(s, "oidc_redirect_uri_base", "")
