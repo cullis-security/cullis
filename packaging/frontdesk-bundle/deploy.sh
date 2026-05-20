@@ -155,7 +155,7 @@ generate-frontdesk-env.sh):
   CULLIS_FRONTDESK_ORG_ID            Org slug, must match Mastio
   CULLIS_FRONTDESK_TRUST_DOMAIN      SPIFFE trust domain, e.g. acme.test
   CULLIS_FRONTDESK_CA_BUNDLE_HOST    Host path to the Mastio CA chain PEM
-  CONNECTOR_VERSION                  cullis-connector image tag (default: 0.5.1)
+  CONNECTOR_VERSION                  cullis-connector image tag (default: 0.5.2)
   CHAT_VERSION                       cullis-chat-frontdesk image tag (default: 0.4.1)
   CONNECTOR_PROFILE                  Connector profile name (default: frontdesk)
   CONNECTOR_DATA_DIR                 Local dir for enrolled identity (default: ./connector_data)
@@ -407,7 +407,7 @@ _load_env() { grep -E "^$1=" "$SCRIPT_DIR/frontdesk.env" 2>/dev/null | head -1 |
 ORG_ID="$(_load_env CULLIS_FRONTDESK_ORG_ID)"
 TRUST_DOMAIN="$(_load_env CULLIS_FRONTDESK_TRUST_DOMAIN)"
 CA_BUNDLE="$(_load_env CULLIS_FRONTDESK_CA_BUNDLE_HOST)"
-CONNECTOR_VERSION="$(_load_env CONNECTOR_VERSION)";   CONNECTOR_VERSION="${CONNECTOR_VERSION:-0.5.1}"
+CONNECTOR_VERSION="$(_load_env CONNECTOR_VERSION)";   CONNECTOR_VERSION="${CONNECTOR_VERSION:-0.5.2}"
 CHAT_VERSION="$(_load_env CHAT_VERSION)";             CHAT_VERSION="${CHAT_VERSION:-0.4.1}"
 CONNECTOR_PROFILE="$(_load_env CONNECTOR_PROFILE)";   CONNECTOR_PROFILE="${CONNECTOR_PROFILE:-frontdesk}"
 DATA_DIR="$(_load_env CONNECTOR_DATA_DIR)";           DATA_DIR="${DATA_DIR:-./connector_data}"

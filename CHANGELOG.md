@@ -12,6 +12,81 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
+## [Connector v0.5.2] — CRITICAL chat-history cross-user leak — 2026-05-20
+
+### Security
+
+- **CRITICAL — `/v1/conversations` cross-user data leak** (#843).
+  Frontdesk bundle deployments running `AUTH_MODE=local` (default for
+  Frontdesk v0.2.x) leaked chat history across all enrolled users:
+  every user listed, read, AND wrote into the same conversation slot,
+  regardless of which cookie authenticated the request.
+
+  Root cause: the Connector cert middleware
+  (`cullis_connector/auth/cert_middleware.py`) declared the URL
+  prefixes that needed per-user `UserPrincipal` cert binding —
+  `/v1/chat/completions`, `/v1/models`, `/v1/mcp`, `/v1/inbox` — but
+  the prefix list was missing `/v1/conversations`. The
+  conversations router fell back to the Connector-wide `agent_id`
+  on every request, collapsing all per-user `principal_id` scoping.
+
+  Fix: one-line addition to `_GUARDED_PREFIXES`. The router-side
+  `_authenticate` helper was already correct; the missing middleware
+  hookup was the entire bug.
+
+  **All Frontdesk multi-user deployments must update immediately**.
+  Pre-fix `conversations.db` rows already store the correct
+  per-user `principal_id` columns (writes were just always landing
+  on the Connector `agent_id` slot), so no schema migration is
+  required. Operators that need to clean the leaked rows from the
+  shared slot can run, AFTER REVIEW:
+
+  ```sql
+  -- Inside <config_dir>/conversations.db
+  DELETE FROM messages
+   WHERE conversation_id IN (
+     SELECT id FROM conversations
+      WHERE principal_id = '<connector-agent-id>'
+   );
+  DELETE FROM conversations
+   WHERE principal_id = '<connector-agent-id>';
+  ```
+
+  Tests (`tests/connector/test_cert_middleware.py`, 3 new):
+  - `test_guarded_prefixes_includes_v1_conversations` — sentinel
+    pin so a refactor can't drop the prefix silently
+  - `test_v1_conversations_binds_per_user_principal` — two cookies
+    → two distinct `principal_id`s
+  - `test_v1_conversations_subpaths_also_guarded` — `/v1/conversations/{id}`
+    and `/v1/conversations/{id}/messages` also bound via prefix match
+
+  Standalone Connector desktop (single user, `AUTH_MODE` absent) is
+  not affected: only one user exists on the process and the fallback
+  to `agent_id` was the same as the real user's principal.
+
+## [Frontdesk bundle v0.2.11] — CRITICAL Connector hotfix passthrough — 2026-05-20
+
+### Security
+
+- Bumps default `CONNECTOR_VERSION` from `0.5.1` to `0.5.2` so a
+  fresh `./deploy.sh` (or an `./deploy.sh --upgrade`) on a Frontdesk
+  bundle host picks up the Connector cross-user chat history leak
+  fix automatically. Operators that pinned a specific
+  `CONNECTOR_VERSION` in `frontdesk.env` must update the pin
+  manually to `0.5.2` and re-run `./deploy.sh --upgrade`.
+
+### Fixed
+
+- `packaging/frontdesk-bundle/docker-compose.yml` default fallback
+  for `${CONNECTOR_VERSION:-…}` was stuck at the stale `0.4.4` even
+  though `deploy.sh` had been bumped to `0.5.1` in v0.2.10. A
+  deployment that bypassed `deploy.sh` (`docker compose up -d`
+  directly with no env file) would have pulled the year-old
+  Connector image. Aligned to `0.5.2`.
+- `packaging/frontdesk-bundle/frontdesk.env.example` reference
+  comment refreshed from the stale `# CONNECTOR_VERSION=0.4.6` to
+  `# CONNECTOR_VERSION=0.5.2`.
+
 ## [Connector v0.5.1] — Per-user auth gate, bcrypt knob, dir-norm HTTPS — 2026-05-20
 
 ### Fixed
