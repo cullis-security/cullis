@@ -124,6 +124,23 @@ function getVuUser() {
 
 // ── Endpoints ─────────────────────────────────────────────────────────
 
+// See ``frontdesk-multiuser-mock.js`` for why we replay cookies via
+// the Cookie header instead of relying on the per-VU jar — short
+// version: bundle cookies carry ``Secure`` for the TLS path and the
+// jar refuses to attach them on plain HTTP sandbox runs.
+function extractCookieHeader(resp) {
+    const setCookies = resp.headers["Set-Cookie"];
+    if (!setCookies) return "";
+    const arr = Array.isArray(setCookies) ? setCookies : [setCookies];
+    const pairs = [];
+    for (const sc of arr) {
+        const semi = sc.indexOf(";");
+        const head = semi >= 0 ? sc.slice(0, semi) : sc;
+        if (head.indexOf("=") > 0) pairs.push(head.trim());
+    }
+    return pairs.join("; ");
+}
+
 function login(user) {
     const resp = http.post(
         `${user.base_url}/api/auth/login`,
@@ -144,10 +161,10 @@ function login(user) {
     const ok = resp.status === 200;
     loginErrors.add(!ok);
     loginCount.add(1);
-    return ok;
+    return { ok, cookieHeader: ok ? extractCookieHeader(resp) : "" };
 }
 
-function chatCompletion(user) {
+function chatCompletion(user, cookieHeader) {
     const body = JSON.stringify({
         model: MODEL,
         messages: [
@@ -155,14 +172,16 @@ function chatCompletion(user) {
         ],
         max_tokens: MAX_TOKENS,
     });
+    const headers = {
+        "Content-Type": "application/json",
+        "Origin": user.base_url,
+    };
+    if (cookieHeader) headers["Cookie"] = cookieHeader;
     const resp = http.post(
         `${user.base_url}/v1/chat/completions`,
         body,
         {
-            headers: {
-                "Content-Type": "application/json",
-                "Origin": user.base_url,
-            },
+            headers,
             timeout: REQ_TIMEOUT,
             tags: { endpoint: "v1_chat_completions" },
         },
@@ -189,14 +208,16 @@ export default function () {
     }
 
     if (!state.loggedIn) {
-        if (!login(state.user)) {
+        const r = login(state.user);
+        if (!r.ok) {
             sleep(1);
             return;
         }
         state.loggedIn = true;
+        state.cookieHeader = r.cookieHeader;
     }
 
-    chatCompletion(state.user);
+    chatCompletion(state.user, state.cookieHeader);
 
     if (THINK_MS > 0) sleep(THINK_MS / 1000);
 }

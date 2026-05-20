@@ -124,6 +124,30 @@ function getVuUser() {
 
 // ── Endpoints ─────────────────────────────────────────────────────────
 
+// Extract every Set-Cookie value's ``name=value`` and join them so we
+// can attach the lot via a single ``Cookie:`` header on subsequent
+// requests. k6's per-VU cookie jar handles this automatically in
+// theory, but production cookies carry the ``Secure`` attribute and
+// the bundle is normally accessed over HTTPS — so when the sandbox
+// runs the test on plain HTTP for iteration speed, the jar refuses to
+// re-attach Secure cookies and every follow-up reads as 401. We
+// short-circuit that by mirroring what the browser does on HTTPS:
+// pull the name=value pairs out of Set-Cookie and replay them on the
+// Cookie header verbatim. Live customer traffic on the TLS sidecar
+// (port 8443 / 18443) does not need this — the jar works there.
+function extractCookieHeader(resp) {
+    const setCookies = resp.headers["Set-Cookie"];
+    if (!setCookies) return "";
+    const arr = Array.isArray(setCookies) ? setCookies : [setCookies];
+    const pairs = [];
+    for (const sc of arr) {
+        const semi = sc.indexOf(";");
+        const head = semi >= 0 ? sc.slice(0, semi) : sc;
+        if (head.indexOf("=") > 0) pairs.push(head.trim());
+    }
+    return pairs.join("; ");
+}
+
 function login(user) {
     const resp = http.post(
         `${user.base_url}/api/auth/login`,
@@ -147,20 +171,18 @@ function login(user) {
     loginErrors.add(!ok);
     loginCount.add(1);
     if (ok && resp.body) {
-        // ``provisioning`` is one of ok / deferred / skipped. Count
-        // deferred separately so the operator can spot Mastio outages
-        // mid-run without parsing the full ndjson.
         if (resp.body.indexOf("\"provisioning\":\"deferred\"") >= 0) {
             provDeferred.add(1);
         }
     }
-    return ok;
+    return { ok, cookieHeader: ok ? extractCookieHeader(resp) : "" };
 }
 
-function listModels(user) {
+function listModels(user, cookieHeader) {
     const resp = http.get(
         `${user.base_url}/v1/models`,
         {
+            headers: cookieHeader ? { "Cookie": cookieHeader } : {},
             timeout: REQ_TIMEOUT,
             tags: { endpoint: "v1_models" },
         },
@@ -186,16 +208,18 @@ export default function () {
     }
 
     if (LOGIN_AT_START && !state.loggedIn) {
-        if (!login(state.user)) {
+        const r = login(state.user);
+        if (!r.ok) {
             // Failed login — sleep briefly so we don't burn CPU on
             // retry storms. The error rate already captured it.
             sleep(1);
             return;
         }
         state.loggedIn = true;
+        state.cookieHeader = r.cookieHeader;
     }
 
-    listModels(state.user);
+    listModels(state.user, state.cookieHeader);
 
     if (THINK_MS > 0) sleep(THINK_MS / 1000);
 }
