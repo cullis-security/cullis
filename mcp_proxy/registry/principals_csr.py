@@ -124,6 +124,16 @@ def _verify_csr_signature(csr: x509.CertificateSigningRequest) -> None:
         raise CsrValidationError("CSR signature does not verify")
 
 
+# F-A-102 (audit 2026-05-20, CWE-326). EC public keys in user-principal
+# CSRs must use one of the NIST-approved curves the rest of the proxy's
+# verifier paths already accept (mirrors ``app/auth/x509_verifier.py:47``).
+# Before the whitelist the size-only check (``key_size >= 256``) let
+# SECP256K1 (the Bitcoin curve, not FIPS-approved) and BrainpoolP256R1
+# through, even though ``x509_verifier`` would later reject any token
+# minted from such a cert.
+_ALLOWED_EC_CURVES = (ec.SECP256R1, ec.SECP384R1, ec.SECP521R1)
+
+
 def _validate_public_key(csr: x509.CertificateSigningRequest) -> None:
     """Refuse weak keys. EC P-256/384/521 ok, RSA >= 2048 ok."""
     pub = csr.public_key()
@@ -133,9 +143,10 @@ def _validate_public_key(csr: x509.CertificateSigningRequest) -> None:
                 f"RSA key too small ({pub.key_size} bits); minimum 2048",
             )
     elif isinstance(pub, ec.EllipticCurvePublicKey):
-        if pub.curve.key_size < 256:
+        if not isinstance(pub.curve, _ALLOWED_EC_CURVES):
             raise CsrValidationError(
-                f"EC curve too small ({pub.curve.key_size} bits); minimum 256",
+                f"EC curve {pub.curve.name!r} not allowed; "
+                "use P-256, P-384 or P-521",
             )
     else:
         raise CsrValidationError(
