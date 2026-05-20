@@ -369,20 +369,41 @@ def compute_audit_row_hash(
     detail: str | None,
     request_id: str | None,
     prev_hash: str,
+    dpop_jkt: str | None = None,
+    on_behalf_of_user_id: str | None = None,
+    hash_format: str | None = None,
 ) -> str:
     """SHA-256 over a canonical encoding of every authoritative field.
 
-    Any tamper to the row — including changing tool_name from ``None``
-    to ``""`` — invalidates the hash. The encoding mirrors the Court
+    Any tamper to the row, including changing tool_name from ``None``
+    to ``""``, invalidates the hash. The encoding mirrors the Court
     pattern in ``app/db/audit.py``: pipe-delimited with empty-string
     sentinels for NULLs and a ``genesis`` literal for the head of the
     chain.
+
+    F-A-403 (audit 2026-05-20). ``hash_format`` dispatches:
+      - NULL / "v1" (legacy rows): v1 canonical, no dpop_jkt or
+        on_behalf_of_user_id binding. Kept so existing chain rows
+        keep verifying after the migration ships.
+      - "v2" (new rows from migration 0042 onward): canonical is
+        prefixed with the literal ``"v2|"`` and extended with
+        ``|{dpop_jkt or ''}|{on_behalf_of_user_id or ''}`` so the
+        ADR-014 DPoP binding and ADR-032 OBO attribution are bound
+        to chain integrity.
     """
-    canonical = (
-        f"{chain_seq}|{timestamp}|{agent_id}|{action}|"
-        f"{tool_name or ''}|{status}|{detail or ''}|"
-        f"{request_id or ''}|{prev_hash}"
-    )
+    if hash_format == "v2":
+        canonical = (
+            f"v2|{chain_seq}|{timestamp}|{agent_id}|{action}|"
+            f"{tool_name or ''}|{status}|{detail or ''}|"
+            f"{request_id or ''}|{dpop_jkt or ''}|"
+            f"{on_behalf_of_user_id or ''}|{prev_hash}"
+        )
+    else:
+        canonical = (
+            f"{chain_seq}|{timestamp}|{agent_id}|{action}|"
+            f"{tool_name or ''}|{status}|{detail or ''}|"
+            f"{request_id or ''}|{prev_hash}"
+        )
     return _hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -517,6 +538,8 @@ async def log_audit(
             async with get_db() as conn:
                 last_seq, prev_hash = await _audit_chain_head(conn)
                 chain_seq = last_seq + 1
+                # F-A-403 (audit 2026-05-20): new rows go in as v2,
+                # binding dpop_jkt + on_behalf_of_user_id to the chain.
                 row_hash = compute_audit_row_hash(
                     chain_seq=chain_seq,
                     timestamp=ts,
@@ -527,6 +550,9 @@ async def log_audit(
                     detail=detail,
                     request_id=request_id,
                     prev_hash=prev_hash,
+                    dpop_jkt=dpop_jkt,
+                    on_behalf_of_user_id=on_behalf_of_user_id,
+                    hash_format="v2",
                 )
                 try:
                     await conn.execute(
@@ -535,12 +561,12 @@ async def log_audit(
                                    timestamp, agent_id, action, tool_name,
                                    status, detail, request_id, duration_ms,
                                    chain_seq, prev_hash, row_hash, dpop_jkt,
-                                   on_behalf_of_user_id
+                                   on_behalf_of_user_id, hash_format
                                ) VALUES (
                                    :timestamp, :agent_id, :action, :tool_name,
                                    :status, :detail, :request_id, :duration_ms,
                                    :chain_seq, :prev_hash, :row_hash, :dpop_jkt,
-                                   :on_behalf_of_user_id
+                                   :on_behalf_of_user_id, :hash_format
                                )"""
                         ),
                         {
@@ -557,6 +583,7 @@ async def log_audit(
                             "row_hash": row_hash,
                             "dpop_jkt": dpop_jkt,
                             "on_behalf_of_user_id": on_behalf_of_user_id,
+                            "hash_format": "v2",
                         },
                     )
                     return
@@ -606,9 +633,14 @@ async def verify_audit_chain(
     Pre-migration rows (``chain_seq IS NULL``) are skipped.
     """
     async with get_db() as conn:
+        # F-A-403 (audit 2026-05-20): SELECT also the v2 attribution
+        # columns and ``hash_format`` so the dispatch below can verify
+        # legacy and new rows with the right canonical.
         stmt = (
             "SELECT chain_seq, prev_hash, row_hash, timestamp, agent_id, "
-            "action, tool_name, status, detail, request_id FROM audit_log "
+            "action, tool_name, status, detail, request_id, dpop_jkt, "
+            "on_behalf_of_user_id, hash_format "
+            "FROM audit_log "
             "WHERE chain_seq IS NOT NULL AND chain_seq >= :start "
             "ORDER BY chain_seq ASC"
         )
@@ -637,6 +669,8 @@ async def verify_audit_chain(
                 return False, chain_seq, f"chain_seq gap: expected {expected_seq}"
             if expected_prev is not None and prev_hash != expected_prev:
                 return False, chain_seq, "prev_hash mismatch with previous row"
+        # F-A-403 dispatch: v2 rows feed dpop_jkt + on_behalf_of_user_id
+        # into the canonical; v1/NULL rows verify with the legacy form.
         recomputed = compute_audit_row_hash(
             chain_seq=chain_seq,
             timestamp=str(row[3]),
@@ -647,6 +681,9 @@ async def verify_audit_chain(
             detail=row[8],
             request_id=row[9],
             prev_hash=prev_hash,
+            dpop_jkt=row[10],
+            on_behalf_of_user_id=row[11],
+            hash_format=row[12],
         )
         if recomputed != stored_hash:
             return False, chain_seq, "row_hash mismatch — row tampered"
