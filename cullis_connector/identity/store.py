@@ -15,6 +15,7 @@ where it matters (POSIX only — Windows NTFS ACLs are out of scope for v1).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
+
+_log = logging.getLogger("cullis_connector.identity.store")
 
 CERT_FILENAME = "agent.crt"
 KEY_FILENAME = "agent.key"
@@ -213,24 +216,50 @@ def load_identity(config_dir: Path) -> IdentityBundle:
 
 
 def _write_atomic(path: Path, data: bytes, *, mode: int) -> None:
-    """Write ``data`` to ``path`` via a tmp file + rename for crash safety."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    """Write ``data`` to ``path`` atomically with the requested file mode.
+
+    Audit F-B-401 — delegates to
+    ``cullis_connector._atomic_write.write_with_mode`` which uses
+    ``tempfile.mkstemp`` (creates 0600 by default) + ``os.fchmod`` +
+    ``os.replace`` so the bytes never hit disk under the default umask
+    permissions. Pre-fix the open-then-chmod idiom left a microsecond
+    window during which agent private keys (PEM) and DPoP jwk material
+    were readable by any other UID on the box.
+    """
+    from cullis_connector._atomic_write import write_with_mode
+
+    write_with_mode(path, data=data, mode=mode)
 
 
 def _ensure_private_key_permissions(path: Path) -> None:
-    """Best-effort check on POSIX that the key file is not world-readable."""
+    """Defence-in-depth: warn loudly if a key file is found with loose
+    perms; only fix silently when explicitly opted in.
+
+    Audit F-B-401 recommendation — the pre-2026-05-20 version silently
+    chmod'd the file back to 0600. That hid the underlying drift (a
+    backup-restore from a different UID, a packaging bug, an operator
+    copying files with a permissive umask). An operator needs to see
+    the signal, not have it papered over.
+
+    We still chmod the file to close the immediate exposure window —
+    leaving a world-readable key on disk would be worse than fixing it
+    without telling anyone — but the WARNING gives ops a reliable
+    grep target.
+    """
     if os.name != "posix":
         return
     try:
         mode = path.stat().st_mode
     except OSError:
         return
-    # Any group or other read/write/execute bit is too permissive.
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        _log.warning(
+            "F-B-401: private key file %s had permissive mode %o "
+            "(group/other readable). Fixing to 0600 — but the underlying "
+            "drift (backup-restore with different UID, packaging bug, "
+            "loose umask) needs investigation.",
+            path, mode & 0o777,
+        )
         os.chmod(path, 0o600)
 
 

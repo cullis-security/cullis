@@ -76,23 +76,23 @@ def rotate_local_token(config_dir: Path) -> str:
 
 
 def _write_new_local_token(config_dir: Path, *, reason: str) -> str:
-    """Generate a fresh token, write it 0600, return it.
+    """Generate a fresh token, write it 0600 atomically, return it.
 
     Shared body for ``ensure_local_token`` first-create path and the
     ``rotate_local_token`` explicit overwrite path. ``reason`` is only
     used for the log line.
+
+    Audit F-B-401 — uses ``cullis_connector._atomic_write.write_text_with_mode``
+    so the file is created 0600 atomically (tempfile.mkstemp → fchmod
+    → os.replace). The pre-fix ``write_text + chmod`` idiom left a
+    microsecond window during which the 64-char hex Bearer hit the
+    disk world-readable.
     """
+    from cullis_connector._atomic_write import write_text_with_mode
+
     token = secrets.token_hex(32)
-    config_dir.mkdir(parents=True, exist_ok=True)
     token_path = config_dir / LOCAL_TOKEN_FILENAME
-    token_path.write_text(token + "\n", encoding="utf-8")
-    try:
-        token_path.chmod(0o600)
-    except OSError:
-        # Some filesystems (e.g. on Windows) ignore chmod. Logged at
-        # info, not warning, because the local trust boundary is the
-        # OS user not the file mode in those environments.
-        _log.info("could not chmod 0600 on %s (filesystem may not support it)", token_path)
+    write_text_with_mode(token_path, text=token + "\n", mode=0o600)
     _log.info("%s local token at %s", reason, token_path)
     return token
 
