@@ -80,7 +80,12 @@ services:
       MCP_PROXY_VERSION:           ${CULLIS_MASTIO_VERSION:-unknown}
       MCP_PROXY_ENVIRONMENT:       ${MCP_PROXY_ENVIRONMENT:-development}
       MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
-      MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
+      # F-A-507 — no fallback default. Operator must set
+      # ``MCP_PROXY_ADMIN_SECRET`` in proxy.env
+      # (``generate-proxy-env.sh --prod`` mints a strong random value).
+      # Empty triggers the ProxySettings refuse-to-start guard in
+      # ``mcp_proxy/config.py``.
+      MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-}
       MCP_PROXY_DASHBOARD_SIGNING_KEY: ${MCP_PROXY_DASHBOARD_SIGNING_KEY:-}
       MCP_PROXY_INITIAL_ADMIN_PASSWORD: ${MCP_PROXY_INITIAL_ADMIN_PASSWORD:-}
       MCP_PROXY_DATABASE_URL:      sqlite+aiosqlite:////data/mcp_proxy.db

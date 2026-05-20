@@ -40,7 +40,11 @@ services:
       # mini-broker. Federation is post-setup, opt-in via the dashboard.
       # The shared-broker override flips this to false.
       MCP_PROXY_STANDALONE:        ${MCP_PROXY_STANDALONE:-true}
-      MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}
+      # F-A-507 — no fallback default. ProxySettings refuses construction
+      # when the secret matches the well-known insecure default. Set
+      # ``MCP_PROXY_ADMIN_SECRET`` in your env or proxy.env before boot
+      # (``scripts/generate-env.sh`` mints a strong random value).
+      MCP_PROXY_ADMIN_SECRET:      ${MCP_PROXY_ADMIN_SECRET:-}
       # Persistent signing key — without this, admin sessions are invalid
       # after every proxy restart (per-process random fallback).
       MCP_PROXY_DASHBOARD_SIGNING_KEY: ${MCP_PROXY_DASHBOARD_SIGNING_KEY:-}

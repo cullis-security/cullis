@@ -37,6 +37,13 @@ os.environ["REDIS_URL"] = ""                   # in-memory fallback for all stor
 os.environ["VAULT_TOKEN"] = "test-not-used"    # silence the dev-token warning
 os.environ["ALLOWED_ORIGINS"] = ""             # disable CORS in tests
 os.environ.setdefault("ADMIN_SECRET", "test-secret-not-default")
+# F-A-507 — ProxySettings refuses to construct when admin_secret is
+# the well-known insecure default in any environment. Mirror the
+# Court-side seed above so the ~170 tests that build ProxySettings
+# (directly or via the lifespan) don't trip the construction-time
+# guard. Tests that exercise the rejection path override this via
+# monkeypatch.setenv inside the test.
+os.environ.setdefault("MCP_PROXY_ADMIN_SECRET", "test-proxy-secret-not-default")
 os.environ["SKIP_ALEMBIC"] = "1"
 
 # F0.4 — keep ``log_audit`` synchronous in the test suite. The batched
