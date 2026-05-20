@@ -706,6 +706,37 @@ class ProxySettings(BaseSettings):
         return v
 
     @model_validator(mode="after")
+    def _reject_insecure_default_admin_secret(self):
+        """Audit F-A-507: refuse to construct ``ProxySettings`` with the
+        default ``MCP_PROXY_ADMIN_SECRET`` regardless of environment.
+
+        Previously the rejection lived only in ``validate_config`` and
+        only fired when ``MCP_PROXY_ENVIRONMENT=production``. In
+        development mode (the bundle default) the container booted
+        happily with the well-known string as the dashboard admin
+        secret. Operators running a quick eval on a LAN-exposed laptop
+        ended up with the dashboard reachable on the same network while
+        ``change-me-in-production`` was still in effect, because the
+        compose substitution ``${MCP_PROXY_ADMIN_SECRET:-change-me-in-production}``
+        plugged the default whenever the operator's ``proxy.env``
+        omitted the line entirely.
+
+        Mirrors ``app/config.py:_reject_insecure_default_admin_secret``
+        (audit F-B-5). The compose default has been dropped to
+        ``${MCP_PROXY_ADMIN_SECRET:-}`` in production-grade bundles so
+        an empty string surfaces here as a ``ValidationError`` with the
+        same actionable message.
+        """
+        if self.admin_secret == _INSECURE_DEFAULT_SECRET:
+            raise ValueError(
+                "MCP_PROXY_ADMIN_SECRET is the insecure default "
+                f"'{_INSECURE_DEFAULT_SECRET}' — set "
+                "MCP_PROXY_ADMIN_SECRET in your proxy.env or environment "
+                "before starting the Mastio (audit F-A-507)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _apply_proxy_db_url_override(self):
         override = os.environ.get("PROXY_DB_URL")
         if override:

@@ -384,3 +384,58 @@ def test_settings_rejects_default_regardless_of_environment(monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", env)
         with pytest.raises(ValidationError):
             Settings()
+
+
+# ── F-A-507: Mastio mirror of F-B-5 ───────────────────────────────────
+#
+# The Mastio compose files used to plug ``change-me-in-production`` as
+# the fallback default for ``MCP_PROXY_ADMIN_SECRET``. The container
+# booted happily in dev mode even though the dashboard was exposed on
+# the docker host. We dropped the fallback in the compose files
+# (``${MCP_PROXY_ADMIN_SECRET:-}``) and added a model_validator that
+# refuses construction at every layer regardless of environment.
+
+def test_proxy_settings_rejects_insecure_default_admin_secret(monkeypatch):
+    """``ProxySettings()`` raises at construction time when the env
+    sets ``MCP_PROXY_ADMIN_SECRET`` to the well-known insecure default.
+    The failure happens before any lifespan hook fires."""
+    from mcp_proxy.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("MCP_PROXY_ADMIN_SECRET", _INSECURE_DEFAULT_SECRET)
+    with pytest.raises(ValidationError) as excinfo:
+        ProxySettings()
+    # Error message names the env var and audit ID so operators know
+    # both what to fix and where to read about the rationale.
+    assert "MCP_PROXY_ADMIN_SECRET" in str(excinfo.value)
+    assert "F-A-507" in str(excinfo.value)
+
+
+def test_proxy_settings_rejects_default_even_when_kwarg_forced():
+    """Explicit kwarg override must raise too. Guards a test harness or
+    script that passes the default through without realising."""
+    from mcp_proxy.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ProxySettings(admin_secret=_INSECURE_DEFAULT_SECRET)
+
+
+def test_proxy_settings_accepts_any_non_default_admin_secret():
+    """Sanity check: any string other than the sentinel is accepted."""
+    settings = ProxySettings(admin_secret="some-other-proxy-admin-secret")
+    assert settings.admin_secret == "some-other-proxy-admin-secret"
+
+
+def test_proxy_settings_rejects_default_regardless_of_environment(monkeypatch):
+    """Mirror of the broker-side check: the refusal fires in every
+    ``MCP_PROXY_ENVIRONMENT`` setting. Development mode does not unlock
+    the default (this was the F-A-507 root cause)."""
+    from mcp_proxy.config import _INSECURE_DEFAULT_SECRET
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("MCP_PROXY_ADMIN_SECRET", _INSECURE_DEFAULT_SECRET)
+    for env in ("development", "production"):
+        monkeypatch.setenv("MCP_PROXY_ENVIRONMENT", env)
+        with pytest.raises(ValidationError):
+            ProxySettings()
