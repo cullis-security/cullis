@@ -235,6 +235,11 @@ services:
       # the sidecar off with ``./deploy.sh --no-tls``.
       - "${FRONTDESK_HTTP_BIND:-127.0.0.1}:${FRONTDESK_HTTP_PORT:-8080}:80"
     volumes:
+      # 00-maps.conf must load BEFORE default.conf (alphabetical
+      # ordering of /etc/nginx/conf.d/*.conf inside the nginx:alpine
+      # http {} context) so default.conf's ``$connection_upgrade``
+      # references resolve. Same pattern as the TLS sidecar below.
+      - ./nginx/00-maps.conf:/etc/nginx/conf.d/00-maps.conf:ro
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - cullis-chat

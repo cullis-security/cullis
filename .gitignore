@@ -123,4 +123,6 @@ scripts/stress/stress_agents.json
 scripts/stress/intra-org-results*.json
 scripts/stress/intra-org-results.ndjson
 scripts/stress/intra-org-summary*.json
+scripts/stress/stress_frontdesk_users.json
+scripts/stress/frontdesk-summary*.json
 scripts/stress/*.log
