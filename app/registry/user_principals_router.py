@@ -204,7 +204,7 @@ async def sign_csr(
         )
 
     try:
-        cert_pem, thumbprint, not_after = await sign_user_csr(
+        cert_pem, thumbprint, pubkey_thumb, not_after = await sign_user_csr(
             csr_pem=body.csr_pem,
             principal_id=body.principal_id,
         )
@@ -216,6 +216,36 @@ async def sign_csr(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="CSR validation failed",
         ) from exc
+
+    # F-A-201 (audit 2026-05-20). Persist the SPKI digest on first
+    # signature so subsequent CSRs are TOFU-checked. Slash-form
+    # principal_id is the wire/protocol id; the DB stores the
+    # ``::``-separated short id. Best-effort — if the row does not
+    # exist yet (admin has not run /v1/admin/users yet, legacy seed,
+    # etc.) the attach is a no-op and the next signature has a fresh
+    # TOFU window. The Mastio side has the same lazy-create semantics.
+    short_pid_parts = body.principal_id.split("/")
+    if len(short_pid_parts) == 4 and short_pid_parts[2] == "user":
+        from app.db.database import AsyncSessionLocal
+        from app.registry import user_principals as up
+        short_pid = f"{short_pid_parts[1]}::user::{short_pid_parts[3]}"
+        try:
+            async with AsyncSessionLocal() as session:
+                await up.attach_pubkey_thumbprint(
+                    session,
+                    principal_id=short_pid,
+                    pubkey_thumbprint=pubkey_thumb,
+                )
+                await session.commit()
+        except Exception as exc:
+            # Persisting is opportunistic: if the principal row is
+            # missing or the DB layer raises, we still return the
+            # signed cert (the TOFU window stays open for the next
+            # call). Log so operators see when this happens.
+            _log.warning(
+                "principals.csr: attach_pubkey_thumbprint(%s) failed: %s",
+                short_pid, exc,
+            )
 
     _log.info(
         "principals.csr signed principal_id=%s thumbprint=%s not_after=%s",

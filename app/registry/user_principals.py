@@ -66,6 +66,13 @@ class UserPrincipalRecord(Base):
             "idx_user_principals_cert_thumbprint",
             "cert_thumbprint",
         ),
+        # F-A-201 audit 2026-05-20 — pubkey TOFU lookup index. Mirrors
+        # the cert_thumbprint index pattern; nullable so legacy rows
+        # are silently skipped.
+        Index(
+            "idx_user_principals_pubkey_thumbprint",
+            "pubkey_thumbprint",
+        ),
     )
 
     principal_id     = Column(String(255), primary_key=True)
@@ -74,6 +81,14 @@ class UserPrincipalRecord(Base):
     display_name     = Column(String(255), nullable=True)
     cert_thumbprint  = Column(String(64),  nullable=True)
     cert_not_after   = Column(DateTime(timezone=True), nullable=True)
+    # F-A-201 (audit 2026-05-20). TOFU pubkey pin: SHA-256 of the CSR's
+    # SubjectPublicKeyInfo DER. Stable across cert rotations (the
+    # Ambassador re-uses its keypair). sign_user_csr records this on
+    # first signature and refuses subsequent CSRs that present a
+    # different SPKI for the same principal_id. NULL = first-touch
+    # window before any CSR has landed; nullable to preserve TOFU
+    # semantics on legacy rows that predate migration u1p2q3r4s5t6.
+    pubkey_thumbprint = Column(String(64), nullable=True)
     kms_backend      = Column(String(32),  nullable=False)
     kms_key_handle   = Column(String(255), nullable=False)
     provisioned_at   = Column(
@@ -255,6 +270,60 @@ async def attach_cert(
             cert_thumbprint=cert_thumbprint,
             cert_not_after=cert_not_after,
         ),
+    )
+    if cur.rowcount == 0:
+        return None
+    await session.flush()
+    return await get_by_principal_id(session, principal_id)
+
+
+async def get_pubkey_thumbprint(
+    session: AsyncSession,
+    principal_id: str,
+) -> tuple[bool, Optional[str]]:
+    """F-A-201 (audit 2026-05-20). TOFU pubkey lookup for a user
+    principal, mirroring the Mastio
+    ``mcp_proxy.db.get_user_principal_pubkey_thumbprint``.
+
+    Returns ``(exists, pubkey_thumbprint)``:
+      - ``(False, None)`` — no row for ``principal_id``. Caller
+        (``sign_user_csr``) treats this as first-touch and persists the
+        CSR's SPKI digest after signature.
+      - ``(True, None)`` — row exists but no pubkey pinned yet (legacy
+        row predating migration u1p2q3r4s5t6, or admin-pre-created).
+        First CSR roundtrip records the SPKI.
+      - ``(True, "<sha256_hex>")`` — pinned. Caller compares to the
+        presented CSR pubkey and refuses on mismatch.
+    """
+    row = await session.execute(
+        select(UserPrincipalRecord.pubkey_thumbprint)
+        .where(UserPrincipalRecord.principal_id == principal_id),
+    )
+    first = row.first()
+    if first is None:
+        return (False, None)
+    return (True, first[0])
+
+
+async def attach_pubkey_thumbprint(
+    session: AsyncSession,
+    *,
+    principal_id: str,
+    pubkey_thumbprint: str,
+) -> Optional[UserPrincipalView]:
+    """F-A-201 (audit 2026-05-20). Persist the CSR's SPKI digest on
+    first signature so subsequent CSRs are TOFU-checked.
+
+    Idempotent on the column value: re-attaching the same thumbprint is
+    a no-op write. Mismatch is caller's job (``sign_user_csr`` raises
+    ``CsrValidationError`` before reaching this helper).
+    """
+    if not pubkey_thumbprint or len(pubkey_thumbprint) > 64:
+        raise ValueError("pubkey_thumbprint must be 1-64 chars")
+    cur = await session.execute(
+        update(UserPrincipalRecord)
+        .where(UserPrincipalRecord.principal_id == principal_id)
+        .values(pubkey_thumbprint=pubkey_thumbprint),
     )
     if cur.rowcount == 0:
         return None

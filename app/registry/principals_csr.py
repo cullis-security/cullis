@@ -160,20 +160,46 @@ def _cert_thumbprint_sha256(cert: x509.Certificate) -> str:
     return hashlib.sha256(der).hexdigest()
 
 
+def pubkey_thumbprint_sha256(public_key) -> str:
+    """F-A-201 (audit 2026-05-20). SHA-256 hex of a public key's
+    SubjectPublicKeyInfo (SPKI) DER.
+
+    Used for TOFU pinning of user principals (port of the Mastio
+    CRIT-1 fix). The cert rotates every USER_CERT_TTL but the
+    Ambassador re-uses its keypair across refreshes, so the SPKI
+    digest is the stable identifier. Compatible across RSA/EC public
+    keys (both expose ``public_bytes(SubjectPublicKeyInfo, DER)``).
+    """
+    spki_der = public_key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(spki_der).hexdigest()
+
+
 async def sign_user_csr(
     csr_pem: str,
     principal_id: str,
     *,
     ttl: timedelta = USER_CERT_TTL,
-) -> tuple[str, str, datetime]:
+) -> tuple[str, str, str, datetime]:
     """Sign a user-principal CSR with the broker CA.
 
-    Returns ``(cert_pem, cert_thumbprint_sha256, cert_not_after)``.
+    Returns ``(cert_pem, cert_thumbprint_sha256, pubkey_thumbprint_sha256,
+    cert_not_after)``.
+
+    The third-element ``pubkey_thumbprint_sha256`` is the stable TOFU
+    binding (F-A-201 audit 2026-05-20). The caller persists it on
+    first signature via ``attach_pubkey_thumbprint`` and this function
+    refuses subsequent CSRs that present a different SPKI for the same
+    principal_id.
 
     Raises:
         ValueError: principal_id malformed.
         CsrValidationError: CSR malformed, weak key, missing SAN,
-            wrong SPIFFE URI, signature invalid.
+            wrong SPIFFE URI, signature invalid, OR pubkey does not
+            match the previously-pinned pubkey for this principal
+            (TOFU mismatch — F-A-201 defence).
     """
     spiffe_expected, expected_org = parse_principal_id_to_spiffe(principal_id)
 
@@ -194,6 +220,33 @@ async def sign_user_csr(
 
     # Catch malformed paths early so signing failures surface as 400.
     spiffe_to_principal(spiffe_expected)
+
+    # F-A-201 (audit 2026-05-20) — TOFU pubkey check. Compute SPKI
+    # digest from the CSR public key, look up the principal's stored
+    # thumbprint, and refuse if they disagree. Without this, any
+    # workload-bound JWT can mint a 1h cert for
+    # ``<org>::user::<arbitrary-name>`` with the caller's own keypair,
+    # then present that cert at ``/v1/auth/token`` with
+    # ``principal_type=user`` to bypass the ADR-009 mastio counter-
+    # signature and the mTLS gate. Ports the Mastio CRIT-1 defence
+    # (``mcp_proxy/registry/principals_csr.py:247-269``).
+    csr_pubkey_thumb = pubkey_thumbprint_sha256(csr.public_key())
+    parts = principal_id.split("/")
+    if len(parts) == 4 and parts[2] == "user":
+        # Slash-form principal_id (``<td>/<org>/user/<name>``) is the
+        # wire form. The DB row keys on the ``::``-separated short id.
+        short_pid = f"{parts[1]}::user::{parts[3]}"
+        from app.db.database import AsyncSessionLocal
+        from app.registry import user_principals as up
+        async with AsyncSessionLocal() as session:
+            _exists, stored_thumb = await up.get_pubkey_thumbprint(
+                session, short_pid,
+            )
+        if stored_thumb is not None and stored_thumb != csr_pubkey_thumb:
+            raise CsrValidationError(
+                "CSR public key does not match the pubkey already bound "
+                f"to {principal_id!r} (TOFU mismatch, refuse to sign)",
+            )
 
     kms = get_kms_provider()
     ca_key_pem = await kms.get_broker_private_key_pem()
@@ -243,7 +296,7 @@ async def sign_user_csr(
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
     thumbprint = _cert_thumbprint_sha256(cert)
-    return cert_pem, thumbprint, not_after
+    return cert_pem, thumbprint, csr_pubkey_thumb, not_after
 
 
 __all__ = [

@@ -105,11 +105,12 @@ def test_parse_principal_id_unknown_type_raises():
 
 async def test_sign_user_csr_happy_ec_p256():
     _, csr_pem = _make_csr("spiffe://acme.test/acme/user/mario")
-    cert_pem, thumbprint, not_after = await sign_user_csr(
+    cert_pem, thumbprint, pubkey_thumb, not_after = await sign_user_csr(
         csr_pem, "acme.test/acme/user/mario",
     )
     assert "BEGIN CERTIFICATE" in cert_pem
     assert len(thumbprint) == 64  # sha256 hex
+    assert len(pubkey_thumb) == 64  # F-A-201 SPKI digest, hex
     assert not_after > datetime.now(timezone.utc)
     # Parse the returned cert and check its SAN.
     cert = x509.load_pem_x509_certificate(cert_pem.encode())
@@ -130,7 +131,7 @@ async def test_sign_user_csr_happy_rsa_2048():
     _, csr_pem = _make_csr(
         "spiffe://acme.test/acme/user/mario", key_type="rsa", key_size=2048,
     )
-    cert_pem, thumbprint, _ = await sign_user_csr(
+    cert_pem, thumbprint, _, _ = await sign_user_csr(
         csr_pem, "acme.test/acme/user/mario",
     )
     assert "BEGIN CERTIFICATE" in cert_pem
