@@ -33,7 +33,11 @@ from fastapi.responses import JSONResponse
 
 from mcp_proxy.auth.dependencies import get_authenticated_agent
 from mcp_proxy.local.audit import append_local_audit
-from mcp_proxy.models import TokenPayload, ToolExecuteRequest
+from mcp_proxy.models import (
+    MAX_TOOL_PARAMETERS_BYTES,
+    TokenPayload,
+    ToolExecuteRequest,
+)
 from mcp_proxy.tools import executor
 from mcp_proxy.tools.registry import tool_registry
 
@@ -138,6 +142,46 @@ async def _handle_tools_call(
         return _rpc_error(
             req_id, ERR_INVALID_PARAMS,
             "'arguments' must be an object",
+        )
+
+    # F-A-303 (audit 2026-05-20) — bound the serialised size of the
+    # tool-call arguments BEFORE the executor's 30-second handler
+    # window opens. The aggregator builds ``ToolExecuteRequest`` via
+    # ``model_construct`` further down to keep MCP resource names
+    # with hyphens/uppercase, which bypasses the pydantic validator
+    # on ``parameters``. The explicit check below restores the size
+    # gate for this entry point. CWE-770.
+    try:
+        _serialised = json.dumps(
+            arguments, separators=(",", ":"), default=str,
+        )
+    except (TypeError, ValueError):
+        return _rpc_error(
+            req_id, ERR_INVALID_PARAMS,
+            "'arguments' must be JSON-serialisable",
+        )
+    _arg_bytes = len(_serialised.encode("utf-8"))
+    if _arg_bytes > MAX_TOOL_PARAMETERS_BYTES:
+        await append_local_audit(
+            event_type="resource_call",
+            result="denied",
+            agent_id=agent.agent_id,
+            org_id=agent.org,
+            details={
+                "tool": name,
+                "reason": "arguments_too_large",
+                "arguments_bytes": _arg_bytes,
+                "limit_bytes": MAX_TOOL_PARAMETERS_BYTES,
+                "principal_type": agent.principal_type,
+            },
+        )
+        return _rpc_error(
+            req_id, ERR_INVALID_PARAMS,
+            (
+                f"'arguments' payload exceeds the per-call limit of "
+                f"{MAX_TOOL_PARAMETERS_BYTES} bytes "
+                f"(got {_arg_bytes})"
+            ),
         )
 
     tool_def = tool_registry.get(name)

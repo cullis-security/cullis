@@ -263,6 +263,14 @@ class ProxySettings(BaseSettings):
     global_rate_limit_rps: float = 500.0
     global_rate_limit_burst: int = 1000
 
+    # F-A-303 (audit 2026-05-20) — per-request body-size ceiling.
+    # Buffered inbound bodies above this threshold get an immediate
+    # 413 before pydantic ever allocates the parsed structure. 2 MiB
+    # is generous for chat-completion + tool-call traffic; embedding
+    # / vision payloads on the same surface may need a bump. Set to
+    # 0 to disable the middleware (NOT recommended in production).
+    max_request_body_bytes: int = 2 * 1024 * 1024
+
     # ADR-013 layer 6 — DB latency circuit breaker. Sheds a fraction
     # of requests while DB p99 sits above the activation threshold,
     # so the Mastio stays responsive as the pool recovers rather

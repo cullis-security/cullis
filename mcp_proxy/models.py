@@ -1,10 +1,19 @@
 """
 MCP Proxy Pydantic models — request/response schemas, token payloads, audit entries.
 """
+import json
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# F-A-303 (audit 2026-05-20) — bound the serialised size of a tool
+# call's ``parameters`` dict. 128 KiB is generous for the call sites
+# we ship today (builtin tools take small JSON bodies, the MCP
+# resource forwarder builds its own envelope) while a single
+# oversized abuse request gets rejected before the executor's
+# 30-second handler window even starts. CWE-770.
+MAX_TOOL_PARAMETERS_BYTES = 128 * 1024
 
 
 class ToolExecuteRequest(BaseModel):
@@ -12,6 +21,36 @@ class ToolExecuteRequest(BaseModel):
     tool: str = Field(..., max_length=128, pattern=r"^[a-z][a-z0-9_]*$")
     parameters: dict[str, Any] = Field(default_factory=dict)
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+    @field_validator("parameters")
+    @classmethod
+    def _bound_parameters_size(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Reject parameter payloads above the tool-call size ceiling.
+
+        F-A-303 — a caller could otherwise submit a tool/call with an
+        ``arguments`` blob of arbitrary size; the executor would then
+        buffer it for the full 30-second handler timeout (and, for
+        builtins that enqueue to ``local_messages``, persist it to
+        SQLite, filling the WAL faster than the sweeper drains).
+        Measuring the serialised JSON length rather than ``len(dict)``
+        catches the dominant abuse shape (one giant string in a
+        single key).
+        """
+        try:
+            serialised = json.dumps(
+                value, separators=(",", ":"), default=str,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "parameters must be JSON-serialisable"
+            ) from exc
+        size = len(serialised.encode("utf-8"))
+        if size > MAX_TOOL_PARAMETERS_BYTES:
+            raise ValueError(
+                f"parameters payload exceeds the per-call limit of "
+                f"{MAX_TOOL_PARAMETERS_BYTES} bytes (got {size})"
+            )
+        return value
 
 
 class ToolExecuteResponse(BaseModel):
