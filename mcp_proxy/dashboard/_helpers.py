@@ -81,3 +81,23 @@ def _login_client_ip(request: Request) -> str:
     """
     client = request.client
     return client.host if client is not None else "unknown"
+
+
+async def _post_login_redirect() -> str:
+    """Where to send a freshly-authenticated admin.
+
+    - No broker uplink yet     -> /proxy/setup (wizard)
+    - Fully configured         -> /proxy/overview (landing)
+    """
+    from mcp_proxy.db import get_config
+    org_id = await get_config("org_id")
+    return "/proxy/overview" if org_id else "/proxy/setup"
+
+
+async def _load_display_name() -> str:
+    """Safe helper: org display name for the login page header."""
+    from mcp_proxy.db import get_config
+    try:
+        return (await get_config("display_name")) or ""
+    except Exception:
+        return ""
