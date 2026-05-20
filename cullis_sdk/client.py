@@ -1,19 +1,35 @@
 """
 CullisClient — main class for connecting agents to the Cullis trust network.
 
-Handles authentication (x509 + DPoP), session lifecycle, E2E encrypted
-messaging, agent discovery, RFQ, and WebSocket real-time events.
+Handles authentication (mTLS client cert + DPoP), agent discovery,
+one-shot encrypted messaging, RFQ, and WebSocket real-time events.
 
-Usage::
+Canonical usage (ADR-008 one-shot, ADR-014 cert-is-credential)::
 
     from cullis_sdk import CullisClient
 
-    client = CullisClient("https://broker.example.com")
-    client.login("myorg::agent", "myorg", "cert.pem", "key.pem")
+    # Connector flow (identity from ~/.cullis/identity/)
+    client = CullisClient.from_connector()
+    client.login_via_proxy_with_local_key()
 
-    agents = client.discover(capabilities=["order.write"])
-    session_id = client.open_session(agents[0].agent_id, agents[0].org_id, ["order.write"])
-    client.send(session_id, "myorg::agent", {"text": "Hello"}, recipient_agent_id=agents[0].agent_id)
+    # Or server / BYOCA flow (cert + key on disk)
+    # client = CullisClient.from_identity_dir(
+    #     "https://mastio.example.com:9443",
+    #     cert_path="/etc/cullis/agent/cert.pem",
+    #     key_path="/etc/cullis/agent/key.pem",
+    #     dpop_key_path="/etc/cullis/agent/dpop.jwk",
+    # )
+
+    resp = client.send_oneshot(
+        recipient_id="acme::supplier-agent",
+        payload={"text": "Quote for 1000 M8 bolts please."},
+        ttl_seconds=300,
+    )
+
+The legacy ``login()`` / ``open_session()`` / ``send()`` surface
+emits a ``DeprecationWarning`` at call time and will be removed in
+v0.5 (~2026-08-15). See ``cullis_sdk/README.md`` "Migrating from
+v0.3 sessions" for the mapping.
 """
 from __future__ import annotations
 
