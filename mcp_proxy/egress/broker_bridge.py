@@ -162,14 +162,26 @@ class BrokerBridge:
             ) from exc
 
         if resp.status_code >= 500:
+            # Audit F-A-306 — Court response body can carry stack-trace
+            # fragments, DB error text, framework version. Log at WARNING
+            # for ops triage; return a stable detail string to the org
+            # admin dashboard.
+            logger.warning(
+                "court rejected mastio pubkey rotation status=%d body=%s",
+                resp.status_code, resp.text,
+            )
             raise HTTPException(
                 status_code=502,
-                detail=f"court rejected rotation with {resp.status_code}: {resp.text}",
+                detail="court rejected rotation",
             )
         if resp.status_code >= 400:
+            logger.warning(
+                "court rejected mastio pubkey rotation status=%d body=%s",
+                resp.status_code, resp.text,
+            )
             raise HTTPException(
                 status_code=resp.status_code,
-                detail=f"court rejected rotation: {resp.text}",
+                detail="court rejected rotation",
             )
 
     async def _evict_and_retry(self, agent_id: str) -> CullisClient:

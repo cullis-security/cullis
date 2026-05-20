@@ -335,10 +335,21 @@ async def test_provider(
     try:
         result = await _live_probe(p, creds)
     except Exception as exc:  # pragma: no cover — defensive
-        _log.warning("ai-provider test failed provider=%s err=%s", p, exc)
+        # Audit F-B-119 — upstream LLM provider errors often carry
+        # ``sk-...`` API key prefixes, request URLs with query params,
+        # or request body fragments. The pre-2026-05-20 truncation to
+        # 512 chars was not enough — a leaked key prefix fits well
+        # under that limit. Log the raw exception for ops triage,
+        # return a redacted detail to the admin UI.
+        from mcp_proxy._http_safety import safe_http_detail
         result = TestResult(
             provider=p, status="error",
-            detail=f"{type(exc).__name__}: {exc}"[:512],
+            detail=safe_http_detail(
+                exc,
+                public_hint="upstream probe failed",
+                log_context="ai_provider_test",
+                extra={"provider": p},
+            ),
         )
     result.latency_ms = int((time.perf_counter() - started) * 1000)
     return result

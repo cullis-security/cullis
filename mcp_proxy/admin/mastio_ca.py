@@ -146,11 +146,17 @@ async def rotate_mastio_ca(
         )
     except RuntimeError as exc:
         # KMS unseal failure, missing at-rest master key, missing
-        # intermediate cache, etc. Surface as 500 with the message.
-        _log.error("rotate_mastio_ca raised RuntimeError: %s", exc)
+        # intermediate cache, etc. Surface as 500 with a redacted detail
+        # — the exception text can carry filesystem paths, KMS internal
+        # state, sub-exception chains (audit F-B-119).
+        from mcp_proxy._http_safety import safe_http_detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"rotation failed: {exc}",
+            detail=safe_http_detail(
+                exc,
+                public_hint="rotation failed",
+                log_context="rotate_mastio_ca",
+            ),
         ) from exc
     except ValueError as exc:
         raise HTTPException(

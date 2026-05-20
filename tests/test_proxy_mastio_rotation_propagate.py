@@ -135,7 +135,12 @@ async def test_propagate_raises_on_court_4xx(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         await bridge.propagate_mastio_key_rotation(proof, new_cert_pem="")
     assert excinfo.value.status_code == 401
-    assert "continuity proof rejected" in excinfo.value.detail
+    # Audit F-A-306 — detail must NOT echo Court response body.
+    # Constant string only; the Court text lives in the WARNING log
+    # line for ops triage.
+    assert excinfo.value.detail == "court rejected rotation"
+    assert "continuity proof rejected" not in excinfo.value.detail
+    assert "signature verification failed" not in excinfo.value.detail
 
 
 @pytest.mark.asyncio
@@ -158,7 +163,11 @@ async def test_propagate_wraps_court_5xx_as_502(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         await bridge.propagate_mastio_key_rotation(proof, new_cert_pem="")
     assert excinfo.value.status_code == 502
-    assert "503" in excinfo.value.detail
+    # Audit F-A-306 — detail no longer echoes Court 5xx text/status.
+    # The 503 status code from Court is in the WARNING log, not the
+    # client-facing detail.
+    assert excinfo.value.detail == "court rejected rotation"
+    assert "service unavailable" not in excinfo.value.detail
 
 
 @pytest.mark.asyncio

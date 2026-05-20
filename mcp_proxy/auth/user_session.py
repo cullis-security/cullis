@@ -387,9 +387,18 @@ async def verify_and_serialise_user_assertion(
                 "frontdesk-shared: verification-rejected audit failed: %s",
                 audit_exc,
             )
+        # Audit F-B-119 — WebAuthn library exceptions are usually
+        # curated, but ``cryptography`` / base64 decoders mixed in via
+        # the verification chain can leak cert subject DNs or PEM
+        # fragments. Redact at the boundary.
+        from mcp_proxy._http_safety import safe_http_detail
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"WebAuthn assertion rejected: {exc}",
+            detail=safe_http_detail(
+                exc,
+                public_hint="WebAuthn assertion rejected",
+                log_context="webauthn_verify_assertion",
+            ),
         ) from exc
 
     await wa_storage.update_sign_count(
