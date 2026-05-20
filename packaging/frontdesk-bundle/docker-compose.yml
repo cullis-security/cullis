@@ -163,6 +163,12 @@ services:
       # Off by default so existing customer deployments keep their
       # chat working until they opt in.
       CULLIS_CONNECTOR_TOOL_PDP_ENABLED: ${CULLIS_CONNECTOR_TOOL_PDP_ENABLED:-}
+      # bcrypt cost for local user passwords (cullis_connector/identity/
+      # users.py). Default 12 if unset. Set to 10 in frontdesk.env when
+      # the deployment expects bursts of concurrent logins above the
+      # ~16/s ceiling at cost 12 — see frontdesk.env.example for the
+      # security tradeoff and the 2026-05-20 load test reference.
+      CULLIS_BCRYPT_COST: ${CULLIS_BCRYPT_COST:-}
       # Trust anchor for the Mastio TLS handshake. Production uses the
       # corporate PKI; the sandbox/ ships a self-signed Org-CA so we
       # mount it as a CA bundle here. Honoured by Python's ssl module

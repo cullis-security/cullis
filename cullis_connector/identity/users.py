@@ -8,11 +8,17 @@ helpers the admin API and the (later-phase) login endpoint use.
 
 Design notes:
 
-- bcrypt cost 12 — same as ``mcp_proxy/dashboard/session.py`` admin
-  password hashing. ``bcrypt.checkpw`` is CPU-bound C code, so we
-  always wrap it in ``asyncio.to_thread`` to keep the event loop
-  responsive while a verification runs (~150 ms / call on commodity
-  hardware).
+- bcrypt cost defaults to 12 (matches ``mcp_proxy/dashboard/session.py``
+  admin hashing). ``bcrypt.checkpw`` is CPU-bound C code, so we always
+  wrap it in ``asyncio.to_thread`` to keep the event loop responsive
+  while a verification runs (~250 ms / call on commodity hardware at
+  cost 12). The cost is configurable via ``CULLIS_BCRYPT_COST`` for
+  Frontdesk deployments anticipating bursts of >~16 concurrent logins
+  (4 worker × 1 bcrypt-12 / 250ms ≈ 16 logins/s saturation under load
+  measured 2026-05-20). Dropping to 10 gives ~62 ms / check (4x faster)
+  and is still defensible per OWASP guidance for non-PII workloads;
+  values below 10 are rejected to avoid an accidental footgun. The
+  cost is clamped to [10, 14].
 - Username regex matches the Mastio convention
   (``mcp_proxy/admin/users.py``): ``^[a-zA-Z0-9._-]{1,64}$``. That
   guarantees the user_name is safe to splice into a SPIFFE id and
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +46,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 _log = logging.getLogger("cullis_connector.identity.users")
+
+
+def _resolve_bcrypt_cost() -> int:
+    """Return the bcrypt rounds value, clamped to a safe range.
+
+    Default 12 matches the dashboard admin hash. Operators expecting
+    high concurrent login bursts (>16/s on a 4-worker box at default
+    cost 12) can set ``CULLIS_BCRYPT_COST`` in the bundle's env file
+    to drop to 10 (~62 ms / check vs ~250 ms) without exposing the
+    hash to GPU-cracking economics that would justify a stronger cost.
+    Values below 10 are rejected; values above 14 are clamped to keep
+    a single login from monopolising a worker for >2 s.
+    """
+    raw = os.environ.get("CULLIS_BCRYPT_COST", "").strip()
+    if not raw:
+        return 12
+    try:
+        cost = int(raw)
+    except ValueError:
+        _log.warning(
+            "CULLIS_BCRYPT_COST=%r not an integer — using default 12", raw,
+        )
+        return 12
+    return max(10, min(14, cost))
+
+
+_BCRYPT_COST = _resolve_bcrypt_cost()
 
 
 # ── SQLAlchemy ORM ────────────────────────────────────────────────────────
@@ -136,7 +170,7 @@ def _now_iso() -> str:
 def _hash_password_sync(plain: str) -> str:
     """Blocking bcrypt hash. Caller wraps in asyncio.to_thread."""
     return bcrypt.hashpw(
-        plain.encode("utf-8"), bcrypt.gensalt(rounds=12),
+        plain.encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_COST),
     ).decode("utf-8")
 
 
