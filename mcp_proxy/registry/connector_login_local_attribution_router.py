@@ -65,6 +65,10 @@ from mcp_proxy.db import (
     upsert_local_user_principal_local,
 )
 from mcp_proxy.models import TokenPayload
+from mcp_proxy.registry.connector_login_router import (
+    _client_ip,
+    _enforce_connector_login_rate_limit,
+)
 
 _log = logging.getLogger("mcp_proxy.registry.connector_login_local_attribution")
 
@@ -219,6 +223,17 @@ async def connector_login_local_attribution(
         bound_thumbprint = server_thumbprint
     else:
         bound_thumbprint = body.device_cert_thumbprint
+
+    # F-A-208 — see sibling router for the threat model. Same three
+    # buckets: per-agent, per-IP, per-(agent, local_subject). Placed
+    # after the regex + thumbprint gates so malformed bodies still 400
+    # without consuming budget.
+    await _enforce_connector_login_rate_limit(
+        agent_id=token.agent_id,
+        client_ip=_client_ip(request),
+        subject=body.local_subject,
+        endpoint="connector-login-local-attribution",
+    )
 
     # principal_id mirrors the SSO sibling's shape so downstream policy /
     # audit code does not need a special-case for local-auth. The
