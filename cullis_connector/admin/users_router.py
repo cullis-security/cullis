@@ -150,11 +150,12 @@ async def list_users_endpoint(
     q: str = Query("", max_length=128),
     disabled: Optional[bool] = Query(None),
     limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ) -> UserListResponse:
     config_dir = _config_dir(request)
     async with get_users_session(config_dir) as session:
         users = await list_users(
-            session, q=q, disabled=disabled, limit=limit,
+            session, q=q, disabled=disabled, limit=limit, offset=offset,
         )
     items = [_to_out(u) for u in users]
     return UserListResponse(users=items, total=len(items))
