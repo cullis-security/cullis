@@ -171,3 +171,60 @@ def test_list_pagination_bounds_validated(client, auth):
     assert client.get("/v1/conversations?limit=0", headers=auth).status_code == 400
     assert client.get("/v1/conversations?limit=101", headers=auth).status_code == 400
     assert client.get("/v1/conversations?offset=-1", headers=auth).status_code == 400
+
+
+# ── 2026-05-20 PR #843 follow-up: refuse fallback in Frontdesk mode ──
+
+
+def test_frontdesk_bundle_refuses_agent_fallback(
+    client, bearer, monkeypatch,
+):
+    """Defence-in-depth (audit 2026-05-20 PR #843 follow-up).
+
+    When the bundle marker ``FRONTDESK_BUNDLE=1`` is set (modern
+    Frontdesk ``AUTH_MODE=local`` bundle or legacy
+    ``AMBASSADOR_MODE=shared``) and the request reaches
+    ``_authenticate`` without a per-user cert binding, the helper
+    MUST return 401 instead of falling back to the Connector-wide
+    agent_id.
+
+    Pre-PR #843 the cert middleware did not guard
+    ``/v1/conversations`` at all so the fallback was hit on every
+    request → all enrolled users collapsed onto the same
+    principal_id (cross-user data leak). PR #843 made the primary
+    binding work; this test pins the residual fail-open path so a
+    future regression (middleware skips the prefix again, cookie
+    fails to parse, etc.) surfaces as a 401 rather than silently
+    rejoining the leak.
+    """
+    monkeypatch.setenv("FRONTDESK_BUNDLE", "1")
+    # No cookie on the request, so _per_user_credentials → None.
+    # Bearer satisfies the legacy gate, but Frontdesk mode now
+    # refuses to serve conversations without a per-user binding.
+    r = client.get(
+        "/v1/conversations",
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    assert r.status_code == 401, (
+        f"Frontdesk multi-user fallback to agent_id was not refused: {r.text}"
+    )
+    assert "Frontdesk multi-user" in r.json().get("detail", "")
+
+
+def test_single_user_desktop_keeps_agent_fallback(
+    client, auth, monkeypatch,
+):
+    """Cullis Chat desktop / standalone PyPI Connector ship without
+    ``FRONTDESK_BUNDLE``. There is only one user on the process and
+    ``state['agent_id']`` IS that user, so the fallback is the
+    correct semantic. Verify the upgrade doesn't regress the
+    single-user path."""
+    monkeypatch.delenv("FRONTDESK_BUNDLE", raising=False)
+    monkeypatch.delenv("AMBASSADOR_MODE", raising=False)
+    r = client.post("/v1/conversations", headers=auth)
+    assert r.status_code == 201, r.text
+    # Listing returns the freshly created conversation under the
+    # Connector agent_id — single-user behaviour preserved.
+    r2 = client.get("/v1/conversations", headers=auth)
+    assert r2.status_code == 200
+    assert len(r2.json()) == 1

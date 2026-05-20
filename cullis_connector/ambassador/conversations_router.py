@@ -73,9 +73,23 @@ def _authenticate(request: Request) -> str:
     principal_id to scope the operation by.
 
     The principal is the per-user credential when present (ADR-025
-    shared mode), otherwise the Connector agent id (single-user mode).
-    Conversations are always partitioned by principal so a user in
-    Frontdesk shared mode cannot see another user's history.
+    multi-user / Frontdesk bundle path); otherwise the Connector
+    agent id (single-user desktop Cullis Chat path).
+
+    Defence-in-depth for Frontdesk multi-user (2026-05-20 PR #843
+    follow-up): the primary bug was the cert middleware not guarding
+    ``/v1/conversations`` at all, which meant ``creds`` was always
+    None and the fallback to ``state['agent_id']`` collapsed every
+    user onto the Connector identity. PR #843 added the prefix to
+    ``_GUARDED_PREFIXES`` so a valid cookie now binds the per-user
+    creds correctly. This helper closes the residual fail-open: if a
+    Frontdesk multi-user deployment ever reaches this code with
+    ``creds=None`` (cookie missing / expired / tampered, middleware
+    silently passing through), refusing the fallback returns 401
+    instead of silently dumping the request into the Connector-wide
+    agent_id bucket. Single-user Cullis Chat desktop keeps the
+    fallback behaviour — there is only one user on the process and
+    ``state['agent_id']`` IS that user.
     """
     _enforce_loopback(request)
     state = _ambassador_state(request)
@@ -83,6 +97,21 @@ def _authenticate(request: Request) -> str:
     creds = _per_user_credentials(request)
     if creds is not None and getattr(creds, "principal_id", None):
         return creds.principal_id
+
+    # Multi-user mode: refuse fallback to the Connector-wide agent_id.
+    # ``is_frontdesk_bundle`` covers both the modern ``AUTH_MODE=local``
+    # bundle and the legacy ``AMBASSADOR_MODE=shared`` deployment.
+    from cullis_connector.identity.auth_mode import is_frontdesk_bundle
+    if is_frontdesk_bundle():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "missing or invalid session cookie — Frontdesk multi-user "
+                "deployments require a per-user UserPrincipal binding "
+                "for /v1/conversations (audit 2026-05-20 PR #843 follow-up)"
+            ),
+        )
+
     agent_id = state.get("agent_id") or ""
     if not agent_id:
         raise HTTPException(
