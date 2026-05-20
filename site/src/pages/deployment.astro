@@ -311,22 +311,22 @@ cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
 
         <article class="install-card reveal" data-delay="2">
           <div class="install-head">
-            <div class="install-label">For evaluation</div>
-            <h3>Sandbox demo</h3>
+            <div class="install-label">For enterprise</div>
+            <h3>Mastio Enterprise</h3>
           </div>
-          <pre><code>git clone https://github.com/cullis-security/cullis
-cd cullis
-./sandbox/demo.sh full</code></pre>
+          <pre><code>curl -L https://github.com/cullis-security/cullis/releases/download/mastio-enterprise-bundle-v0.3.0/cullis-mastio-enterprise-bundle.tar.gz | tar xz
+cd cullis-mastio-enterprise-bundle &amp;&amp; ./deploy.sh</code></pre>
           <p>
-            Boots the full enterprise stack — Court, two Mastios, three
-            agents, two MCP servers in two organizations, wired with SPIRE,
-            Keycloak, Vault and Postgres. Replay intra-org and cross-org
-            scenarios out of the box.
+            Same Mastio core, plus backup / restore tooling, cloud KMS
+            plugins (AWS / Azure / GCP), longer rotation cadence, and
+            signed support. Licensed —
+            <a href="mailto:hello@cullis.io?subject=Cullis%20Enterprise%20evaluation">contact us</a>
+            for evaluation.
           </p>
           <ul class="install-specs">
             <li><span class="k">Time</span><span>~3 minutes first boot</span></li>
-            <li><span class="k">Requires</span><span>Docker + Compose v2 · ~6 GB disk · ~4 GB RAM</span></li>
-            <li><span class="k">Best for</span><span>local evaluation</span></li>
+            <li><span class="k">Requires</span><span>Docker + Compose v2 · ~3 GB RAM</span></li>
+            <li><span class="k">Best for</span><span>org with compliance scope</span></li>
           </ul>
         </article>
 

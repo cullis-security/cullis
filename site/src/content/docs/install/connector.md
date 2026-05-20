@@ -37,7 +37,7 @@ Each zip ships the platform-specific binary plus an `install.sh` / `install.comm
 # Linux example — adjust filename for your platform
 sudo mv cullis-connector-linux-x86_64 /usr/local/bin/cullis-connector
 cullis-connector --version
-# cullis-connector 0.3.6
+# cullis-connector 0.5.1
 ```
 
 > macOS Intel and Linux on ARM are not currently published as standalone binaries. Use **option B (`pip install`)** on those platforms.
@@ -207,5 +207,5 @@ Registers a launch agent on macOS, a systemd user service on Linux, or a startup
 ## Next
 
 - [Connector device-code enrollment](../enroll/connector-device-code) — the challenge-response protocol under the hood
-- [Sandbox walkthrough](../quickstart/sandbox-walkthrough) — try the whole flow against the local sandbox before you touch production
-- [Getting started](../quickstart/getting-started) — decision tree if you're not sure the Connector is the right enrollment method for you
+- [Getting started](../quickstart/getting-started) — pick the right path for your scenario (operator, developer, end user)
+- [Self-host the Mastio](mastio-self-host) — if you also need to stand up the org gateway

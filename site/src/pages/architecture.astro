@@ -37,11 +37,147 @@ import Layout from '../layouts/Layout.astro';
 
   <hr class="divider" />
 
-  <!-- LIVE NETWORK STAGE -->
-  <section class="net-section">
+  <!-- DAY-1 STANDALONE TOPOLOGY -->
+  <section class="day1-section">
     <div class="container">
       <div class="eyebrow reveal">
         <span class="eyebrow-number">02</span>
+        Day-1 · Mastio works alone
+      </div>
+      <h2 class="reveal" data-delay="1">Bring your <em>existing stack</em>.</h2>
+      <p class="day1-lead reveal" data-delay="2">
+        Mastio is the org control point. Day-1 it runs alone — one
+        container, sensible defaults, no external dependency. Day-N you
+        attach what you already have: your PKI, your OPA, your IDP, your
+        KMS, your observability. One Docker image, every dependency
+        optional.
+      </p>
+
+      <figure class="day1-figure reveal" data-delay="3">
+        <div class="day1-grid">
+
+          <!-- NORTH — identities -->
+          <div class="day1-cluster north">
+            <div class="cluster-label">Identities</div>
+            <div class="cluster-row">
+              <div class="spoke solid">
+                <div class="spoke-name">Connector</div>
+                <div class="spoke-sub">IDE / laptop · MCP</div>
+              </div>
+              <div class="spoke solid">
+                <div class="spoke-name">Frontdesk</div>
+                <div class="spoke-sub">multi-user chat · shared mode</div>
+              </div>
+              <div class="spoke dashed">
+                <div class="spoke-name">BYOCA</div>
+                <div class="spoke-sub">programmatic agents · opt-in</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- WEST — trust + obs -->
+          <div class="day1-cluster west">
+            <div class="cluster-label">Trust + Observability</div>
+            <div class="cluster-col">
+              <div class="spoke dashed">
+                <div class="spoke-name">External PDP</div>
+                <div class="spoke-sub">OPA · webhook · opt-in</div>
+              </div>
+              <div class="spoke dashed">
+                <div class="spoke-name">OIDC</div>
+                <div class="spoke-sub">oauth2-proxy · IDP · opt-in</div>
+              </div>
+              <div class="spoke solid">
+                <div class="spoke-name">Prometheus</div>
+                <div class="spoke-sub">metrics scrape</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- HUB — Mastio -->
+          <div class="day1-hub">
+            <div class="hub-rule"></div>
+            <div class="hub-name">CULLIS MASTIO</div>
+            <ul class="hub-features">
+              <li>Org CA + 3-tier PKI</li>
+              <li>Policy engine</li>
+              <li>Audit chain (SHA-256)</li>
+              <li>AI gateway (LiteLLM)</li>
+              <li>MCP reverse-proxy</li>
+              <li>Dashboard <code>:9443</code></li>
+            </ul>
+            <div class="hub-rule"></div>
+          </div>
+
+          <!-- EAST — AI + tools -->
+          <div class="day1-cluster east">
+            <div class="cluster-label">AI + tools</div>
+            <div class="cluster-col">
+              <div class="spoke solid">
+                <div class="spoke-name">LLM providers</div>
+                <div class="spoke-sub">Anthropic · OpenAI · Gemini · Ollama (via LiteLLM)</div>
+              </div>
+              <div class="spoke dashed">
+                <div class="spoke-name">Alt AI gateway</div>
+                <div class="spoke-sub">sidecar pattern · opt-in</div>
+              </div>
+              <div class="spoke solid">
+                <div class="spoke-name">MCP tools</div>
+                <div class="spoke-sub">filesystem · GitHub · Slack · custom</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- SOUTH — state + secrets -->
+          <div class="day1-cluster south">
+            <div class="cluster-label">State + Secrets</div>
+            <div class="cluster-row">
+              <div class="spoke solid">
+                <div class="spoke-name">Database</div>
+                <div class="spoke-sub">SQLite default · Postgres prod</div>
+              </div>
+              <div class="spoke dashed">
+                <div class="spoke-name">Redis</div>
+                <div class="spoke-sub">DPoP JTI · rate limit · multi-worker</div>
+              </div>
+              <div class="spoke solid">
+                <div class="spoke-name">KMS</div>
+                <div class="spoke-sub">filesystem default · Vault prod</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <figcaption>
+          Fig. <em>I</em> — Day-1 Mastio standalone. <strong>Solid</strong>
+          borders ship by default or are production-ready;
+          <strong>dashed</strong> borders are opt-in. Cross-org federation
+          layer (Court, RFC 3161 TSA, OTEL traces) appears in
+          <a href="#federation">Fig. II</a>.
+        </figcaption>
+      </figure>
+
+      <div class="day1-legend reveal" data-delay="4">
+        <span class="legend-item">
+          <span class="legend-swatch solid"></span>
+          Default or production-ready
+        </span>
+        <span class="legend-item">
+          <span class="legend-swatch dashed"></span>
+          Opt-in / preview
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider" />
+
+  <!-- LIVE NETWORK STAGE -->
+  <section class="net-section" id="federation">
+    <div class="container">
+      <div class="eyebrow reveal">
+        <span class="eyebrow-number">03</span>
         Federation in action (Day-2)
       </div>
       <h2 class="reveal" data-delay="1">When two Mastios <em>talk</em>.</h2>
@@ -186,7 +322,7 @@ import Layout from '../layouts/Layout.astro';
   <section class="modes">
     <div class="container">
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">03</span>
+        <span class="eyebrow-number">04</span>
         Two routing modes
       </div>
       <h2 class="reveal" data-delay="1">One binary, <em>two paths</em>.</h2>
@@ -249,7 +385,7 @@ import Layout from '../layouts/Layout.astro';
   <section class="prose-section">
     <div class="container">
       <div class="eyebrow reveal">
-        <span class="eyebrow-number">04</span>
+        <span class="eyebrow-number">05</span>
         Threat model
       </div>
       <h2 class="reveal" data-delay="1">What we <em>assume</em>, and what we <em>defend</em>.</h2>
@@ -300,10 +436,10 @@ import Layout from '../layouts/Layout.astro';
     <div class="container narrow">
       <div class="closing-rule"></div>
       <div class="eyebrow">
-        <span class="eyebrow-number">05</span>
+        <span class="eyebrow-number">06</span>
         Continue
       </div>
-      <h2>Use case, <em>pricing</em>, deployment.</h2>
+      <h2>Use case, <em>deployment</em>, source.</h2>
       <p>
         Mastio scales from air-gapped standalone to cross-organization
         federation. Same binary, no redeploy, no re-enrollment. Pick
@@ -311,8 +447,8 @@ import Layout from '../layouts/Layout.astro';
       </p>
       <div class="hero-actions">
         <a href="/insurance" class="btn btn-primary">Insurance use case</a>
-        <a href="/pricing" class="btn btn-ghost">Pricing</a>
         <a href="/deployment" class="btn btn-ghost">Deployment patterns</a>
+        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
       </div>
     </div>
   </section>
@@ -1141,5 +1277,268 @@ import Layout from '../layouts/Layout.astro';
     }
     .stage-counter { font-size: 10px; gap: 10px; }
     .network-stage { padding: 20px; }
+  }
+
+  /* ====================================================================== */
+  /* DAY-1 STANDALONE TOPOLOGY                                              */
+  /* ====================================================================== */
+
+  .day1-section {
+    padding: clamp(4rem, 8vw, 7rem) 0;
+  }
+
+  .day1-lead {
+    max-width: 62ch;
+    font-family: var(--font-body);
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    line-height: 1.65;
+    margin: 1.25rem 0 3rem;
+  }
+
+  .day1-figure {
+    margin: 0 0 2.5rem;
+  }
+
+  .day1-grid {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(280px, 1.4fr) minmax(180px, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      ".    north  .   "
+      "west hub    east"
+      ".    south  .   ";
+    gap: 1.5rem 2.25rem;
+    align-items: stretch;
+    padding: 2.5rem;
+    border: 1px solid var(--border-subtle);
+    background: linear-gradient(180deg, rgba(8, 9, 13, 0.4), rgba(5, 5, 8, 0.7));
+    position: relative;
+  }
+
+  .day1-cluster {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    position: relative;
+  }
+  .day1-cluster.north { grid-area: north; }
+  .day1-cluster.west  { grid-area: west; }
+  .day1-cluster.east  { grid-area: east; }
+  .day1-cluster.south { grid-area: south; }
+
+  .cluster-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 0.25rem;
+  }
+  .day1-cluster.south .cluster-label { order: 2; margin: 0.25rem 0 0; }
+
+  .cluster-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.65rem;
+  }
+  .cluster-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .spoke {
+    background: rgba(15, 17, 25, 0.75);
+    border: 1.5px solid #4a5060;
+    padding: 0.7rem 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    transition: border-color 0.25s ease, background 0.25s ease;
+  }
+  .spoke:hover {
+    border-color: var(--accent-cyan);
+    background: rgba(0, 229, 199, 0.04);
+  }
+  .spoke.solid {
+    border-style: solid;
+    border-color: rgba(0, 229, 199, 0.55);
+  }
+  .spoke.dashed {
+    border-style: dashed;
+    border-color: rgba(138, 141, 155, 0.55);
+  }
+  .spoke-name {
+    font-family: var(--font-brand, var(--font-body));
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.01em;
+  }
+  .spoke-sub {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+
+  /* HUB — the Mastio centerpiece */
+  .day1-hub {
+    grid-area: hub;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: stretch;
+    padding: 1.5rem 1.75rem;
+    background: rgba(0, 229, 199, 0.04);
+    border: 2px solid var(--accent-cyan);
+    box-shadow: 0 0 0 4px rgba(0, 229, 199, 0.05), 0 0 40px rgba(0, 229, 199, 0.08);
+    position: relative;
+  }
+  .hub-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-cyan), transparent);
+    opacity: 0.5;
+    margin: 0.5rem 0;
+  }
+  .hub-name {
+    font-family: var(--font-brand, var(--font-body));
+    font-weight: 700;
+    font-size: 1.15rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    text-align: center;
+    margin: 0.5rem 0;
+  }
+  .hub-features {
+    list-style: none;
+    padding: 0;
+    margin: 0.5rem 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem 1.25rem;
+  }
+  .hub-features li {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+    position: relative;
+    padding-left: 0.85rem;
+    line-height: 1.4;
+  }
+  .hub-features li::before {
+    content: '◆';
+    position: absolute;
+    left: 0;
+    top: 0;
+    color: var(--accent-cyan);
+    font-size: 0.55rem;
+    line-height: 1.6;
+  }
+  .hub-features code {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--accent-cyan);
+    background: rgba(0, 229, 199, 0.08);
+    padding: 0 0.25rem;
+    border-radius: 2px;
+  }
+
+  /* Connector lines via pseudo-elements */
+  .day1-cluster.north::after,
+  .day1-cluster.south::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    width: 1px;
+    height: 1.5rem;
+    background: linear-gradient(180deg, transparent, rgba(0, 229, 199, 0.4));
+  }
+  .day1-cluster.north::after  { bottom: -1.65rem; }
+  .day1-cluster.south::before { top: -1.65rem; background: linear-gradient(0deg, transparent, rgba(0, 229, 199, 0.4)); }
+
+  .day1-cluster.west::after,
+  .day1-cluster.east::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 2.25rem;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0, 229, 199, 0.4));
+  }
+  .day1-cluster.west::after  { right: -2.4rem; }
+  .day1-cluster.east::before { left: -2.4rem; background: linear-gradient(270deg, transparent, rgba(0, 229, 199, 0.4)); }
+
+  .day1-figure figcaption {
+    font-family: var(--font-body);
+    font-style: italic;
+    font-size: 0.92rem;
+    color: var(--text-tertiary);
+    margin-top: 1.5rem;
+    line-height: 1.55;
+    max-width: 64ch;
+  }
+  .day1-figure figcaption a {
+    color: var(--accent-cyan);
+    border-bottom: 1px solid transparent;
+  }
+  .day1-figure figcaption a:hover {
+    border-bottom-color: var(--accent-cyan);
+  }
+
+  .day1-legend {
+    display: flex;
+    gap: 2rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: var(--text-tertiary);
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 1.2rem;
+    height: 0.75rem;
+    background: rgba(15, 17, 25, 0.75);
+    border: 1.5px solid rgba(0, 229, 199, 0.55);
+  }
+  .legend-swatch.dashed {
+    border-style: dashed;
+    border-color: rgba(138, 141, 155, 0.55);
+  }
+
+  /* Mobile: stack everything */
+  @media (max-width: 960px) {
+    .day1-grid {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "north"
+        "hub"
+        "east"
+        "west"
+        "south";
+      gap: 1.5rem;
+      padding: 1.5rem;
+    }
+    .cluster-row {
+      grid-template-columns: 1fr;
+    }
+    .day1-cluster::before,
+    .day1-cluster::after {
+      display: none;
+    }
+    .hub-features {
+      grid-template-columns: 1fr;
+    }
   }
 </style>

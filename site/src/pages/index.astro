@@ -32,8 +32,8 @@ import Layout from '../layouts/Layout.astro';
             drop-in for Claude, GPT, Mistral, and any MCP-compatible tool.
           </p>
           <div class="hero-actions reveal" data-delay="3">
-            <a href="mailto:hello@cullis.io?subject=Cullis%20walk-through" class="btn btn-primary">Schedule a walk-through</a>
-            <a href="#quickstart" class="btn btn-ghost">Try the sandbox</a>
+            <a href="#quickstart" class="btn btn-primary">Get the Mastio bundle</a>
+            <a href="/docs" class="btn btn-ghost">Read the docs</a>
           </div>
           <div class="hero-meta reveal" data-delay="4">
             <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="hero-meta-link">
@@ -366,23 +366,26 @@ import Layout from '../layouts/Layout.astro';
         Quickstart
       </div>
       <h2 class="reveal" data-delay="1">
-        From zero to <em>a full network</em>, in one command.
+        Three artefacts. <em>Pull, deploy, use.</em>
       </h2>
       <p class="reveal" data-delay="2">
-        Boot Mastio with example agents, MCP servers, and a second org
-        for federation preview. Pre-wired with SPIRE, Keycloak, Vault,
-        Postgres.
+        Mastio bundle, Frontdesk bundle, Connector. No repo clone, no
+        sandbox. Self-contained tarballs that pull their images from
+        <code>ghcr.io</code> and configure themselves.
       </p>
-      <pre class="reveal" data-delay="3"><code>git clone https://github.com/cullis-security/cullis
-cd cullis
-./sandbox/demo.sh full</code></pre>
-      <p class="reveal" data-delay="4">
-        Then replay intra-org MCP tool calls and cross-org A2A messages:
+      <pre class="reveal" data-delay="3"><code># 1. Mastio — org gateway + dashboard on :9443
+curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.5.1/cullis-mastio-bundle.tar.gz | tar xz
+cd cullis-mastio-bundle &amp;&amp; ./deploy.sh</code></pre>
+      <pre class="reveal" data-delay="4"><code># 2. Frontdesk — multi-user chat on :8080 (optional)
+curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.2.10/cullis-frontdesk-bundle.tar.gz | tar xz
+cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
+      <pre class="reveal" data-delay="5"><code># 3. Connector — your IDE through Cullis
+pip install cullis-connector
+cullis-connector dashboard       # http://127.0.0.1:7777 — 3-step wizard</code></pre>
+      <p class="reveal" data-delay="6">
+        Full per-component install instructions, enrolment paths, and
+        production overrides on the <a href="/docs">docs</a>.
       </p>
-      <pre class="reveal" data-delay="5"><code>./sandbox/demo.sh mcp-catalog     # intra-org: agent → MCP tool call (Org A)
-./sandbox/demo.sh mcp-inventory   # intra-org: agent → MCP tool call (Org B)
-./sandbox/demo.sh oneshot-a-to-b  # cross-org: encrypted A2A message A → B
-./sandbox/demo.sh oneshot-b-to-a  # cross-org: encrypted A2A message B → A</code></pre>
     </div>
   </section>
 
@@ -396,16 +399,17 @@ cd cullis
         <span class="eyebrow-number">07</span>
         Continue
       </div>
-      <h2 class="reveal" data-delay="1">Talk to us. <em>Or read the code.</em></h2>
+      <h2 class="reveal" data-delay="1">Read the code. <em>Then write us.</em></h2>
       <p class="reveal" data-delay="2">
-        We are early. We want to talk with security and compliance
-        teams running their first AI agents in production. Schedule a
-        call, read the research, or dive into the architecture.
+        We're early and looking for pilot partners — security and
+        compliance teams running their first AI agents in production.
+        Read the source, the architecture, the research; if Cullis
+        fits, write us.
       </p>
       <div class="hero-actions reveal" data-delay="3">
-        <a href="mailto:hello@cullis.io?subject=Cullis%20walk-through" class="btn btn-primary">Schedule a call</a>
+        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-primary">GitHub</a>
         <a href="https://mazzolad.com/writing" target="_blank" rel="noopener" class="btn btn-ghost">Read the research</a>
-        <a href="https://github.com/cullis-security/cullis" target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
+        <a href="mailto:hello@cullis.io?subject=Cullis%20pilot%20enquiry" class="btn btn-ghost">Pilot enquiry</a>
       </div>
     </div>
   </section>

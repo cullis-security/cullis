@@ -5,7 +5,7 @@ import Layout from '../layouts/Layout.astro';
 // We can't use `releases/latest/download/<file>` because GitHub's "latest"
 // flag is shared across Connector / SDK / Mastio tags in this repo and
 // often resolves to a non-Connector release.
-const CONNECTOR_VERSION = '0.3.6';
+const CONNECTOR_VERSION = '0.5.1';
 const CONNECTOR_TAG = `connector-v${CONNECTOR_VERSION}`;
 const BASE = `https://github.com/cullis-security/cullis/releases/download/${CONNECTOR_TAG}`;
 
@@ -59,9 +59,10 @@ const platforms = [
             <code>localhost:7777</code>.
           </p>
           <p class="prerelease-note reveal" data-delay="4">
-            <strong>Pre-release.</strong> The Connector is published under
-            release-candidate tags while Cullis is in research preview. API and
-            wire protocol may still change before 1.0.
+            <strong>Alpha.</strong> Cullis is in active hardening pre-1.0.
+            The wire protocol is stable inside the 0.5.x train; minor breaks
+            may still happen on major bumps. Production-ready for internal
+            deploys and evaluation; check with us before regulated traffic.
           </p>
         </div>
       </div>
@@ -184,43 +185,41 @@ const platforms = [
         <li>
           <div class="bundle-head">
             <strong>Mastio bundle</strong>
-            <span class="bundle-tag">mastio-v0.3.2-rc3</span>
+            <span class="bundle-tag">mastio-v0.5.1</span>
           </div>
           <p class="bundle-blurb">
             Org gateway. First-boot Org CA, dashboard on <code>:9443</code>,
-            agent enrollment + audit chain. The runtime that backs every
-            Connector inside one organization.
+            agent enrollment, audit chain, embedded AI gateway. The
+            runtime that backs every Connector inside one organization.
           </p>
-          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.3.2-rc3/cullis-mastio-bundle.tar.gz | tar xz
+          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.5.1/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle &amp;&amp; ./deploy.sh</code></pre>
         </li>
 
         <li>
           <div class="bundle-head">
             <strong>Frontdesk bundle</strong>
-            <span class="bundle-tag">frontdesk-bundle-v0.2.0-rc3</span>
+            <span class="bundle-tag">frontdesk-bundle-v0.2.10</span>
           </div>
           <p class="bundle-blurb">
             Multi-user Cullis Chat (SPA on <code>:8080</code>) co-located
-            with a Mastio on the same host. Adds a shared-mode Connector
-            so multiple human users issue ADR-020 user principals.
+            with a Mastio on the same host. Shared-mode Connector issues
+            a per-user identity for each human user, with per-user audit.
           </p>
-          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.2.0-rc3/cullis-frontdesk-bundle.tar.gz | tar xz
+          <pre class="bundle-cmd"><code>curl -L https://github.com/cullis-security/cullis/releases/download/frontdesk-bundle-v0.2.10/cullis-frontdesk-bundle.tar.gz | tar xz
 cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
         </li>
 
         <li>
           <div class="bundle-head">
-            <strong>Court</strong>
-            <span class="bundle-tag">court-v0.1.0-rc1</span>
+            <strong>Mastio Enterprise</strong>
+            <span class="bundle-tag">licensed</span>
           </div>
           <p class="bundle-blurb">
-            Federation broker between Mastios — registry, hash-chain
-            anchor, cross-org routing. Run one if you need agents in your
-            org to talk to agents in another. Image pull only; Helm chart
-            on the deployment page.
+            Same Mastio with backup / restore tooling, longer rotation
+            cadence, cloud KMS plugins (AWS / Azure / GCP), and signed
+            support. <a href="mailto:hello@cullis.io?subject=Cullis%20Enterprise%20evaluation">Contact us</a> for evaluation.
           </p>
-          <pre class="bundle-cmd"><code>docker pull ghcr.io/cullis-security/cullis-court:0.1.0-rc1</code></pre>
         </li>
       </ul>
 
@@ -263,9 +262,10 @@ cd cullis-frontdesk-bundle &amp;&amp; ./deploy.sh</code></pre>
       <div class="closing-rule"></div>
       <h2>Downloaded it. Now what?</h2>
       <p>
-        The Connector is the edge piece. To use it, you need a Mastio running
-        somewhere (your org's server, or a local demo instance). The
-        Quickstart boots the whole stack on your laptop in a minute.
+        The Connector is the edge piece. To use it, you need a Mastio
+        running somewhere (your org's server, or a local Mastio bundle
+        on your laptop). The Mastio bundle above boots in two commands;
+        the docs walk through enrolment, policy, and the audit chain.
       </p>
       <div class="server-row">
         <a href="/docs" class="btn btn-primary">Read the docs</a>
