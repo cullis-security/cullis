@@ -180,4 +180,4 @@ The challenge-response happens on every token mint, not just enrollment. The non
 - [BYOCA enrollment](byoca) — for headless agents where the org already runs an internal PKI
 - [SPIRE enrollment](spire) — when Kubernetes workloads already have SVIDs
 - [Runbook § admin lockout](../operate/runbook#7-admin-lockout) — what to do if the admin who can approve just quit
-- [Sandbox walkthrough](../quickstart/sandbox-walkthrough) — watch the whole flow end-to-end in a local sandbox
+- [Install the Connector](../install/connector) — the desktop client that drives this flow on an end user's laptop
