@@ -19,11 +19,11 @@ import zipfile
 import datetime
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.responses import RedirectResponse
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dashboard.session import (
@@ -61,9 +61,8 @@ from app.registry.binding_store import (
     BindingRecord, create_binding, approve_binding, revoke_binding,
     get_binding_by_org_agent,
 )
-from app.broker.db_models import SessionRecord, SessionMessageRecord, RfqRecord, RfqResponseRecord
+from app.broker.db_models import SessionRecord
 from app.broker.ws_manager import ws_manager
-from app.auth.transaction_token import create_transaction_token, compute_payload_hash
 from app.dashboard import _demo_cast
 
 import logging
@@ -125,6 +124,15 @@ from app.dashboard import policies_routes as _policies_routes  # noqa: E402
 from app.dashboard import bindings_routes as _bindings_routes  # noqa: E402
 router.include_router(_policies_routes.router)
 router.include_router(_bindings_routes.router)
+
+# F-B-202 PR-9: include sessions (session list), audit (log table +
+# chain verify) and rfq (list + detail + approve). 6 routes total.
+from app.dashboard import sessions_routes as _sessions_routes  # noqa: E402
+from app.dashboard import audit_routes as _audit_routes  # noqa: E402
+from app.dashboard import rfq_routes as _rfq_routes  # noqa: E402
+router.include_router(_sessions_routes.router)
+router.include_router(_audit_routes.router)
+router.include_router(_rfq_routes.router)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,249 +358,15 @@ async def federation_view(request: Request):
     ))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sessions
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/sessions", response_class=HTMLResponse)
-async def sessions_list(
-    request: Request,
-    status: str | None = Query(default=None),
-    db: AsyncSession = Depends(get_db),
-):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-
-    q = select(SessionRecord).order_by(SessionRecord.created_at.desc())
-    if status:
-        q = q.where(SessionRecord.status == status)
-    q = q.limit(100)
-
-    result = await db.execute(q)
-    sessions = result.scalars().all()
-
-    # Count messages per session
-    msg_counts = {}
-    if sessions:
-        session_ids = [s.session_id for s in sessions]
-        count_q = (
-            select(SessionMessageRecord.session_id, func.count(SessionMessageRecord.id))
-            .where(SessionMessageRecord.session_id.in_(session_ids))
-            .group_by(SessionMessageRecord.session_id)
-        )
-        for row in (await db.execute(count_q)).all():
-            msg_counts[row[0]] = row[1]
-
-    session_list = []
-    for s in sessions:
-        session_list.append({
-            "session_id": s.session_id,
-            "initiator_agent_id": s.initiator_agent_id,
-            "initiator_org_id": s.initiator_org_id,
-            "target_agent_id": s.target_agent_id,
-            "target_org_id": s.target_org_id,
-            "status": s.status,
-            "message_count": msg_counts.get(s.session_id, 0),
-            "created_at": s.created_at,
-        })
-
-    return templates.TemplateResponse("sessions.html",
-        _ctx(request, session, active="sessions", sessions=session_list, status_filter=status)
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Audit Log
-# ─────────────────────────────────────────────────────────────────────────────
-
-_AUDIT_LIMIT = 200
-
-# ``_build_audit_event_dict`` lives in ``app.dashboard._helpers`` since
-# F-B-202 PR-1.
-
-
-@router.get("/audit", response_class=HTMLResponse)
-async def audit_log(
-    request: Request,
-    q: str | None = Query(default=None),
-    db: AsyncSession = Depends(get_db),
-):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-
-    query = select(AuditLog).order_by(AuditLog.id.desc())
-
-    if q:
-        q = q[:100]  # Limit search term length to prevent expensive LIKE queries
-        # Escape LIKE wildcards in user input to prevent pattern abuse
-        _escaped = q.replace("%", r"\%").replace("_", r"\_")
-        pattern = f"%{_escaped}%"
-        query = query.where(or_(
-            AuditLog.event_type.ilike(pattern),
-            AuditLog.agent_id.ilike(pattern),
-            AuditLog.org_id.ilike(pattern),
-            AuditLog.result.ilike(pattern),
-            AuditLog.details.ilike(pattern),
-        ))
-
-    query = query.limit(_AUDIT_LIMIT)
-    result = await db.execute(query)
-    events = result.scalars().all()
-
-    event_list = [_build_audit_event_dict(e) for e in events]
-
-    return templates.TemplateResponse("audit.html",
-        _ctx(request, session, active="audit", events=event_list, query=q or "", limit=_AUDIT_LIMIT)
-    )
-
-
-@router.post("/audit/verify", response_class=HTMLResponse)
-async def verify_audit_chain(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Admin-only: verify the cryptographic integrity of the audit log chain."""
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not session.is_admin:
-        raise HTTPException(status_code=403, detail="Admin only")
-    if not await verify_csrf(request, session):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    from app.db.audit import verify_chain
-    is_valid, total, broken_id = await verify_chain(db)
-
-    verify_result = {"valid": is_valid, "total": total, "broken_id": broken_id}
-
-    # Re-render audit page with verification result
-    query = select(AuditLog).order_by(AuditLog.id.desc()).limit(_AUDIT_LIMIT)
-    result = await db.execute(query)
-    events = result.scalars().all()
-    event_list = [_build_audit_event_dict(e) for e in events]
-
-    return templates.TemplateResponse("audit.html",
-        _ctx(request, session, active="audit", events=event_list, query="",
-             limit=_AUDIT_LIMIT, verify_result=verify_result)
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# RFQ Detail & Approval
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.get("/rfqs", response_class=HTMLResponse)
-async def rfq_list(request: Request, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-
-    q = select(RfqRecord).order_by(RfqRecord.created_at.desc()).limit(100)
-    rfqs = (await db.execute(q)).scalars().all()
-
-    return templates.TemplateResponse("rfqs.html",
-        _ctx(request, session, active="rfq", rfqs=rfqs)
-    )
-
-
-@router.get("/rfq/{rfq_id}", response_class=HTMLResponse)
-async def rfq_detail(request: Request, rfq_id: str, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-
-    rfq = (await db.execute(
-        select(RfqRecord).where(RfqRecord.rfq_id == rfq_id)
-    )).scalar_one_or_none()
-    if not rfq:
-        raise HTTPException(status_code=404, detail="RFQ not found")
-
-    responses = (await db.execute(
-        select(RfqResponseRecord).where(RfqResponseRecord.rfq_id == rfq_id)
-    )).scalars().all()
-
-    return templates.TemplateResponse("rfq_detail.html",
-        _ctx(request, session, active="rfq", rfq=rfq, responses=responses,
-             success=None, error=None)
-    )
-
-
-@router.post("/rfq/{rfq_id}/approve", response_class=HTMLResponse)
-async def rfq_approve(request: Request, rfq_id: str, db: AsyncSession = Depends(get_db)):
-    session = require_login(request)
-    if isinstance(session, RedirectResponse):
-        return session
-    if not await verify_csrf(request, session):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-    rfq = (await db.execute(
-        select(RfqRecord).where(RfqRecord.rfq_id == rfq_id)
-    )).scalar_one_or_none()
-    if not rfq:
-        raise HTTPException(status_code=404, detail="RFQ not found")
-
-    form = await request.form()
-    response_id = form.get("response_id")
-    responder_agent_id = form.get("responder_agent_id", "")
-
-    if not response_id:
-        raise HTTPException(status_code=400, detail="Missing response_id")
-
-    quote = (await db.execute(
-        select(RfqResponseRecord).where(
-            RfqResponseRecord.id == int(response_id),
-            RfqResponseRecord.rfq_id == rfq_id,
-        )
-    )).scalar_one_or_none()
-    if not quote:
-        raise HTTPException(status_code=404, detail="Quote not found")
-
-    payload_hash = compute_payload_hash(quote.payload)
-    token_id, token_record = await create_transaction_token(
-        db,
-        agent_id=rfq.initiator_agent_id,
-        org_id=rfq.initiator_org_id,
-        txn_type="CREATE_ORDER",
-        resource_id=rfq_id,
-        payload_hash=payload_hash,
-        approved_by="admin",
-        rfq_id=rfq_id,
-        target_agent_id=responder_agent_id,
-    )
-
-    rfq.status = "approved"
-    await db.commit()
-
-    try:
-        await ws_manager.send_to_agent(rfq.initiator_agent_id, {
-            "type": "transaction_token",
-            "token_id": token_id,
-            "rfq_id": rfq_id,
-            "txn_type": "CREATE_ORDER",
-            "target_agent_id": responder_agent_id,
-            "payload_hash": payload_hash,
-        })
-    except Exception:
-        _log.warning("Could not deliver transaction token to agent %s via WS",
-                      rfq.initiator_agent_id)
-
-    await log_event(db, "rfq.approved", "ok",
-                    agent_id=rfq.initiator_agent_id, org_id=rfq.initiator_org_id,
-                    details={"rfq_id": rfq_id, "approved_quote_id": response_id,
-                             "responder_agent_id": responder_agent_id, "token_id": token_id})
-
-    responses = (await db.execute(
-        select(RfqResponseRecord).where(RfqResponseRecord.rfq_id == rfq_id)
-    )).scalars().all()
-    await db.refresh(rfq)
-
-    return templates.TemplateResponse("rfq_detail.html",
-        _ctx(request, session, active="rfq", rfq=rfq, responses=responses,
-             success=f"Quote approved. Transaction token issued to agent {rfq.initiator_agent_id}.",
-             error=None)
-    )
+# Sessions list (/dashboard/sessions) moved to
+# ``app/dashboard/sessions_routes.py`` since F-B-202 PR-9.
+#
+# Audit log (/dashboard/audit + /dashboard/audit/verify) moved to
+# ``app/dashboard/audit_routes.py`` since F-B-202 PR-9.
+#
+# RFQ list / detail / approve (/dashboard/rfqs, /dashboard/rfq/{id},
+# /dashboard/rfq/{id}/approve) moved to
+# ``app/dashboard/rfq_routes.py`` since F-B-202 PR-9.
 
 
 # Badge endpoints moved to ``app/dashboard/badges_routes.py`` and the
