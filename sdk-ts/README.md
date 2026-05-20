@@ -51,7 +51,6 @@ import { BrokerClient } from "@agent-trust/sdk";
 
 const client = new BrokerClient({
   baseUrl: "https://broker.example.com",
-  verifyTls: true,
 });
 
 await client.login(
@@ -61,6 +60,10 @@ await client.login(
   "./certs/buyer.key",    // private key path
 );
 ```
+
+TLS verification is always on. If your broker presents a private or
+self-signed CA, see [Self-signed / private CA](#self-signed--private-ca)
+below.
 
 ### 2. Discover agents
 
@@ -119,6 +122,28 @@ for (const quote of updated.quotes) {
 ```typescript
 await client.closeSession(sessionId);
 ```
+
+## Self-signed / private CA
+
+This SDK does not expose a `verifyTls` option. Node's native `fetch`
+has no per-call TLS-verify toggle, and the process-wide escape hatch
+`NODE_TLS_REJECT_UNAUTHORIZED=0` disables verification for every
+outbound HTTPS call in the process — unsafe even for dev.
+
+For a broker fronted by a private or self-signed CA (the common
+dogfood case against a local Mastio or sandbox), add the CA PEM to
+Node's trust store via `NODE_EXTRA_CA_CERTS`:
+
+```bash
+export NODE_EXTRA_CA_CERTS=/path/to/cullis-ca.pem
+node my-agent.js
+```
+
+This is scoped to the current Node process. TLS verification stays
+enabled for the broker and for every other HTTPS call your code
+makes. The Python SDK exposes `verify_tls=False` directly because
+`httpx` supports per-client SSL contexts; the TS SDK cannot mirror
+that without taking on a hard `undici` dependency.
 
 ## Roadmap
 

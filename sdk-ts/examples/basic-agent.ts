@@ -37,10 +37,14 @@ async function main(): Promise<void> {
   const certPath = process.env.CERT_PATH ?? "./certs/buyer.crt";
   const keyPath = process.env.KEY_PATH ?? "./certs/buyer.key";
 
-  // 1. Create client and authenticate
+  // 1. Create client and authenticate.
+  //
+  // TLS verification is always ON. For a broker with a private or
+  // self-signed CA, export NODE_EXTRA_CA_CERTS=/path/to/ca.pem before
+  // running this script — that adds the CA to Node's trust store for
+  // the current process without weakening verification globally.
   const client = new BrokerClient({
     baseUrl: brokerUrl,
-    verifyTls: process.env.VERIFY_TLS !== "false",
   });
 
   console.log(`[${agentId}] Logging in to ${brokerUrl}...`);
