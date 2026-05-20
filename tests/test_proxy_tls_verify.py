@@ -49,6 +49,10 @@ def _prod_settings(**overrides) -> ProxySettings:
         # Three-tier PKI hardening (audit 2026-05-18) — prod now
         # refuses empty MCP_PROXY_DB_ENCRYPTION_KEY.
         db_encryption_key="x" * 48,
+        # PR #1 audit 2026-05-20 — H4 sweep refuse-to-start gates.
+        pdp_webhook_hmac_secret="strong-pdp-hmac-secret",  # F-A-202
+        webauthn_enforcement="required",  # F-A-205
+        webauthn_rp_id="mastio.example.com",
     )
     base.update(overrides)
     return ProxySettings(**base)

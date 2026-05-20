@@ -27,22 +27,25 @@ def _stub_request(*, host: str | None = "127.0.0.1", header: str | None = None):
     return req
 
 
-def test_c2_empty_allowlist_accepts_any_peer(monkeypatch):
-    """Back-compat: empty allowlist accepts the header from any peer.
-    Operators on legacy configs aren't broken.
+def test_c2_empty_allowlist_fails_closed(monkeypatch):
+    """F-A-101 (audit 2026-05-20): empty allowlist now fails closed.
 
-    The function also emits a WARNING to nudge operators to set the
-    allowlist, but we don't assert on the log record here: caplog
-    capture is fragile across shards (other tests reconfigure named-
-    logger handlers / propagate flags) and the warning is operator
-    observability rather than a functional contract."""
+    Pre-fix: empty allowlist accepted any peer with a warning, which
+    let an attacker reaching the broker directly forge the
+    ``X-Cullis-Mastio-Cert`` header and bypass the federation mTLS
+    layer (SPKI byte-equality against the org's pinned mastio_pubkey
+    is trivial when the public key is public material).
+
+    Post-fix: empty allowlist returns False. ``validate_config``
+    refuses to start in production when the env is unset; this runtime
+    branch is the defense-in-depth safety net for dev/test."""
     from app.config import get_settings
     monkeypatch.setattr(
         get_settings(), "mastio_mtls_trusted_proxy_cidrs", "",
     )
     from app.auth.mastio_mtls import _peer_is_trusted_proxy
     req = _stub_request(host="203.0.113.10")
-    assert _peer_is_trusted_proxy(req) is True
+    assert _peer_is_trusted_proxy(req) is False
 
 
 def test_c2_allowlist_rejects_non_member(monkeypatch):

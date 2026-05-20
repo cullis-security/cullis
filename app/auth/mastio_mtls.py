@@ -118,9 +118,13 @@ def _peer_is_trusted_proxy(request: Request) -> bool:
     """Wave B C2 — True when ``request.client.host`` falls inside any
     CIDR in ``settings.mastio_mtls_trusted_proxy_cidrs``.
 
-    Empty list (default) keeps the legacy behaviour of accepting any
-    peer for back-compat — operators who configure the header path in
-    production MUST also set the allowlist or the header is rejected.
+    F-A-101 fix: empty list returns False (fail-closed). Previously
+    accepted any peer with a warning, which let an attacker who could
+    reach the broker directly forge ``X-Cullis-Mastio-Cert`` and pass
+    the SPKI byte-equality check on a target org's pinned mastio_pubkey
+    without holding the private key. ``validate_config`` refuses to
+    start in production when the allowlist is empty; this branch is
+    the runtime safety net for dev/test deploys.
     Returns False on parse error (fail-closed)."""
     import ipaddress
     from app.config import get_settings
@@ -128,16 +132,14 @@ def _peer_is_trusted_proxy(request: Request) -> bool:
     cidrs = getattr(settings, "mastio_mtls_trusted_proxy_cidrs", "") or ""
     cidrs = [c.strip() for c in cidrs.split(",") if c.strip()]
     if not cidrs:
-        # Empty allowlist: behave as before (accept), but warn. The fix
-        # is to set the allowlist on operator side; we don't break
-        # existing deploys that haven't migrated their config yet.
-        _log.warning(
-            "mastio mTLS: %s header accepted because "
-            "MASTIO_MTLS_TRUSTED_PROXY_CIDRS is empty — set it to "
-            "your reverse-proxy CIDR(s) to close the spoofing window",
+        _log.error(
+            "mastio mTLS: %s header rejected because "
+            "MASTIO_MTLS_TRUSTED_PROXY_CIDRS is empty. Set it to your "
+            "reverse-proxy CIDR(s) to enable the federation mTLS path "
+            "(F-A-101).",
             PASS_THROUGH_HEADER,
         )
-        return True
+        return False
     if request.client is None:
         return False
     try:

@@ -43,6 +43,9 @@ def _prod_broker_settings(**overrides) -> Settings:
         # therefore declares one (we don't care which value: tests that
         # need "allow" override locally).
         policy_default_decision="deny",
+        # PR #1 audit 2026-05-20 — H4 sweep refuse-to-start gates.
+        mastio_mtls_trusted_proxy_cidrs="172.18.0.0/16",  # F-A-101
+        policy_webhook_hmac_secret="strong-policy-webhook-hmac",  # F-A-513
     )
     base.update(overrides)
     return Settings(**base)
@@ -126,6 +129,10 @@ def _prod_proxy_settings(**overrides) -> ProxySettings:
         # Three-tier PKI hardening (audit 2026-05-18) — prod now
         # refuses empty MCP_PROXY_DB_ENCRYPTION_KEY too.
         db_encryption_key="x" * 48,
+        # PR #1 audit 2026-05-20 — H4 sweep refuse-to-start gates.
+        pdp_webhook_hmac_secret="strong-pdp-hmac-secret",  # F-A-202
+        webauthn_enforcement="required",  # F-A-205
+        webauthn_rp_id="mastio.example.com",
     )
     base.update(overrides)
     return ProxySettings(**base)

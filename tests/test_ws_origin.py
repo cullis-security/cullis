@@ -169,6 +169,9 @@ def _prod_settings(**overrides) -> Settings:
         kms_backend="vault",
         # Audit Ultra U2 — prod validate_config requires explicit decl.
         policy_default_decision="deny",
+        # PR #1 audit 2026-05-20 — H4 sweep refuse-to-start gates.
+        mastio_mtls_trusted_proxy_cidrs="172.18.0.0/16",  # F-A-101
+        policy_webhook_hmac_secret="strong-policy-webhook-hmac",  # F-A-513
     )
     base.update(overrides)
     return Settings(**base)
