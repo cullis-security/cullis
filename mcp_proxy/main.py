@@ -1653,6 +1653,40 @@ _log.info("X-Cullis-* incoming header strip middleware registered (P1.3)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Request-body size limit (F-A-303)
+#
+# Reject inbound HTTP requests whose declared Content-Length exceeds the
+# configured ceiling with 413 before any handler buffers the body or any
+# downstream middleware (auth dep, rate limit, DB write) is touched.
+# Registered LAST so Starlette's LIFO order runs it FIRST on every
+# inbound request — the size check has to happen before every other
+# middleware allocates state on the request. Pure ASGI implementation
+# mirrors the global rate limit + strip-headers pattern.
+# ─────────────────────────────────────────────────────────────────────────────
+
+if settings.max_request_body_bytes > 0:
+    from mcp_proxy.middleware.limit_request_body import (
+        LimitRequestBodyMiddleware,
+    )
+
+    app.add_middleware(
+        LimitRequestBodyMiddleware,
+        max_bytes=settings.max_request_body_bytes,
+    )
+    _log.info(
+        "Request-body size limit middleware registered: max=%d bytes "
+        "(F-A-303)",
+        settings.max_request_body_bytes,
+    )
+else:
+    _log.warning(
+        "Request-body size limit DISABLED (max_request_body_bytes=0). "
+        "F-A-303 size cap is not enforced; downstream pydantic schemas "
+        "still bound message/tool/parameters payloads."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Routers
 # ─────────────────────────────────────────────────────────────────────────────
 
