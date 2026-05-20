@@ -104,7 +104,13 @@ async def test_verify_chain_catches_detail_tamper(proxy_app):
 
     # Rewrite row 3's detail without touching row_hash — the kind of
     # mutation an operator with DB write access could do.
+    # F-A-402 (audit 2026-05-20): migration 0042 installs a
+    # BEFORE UPDATE/DELETE trigger on audit_log. Drop it locally to
+    # simulate the threat model "attacker with DB write that bypasses
+    # the schema gate" — the test asserts verify_audit_chain catches
+    # the tamper as the second layer of defence.
     async with get_db() as conn:
+        await conn.execute(text("DROP TRIGGER IF EXISTS audit_log_no_update"))
         await conn.execute(
             text("UPDATE audit_log SET detail = 'rewritten' WHERE chain_seq = 3"),
         )
@@ -126,6 +132,8 @@ async def test_verify_chain_catches_dropped_row(proxy_app):
                         detail=f"row-{i}")
 
     async with get_db() as conn:
+        # F-A-402: simulate attacker bypassing the schema trigger.
+        await conn.execute(text("DROP TRIGGER IF EXISTS audit_log_no_delete"))
         await conn.execute(
             text("DELETE FROM audit_log WHERE chain_seq = 3"),
         )
@@ -156,10 +164,16 @@ async def test_verify_chain_catches_prev_hash_tamper(proxy_app):
     # leave row 4's prev_hash untouched. The chain walker should
     # flag row 4 as the break point.
     async with get_db() as conn:
+        # F-A-402: simulate attacker bypassing the schema trigger.
+        # F-A-403: recompute with the same v2 inputs the live row has
+        # so we exercise the prev_hash-mismatch detection on row 4.
+        await conn.execute(text("DROP TRIGGER IF EXISTS audit_log_no_update"))
         row3 = (await conn.execute(
             text(
                 "SELECT timestamp, agent_id, action, tool_name, status, "
-                "detail, request_id, prev_hash FROM audit_log WHERE chain_seq = 3",
+                "detail, request_id, prev_hash, dpop_jkt, "
+                "on_behalf_of_user_id, hash_format "
+                "FROM audit_log WHERE chain_seq = 3",
             ),
         )).first()
         new_hash = compute_audit_row_hash(
@@ -172,6 +186,9 @@ async def test_verify_chain_catches_prev_hash_tamper(proxy_app):
             detail="rewritten",
             request_id=row3[6],
             prev_hash=str(row3[7]),
+            dpop_jkt=row3[8],
+            on_behalf_of_user_id=row3[9],
+            hash_format=row3[10],
         )
         await conn.execute(
             text(
