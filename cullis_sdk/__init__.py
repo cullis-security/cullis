@@ -4,15 +4,32 @@ cullis-agent-sdk — Python SDK for Cullis, the federated agent trust broker.
 Connect your AI agents to the Cullis network with E2E encrypted messaging,
 x509 mutual authentication, and DPoP-bound tokens.
 
-Usage::
+Canonical usage (ADR-008 one-shot, ADR-014 mTLS-cert-as-credential)::
 
     from cullis_sdk import CullisClient
 
-    with CullisClient("https://broker.example.com") as client:
-        client.login("myorg::agent", "myorg", "cert.pem", "key.pem")
-        agents = client.discover(capabilities=["order.write"])
-        session_id = client.open_session(agents[0].agent_id, agents[0].org_id, ["order.write"])
-        client.send(session_id, "myorg::agent", {"text": "Hello"}, agents[0].agent_id)
+    # Connector flow (identity from ~/.cullis/identity/)
+    client = CullisClient.from_connector()
+    client.login_via_proxy_with_local_key()
+
+    # Or server / BYOCA flow (cert + key on disk)
+    # client = CullisClient.from_identity_dir(
+    #     "https://mastio.example.com:9443",
+    #     cert_path="/etc/cullis/agent/cert.pem",
+    #     key_path="/etc/cullis/agent/key.pem",
+    #     dpop_key_path="/etc/cullis/agent/dpop.jwk",
+    # )
+
+    resp = client.send_oneshot(
+        recipient_id="acme::supplier-agent",
+        payload={"text": "Quote for 1000 M8 bolts please."},
+        ttl_seconds=300,
+    )
+    print(resp["msg_id"])
+
+The legacy ``login()`` / ``open_session()`` / ``send()`` surface is
+deprecated and will be removed in v0.5 (~2026-08-15). See the README
+"Migrating from v0.3 sessions" section for the mapping.
 """
 
 from cullis_sdk.client import CullisClient
