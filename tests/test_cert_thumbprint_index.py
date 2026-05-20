@@ -94,12 +94,16 @@ def test_alembic_upgrade_creates_thumbprint_indices():
     finally:
         con.close()
 
+    # PR #3 audit 2026-05-20: downgrade to the revision BEFORE the
+    # thumbprint-index migration (t0o1p2q3r4s5_idx_thumb). Using a
+    # named revision rather than ``-1`` keeps the test stable as more
+    # migrations land on top.
     r = subprocess.run(
-        cmd + ["downgrade", "-1"],
+        cmd + ["downgrade", "s9n0o1p2q3r4_replica"],
         capture_output=True, text=True, env=env, cwd=cwd,
     )
     assert r.returncode == 0, (
-        f"alembic downgrade -1 failed: stderr={r.stderr[-1500:]}"
+        f"alembic downgrade failed: stderr={r.stderr[-1500:]}"
     )
 
     con = sqlite3.connect(db_path.name)
