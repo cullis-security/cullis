@@ -108,10 +108,8 @@ function buildEncryptedInbox({
  * testing: signing key is set so decryption proceeds, and the pubkey
  * cache is pre-seeded with the sender's cert so no HTTP fetch happens.
  *
- * We bypass the constructor's TLS guard via the supported path
- * (verifyTls defaults to true) and reach into private state through
- * the ``any`` escape hatch — this is a unit-test helper, not a real
- * consumer pattern.
+ * Reaches into private state through the ``any`` escape hatch; this
+ * is a unit-test helper, not a real consumer pattern.
  */
 function makeClientWithCachedSenderCert(recipientKeyPem, senderAgentId, senderCertPem) {
   const client = new BrokerClient({ baseUrl: "https://broker.test" });

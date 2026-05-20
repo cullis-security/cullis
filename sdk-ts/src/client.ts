@@ -66,7 +66,6 @@ async function httpRequest(
   headers: Record<string, string>,
   options?: RequestOptions,
   timeoutMs = 10_000,
-  verifyTls = true,
 ): Promise<HttpResponse> {
   let fullUrl = url;
   if (options?.params) {
@@ -88,17 +87,13 @@ async function httpRequest(
   // Node 18+ supports AbortSignal.timeout
   fetchOptions.signal = AbortSignal.timeout(timeoutMs);
 
-  // NB: this SDK does NOT implement a scoped TLS-verify opt-out. The
-  // historical workaround (NODE_TLS_REJECT_UNAUTHORIZED=0) disables TLS
-  // verification for the ENTIRE Node process, which is unsafe. If you
-  // need to talk to a broker with a private/self-signed CA, add the CA
-  // to Node's trust store via NODE_EXTRA_CA_CERTS=/path/to/ca.pem —
-  // this is scoped to the process but keeps verification ON for every
-  // other connection. The `verifyTls` option is retained so callers can
-  // see the default and for future scoped-dispatcher support; setting
-  // it to `false` currently raises at BrokerClient construction time.
-  void verifyTls;
-
+  // TLS verification is always ON. Node's native fetch does not expose
+  // a per-call verify toggle, so this SDK does not offer one. For a
+  // broker with a private or self-signed CA, add the CA PEM to Node's
+  // trust store via NODE_EXTRA_CA_CERTS=/path/to/ca.pem — scoped to
+  // the current process, leaves verification enabled for every other
+  // connection. Do NOT use NODE_TLS_REJECT_UNAUTHORIZED=0; it disables
+  // verification process-wide and exposes every outbound HTTPS call.
   const response = await fetch(fullUrl, fetchOptions);
   const text = await response.text();
 
@@ -116,7 +111,6 @@ const PUBKEY_CACHE_TTL_MS = 300_000; // 5 minutes
 
 export class BrokerClient {
   private readonly baseUrl: string;
-  private readonly verifyTls: boolean;
   private readonly timeoutMs: number;
 
   private token: string | null = null;
@@ -135,24 +129,14 @@ export class BrokerClient {
 
   constructor(options: BrokerClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.verifyTls = options.verifyTls ?? true;
     this.timeoutMs = options.timeoutMs ?? 10_000;
 
-    // This SDK does not implement a scoped TLS-verify opt-out (see
-    // note in httpRequest). Refuse rather than silently trust the
-    // network: the previous behavior accepted `verifyTls=false` and
-    // did nothing, which hid the problem from callers.
-    if (!this.verifyTls) {
-      throw new Error(
-        "verifyTls=false is not supported. Node's native fetch cannot " +
-        "disable TLS verification per-call, and the process-wide escape " +
-        "hatch NODE_TLS_REJECT_UNAUTHORIZED=0 is unsafe. For a broker " +
-        "with a private or self-signed CA, add the CA PEM to Node's " +
-        "trust store via NODE_EXTRA_CA_CERTS=/path/to/ca.pem — this is " +
-        "scoped to this process and keeps verification enabled for every " +
-        "other connection.",
-      );
-    }
+    // TLS verification is mandatory. The SDK no longer exposes a
+    // `verifyTls` option (it used to throw on `false`, which was just
+    // a misleading API). For brokers with a private or self-signed
+    // CA, point Node at the CA PEM via NODE_EXTRA_CA_CERTS — process
+    // scoped, verification stays ON everywhere else. See the README
+    // "Self-signed / private CA" section.
   }
 
   // ── Authentication ───────────────────────────────────────────
@@ -193,7 +177,6 @@ export class BrokerClient {
       { DPoP: dpopProof },
       { body: { client_assertion: assertion } },
       this.timeoutMs,
-      this.verifyTls,
     );
 
     this.updateNonce(resp.headers);
@@ -207,7 +190,6 @@ export class BrokerClient {
         { DPoP: dpopProof },
         { body: { client_assertion: assertion } },
         this.timeoutMs,
-        this.verifyTls,
       );
       this.updateNonce(resp.headers);
     }
@@ -541,7 +523,6 @@ export class BrokerClient {
       headers,
       options,
       this.timeoutMs,
-      this.verifyTls,
     );
     this.updateNonce(resp.headers);
 
@@ -554,7 +535,6 @@ export class BrokerClient {
         retryHeaders,
         options,
         this.timeoutMs,
-        this.verifyTls,
       );
       this.updateNonce(resp.headers);
     }

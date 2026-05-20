@@ -165,8 +165,15 @@ export interface AgentListResponse {
 export interface BrokerClientOptions {
   /** Base URL of the broker (e.g. "https://broker.example.com") */
   baseUrl: string;
-  /** Whether to verify TLS certificates (default: true) */
-  verifyTls?: boolean;
   /** HTTP request timeout in milliseconds (default: 10000) */
   timeoutMs?: number;
+  // NB: there is intentionally no `verifyTls` option. Node's native
+  // fetch does not expose a per-call TLS-verify toggle, and the
+  // process-wide escape hatch (NODE_TLS_REJECT_UNAUTHORIZED=0) is
+  // unsafe. For a broker with a private or self-signed CA, add the CA
+  // PEM to Node's trust store via NODE_EXTRA_CA_CERTS=/path/to/ca.pem
+  // — scoped to this process, verification stays ON for every other
+  // connection. The Python SDK exposes `verify_tls=False` because
+  // httpx supports per-client SSL contexts; the TS SDK cannot mirror
+  // that surface without taking on a hard `undici` dependency.
 }
