@@ -80,14 +80,16 @@ def _install_fake_frontdesk(monkeypatch, *, responses):
             raise AssertionError(f"unexpected extra call: {method} {path}")
         return responses.pop(0)
 
-    from mcp_proxy.dashboard import router as dash_router
-    monkeypatch.setattr(dash_router, "_frontdesk_admin_call", fake_call)
+    # F-B-201 PR-11: the frontdesk helpers + users routes moved out of
+    # ``router.py`` into ``users_routes.py``. Patch the new module.
+    from mcp_proxy.dashboard import users_routes as dash_users
+    monkeypatch.setattr(dash_users, "_frontdesk_admin_call", fake_call)
     # Also short-circuit the list fetch so the page render doesn't try
     # to hit fd-test on background pulls during the redirect-following
     # detail page render.
     async def fake_fetch_list():
         return {}
-    monkeypatch.setattr(dash_router, "_fetch_frontdesk_users", fake_fetch_list)
+    monkeypatch.setattr(dash_users, "_fetch_frontdesk_users", fake_fetch_list)
     return calls
 
 
@@ -793,8 +795,9 @@ async def test_admin_input_password_never_logged(tmp_path, monkeypatch):
             monkeypatch,
             responses=[(500, {"detail": "boom"}, None)],
         )
-        # Capture every log line emitted from the router module.
-        from mcp_proxy.dashboard import router as dash_router
+        # Capture every log line emitted from the users sub-router
+        # (F-B-201 PR-11 moved this surface out of ``router.py``).
+        from mcp_proxy.dashboard import users_routes as dash_users
         log_calls: list[tuple[str, tuple, dict]] = []
 
         def _capture(level):
@@ -802,9 +805,9 @@ async def test_admin_input_password_never_logged(tmp_path, monkeypatch):
                 log_calls.append((msg, args, kwargs))
             return inner
 
-        monkeypatch.setattr(dash_router._log, "warning", _capture("warning"))
-        monkeypatch.setattr(dash_router._log, "info", _capture("info"))
-        monkeypatch.setattr(dash_router._log, "error", _capture("error"))
+        monkeypatch.setattr(dash_users._log, "warning", _capture("warning"))
+        monkeypatch.setattr(dash_users._log, "info", _capture("info"))
+        monkeypatch.setattr(dash_users._log, "error", _capture("error"))
 
         async with AsyncClient(transport=transport, base_url="http://test") as cli:
             await _login(cli)
