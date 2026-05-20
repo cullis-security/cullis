@@ -318,3 +318,53 @@ async def test_log_audit_details_chain_still_verifies(proxy_app):
 
     ok, broken, reason = await verify_audit_chain()
     assert ok is True, f"chain broken at {broken}: {reason}"
+
+
+# ── F-A-410 — caller-controlled detail payload cap ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_fa410_log_audit_oversized_detail_rejected(proxy_app):
+    """``log_audit`` rejects ``detail`` > 16 KiB with a RuntimeError.
+
+    Sister of ``app/db/audit.py::log_event`` and
+    ``mcp_proxy/local/audit.py::append_local_audit``. Same cap, same
+    reject semantics. CWE-770 — caller-controlled exception messages
+    and tool inputs flow through here; without a cap an authenticated
+    attacker can fill the append-only ``audit_log`` table.
+    """
+    _, _ = proxy_app
+    from sqlalchemy import text
+
+    from mcp_proxy.db import AUDIT_DETAILS_MAX_BYTES, get_db, log_audit
+
+    oversized_string = "x" * (32 * 1024)
+
+    async with get_db() as conn:
+        before = (await conn.execute(
+            text("SELECT COUNT(*) FROM audit_log"),
+        )).scalar_one()
+
+    with pytest.raises(RuntimeError, match="audit details too large"):
+        await log_audit(
+            agent_id="alice",
+            action="t.invoke",
+            status="ok",
+            detail=oversized_string,
+        )
+
+    # Same rejection for the dict-shaped ``details`` path.
+    with pytest.raises(RuntimeError, match="audit details too large"):
+        await log_audit(
+            agent_id="alice",
+            action="t.invoke",
+            status="ok",
+            details={"blob": "y" * (32 * 1024)},
+        )
+
+    async with get_db() as conn:
+        after = (await conn.execute(
+            text("SELECT COUNT(*) FROM audit_log"),
+        )).scalar_one()
+    assert after == before, "rejected log_audit must not write a row"
+    assert AUDIT_DETAILS_MAX_BYTES == 16 * 1024

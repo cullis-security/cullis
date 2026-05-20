@@ -36,6 +36,47 @@ _log = logging.getLogger("app.db.audit")
 # persistent fault; production rarely exceeds 1 retry.
 _MAX_CHAIN_RETRIES = 5
 
+# F-A-410 (audit 2026-05-20) — hard cap on the JSON-serialised
+# ``details`` payload that callers may attach to an audit row. The
+# helpers were designed for operator-curated strings (reason, source,
+# count) but several call sites now feed user-controlled content
+# (exception messages, tool inputs, JWT bodies). Without a cap an
+# authenticated attacker can trigger:
+#
+#   - storage DoS (10 MB rows on an append-only table that cannot be
+#     pruned via SQL),
+#   - hash-chain amplification (each row's ``details`` flows into
+#     ``compute_entry_hash_v2`` and again into every ``verify_chain``
+#     walk — a single fat row drags ``/dashboard/audit/verify`` CPU
+#     up by GB worth of SHA-256 input),
+#   - federation amplification (the Mastio audit publisher batches
+#     200 rows per POST to the Court receiver, so 200 × 10 MB = 2 GB).
+#
+# Reject (rather than truncate) preserves forensic completeness: a
+# silent truncation destroys evidence at the worst possible moment.
+# The ``audit_fail_deny`` policy (see ``audit_chain_background_fail_*``
+# settings) turns the resulting ``RuntimeError`` into a 5xx so the
+# caller cannot succeed without a matching audit row. CWE-770 /
+# CWE-400. Sister-files: ``mcp_proxy/db.py``, ``mcp_proxy/local/audit.py``.
+AUDIT_DETAILS_MAX_BYTES = 16 * 1024
+
+
+def _enforce_details_size(details_json: str | None, *, where: str) -> None:
+    """Raise ``RuntimeError`` if ``details_json`` exceeds the boundary cap.
+
+    No part of ``details_json`` is included in the error message — the
+    caller may have packed user-controlled content into it, and the
+    error path can land on stderr / structured logs.
+    """
+    if details_json is None:
+        return
+    size = len(details_json.encode("utf-8"))
+    if size > AUDIT_DETAILS_MAX_BYTES:
+        raise RuntimeError(
+            f"audit details too large for {where}: "
+            f"{size} bytes (max {AUDIT_DETAILS_MAX_BYTES})"
+        )
+
 # Sentinel org used for audit events that have no natural tenant
 # (system-level events, bootstrap, etc.). Isolates their chain from
 # real tenants so an export for a real org never mixes in system rows.
@@ -395,6 +436,8 @@ async def log_event(
     and retry with the next seq. Bounded by ``_MAX_CHAIN_RETRIES``.
     """
     details_json = json.dumps(details) if details else None
+    # F-A-410 — enforce the cap at the boundary, before any chain work.
+    _enforce_details_size(details_json, where="log_event")
     chain_org = org_id or SYSTEM_ORG
     lock = await _get_org_lock(chain_org)
 
@@ -472,6 +515,10 @@ async def log_event_cross_org(
         raise ValueError("cross-org append requires distinct org ids")
 
     details_json = json.dumps(details) if details else None
+    # F-A-410 — enforce the cap at the boundary. Cross-org writes
+    # produce TWO rows (one per chain) so an oversized payload doubles
+    # the storage and hash-chain amplification surface.
+    _enforce_details_size(details_json, where="log_event_cross_org")
 
     # Deterministic lock order ⇒ no deadlocks when two coroutines race
     # on the same pair in opposite directions.

@@ -49,6 +49,25 @@ _locks_guard = asyncio.Lock()
 # multi-worker deployments depend on the DB-level UNIQUE to serialise.
 _MAX_CHAIN_RETRIES = 5
 
+# F-A-410 (audit 2026-05-20) — hard cap on the JSON-serialised
+# ``details`` payload. Sister of ``app/db/audit.py::AUDIT_DETAILS_MAX_BYTES``
+# — keep the constants in sync so cross-component audit semantics
+# stay identical. See that file for the threat-model commentary
+# (storage DoS, hash-chain amplification, federation amplification).
+AUDIT_DETAILS_MAX_BYTES = 16 * 1024
+
+
+def _enforce_details_size(details_json: str | None, *, where: str) -> None:
+    """Raise ``RuntimeError`` if ``details_json`` exceeds the boundary cap."""
+    if details_json is None:
+        return
+    size = len(details_json.encode("utf-8"))
+    if size > AUDIT_DETAILS_MAX_BYTES:
+        raise RuntimeError(
+            f"audit details too large for {where}: "
+            f"{size} bytes (max {AUDIT_DETAILS_MAX_BYTES})"
+        )
+
 
 async def _get_org_lock(org_id: str) -> asyncio.Lock:
     if org_id in _org_locks:
@@ -89,6 +108,8 @@ async def append_local_audit(
     """
     chain_org = org_id or SYSTEM_ORG
     details_json = json.dumps(details, separators=(",", ":"), sort_keys=True) if details else None
+    # F-A-410 — enforce the cap at the boundary before any chain work.
+    _enforce_details_size(details_json, where="append_local_audit")
     lock = await _get_org_lock(chain_org)
 
     async with lock:
