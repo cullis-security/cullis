@@ -239,12 +239,18 @@ async def list_users(
     q: str = "",
     disabled: Optional[bool] = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[User]:
-    """Return up to ``limit`` users, newest-first.
+    """Return up to ``limit`` users, newest-first, skipping ``offset``.
 
     ``q`` does a case-insensitive substring match on ``user_name``
     and ``display_name``. ``disabled`` filters by status when set;
-    ``None`` returns both enabled and disabled rows.
+    ``None`` returns both enabled and disabled rows. ``offset``
+    lets callers paginate through deployments with more rows than
+    ``limit`` (the stress harness wipe path walks the table in 500-
+    row pages); the sort key is stable since ``created_at`` is
+    indexed and unique-enough in practice for the dev-time scripts
+    that consume this endpoint.
     """
     stmt = select(LocalUser)
     if q:
@@ -255,7 +261,11 @@ async def list_users(
         )
     if disabled is not None:
         stmt = stmt.where(LocalUser.disabled == (1 if disabled else 0))
-    stmt = stmt.order_by(LocalUser.created_at.desc()).limit(int(limit))
+    stmt = (
+        stmt.order_by(LocalUser.created_at.desc())
+        .offset(int(offset))
+        .limit(int(limit))
+    )
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [_row_to_user(r) for r in rows]
