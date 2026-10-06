@@ -216,6 +216,7 @@ def test_plugin_routers_mount_in_order():
         def routers(self):
             r = APIRouter()
             r.add_api_route("/_test/r1", lambda: {"ok": "r1"})
+            r.add_api_route("/_test/order", lambda: {"first": "r1"})
             return [r]
 
     class _R2(mp_plugins.Plugin):
@@ -224,14 +225,21 @@ def test_plugin_routers_mount_in_order():
         def routers(self):
             r = APIRouter()
             r.add_api_route("/_test/r2", lambda: {"ok": "r2"})
+            r.add_api_route("/_test/order", lambda: {"first": "r2"})
             return [r]
 
     reg = mp_plugins.PluginRegistry(plugins=[_R1(), _R2()])
     app = FastAPI()
     reg.mount_routers(app)
-    paths = [r.path for r in app.routes if hasattr(r, "path")]
-    assert "/_test/r1" in paths
-    assert "/_test/r2" in paths
+    # Included routers need not appear as flat entries in app.routes.
+    # Verify both mounted endpoints and first-registered routing precedence.
+    with TestClient(app) as client:
+        for path, body in (("/_test/r1", {"ok": "r1"}),
+                           ("/_test/r2", {"ok": "r2"}),
+                           ("/_test/order", {"first": "r1"})):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.json() == body
 
 
 def test_filter_by_license_drops_ungated_plugins():
