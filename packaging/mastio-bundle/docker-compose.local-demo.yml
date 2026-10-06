@@ -1,0 +1,106 @@
+# Single-host evaluation, synthetic data only. Used by local-demo.py.
+# Keep separate from the configurable corporate deployment overlays.
+services:
+  init-permissions:
+    image: ${DEMO_BUSYBOX_IMAGE:?}
+    network_mode: none
+    command: [sh, -c, 'chown -R 10001:10001 /data /certs && chmod 0750 /data /certs']
+    volumes:
+      - ${DEMO_STATE:?}/data:/data
+      - ${DEMO_STATE:?}/certs:/certs
+  redis:
+    image: ${DEMO_REDIS_IMAGE:?}
+    command: [redis-server, --save, '', --appendonly, 'no']
+    networks: [gateway]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  ollama:
+    image: ${DEMO_OLLAMA_IMAGE:?}
+    environment:
+      OLLAMA_NO_CLOUD: '1'
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      OLLAMA_NUM_PARALLEL: '1'
+    volumes:
+      - ${DEMO_STATE:?}/models:/models:ro
+    networks: [models]
+    healthcheck:
+      test: [CMD, ollama, show, '${DEMO_MODEL:?}']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  mcp-proxy:
+    image: ${DEMO_MASTIO_IMAGE:?}
+    env_file: ${DEMO_STATE:?}/runtime.env
+    command: [uvicorn, mcp_proxy.main:app, --host, 0.0.0.0, --port, '9100', --proxy-headers, '--forwarded-allow-ips=*', --workers, '1']
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ${DEMO_STATE:?}/data:/data
+      - ${DEMO_STATE:?}/certs:/var/lib/mastio/nginx-certs
+      - ./local-demo-bootstrap.py:/opt/local-demo-bootstrap.py:ro
+    networks: [gateway, models]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9100/health', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  mastio-nginx:
+    image: ${DEMO_NGINX_IMAGE:?}
+    # The entrypoint installs namespace-local egress rules, then permanently
+    # drops NET_ADMIN before nginx starts. No host network or Docker socket.
+    cap_add: [NET_ADMIN]
+    cap_drop: [NET_RAW]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      mcp-proxy:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${DEMO_PORT:?}:9443'
+    volumes:
+      - ./nginx/mastio:/etc/nginx/conf.d:ro
+      - ${DEMO_STATE:?}/certs:/etc/nginx/certs:ro
+    networks: [clients, gateway, ingress]
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, --max-time, '2', --cacert, /etc/nginx/certs/org-ca.crt, 'https://127.0.0.1:9443/health']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  agent:
+    image: ${DEMO_MASTIO_IMAGE:?}
+    profiles: [agent]
+    user: '${DEMO_UID:?}:${DEMO_GID:?}'
+    entrypoint: [python, /opt/first-agent.py]
+    environment:
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: '1'
+      OTEL_SDK_DISABLED: 'true'
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - ./first-agent.py:/opt/first-agent.py:ro
+      - ${DEMO_STATE:?}/agent:/identity
+      - ${DEMO_STATE:?}/public:/trust:ro
+    networks: [clients]
+    healthcheck:
+      test: [CMD, python, -c, 'import cullis_sdk']
+networks:
+  # A publishable ingress is needed by Docker. Only the filtered nginx joins it.
+  ingress:
+    internal: false
+  clients:
+    internal: true
+  gateway:
+    internal: true
+  models:
+    internal: true

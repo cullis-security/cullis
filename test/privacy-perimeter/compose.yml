@@ -1,0 +1,107 @@
+# Evaluation only: synthetic data, SQLite and local KMS, no published ports.
+# Images and model weights must be available before starting this stack.
+services:
+  init-permissions:
+    image: busybox:stable
+    network_mode: none
+    command: [sh, -c, 'mkdir -p /data /certs && chown -R 10001:10001 /data /certs && chmod 0750 /data /certs']
+    volumes:
+      - ${CULLIS_PERIMETER_STATE:?}/data:/data
+      - ${CULLIS_PERIMETER_STATE:?}/certs:/certs
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --save, '', --appendonly, 'no']
+    networks: [gateway]
+  ollama:
+    image: ${OLLAMA_IMAGE:?Use the digest recorded during preparation}
+    environment:
+      OLLAMA_NO_CLOUD: '1'
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MODELS: /models
+      OLLAMA_NUM_PARALLEL: '1'
+    volumes:
+      - ${CULLIS_PERIMETER_STATE:?}/models:/models:ro
+    networks: [backends]
+  fixture:
+    image: ${MASTIO_IMAGE:?}
+    entrypoint: [python, /checks/fixture.py]
+    command: [--tls]
+    user: '0:0'
+    volumes:
+      - .:/checks:ro
+      - ${CULLIS_PERIMETER_STATE:?}/fixture-tls:/tls:ro
+    networks: [backends]
+    healthcheck:
+      test: [CMD, python, -c, "import ssl,urllib.request; urllib.request.urlopen('https://fixture:8443/', context=ssl.create_default_context(cafile='/tls/ca.pem'), timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  mcp-proxy:
+    image: ${MASTIO_IMAGE:?}
+    env_file: ${CULLIS_PERIMETER_STATE:?}/runtime.env
+    command: [uvicorn, mcp_proxy.main:app, --host, 0.0.0.0, --port, '9100', --proxy-headers, '--forwarded-allow-ips=*', --workers, '1']
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+      ollama:
+        condition: service_started
+      fixture:
+        condition: service_started
+    volumes:
+      - ${CULLIS_PERIMETER_STATE:?}/data:/data
+      - ${CULLIS_PERIMETER_STATE:?}/certs:/var/lib/mastio/nginx-certs
+      - ${CULLIS_PERIMETER_STATE:?}/fixture-tls/ca.pem:/test-ca.pem:ro
+    networks: [gateway, backends]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:9100/health', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+  mastio-nginx:
+    image: nginx:1.27-alpine
+    depends_on:
+      mcp-proxy:
+        condition: service_healthy
+    volumes:
+      - ../../nginx/mastio:/etc/nginx/conf.d:ro
+      - ${CULLIS_PERIMETER_STATE:?}/certs:/etc/nginx/certs:ro
+    networks: [clients, gateway]
+  operator:
+    image: ${MASTIO_IMAGE:?}
+    user: '0:0'
+    entrypoint: [python, -c, 'import time; time.sleep(86400)']
+    env_file: ${CULLIS_PERIMETER_STATE:?}/runtime.env
+    volumes:
+      - .:/checks:ro
+      - ../../packaging/mastio-bundle/first-agent.py:/first-agent.py:ro
+      - ../../scripts/cullis-audit-verify.py:/audit-verify.py:ro
+      - ${CULLIS_PERIMETER_STATE:?}/evidence:/evidence
+    networks: [clients]
+    healthcheck:
+      test: [CMD, python, -c, "import os,httpx; from pathlib import Path; os.kill(1, 0); assert Path('/checks/journey.py').is_file(); assert Path('/first-agent.py').is_file(); assert os.access('/evidence', os.W_OK)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  # Controlled destination OUTSIDE the permitted networks. No Internet needed.
+  outside:
+    image: ${MASTIO_IMAGE:?}
+    entrypoint: [python, /checks/fixture.py]
+    volumes:
+      - .:/checks:ro
+    networks: [outside]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+networks:
+  clients:
+    internal: true
+  gateway:
+    internal: true
+  backends:
+    internal: true
+  outside:
+    internal: true

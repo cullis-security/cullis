@@ -47,6 +47,7 @@ postgresql+asyncpg:/
 packaging/mastio-bundle/data/
 packaging/mastio-bundle/nginx-certs/
 packaging/mastio-bundle/backups/
+/packaging/mastio-bundle/local-demo-state/
 
 # Nginx proxy (TLS private keys, per-VM configs)
 nginx-proxy/

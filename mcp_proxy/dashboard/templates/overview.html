@@ -61,6 +61,18 @@
 
 <div class="max-w-6xl space-y-6">
 
+    {% if standalone_mode and not local_count %}
+    <div class="p-6 bg-surface-900/60 border border-gray-800/60 rounded-lg">
+        <h2 class="text-sm font-semibold text-white mb-3">Connect your first autonomous agent</h2>
+        <ol class="space-y-2 text-sm text-gray-300">
+            <li>1. <a href="/proxy/ai-providers" class="text-accent-400 hover:underline">Configure and test a model provider.</a></li>
+            <li>2. On the agent computer, follow <code>FIRST_AGENT.md</code> included in the Mastio bundle and run <code>first-agent.py connect</code>.</li>
+            <li>3. <a href="/proxy/enrollments" class="text-accent-400 hover:underline">Approve the agent request</a>, then run the connection check and first task.</li>
+        </ol>
+        <p class="mt-3 text-xs text-gray-500">The guide also covers adding an MCP tool and verifying access. Standalone Mastio does not require a broker connection.</p>
+    </div>
+    {% endif %}
+
     {# A-5 dogfood fix: server-rendered update-available banner.
        The HTMX banner in base.html (#update-status-banner) still fires
        and provides the rich expandable instructions, but it depends on
