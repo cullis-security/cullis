@@ -1,18 +1,20 @@
 ---
 title: "Rego policies — beyond allowlists"
-description: "Replace the dashboard's allowlist / blocklist with full Rego rules. Cullis compiles the operator's Rego to a WASM bundle at save time and evaluates it in-process on every decision, with the allowlist as a safety fallback."
+description: "Constrain authorized actions with Rego rules compiled to WASM. Configured policies deny requests when evaluation fails."
 category: "Operate"
 order: 9
-updated: "2026-05-23"
+updated: "2026-10-06"
 ---
 
 # Rego policies
 
-The dashboard Policies page accepts two layers, evaluated in order on every PDP decision:
+Tool execution follows cumulative checks:
 
-1. **Rego layer** — when the operator has authored a Rego policy, Cullis compiles it to a WASM bundle via the bundled OPA CLI, persists the bundle next to the source, and evaluates it in-process on every call to `/pdp/policy`, `/v1/data/cullis/policy/session`, and `/v1/data/cullis/policy/tool_call`.
+1. **Action permission:** every tool must declare a capability and every caller must hold it. Agent device tier requirements also apply.
+2. **Tool permission:** MCP resources require an active binding. Operator Tool Rules can further restrict tools, principals, models and servers.
+3. **Conditions:** the gateway selects the authenticated agent's delegation and evaluates Rego. An allow at this stage cannot override any earlier denial.
 
-2. **Legacy allowlist** — `blocked_agents`, `allowed_orgs`, `capabilities`, `tool_rules`. Backstop for deployments that never authored Rego, also kicks in transparently when the Rego layer fails to evaluate (logged at warning level so the operator catches it; never silently denies).
+REST `/v1/ingress/execute` and MCP `/v1/mcp` share the executor. Their discovery endpoints filter capabilities and resource bindings. Session PDP endpoints evaluate Built-in Rules before Rego; tool PDP endpoints use the same Tool Rules and Rego composition as the executor. External PDP callers remain responsible for authenticating their users and enforcing their own capability and binding checks: a PDP response does not execute a tool or grant access to a resource.
 
 Cullis ships OPA, so there is **no extra component to install**. Writing Rego adds expressiveness without changing the deployment topology.
 
@@ -43,7 +45,7 @@ Cullis evaluates two Rego entrypoints:
   }
   ```
 
-- `data.cullis.policy.tool_call` — invoked for `/v1/data/cullis/policy/tool_call`. The `input` mirrors the OPA Data API tool-call shape:
+- `data.cullis.policy.tool_call` — invoked for `/v1/data/cullis/policy/tool_call` and authorized REST/MCP tool executions. The executor supplies the authenticated `agent_id` and `principal_type`; caller arguments cannot replace them. The `input` mirrors the OPA Data API tool-call shape:
 
   ```json
   {
@@ -149,7 +151,7 @@ Default-deny is the safer default — but you can flip the polarity by setting `
 
 1. Open the dashboard at `https://mastio.example.com:9443/proxy/policies`.
 2. Paste Rego into the Policies editor. Save.
-3. Cullis runs `opa build -t wasm -e cullis.policy` on the source. On success: green checkmark, WASM bundle persisted, next decision evaluates Rego. On failure: red banner with the `opa build` diagnostic (line + column + error reason). The legacy allowlist stays active until the operator fixes the Rego.
+3. Cullis runs `opa build -t wasm -e cullis/policy/session -e cullis/policy/tool_call` on the source. On success: green checkmark, WASM bundle persisted, next decision evaluates Rego. On failure: red banner with the `opa build` diagnostic (line + column + error reason). The previously saved policy stays active; legacy rules apply only if no Rego policy was previously saved.
 4. Watch the audit log. Every Rego-decided call carries the WASM SHA-256 prefix in the log line (`PDP[rego] DENY: ... sha256=ab12cd34...`) so the operator can correlate a runtime decision back to the policy version that produced it.
 
 ## Constraints
@@ -162,9 +164,56 @@ The compile step bounds Rego at **10 seconds**. Honest policies compile in well 
 
 The OPA binary bundled in the image is **v1.16.2**, SHA-256-pinned at build time (`scripts/opa-sha256.txt`, verified with `sha256sum -c`). Policies compile to WebAssembly on Save (~25 ms) and evaluate in-process via `opa-wasmtime` — no sidecar, no network hop. After the first evaluate warms the instance cache, a representative 60-line policy runs at **p50 ~0.2 ms / ~4 600 evals/s** single-thread. The benchmark is reproducible: `python scripts/bench-rego-eval.py`.
 
-## Fall-through to the legacy allowlist
+## Required delegations
 
-When the Rego layer is empty or its evaluation fails (compile-time issues never reach the runtime, but a runtime-only error like an undefined rule for a specific input still drops to legacy), Cullis falls through to the dashboard's allowlist fields (`blocked_agents`, `allowed_orgs`, `capabilities`, `tool_rules`). Operators can adopt Rego incrementally: keep the allowlist populated, author Rego incrementally, and remove the allowlist entries once the Rego rules cover the same surface.
+Enable **Require an agent delegation and Rego policy** on a sensitive MCP resource (`requires_delegation: true` in the admin API). This requirement is stored on the resource independently of `policy_rules` and read on every execution, including across workers. Removing the rule or the entire policy therefore denies access. Builtin definitions can declare the same requirement.
+
+In Tool Rules, set delegations by exact principal ID:
+
+```json
+{
+  "tool_rules": {
+    "issue_refund": {
+      "delegations": {
+        "acme::refund100": {"max_amount_cents": 10000},
+        "acme::refund1000": {"max_amount_cents": 100000}
+      }
+    }
+  }
+}
+```
+
+A nonempty named Tool Rules collection denies unlisted tools. `allowed_principals: []` explicitly denies every principal; omitting the field imposes no additional principal restriction. Legacy `allowed_tools` and `blocked_tools` lists are also enforced. Malformed restrictions deny rather than disappear.
+
+Rego receives the selected conditions as `input.delegation`; arguments cannot replace this value or `input.agent_id`:
+
+```rego
+package cullis.policy
+
+default session := {"decision": "deny"}
+default tool_call := {"decision": "deny"}
+
+tool_call := {"decision": "allow"} if {
+    input.tool_name == "issue_refund"
+    input.arguments.currency == "EUR"
+    is_number(input.arguments.amount_cents)
+    input.arguments.amount_cents > 0
+    input.arguments.amount_cents == floor(input.arguments.amount_cents)
+    input.arguments.amount_cents <= input.delegation.max_amount_cents
+}
+```
+
+These limits are per invocation. Cumulative spending limits require a transactional ledger; this example does not implement one. A ticket agent without `refunds.issue` never reaches refund Rego, even if accidentally bound to the financial resource.
+
+A missing delegation denies with `delegation_missing`; a delegation without Rego denies with `delegation_policy_missing`. Configured but corrupt artifacts, runtime exceptions, undefined rules and malformed decisions deny. Other policy errors use `policy_configuration_error`, `rego_artifact_error` or `rego_evaluation_error`. Executor failures retain `policy_denied` and are audited before secrets or handler execution.
+
+## Upgrade behavior
+
+Tools with no declared capability can no longer execute, including MCP resources. User and workload principals also need the declared capability. Add explicit capabilities and grants to existing resources before upgrading. Binding remains required in addition to capability. Device tier applies to agent identities; users and workloads have no agent device attestation source.
+
+Static denials now win over Rego on every PDP surface. Model restrictions cannot be satisfied by placing a model ID in tool arguments; the native executor has no authoritative model context, so such restricted calls deny. The `scope`, `rate_limit` and `obligations` fields are advisory PDP output; enforce runtime conditions in Rego rather than assuming these fields alone constrain execution.
+
+Resources with optional delegation preserve execution without Rego after all other checks pass. Mark sensitive resources as requiring delegation before relying on amount limits.
 
 ## What stays the same
 

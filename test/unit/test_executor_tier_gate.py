@@ -37,7 +37,12 @@ _TOOL_CAP = "mcp.transfer_money"
 
 
 @pytest.fixture
-def clean_registry():
+def clean_registry(monkeypatch):
+    # Resource metadata store is readable, with delegation optional in this fixture.
+    monkeypatch.setattr(executor, "_resource_requires_delegation", AsyncMock(return_value=False))
+    # This isolated executor fixture has a readable store with no operator policy.
+    # Store failures and configured Rego are covered by the policy gate tests.
+    monkeypatch.setattr(executor, "get_config", AsyncMock(return_value=None))
     saved = dict(tool_registry._tools)
     tool_registry._tools.clear()
     yield tool_registry

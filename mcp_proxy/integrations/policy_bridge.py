@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse
 
 from mcp_proxy.config import get_settings
 from mcp_proxy.db import get_config, log_audit
+from mcp_proxy.policy import parse_policy_rules, policy_error_decision
 
 _log = logging.getLogger("mcp_proxy.integrations.policy_bridge")
 
@@ -127,66 +128,13 @@ async def _evaluate_session_policy(opa_input: dict) -> dict:
     ``deny``) and optional ``reason``. The caller maps allow → pass,
     deny → block.
     """
-    rules_raw = await get_config("policy_rules")
-    if rules_raw:
-        try:
-            rules = _json.loads(rules_raw)
-        except _json.JSONDecodeError:
-            rules = {}
-    else:
-        rules = {}
+    try:
+        rules = parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        return policy_error_decision("policy_configuration_error")
 
-    # Two-layer policy: operator's Rego first, legacy allowlist as
-    # fall-through. See ``mcp_proxy.policy.try_rego_decision`` for the
-    # contract (returns None when no Rego is configured or its eval
-    # fails — the latter logged at warning level inside the helper).
-    from mcp_proxy.policy import try_rego_decision
-    rego_decision = try_rego_decision(rules, opa_input, surface="session")
-    if rego_decision is not None:
-        _log.info(
-            "policy_bridge[rego] session %s: %s",
-            rego_decision.get("decision", "").upper(),
-            rego_decision.get("reason", ""),
-        )
-        return rego_decision
-
-    initiator = opa_input.get("initiator_agent_id", "?")
-    target = opa_input.get("target_agent_id", "?")
-    context = opa_input.get("session_context", "?")
-
-    decision = "allow"
-    reason = ""
-
-    blocked = rules.get("blocked_agents", [])
-    if initiator in blocked or target in blocked:
-        decision = "deny"
-        reason = "Agent blocked by policy"
-
-    allowed_orgs = rules.get("allowed_orgs", [])
-    if allowed_orgs:
-        initiator_org = opa_input.get("initiator_org_id", "")
-        target_org = opa_input.get("target_org_id", "")
-        peer_org = initiator_org if context == "target" else target_org
-        if peer_org not in allowed_orgs:
-            decision = "deny"
-            reason = f"Organization '{peer_org}' not in allowed list"
-
-    allowed_caps = rules.get("capabilities", [])
-    if allowed_caps and isinstance(allowed_caps, list):
-        requested = opa_input.get("capabilities", []) or []
-        denied = [c for c in requested if c not in allowed_caps]
-        if denied:
-            decision = "deny"
-            reason = f"Capabilities not allowed: {denied}"
-
-    out: dict = {"decision": decision}
-    if reason:
-        out["reason"] = reason
-    _log.info(
-        "policy_bridge session %s: %s -> %s (ctx=%s) %s",
-        decision.upper(), initiator, target, context, reason,
-    )
-    return out
+    from mcp_proxy.policy.composition import session_decision
+    return session_decision(rules, opa_input)
 
 
 async def _evaluate_tool_call_policy(opa_input: dict) -> dict:
@@ -204,62 +152,13 @@ async def _evaluate_tool_call_policy(opa_input: dict) -> dict:
     the ``tool_rules`` subtree of ``policy_rules`` — same surface the
     existing /v1/policy/tool-call endpoint reads.
     """
-    rules_raw = await get_config("policy_rules")
-    rules: dict = {}
-    if rules_raw:
-        try:
-            rules = _json.loads(rules_raw)
-        except _json.JSONDecodeError:
-            rules = {}
+    try:
+        rules = parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        return policy_error_decision("policy_configuration_error")
 
-    # Two-layer policy: operator's Rego first, ``tool_rules`` allowlist
-    # as fall-through. Mirror of the session surface above.
-    from mcp_proxy.policy import try_rego_decision
-    rego_decision = try_rego_decision(rules, opa_input, surface="tool_call")
-    if rego_decision is not None:
-        _log.info(
-            "policy_bridge[rego] tool_call %s: agent=%s tool=%s %s",
-            rego_decision.get("decision", "").upper(),
-            opa_input.get("agent_id", "?"),
-            opa_input.get("tool_name", "?"),
-            rego_decision.get("reason", ""),
-        )
-        return rego_decision
-
-    tool_rules = rules.get("tool_rules", {})
-    if not isinstance(tool_rules, dict):
-        tool_rules = {}
-
-    tool_name = opa_input.get("tool_name", "?")
-    agent_id = opa_input.get("agent_id", "?")
-
-    blocked_tools = tool_rules.get("blocked_tools", []) or []
-    if tool_name in blocked_tools:
-        _log.info(
-            "policy_bridge tool_call DENY: agent=%s tool=%s "
-            "(blocked_tools)", agent_id, tool_name,
-        )
-        return {
-            "decision": "deny",
-            "reason": f"Tool '{tool_name}' is in the operator blocklist",
-        }
-
-    allowed_tools = tool_rules.get("allowed_tools", []) or []
-    if allowed_tools and tool_name not in allowed_tools:
-        _log.info(
-            "policy_bridge tool_call DENY: agent=%s tool=%s "
-            "(not in allowed_tools)", agent_id, tool_name,
-        )
-        return {
-            "decision": "deny",
-            "reason": f"Tool '{tool_name}' is not in the operator allowlist",
-        }
-
-    _log.info(
-        "policy_bridge tool_call ALLOW: agent=%s tool=%s",
-        agent_id, tool_name,
-    )
-    return {"decision": "allow"}
+    from mcp_proxy.policy.composition import tool_decision
+    return tool_decision(rules, opa_input)
 
 
 @router.post("/v1/data/cullis/policy/{path:path}")

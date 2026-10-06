@@ -1,28 +1,14 @@
-"""Cullis Mastio policy engine surface.
+"""Policy configuration and fail-closed Rego evaluation.
 
-Two layers, evaluated in order on every PDP-style decision call
-(``/pdp/policy``, ``/v1/policy/tool-call``,
-``/v1/data/cullis/policy/*``):
-
-  1. **Rego engine** (:mod:`mcp_proxy.policy.rego_engine`) — when the
-     operator has saved a Rego policy on the dashboard Policies page,
-     the compiled WASM bundle is consulted first. A
-     ``{"decision": "allow"|"deny", "reason": ...}`` returned by Rego
-     short-circuits the legacy allowlist below.
-
-  2. **Legacy allowlist** — the ``blocked_agents`` / ``allowed_orgs`` /
-     ``capabilities`` / ``tool_rules`` shape the dashboard wrote
-     before the Rego surface existed. Continues to back-stop
-     deployments that never adopted Rego.
-
-The :func:`try_rego_decision` helper is the single entry point both
-the in-tree PDP routes and the external policy-bridge (:mod:`
-mcp_proxy.integrations.policy_bridge`) consume — keeps the two-layer
-contract DRY across the four call sites.
+The composition module applies static rules and agent delegations before Rego.
+Execution additionally enforces capability, device tier and resource binding.
+A configured policy that cannot be evaluated denies; absence is permitted only
+for tools whose resource metadata and operator rules do not require a delegation.
 """
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from typing import Optional
 
@@ -37,10 +23,35 @@ __all__ = [
     "RegoCompileError",
     "RegoEvalError",
     "try_rego_decision",
+    "parse_policy_rules",
+    "policy_error_decision",
 ]
 
 
 _log = logging.getLogger("mcp_proxy.policy")
+
+
+def parse_policy_rules(raw: str | None) -> dict:
+    """Decode stored policy configuration; only a missing row is empty policy.
+
+    Malformed JSON or a non-object document must never erase restrictions.
+    Callers also catch storage errors and return a policy error decision.
+    """
+    if raw is None or raw == "":
+        return {}
+    try:
+        rules = json.loads(raw)
+    except (ValueError, TypeError):
+        raise ValueError("Invalid policy configuration") from None
+    if not isinstance(rules, dict):
+        raise ValueError("Policy configuration must be an object")
+    return rules
+
+
+def policy_error_decision(reason: str) -> dict:
+    """Deny with a caller-supplied static error code, never exception contents."""
+    _log.warning("policy: request denied (%s)", reason)
+    return {"decision": "deny", "reason": reason}
 
 
 def try_rego_decision(
@@ -73,37 +84,23 @@ def try_rego_decision(
 
     Returns:
         The decision dict (``{"decision": "allow"|"deny",
-        "reason"?}``) when the Rego layer produced one. ``None`` when:
-
-          * no Rego is configured (``rego_wasm_base64`` missing /
-            empty);
-          * the configured WASM is unreadable (base64 decode error);
-          * the Rego runtime raised an eval error (the caller treats
-            the absence as a signal to **fall through** to the legacy
-            allowlist, NOT as a deny — the failure already gets logged
-            here, and a soft-fail-open on Rego runtime errors matches
-            the pre-Rego posture so an operator's broken Rego doesn't
-            silently brick every previously-allowed call).
-
-        Callers that need fail-closed semantics on a Rego runtime
-        error should layer that on top — the policy-bridge HTTP
-        handlers do exactly this when the operator has explicitly
-        opted into strict mode (future work; today the legacy
-        fall-through is the only mode).
+        "reason"?}``). ``None`` only when both source and artifact are
+        absent/empty. A source without its artifact, invalid WASM, runtime
+        error or undefined/malformed decision returns deny with a static
+        reason. These failures cannot relax an existing delegation.
     """
     if not isinstance(rules, dict):
+        return policy_error_decision("policy_configuration_error")
+    source = rules.get("rego")
+    wasm_b64 = rules.get("rego_wasm_base64")
+    if source in (None, "") and wasm_b64 in (None, ""):
         return None
-    wasm_b64 = rules.get("rego_wasm_base64") or ""
-    if not wasm_b64:
-        return None
+    if not isinstance(wasm_b64, str) or not wasm_b64:
+        return policy_error_decision("rego_artifact_error")
     try:
         wasm = base64.b64decode(wasm_b64, validate=True)
-    except (ValueError, TypeError) as exc:
-        _log.warning(
-            "policy.rego: rego_wasm_base64 decode failed (%s) — "
-            "falling through to legacy allowlist", exc,
-        )
-        return None
+    except (ValueError, TypeError):
+        return policy_error_decision("rego_artifact_error")
 
     entrypoint = f"cullis/policy/{surface}"
     policy = CompiledPolicy.from_wasm(wasm)
@@ -111,17 +108,13 @@ def try_rego_decision(
         decision = evaluate_decision(
             policy, input_doc, entrypoint=entrypoint,
         )
-    except RegoEvalError as exc:
-        # Operator's Rego is misshaped — log + fall through to legacy.
-        # The dashboard Save flow validates the shape at compile time,
-        # but a Rego that compiles can still return an unexpected
-        # document at runtime (e.g. a partial rule that didn't cover
-        # one of the operator's input shapes).
-        _log.warning(
-            "policy.rego: %s eval failed (%s) — falling through to "
-            "legacy allowlist for this decision", surface, exc,
-        )
-        return None
+    except Exception:
+        # Covers WASM faults, undefined output and malformed decision values.
+        # Exception text can contain policy input or source; never expose it.
+        return policy_error_decision("rego_evaluation_error")
+
+    if not isinstance(decision, dict) or decision.get("decision") not in ("allow", "deny"):
+        return policy_error_decision("rego_evaluation_error")
 
     _log.info(
         "policy.rego: %s decision=%s (sha256=%s)",

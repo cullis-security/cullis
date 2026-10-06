@@ -38,19 +38,7 @@ from mcp_proxy.db import compute_audit_row_hash, _AUDIT_CHAIN_GENESIS
 
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 
-if url.startswith('postgresql'):
-    import psycopg2, re
-    sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-    conn = psycopg2.connect(sync_url)
-    cur = conn.cursor()
-    cur.execute('SELECT chain_seq, prev_hash, row_hash, timestamp, agent_id, action, tool_name, status, detail, request_id, dpop_jkt, on_behalf_of_user_id, hash_format FROM audit_log WHERE chain_seq IS NOT NULL ORDER BY chain_seq ASC')
-    rows = cur.fetchall()
-else:
-    import sqlite3
-    path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-    conn = sqlite3.connect(path)
-    rows = conn.execute('SELECT chain_seq, prev_hash, row_hash, timestamp, agent_id, action, tool_name, status, detail, request_id, dpop_jkt, on_behalf_of_user_id, hash_format FROM audit_log WHERE chain_seq IS NOT NULL ORDER BY chain_seq ASC').fetchall()
-
+rows = query('SELECT chain_seq, prev_hash, row_hash, timestamp, agent_id, action, tool_name, status, detail, request_id, dpop_jkt, on_behalf_of_user_id, hash_format FROM audit_log WHERE chain_seq IS NOT NULL ORDER BY chain_seq ASC')
 if not rows:
     print('VERIFY_OK total=0  (empty chain — nothing to verify)')
     sys.exit(0)
@@ -100,7 +88,8 @@ PY
 )"
 
 set +e
-result="$(smoke_compose exec -T mcp-proxy python3 -c "$VERIFY_SCRIPT" 2>&1)"
+result="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
+$VERIFY_SCRIPT" 2>&1)"
 exit_code=$?
 set -e
 
@@ -121,23 +110,11 @@ log_pass "verify_audit_chain: ${total} chained rows verified, chain intact"
 # Bonus: round-trip the audit_chain_anchors → TSA token decoding via
 # asn1crypto, mirroring what the offline standalone verifier would do
 # for the anchor portion. Skip cleanly when no anchors are present.
-anchor_check="$(smoke_compose exec -T mcp-proxy python3 -c "
+anchor_check="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import hashlib, os, sys
 
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
-if url.startswith('postgresql'):
-    import psycopg2, re
-    sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-    conn = psycopg2.connect(sync_url)
-    row = conn.cursor()
-    row.execute('SELECT chain_seq, row_hash, tsa_token FROM audit_chain_anchors ORDER BY id DESC LIMIT 1')
-    row = row.fetchone()
-else:
-    import sqlite3
-    path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-    conn = sqlite3.connect(path)
-    row = conn.execute('SELECT chain_seq, row_hash, tsa_token FROM audit_chain_anchors ORDER BY id DESC LIMIT 1').fetchone()
-
+row = query('SELECT chain_seq, row_hash, tsa_token FROM audit_chain_anchors ORDER BY id DESC LIMIT 1')[0]
 if row is None:
     print('NO_ANCHORS')
     sys.exit(0)

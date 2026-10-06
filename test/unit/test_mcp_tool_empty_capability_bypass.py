@@ -41,7 +41,12 @@ from mcp_proxy.tools.registry import ToolDefinition, ToolRegistry, tool_registry
 
 
 @pytest.fixture
-def clean_registry():
+def clean_registry(monkeypatch):
+    # Resource metadata store is readable, with delegation optional in this fixture.
+    monkeypatch.setattr(executor, "_resource_requires_delegation", AsyncMock(return_value=False))
+    # This isolated executor fixture has a readable store with no operator policy.
+    # Store failures and configured Rego are covered by the policy gate tests.
+    monkeypatch.setattr(executor, "get_config", AsyncMock(return_value=None))
     """Snapshot + restore the singleton registry to keep tests isolated."""
     saved = dict(tool_registry._tools)
     tool_registry._tools.clear()
@@ -171,7 +176,7 @@ def test_has_capability_builtin_with_empty_capability_fails_closed(
     assert tool_registry.has_capability("builtin_no_cap", ["any.cap"]) is False
 
 
-def test_has_capability_resource_with_empty_capability_allows(
+def test_has_capability_resource_with_empty_capability_denies(
     clean_registry,
 ) -> None:
     """MCP resource with empty capability still returns True from
@@ -189,7 +194,7 @@ def test_has_capability_resource_with_empty_capability_allows(
         endpoint_url="https://x.invalid/mcp",
     ))
 
-    assert tool_registry.has_capability("resource_no_cap", []) is True
+    assert tool_registry.has_capability("resource_no_cap", []) is False
 
 
 # ── Executor runtime fail-closed ─────────────────────────────────────
@@ -244,7 +249,7 @@ async def test_executor_denies_builtin_with_empty_capability(
 
 
 @pytest.mark.asyncio
-async def test_executor_emits_informational_audit_for_resource_empty_capability(
+async def test_executor_denies_resource_empty_capability_even_with_binding(
     clean_registry,
 ) -> None:
     """Recommendation #2: MCP resource with empty capability gets an
@@ -277,17 +282,14 @@ async def test_executor_emits_informational_audit_for_resource_empty_capability(
             secret_provider=_FakeSecretProvider(),
         )
 
-    assert resp.status == "success", (resp.status, resp.error)
-    handler.assert_awaited_once()
-
-    actions = [
-        kwargs.get("action") for _, kwargs in audit_mock.call_args_list
-    ]
-    assert "policy.no_capability_required" in actions, actions
+    assert resp.status == "error"
+    assert resp.denied_reason_code == "capability_denied"
+    handler.assert_not_awaited()
+    assert any(c.kwargs.get("status") == "denied" for c in audit_mock.await_args_list)
 
 
 @pytest.mark.asyncio
-async def test_executor_resource_empty_capability_still_blocked_by_missing_binding(
+async def test_executor_resource_with_capability_still_requires_binding(
     clean_registry,
 ) -> None:
     """Belt-and-braces: even with the new informational audit, an
@@ -298,13 +300,13 @@ async def test_executor_resource_empty_capability_still_blocked_by_missing_bindi
     tool_registry.register_definition(ToolDefinition(
         name="resource_no_cap",
         description="MCP resource with empty capability",
-        required_capability="",
+        required_capability="resource.read",
         allowed_domains=[],
         handler=handler,
         resource_id="res-1",
         endpoint_url="https://upstream.invalid/mcp",
     ))
-    agent = _make_agent(scope=[], principal_type="user")
+    agent = _make_agent(scope=["resource.read"], principal_type="user")
 
     async def _binding_missing(*_a, **_k):
         return False

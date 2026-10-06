@@ -35,22 +35,11 @@ source "$SMOKE_LIB_DIR/_common.sh"
 deadline=$(( $(date +%s) + 60 ))
 anchors=0
 while (( $(date +%s) < deadline )); do
-    anchors="$(smoke_compose exec -T mcp-proxy python3 -c "
+    anchors="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os, re
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM audit_merkle_anchors')
-        print(cur.fetchone()[0])
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        print(conn.execute('SELECT COUNT(*) FROM audit_merkle_anchors').fetchone()[0])
+    print(query('SELECT COUNT(*) FROM audit_merkle_anchors')[0][0])
 except Exception:
     print(0)
 " 2>/dev/null | tr -d '\r' || echo 0)"

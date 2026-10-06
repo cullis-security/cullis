@@ -42,7 +42,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mcp_proxy.models import TokenPayload, ToolExecuteRequest
-from mcp_proxy.policy.denied_reason_codes import CAPABILITY_DENIED, POLICY_DENIED
+from mcp_proxy.policy.denied_reason_codes import (
+    CAPABILITY_DENIED, INSUFFICIENT_TIER, MISSING_BINDING, POLICY_DENIED,
+)
 from mcp_proxy.policy.tier_matrix import TierMatrix
 from mcp_proxy.tools import executor
 from mcp_proxy.tools.registry import ToolDefinition, tool_registry
@@ -55,7 +57,9 @@ _RULES_JSON = '{"rego_wasm_base64": "ZmFrZQ=="}'
 
 
 @pytest.fixture
-def clean_registry():
+def clean_registry(monkeypatch):
+    # Resource metadata store is readable, with delegation optional in this fixture.
+    monkeypatch.setattr(executor, "_resource_requires_delegation", AsyncMock(return_value=False))
     saved = dict(tool_registry._tools)
     tool_registry._tools.clear()
     yield tool_registry
@@ -90,7 +94,7 @@ def _request(parameters: dict | None = None) -> ToolExecuteRequest:
     )
 
 
-def _register_tool(handler: AsyncMock | None = None) -> AsyncMock:
+def _register_tool(handler: AsyncMock | None = None, resource_id: str | None = None) -> AsyncMock:
     h = handler or AsyncMock(return_value={"ok": True})
     tool_registry.register_definition(ToolDefinition(
         name=_TOOL_NAME,
@@ -98,7 +102,7 @@ def _register_tool(handler: AsyncMock | None = None) -> AsyncMock:
         required_capability=_TOOL_CAP,
         allowed_domains=[],
         handler=h,
-        resource_id=None,
+        resource_id=resource_id,
     ))
     return h
 
@@ -234,3 +238,100 @@ async def test_capability_deny_wins_before_rego_gate(clean_registry):
     assert resp.status == "error"
     assert resp.denied_reason_code == CAPABILITY_DENIED
     rego.assert_not_called()  # capability deny short-circuits before Rego
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate,expected_code", [
+    ("capability", CAPABILITY_DENIED),
+    ("tier", INSUFFICIENT_TIER),
+    ("binding", MISSING_BINDING),
+])
+async def test_base_authorization_denial_never_loads_policy_or_secrets(
+    clean_registry, monkeypatch, gate, expected_code,
+):
+    handler = _register_tool(resource_id="refunds")
+    config = AsyncMock(side_effect=RuntimeError("policy store unavailable"))
+    rego = MagicMock(return_value={"decision": "allow"})
+    secrets = SimpleNamespace(get_tool_secrets=AsyncMock(return_value={}))
+    audit = AsyncMock()
+    monkeypatch.setattr(executor, "get_config", config)
+    monkeypatch.setattr("mcp_proxy.policy.try_rego_decision", rego)
+    monkeypatch.setattr(executor, "log_audit", audit)
+    monkeypatch.setattr(executor, "resolve_effective_tier", AsyncMock(
+        return_value=("untrusted" if gate == "tier" else "managed_attested", None),
+    ))
+    monkeypatch.setattr("mcp_proxy.local.bindings.has_active_binding", AsyncMock(
+        return_value=gate != "binding",
+    ))
+    state = SimpleNamespace(tier_matrix=TierMatrix(
+        version="test", default_min_tier="managed_attested",
+        by_exact={}, by_prefix=(), source_path="<test>",
+    ))
+    resp = await executor.run(
+        request=_request(), agent=_agent(scope=[] if gate == "capability" else None),
+        db=None, secret_provider=secrets, app_state=state,
+    )
+    assert resp.status == "error"
+    assert resp.denied_reason_code == expected_code
+    config.assert_not_awaited()
+    rego.assert_not_called()
+    secrets.get_tool_secrets.assert_not_awaited()
+    handler.assert_not_awaited()
+    assert any(c.kwargs.get("status") == "denied" for c in audit.await_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw,error,reason", [
+    ("{broken", None, "policy_configuration_error"),
+    ("[]", None, "policy_configuration_error"),
+    (None, RuntimeError("synthetic-sensitive-config"), "policy_configuration_error"),
+    ('{"rego":"package cullis.policy"}', None, "rego_artifact_error"),
+    ('{"rego_wasm_base64":"invalid!"}', None, "rego_artifact_error"),
+    (_RULES_JSON, None, "rego_evaluation_error"),
+])
+async def test_policy_failure_denies_before_secrets_and_handler(
+    clean_registry, monkeypatch, raw, error, reason,
+):
+    handler = _register_tool(resource_id="refunds")
+    secrets = SimpleNamespace(get_tool_secrets=AsyncMock(return_value={}))
+    audit = AsyncMock()
+    monkeypatch.setattr(executor, "get_config", AsyncMock(return_value=raw, side_effect=error))
+    monkeypatch.setattr(executor, "log_audit", audit)
+    monkeypatch.setattr(executor, "resolve_effective_tier", AsyncMock(return_value=("managed_attested", None)))
+    monkeypatch.setattr("mcp_proxy.local.bindings.has_active_binding", AsyncMock(return_value=True))
+    # Keep the real helper and decision normalization; an undefined rule must deny.
+    monkeypatch.setattr("mcp_proxy.policy.rego_engine.RegoEngine.evaluate", lambda *a, **kw: None)
+    resp = await executor.run(
+        request=_request({"amount_cents": 50000}), agent=_agent(), db=None,
+        secret_provider=secrets, app_state=_tier_ok(),
+    )
+    assert resp.status == "error"
+    assert resp.denied_reason_code == POLICY_DENIED
+    assert reason in resp.error
+    secrets.get_tool_secrets.assert_not_awaited()
+    handler.assert_not_awaited()
+    denied = [c.kwargs for c in audit.await_args_list if c.kwargs.get("status") == "denied"]
+    assert len(denied) == 1
+    assert reason in denied[0]["detail"]
+    assert "synthetic-sensitive-config" not in resp.error + str(denied)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared,curr_requirement", [(True, False), (False, True)])
+async def test_required_delegation_cannot_disappear_with_empty_policy(
+    clean_registry, monkeypatch, declared, curr_requirement,
+):
+    handler = _register_tool(resource_id="refunds")
+    tool_registry.get(_TOOL_NAME).requires_delegation = declared
+    monkeypatch.setattr(executor, "_resource_requires_delegation", AsyncMock(return_value=curr_requirement))
+    monkeypatch.setattr("mcp_proxy.local.bindings.has_active_binding", AsyncMock(return_value=True))
+    monkeypatch.setattr(executor, "resolve_effective_tier", AsyncMock(return_value=("managed_attested", None)))
+    monkeypatch.setattr(executor, "get_config", AsyncMock(return_value=None))
+    monkeypatch.setattr(executor, "log_audit", AsyncMock())
+    secrets = SimpleNamespace(get_tool_secrets=AsyncMock(return_value={}))
+    response = await executor.run(request=_request(), agent=_agent(), db=None,
+                                  secret_provider=secrets, app_state=_tier_ok())
+    assert response.denied_reason_code == POLICY_DENIED
+    assert "delegation_missing" in response.error
+    handler.assert_not_awaited()
+    secrets.get_tool_secrets.assert_not_awaited()

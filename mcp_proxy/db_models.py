@@ -589,6 +589,7 @@ class LocalMCPResource(Base):
     auth_type = Column(Text, nullable=False, server_default="none")
     auth_secret_ref = Column(Text, nullable=True)
     required_capability = Column(Text, nullable=True)
+    requires_delegation = Column(Integer, nullable=False, server_default="0")
     allowed_domains = Column(Text, nullable=False, server_default="[]")
     enabled = Column(Integer, nullable=False, server_default="1")
     created_at = Column(Text, nullable=False)

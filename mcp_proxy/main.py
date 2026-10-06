@@ -2098,73 +2098,20 @@ async def pdp_policy(request: Request):
     target = body.get("target_agent_id", "?")
     context = body.get("session_context", "?")
 
-    # Load rules from DB (configured via dashboard Policies page)
-    rules_raw = await get_config("policy_rules")
-    if rules_raw:
-        try:
-            rules = _json.loads(rules_raw)
-        except _json.JSONDecodeError:
-            rules = {}
-    else:
-        rules = {}
+    # Unreadable configuration must not erase operator restrictions.
+    from mcp_proxy.policy import parse_policy_rules, policy_error_decision
+    try:
+        rules = parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        return JSONResponse(policy_error_decision("policy_configuration_error"))
 
-    # Two-layer policy: try the operator's Rego first (compiled WASM
-    # bundle stored under ``policy_rules.rego_wasm_base64``); fall
-    # through to the legacy allowlist below if Rego is not configured
-    # or its eval fails (the helper logs the failure).
-    from mcp_proxy.policy import try_rego_decision
-    rego_decision = try_rego_decision(
-        rules,
-        {
-            "initiator_agent_id": initiator,
-            "target_agent_id": target,
-            "initiator_org_id": body.get("initiator_org_id", ""),
-            "target_org_id": body.get("target_org_id", ""),
-            "session_context": context,
-            "capabilities": body.get("capabilities", []),
-        },
-        surface="session",
-    )
-    if rego_decision is not None:
-        _log.info(
-            "PDP[rego] %s: %s -> %s (ctx=%s) %s",
-            rego_decision.get("decision", "").upper(),
-            initiator, target, context, rego_decision.get("reason", ""),
-        )
-        return JSONResponse(rego_decision)
-
-    # Evaluate rules (empty = allow all)
-    decision = "allow"
-    reason = ""
-
-    blocked = rules.get("blocked_agents", [])
-    if initiator in blocked or target in blocked:
-        decision = "deny"
-        reason = "Agent blocked by policy"
-
-    allowed_orgs = rules.get("allowed_orgs", [])
-    if allowed_orgs:
-        initiator_org = body.get("initiator_org_id", "")
-        target_org = body.get("target_org_id", "")
-        peer_org = initiator_org if context == "target" else target_org
-        if peer_org not in allowed_orgs:
-            decision = "deny"
-            reason = f"Organization '{peer_org}' not in allowed list"
-
-    allowed_caps = rules.get("capabilities", [])
-    if allowed_caps and isinstance(allowed_caps, list):
-        requested = body.get("capabilities", [])
-        denied = [c for c in requested if c not in allowed_caps]
-        if denied:
-            decision = "deny"
-            reason = f"Capabilities not allowed: {denied}"
-
-    _log.info("PDP %s: %s -> %s (ctx=%s) %s", decision.upper(), initiator, target, context, reason)
-
-    resp: dict = {"decision": decision}
-    if reason:
-        resp["reason"] = reason
-    return JSONResponse(resp)
+    from mcp_proxy.policy.composition import session_decision
+    return JSONResponse(session_decision(rules, {
+        "initiator_agent_id": initiator, "target_agent_id": target,
+        "initiator_org_id": body.get("initiator_org_id", ""),
+        "target_org_id": body.get("target_org_id", ""),
+        "session_context": context, "capabilities": body.get("capabilities", []),
+    }))
 
 
 @app.post("/v1/policy/tool-call", tags=["pdp"])

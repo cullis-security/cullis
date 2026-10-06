@@ -25,9 +25,9 @@ per-tool / per-model / per-server policy:
     }
 
 Default semantics:
-    - tool_rules absent or empty  -> allow (legacy parity).
+    - tool_rules absent or empty -> no extra static restriction; Rego still applies.
     - tool_rules present but tool not listed -> deny (explicit-allow).
-    - tool listed but principal missing from allowed_principals -> deny.
+    - explicit allowed_principals list excludes principal (including []) -> deny.
     - principal in denied_principals -> deny (wins over allowed_principals).
     - model not in allowed_models -> deny (if allowed_models non-empty).
     - mcp_server not in allowed_mcp_servers -> deny (if non-empty).
@@ -38,12 +38,12 @@ targets AcmeCorp's MCP server) lives in Phase D.
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from mcp_proxy.db import get_config
+from mcp_proxy.policy import parse_policy_rules, policy_error_decision
 
 _log = logging.getLogger("mcp_proxy.policy.tool_call")
 
@@ -74,122 +74,23 @@ async def evaluate_tool_call_policy(
     Returns a ToolCallDecision. The endpoint wrapper writes the audit
     row regardless of outcome so deny attempts stay traceable.
     """
-    rules_raw = await get_config("policy_rules")
-    rules: dict[str, Any] = {}
-    if rules_raw:
-        try:
-            rules = json.loads(rules_raw)
-        except json.JSONDecodeError:
-            _log.warning("policy_rules JSON malformed, treating as empty")
-            rules = {}
+    try:
+        rules = parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        error = policy_error_decision("policy_configuration_error")
+        return ToolCallDecision(allowed=False, reason=error["reason"])
 
-    tool_rules = rules.get("tool_rules")
-    if not isinstance(tool_rules, dict):
-        tool_rules = {}
-
-    tool_name: str | None = None
-    if isinstance(invocation, dict):
-        tn = invocation.get("tool_name")
-        if isinstance(tn, str) and tn:
-            tool_name = tn
-
-    # Legacy default-allow when no tool_rules configured. Operators who
-    # have never touched ADR-029 settings see no behaviour change.
-    if not tool_rules:
-        return ToolCallDecision(
-            allowed=True,
-            reason="no tool_rules configured (default-allow legacy mode)",
-        )
-
-    if not tool_name:
-        return ToolCallDecision(
-            allowed=False,
-            reason="invocation.tool_name missing",
-        )
-
-    if tool_name not in tool_rules:
-        return ToolCallDecision(
-            allowed=False,
-            reason=f"tool '{tool_name}' not in tool_rules (explicit-allow mode)",
-        )
-
-    rule = tool_rules[tool_name]
-    if not isinstance(rule, dict):
-        return ToolCallDecision(
-            allowed=False,
-            reason=f"tool_rules.{tool_name} entry is not a dict",
-        )
-
-    # Principal denylist beats allowlist (defense in depth).
-    denied_principals = rule.get("denied_principals", [])
-    if isinstance(denied_principals, list) and principal_id in denied_principals:
-        return ToolCallDecision(
-            allowed=False,
-            reason=f"principal '{principal_id}' in tool_rules.{tool_name}.denied_principals",
-        )
-
-    allowed_principals = rule.get("allowed_principals", [])
-    if isinstance(allowed_principals, list) and allowed_principals:
-        if principal_id not in allowed_principals:
-            return ToolCallDecision(
-                allowed=False,
-                reason=(
-                    f"principal '{principal_id}' not in "
-                    f"tool_rules.{tool_name}.allowed_principals"
-                ),
-            )
-
-    # Model check.
-    model_id: str | None = None
-    if isinstance(model, dict):
-        mid = model.get("id")
-        if isinstance(mid, str):
-            model_id = mid
-
-    allowed_models = rule.get("allowed_models", [])
-    if isinstance(allowed_models, list) and allowed_models:
-        if not model_id or model_id not in allowed_models:
-            return ToolCallDecision(
-                allowed=False,
-                reason=(
-                    f"model '{model_id}' not in "
-                    f"tool_rules.{tool_name}.allowed_models"
-                ),
-            )
-
-    # MCP server check.
-    server_id: str | None = None
-    if isinstance(invocation, dict):
-        sid = invocation.get("mcp_server_id")
-        if isinstance(sid, str):
-            server_id = sid
-
-    allowed_servers = rule.get("allowed_mcp_servers", [])
-    if isinstance(allowed_servers, list) and allowed_servers:
-        if not server_id or server_id not in allowed_servers:
-            return ToolCallDecision(
-                allowed=False,
-                reason=(
-                    f"mcp_server '{server_id}' not in "
-                    f"tool_rules.{tool_name}.allowed_mcp_servers"
-                ),
-            )
-
-    # All checks passed. Echo optional scope/rate_limit/obligations
-    # back to the Connector so the caller knows what constraints apply
-    # to the (now-allowed) tool invocation.
-    scope = rule.get("scope") if isinstance(rule.get("scope"), dict) else None
-    rate_limit = (
-        rule.get("rate_limit") if isinstance(rule.get("rate_limit"), dict) else None
-    )
-    obligations = (
-        rule.get("obligations") if isinstance(rule.get("obligations"), dict) else None
-    )
-
+    from mcp_proxy.policy.composition import tool_decision
+    invocation = invocation or {}
+    result = tool_decision(rules, {
+        "agent_id": principal_id, "principal_type": principal_type,
+        "tool_name": invocation.get("tool_name", ""),
+        "arguments": invocation.get("arguments", {}),
+        "mcp_server_id": invocation.get("mcp_server_id"),
+        "model_id": (model or {}).get("id"),
+    })
     return ToolCallDecision(
-        allowed=True,
-        reason=f"allowed by tool_rules.{tool_name}",
-        scope=scope,
-        rate_limit=rate_limit,
-        obligations=obligations,
+        allowed=result["decision"] == "allow", reason=result.get("reason", "allowed by operator policy"),
+        scope=result.get("scope"), rate_limit=result.get("rate_limit"),
+        obligations=result.get("obligations"),
     )

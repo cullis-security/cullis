@@ -32,9 +32,11 @@
             <code class="text-accent-400">opa build -t wasm</code> on Save and evaluates the
             resulting WebAssembly bundle in-process on every PDP decision
             (<code class="text-accent-400">/pdp/policy</code> and
-            <code class="text-accent-400">/v1/data/cullis/policy/*</code>). The legacy
-            Built-in Rules + Tool Rules tabs above continue to back-stop this surface: when
-            the Rego is absent or its evaluation fails at runtime, the allowlist wins.
+            <code class="text-accent-400">/v1/data/cullis/policy/*</code>). Built-in Rules + Tool Rules are evaluated before Rego on their respective surfaces.
+            Rego cannot override their denials.
+            A configured Rego policy that cannot be evaluated denies the request.
+            Tool execution checks capability, device tier and resource binding before Rego;
+            a Rego allow cannot grant a missing permission.
         </p>
         <p class="text-[11px] text-gray-600 mt-3">
             Rego must declare two rules under <code class="text-accent-400">package cullis.policy</code> —

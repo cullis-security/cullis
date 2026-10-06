@@ -59,7 +59,8 @@
                 </div>
                 <div>
                     <label class="block text-xs text-gray-500 uppercase tracking-wider mb-2">Required capability</label>
-                    <input type="text" name="required_capability" placeholder="sql.read (optional)"
+                    <label class="block text-xs text-gray-400"><input type="checkbox" name="requires_delegation"> Require an agent delegation and Rego policy</label>
+                    <input type="text" name="required_capability" placeholder="sql.read (required to execute)"
                            class="w-full px-3 py-2 bg-surface-950 border border-gray-700 rounded text-white">
                 </div>
                 <div class="flex items-center gap-2 mt-6">
@@ -163,6 +164,7 @@
                                 </div>
                                 <div>
                                     <label class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Required capability</label>
+                                    <label class="block text-xs text-gray-400"><input type="checkbox" name="requires_delegation" {% if r.requires_delegation %}checked{% endif %}> Require an agent delegation and Rego policy</label>
                                     <input type="text" name="required_capability" value="{{ r.required_capability or '' }}"
                                            class="w-full px-2 py-1 bg-surface-900 border border-gray-700 rounded text-white text-sm">
                                 </div>

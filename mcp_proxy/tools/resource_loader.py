@@ -182,7 +182,7 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
                 """
                 SELECT resource_id, org_id, name, description,
                        endpoint_url, auth_type, auth_secret_ref,
-                       required_capability, allowed_domains, enabled
+                       required_capability, requires_delegation, allowed_domains, enabled
                   FROM local_mcp_resources
                  WHERE enabled = 1
                 """
@@ -217,6 +217,7 @@ async def load_resources_into_registry(registry: ToolRegistry) -> int:
             name=name,
             description=row["description"] or "",
             required_capability=row["required_capability"] or "",
+            requires_delegation=bool(row["requires_delegation"]),
             allowed_domains=_parse_allowed_domains(row["allowed_domains"]),
             handler=_noop_placeholder,  # replaced below; must be a callable
             parameters_schema=upstream_schema,

@@ -51,26 +51,12 @@ admin_export_org_ca() {
 # Mastio actually completed first-boot.
 admin_read_org_id() {
     local val=""
-    val="$(smoke_compose exec -T mcp-proxy python3 -c "
+    val="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os
 import sys
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2  # type: ignore[import-not-found]
-        # asyncpg → sync URL conversion: keep what's after :// but drop
-        # the asyncpg dialect for the sync psycopg2 connect string.
-        import re
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute(\"SELECT value FROM proxy_config WHERE key='org_id'\")
-        row = cur.fetchone()
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        row = conn.execute(\"SELECT value FROM proxy_config WHERE key='org_id'\").fetchone()
+    row = query(\"SELECT value FROM proxy_config WHERE key='org_id'\")[0]
     print(row[0] if row else '')
 except Exception as exc:
     print('', end='')
@@ -100,7 +86,7 @@ admin_seed_ai_provider_creds() {
         -e SEED_API_BASE="$api_base" \
         -e SEED_API_KEY="$api_key" \
         -e PROXY_SKIP_MIGRATIONS=1 \
-        mcp-proxy python3 -c "
+        mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import asyncio, os, sys
 from mcp_proxy.db import init_db, upsert_ai_provider_creds
 async def _seed():

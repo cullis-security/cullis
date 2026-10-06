@@ -173,7 +173,7 @@ async def _list_resources(trust_domain: str) -> list[dict]:
                 """
                 SELECT r.resource_id, r.org_id, r.name, r.description,
                        r.endpoint_url, r.auth_type, r.auth_secret_ref,
-                       r.required_capability, r.allowed_domains, r.enabled,
+                       r.required_capability, r.requires_delegation, r.allowed_domains, r.enabled,
                        r.created_at, r.updated_at,
                        COALESCE(SUM(CASE WHEN b.revoked_at IS NULL THEN 1 ELSE 0 END), 0) AS active_count,
                        COUNT(b.binding_id) AS total_count
@@ -279,6 +279,7 @@ async def resources_create(request: Request):
     auth_type = _validate_auth_type(str(form.get("auth_type", "none")).strip())
     auth_secret_ref = str(form.get("auth_secret_ref", "")).strip() or None
     required_capability = str(form.get("required_capability", "")).strip() or None
+    requires_delegation = 1 if form.get("requires_delegation") == "on" else 0
     allowed_domains = _parse_allowed_domains(str(form.get("allowed_domains", "")))
     org_id = str(form.get("org_id", "")).strip() or None
     enabled = 1 if form.get("enabled") in ("1", "true", "on") else 0
@@ -292,11 +293,11 @@ async def resources_create(request: Request):
                     """
                     INSERT INTO local_mcp_resources (
                         resource_id, org_id, name, description, endpoint_url,
-                        auth_type, auth_secret_ref, required_capability,
+                        auth_type, auth_secret_ref, required_capability, requires_delegation,
                         allowed_domains, enabled, created_at, updated_at
                     ) VALUES (
                         :rid, :org, :name, :description, :endpoint_url,
-                        :auth_type, :auth_secret_ref, :required_capability,
+                        :auth_type, :auth_secret_ref, :required_capability, :requires_delegation,
                         :allowed_domains, :enabled, :ts, :ts
                     )
                     """
@@ -310,6 +311,7 @@ async def resources_create(request: Request):
                     "auth_type": auth_type,
                     "auth_secret_ref": auth_secret_ref,
                     "required_capability": required_capability,
+                    "requires_delegation": requires_delegation,
                     "allowed_domains": json.dumps(
                         allowed_domains, separators=(",", ":"), sort_keys=True,
                     ),
@@ -347,6 +349,7 @@ async def resources_update(resource_id: str, request: Request):
     auth_type = _validate_auth_type(str(form.get("auth_type", "none")).strip())
     auth_secret_ref = str(form.get("auth_secret_ref", "")).strip() or None
     required_capability = str(form.get("required_capability", "")).strip() or None
+    requires_delegation = 1 if form.get("requires_delegation") == "on" else 0
     allowed_domains = _parse_allowed_domains(str(form.get("allowed_domains", "")))
 
     async with get_db() as conn:
@@ -359,6 +362,7 @@ async def resources_update(resource_id: str, request: Request):
                        auth_type = :auth_type,
                        auth_secret_ref = :auth_secret_ref,
                        required_capability = :required_capability,
+                       requires_delegation = :requires_delegation,
                        allowed_domains = :allowed_domains,
                        updated_at = :ts
                  WHERE resource_id = :rid
@@ -371,6 +375,7 @@ async def resources_update(resource_id: str, request: Request):
                 "auth_type": auth_type,
                 "auth_secret_ref": auth_secret_ref,
                 "required_capability": required_capability,
+                "requires_delegation": requires_delegation,
                 "allowed_domains": json.dumps(
                     allowed_domains, separators=(",", ":"), sort_keys=True,
                 ),

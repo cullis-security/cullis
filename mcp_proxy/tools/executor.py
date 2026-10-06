@@ -72,6 +72,20 @@ async def _load_principal_capabilities(
     return set(agent.scope or [])
 
 
+async def _resource_requires_delegation(resource_id: str) -> bool:
+    """Read the requirement per call so another worker cannot use a stale grant."""
+    from sqlalchemy import text
+    from mcp_proxy.db import get_db
+    async with get_db() as conn:
+        row = (await conn.execute(text(
+            "SELECT requires_delegation FROM local_mcp_resources "
+            "WHERE resource_id = :rid AND enabled = 1"
+        ), {"rid": resource_id})).first()
+    if row is None:
+        raise ValueError("Resource unavailable")
+    return bool(row[0])
+
+
 async def run(
     request: ToolExecuteRequest,
     agent: TokenPayload,
@@ -135,134 +149,20 @@ async def run(
             execution_time_ms=duration_ms,
         )
 
-    # 2. Capability gate.
-    #
-    # Pre-#730 this block was guarded by ``principal_type == "agent"``,
-    # so user- and workload-typed principals silently bypassed the
-    # capability check on every builtin. The reasoning at the time
-    # (see ADR-020 + the CRIT-2 comment at step 2b below) was that
-    # typed principals authorise via ``local_agent_resource_bindings``
-    # instead of JWT scope. That's correct for **MCP resources** (the
-    # binding table is authoritative there) but it doesn't apply to
-    # builtins — builtins have no binding row, so "no binding check"
-    # meant "no check at all" for typed callers.
-    #
-    # PR #729 weaponised the gap by adding the first privileged
-    # builtin (``cullis_send_to_agent``). Subagent security review
-    # surfaced it post-merge. The hotfix:
-    #
-    # * Agent-typed callers: capability gate runs unchanged — same
-    #   coverage as before, for both builtins and MCP resources. The
-    #   existing CRIT-2 regression (``test_agent_principal_with_
-    #   binding_but_no_capability_denied``) pins this.
-    # * Typed callers (user / workload) on **builtins**: capability
-    #   gate now runs, sourced from
-    #   :func:`_load_principal_capabilities`. Today the helper just
-    #   wraps ``agent.scope``; future ADR-021 per-user grants + ADR-020
-    #   workload-binding richer claims plug in there, single point of
-    #   extension.
-    # * Typed callers on **MCP resources**: behaviour unchanged. The
-    #   binding gate at step 2b is the authoritative authz path
-    #   (ADR-007); capability stays optional metadata for discovery
-    #   filtering.
-    #
-    # Fail-closed: if ``_load_principal_capabilities`` raises (e.g.
-    # an ADR-021 user-store outage in a future iteration), the
-    # executor denies and audits "capability lookup failed". No
-    # silent grant.
+    # Every tool and principal must carry an explicit action capability.
+    # Resource binding is an additional permission, never a substitute.
     principal_type = getattr(agent, "principal_type", "agent")
-    capability_gate_applies = (
-        principal_type == "agent"
-        or (
-            principal_type in ("user", "workload")
-            and not tool_def.is_mcp_resource
-        )
-    )
-
-    # F-A-304 fail-closed gate (audit 2026-05-20).
-    #
-    # Pre-fix, ``if capability_gate_applies and tool_def.required_capability``
-    # silently SKIPPED the gate when a builtin was registered (or
-    # mutated) to carry an empty ``required_capability``. That is a
-    # default-allow on a code path that intends default-deny — the
-    # exact failure mode F-A-304 catalogues.
-    #
-    # Defense in depth: :meth:`ToolRegistry.register` raises at
-    # import time when a builtin lacks a capability, but the executor
-    # MUST NOT trust that invariant — anything routed through
-    # :meth:`ToolRegistry.register_definition` (DB migrations, test
-    # scaffolding, future plugin paths) can land an empty-capability
-    # builtin in the live registry. Reject here so the runtime path
-    # is the load-bearing default-deny.
-    #
-    # MCP resources are deliberately exempted: ADR-007 makes the
-    # binding table the authoritative authz path; empty capability
-    # on a resource is supported by design, but step 2b still gates
-    # execution behind ``has_active_binding``. We emit an explicit
-    # audit subtype just below so SOC can spot the
-    # default-allow-by-capability shape and confirm a binding gate
-    # is enforcing.
-    if (
-        capability_gate_applies
-        and not tool_def.is_mcp_resource
-        and not tool_def.required_capability
-    ):
-        duration_ms = _elapsed_ms(t0)
-        _log.error(
-            "Tool '%s' has no required_capability declared but is a "
-            "builtin (is_mcp_resource=False) — refusing execution. "
-            "Registration-time guard should prevent this; if you see "
-            "this in production, audit how the tool was registered.",
-            tool_name,
-        )
+    capability_gate_applies = True
+    if not isinstance(tool_def.required_capability, str) or not tool_def.required_capability.strip():
         await log_audit(
-            agent_id=agent.agent_id,
-            action="tool_execute",
-            tool_name=tool_name,
-            status="denied",
-            detail=(
-                "Tool missing capability declaration "
-                f"(principal_type={principal_type}); fail-closed "
-                "per F-A-304"
-            ),
-            request_id=request_id,
-            duration_ms=duration_ms,
+            agent_id=agent.agent_id, action="tool_execute", tool_name=tool_name,
+            status="denied", detail="Tool missing capability declaration",
+            request_id=request_id, duration_ms=_elapsed_ms(t0),
         )
         return ToolExecuteResponse(
-            request_id=request_id,
-            tool=tool_name,
-            status="error",
-            error=(
-                f"Forbidden: tool '{tool_name}' has no capability "
-                "declaration"
-            ),
-            execution_time_ms=duration_ms,
-            denied_reason_code=CAPABILITY_DENIED,
-        )
-
-    # F-A-304 recommendation #2: when an MCP resource carries no
-    # ``required_capability``, the binding gate at step 2b is the only
-    # RBAC check. Emit an explicit informational audit row so SOC can
-    # detect misconfigured resources whose authz collapses to binding
-    # alone. The decision is "allow" (the binding gate may still
-    # deny), but the row makes the default-allow-by-capability
-    # explicit instead of silent.
-    if (
-        capability_gate_applies
-        and tool_def.is_mcp_resource
-        and not tool_def.required_capability
-    ):
-        await log_audit(
-            agent_id=agent.agent_id,
-            action="policy.no_capability_required",
-            tool_name=tool_name,
-            status="allow",
-            detail=(
-                f"MCP resource '{tool_def.resource_id}' has no "
-                f"required_capability; authz delegated to binding "
-                f"table (principal_type={principal_type})"
-            ),
-            request_id=request_id,
+            request_id=request_id, tool=tool_name, status="error",
+            error="Forbidden: tool has no capability declaration",
+            denied_reason_code=CAPABILITY_DENIED, execution_time_ms=_elapsed_ms(t0),
         )
 
     if capability_gate_applies and tool_def.required_capability:
@@ -328,94 +228,6 @@ async def run(
                 execution_time_ms=duration_ms,
                 denied_reason_code=CAPABILITY_DENIED,
             )
-
-    # 2-rego. Operator Rego policy gate (tool_call surface).
-    #
-    # The capability gate above answers "may this principal call this
-    # CLASS of tool?". This gate lets the operator layer a content-aware
-    # ABAC rule on top — e.g. deny a specific ``customer_id`` / ``name``
-    # — through a Rego policy loaded from the dashboard. It evaluates the
-    # SAME ``cullis/policy/tool_call`` Rego (WASM) layer that the
-    # ``/v1/data/cullis/policy/tool_call`` bridge evaluates, now consulted
-    # INLINE on the agent's own tool-call path (the bridge is the external
-    # PDP-as-a-service surface; this is the internal enforcement point).
-    #
-    # PARITY CAVEAT: the bridge ALSO has a legacy ``tool_rules`` allowlist /
-    # blocklist (``blocked_tools`` / ``allowed_tools``, ADR-029) that runs
-    # as a fall-through when the Rego layer abstains. This gate consults
-    # ONLY the Rego WASM layer — it does NOT replicate that ``tool_rules``
-    # fall-through, which predates this gate (the executor never read
-    # ``tool_rules``). So a ``blocked_tools`` entry configured WITHOUT a
-    # compiled Rego is enforced on the bridge but NOT on the agent path.
-    # Follow-up: extend this gate to apply the ``tool_rules`` allowlist
-    # after a Rego ``None``, sharing the bridge's logic.
-    #
-    # Runs unconditionally (builtins + MCP resources), after the
-    # capability gate, so a principal lacking the capability still gets
-    # the more specific ``capability_denied`` first.
-    #
-    # Posture — backward compatible: ``try_rego_decision`` returns ``None``
-    # when no operator Rego is loaded, so deployments without a policy
-    # behave EXACTLY as before; only an explicit ``decision == "deny"``
-    # blocks. It also returns ``None`` on a Rego runtime error (soft
-    # fall-through, matching the session surface + the bridge), so a
-    # broken operator Rego cannot brick every previously-allowed call.
-    # Strict fail-closed on Rego eval errors is deliberate future work
-    # (see ``try_rego_decision`` docstring) and is called out for review.
-    from mcp_proxy.policy import try_rego_decision
-
-    rego_input = {
-        "agent_id": agent.agent_id,
-        "principal_type": principal_type,
-        "tool_name": tool_name,
-        "arguments": request.parameters,
-    }
-    try:
-        _rules_raw = await get_config("policy_rules")
-        _rego_rules = _json.loads(_rules_raw) if _rules_raw else {}
-        if not isinstance(_rego_rules, dict):
-            _rego_rules = {}
-    except Exception as _cfg_exc:  # noqa: BLE001
-        # Config read or JSON parse failed. Fall through to "no operator
-        # Rego" instead of breaking the call. The Rego layer is ADDITIVE
-        # over capability + binding (both still enforced below), so on a
-        # config-read error we degrade to the pre-feature posture — never
-        # to "no authorization". Catching broadly is deliberate: a narrow
-        # except would let a transient policy_rules read failure turn
-        # every tool call into an unhandled 500 (self-inflicted DoS).
-        _log.warning(
-            "policy_rules read failed (%s) — skipping Rego tool_call gate "
-            "for this call (capability + binding still enforced)",
-            type(_cfg_exc).__name__,
-        )
-        _rego_rules = {}
-    rego_decision = try_rego_decision(
-        _rego_rules, rego_input, surface="tool_call",
-    )
-    if rego_decision is not None and rego_decision.get("decision") == "deny":
-        duration_ms = _elapsed_ms(t0)
-        reason = rego_decision.get("reason") or "operator policy denied this tool call"
-        _log.warning(
-            "Rego policy denied tool '%s' for principal '%s': %s",
-            tool_name, agent.agent_id, reason,
-        )
-        await log_audit(
-            agent_id=agent.agent_id,
-            action="tool_execute",
-            tool_name=tool_name,
-            status="denied",
-            detail=f"Rego policy deny: {reason}",
-            request_id=request_id,
-            duration_ms=duration_ms,
-        )
-        return ToolExecuteResponse(
-            request_id=request_id,
-            tool=tool_name,
-            status="error",
-            error=f"Forbidden by operator policy: {reason}",
-            execution_time_ms=duration_ms,
-            denied_reason_code=POLICY_DENIED,
-        )
 
     # 2a. Tier gate (ADR-032 Decision E / F5).
     #
@@ -580,6 +392,59 @@ async def run(
                 ),
                 execution_time_ms=duration_ms,
             )
+
+    # 2c. Operator conditions run only after capability, tier and binding.
+    # Rego may constrain an authorized action, never grant a missing permission.
+    # Static tool rules and required delegations precede Rego on every surface.
+    from mcp_proxy.policy import (
+        parse_policy_rules, policy_error_decision,
+    )
+
+    from mcp_proxy.policy.composition import tool_decision
+
+    rego_input = {
+        "agent_id": agent.agent_id,
+        "principal_type": principal_type,
+        "tool_name": tool_name,
+        "arguments": request.parameters,
+        "mcp_server_id": tool_def.resource_id,
+    }
+    try:
+        requires_delegation = tool_def.requires_delegation
+        if tool_def.is_mcp_resource:
+            requires_delegation = (await _resource_requires_delegation(tool_def.resource_id)) or requires_delegation
+        _rego_rules = parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        # Unreadable config is not evidence that no operator policy exists.
+        rego_decision = policy_error_decision("policy_configuration_error")
+    else:
+        rego_decision = tool_decision(
+            _rego_rules, rego_input, requires_delegation=requires_delegation,
+        )
+    if rego_decision is not None and rego_decision.get("decision") == "deny":
+        duration_ms = _elapsed_ms(t0)
+        reason = rego_decision.get("reason") or "operator policy denied this tool call"
+        _log.warning(
+            "Operator policy denied tool '%s' for principal '%s': %s",
+            tool_name, agent.agent_id, reason,
+        )
+        await log_audit(
+            agent_id=agent.agent_id,
+            action="tool_execute",
+            tool_name=tool_name,
+            status="denied",
+            detail=f"Operator policy deny: {reason}",
+            request_id=request_id,
+            duration_ms=duration_ms,
+        )
+        return ToolExecuteResponse(
+            request_id=request_id,
+            tool=tool_name,
+            status="error",
+            error=f"Forbidden by operator policy: {reason}",
+            execution_time_ms=duration_ms,
+            denied_reason_code=POLICY_DENIED,
+        )
 
     # 3. Fetch secrets
     try:

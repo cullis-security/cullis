@@ -131,15 +131,10 @@ async def _handle_tools_list(req_id: Any, agent: TokenPayload) -> dict:
 
     tools_out: list[dict] = []
     for td in tool_registry.list_tools():
-        if td.is_mcp_resource:
-            # MCP resource: binding remains the per-tool gate after
-            # the method-level capability check above.
-            if td.resource_id not in bound:
-                continue
-        else:
-            # Builtin: capability-gated like /v1/ingress/tools.
-            if td.required_capability and td.required_capability not in agent_caps:
-                continue
+        if not tool_registry.has_capability(td.name, list(agent_caps)):
+            continue
+        if td.is_mcp_resource and td.resource_id not in bound:
+            continue
 
         tools_out.append({
             "name": td.name,
