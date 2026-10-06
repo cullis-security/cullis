@@ -61,6 +61,13 @@ BUNDLE_ALLOWLIST=(
   "docker-compose.postgres.yml"
   "proxy.env.example"
   "README.md"
+  "FIRST_AGENT.md"
+  "first-agent.py"
+  "LOCAL_DEMO.md"
+  "local-demo.py"
+  "local-demo-bootstrap.py"
+  "docker-compose.local-demo.yml"
+  "local-demo-nginx"
   "nginx"
 )
 
@@ -147,7 +154,7 @@ fi
 ok "  deploy.sh sources the helper"
 
 # 4. no runtime crud leaked.
-for forbidden in data nginx-certs certs proxy.env; do
+for forbidden in data nginx-certs certs proxy.env local-demo-state; do
   if [[ -e "$forbidden" ]]; then
     err "forbidden runtime artifact in tarball: $forbidden"
     exit 1

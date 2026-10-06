@@ -67,15 +67,21 @@ The script also:
 - Pulls the GHCR image and starts the stack
 - Waits for `/healthz` to return `200`
 
-## 3. First-boot wizard
+## 3. Create the administrator and connect an agent
 
 Open the dashboard URL printed by the deploy script (e.g. `https://<your-host>:9443/proxy/login`) in a browser. The browser will warn about the certificate — that is expected: the TLS cert is signed by your auto-generated Org CA, not a public CA. Accept the warning once, or import `./certs/org-ca.pem` (also exported to `./nginx-certs/org-ca.crt`) into your OS trust store.
 
-Complete the wizard:
+Create the **admin account**. For standalone Mastio, the separate broker
+setup wizard is not needed.
 
-1. Create the **admin account**
-2. Enroll the **first agent identity** (the dashboard walks you through CSR + cert issuance)
-3. Optionally, copy the agent PEMs to where your SDK code will read them
+Follow **`FIRST_AGENT.md` in the bundle** for the standard first-agent path:
+configure a model provider, run `first-agent.py connect` on the agent computer,
+approve the request in **Enrollments**, then run `check` and a first task.
+The agent generates its own identity and request-signing keys. The guide
+also covers selecting MCP tools and verifying resource access.
+
+This path uses the existing Python SDK and keeps TLS verification enabled.
+It does not require an administrator token or provider key on the agent host.
 
 ## 4. Verify
 
@@ -89,23 +95,16 @@ curl -k https://localhost:9443/readyz
 
 If `/readyz` returns `503`, jump to [Troubleshoot](#troubleshoot).
 
-## Enable chat (Anthropic API key)
+## Enable model access
 
-The Mastio includes an embedded AI gateway that powers the `/v1/llm/chat` endpoint your agents call via the SDK. Without a provider key, chat returns HTTP `503 provider_key_missing` — registry / MCP / audit keep working regardless.
+Open **Settings → AI Providers** in the dashboard. Configure Anthropic, OpenAI
+or Ollama, save the settings and test the connection. Keep the provider credentials on
+Mastio and use a model ID supported by the configured provider in the agent.
+Without a configured provider, model requests cannot complete; registry,
+MCP and audit can still operate independently.
 
-Open `proxy.env` and set:
-
-```bash
-MCP_PROXY_ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Then restart the bundle:
-
-```bash
-./deploy.sh --pull
-```
-
-Today only Anthropic is wired as upstream provider. OpenAI / Gemini are on the roadmap; setting `MCP_PROXY_AI_GATEWAY_PROVIDER` to anything other than `anthropic` returns HTTP `501` until the corresponding wiring lands. See the AI gateway block in `proxy.env.example` for the full list of tunables (backend, provider, sidecar URL, timeout).
+Assign **`llm.chat`** to agents that should call a model. The first-agent guide
+includes this permission in its approval step.
 
 ## Production deployment
 
