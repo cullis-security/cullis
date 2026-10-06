@@ -267,6 +267,9 @@ async def _handle_tsa(
         writer.close()
 
 
+TOOL_COUNTS: dict[str, int] = {}
+
+
 async def _handle_chat(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
 ) -> None:
@@ -274,6 +277,26 @@ async def _handle_chat(
         method, path, _headers, body = await _read_http_request(reader)
         if method == "GET" and path == "/health":
             writer.write(_http_response("200 OK", b"ok\n"))
+            return
+        if method == "GET" and path == "/tool-counts":
+            writer.write(_http_response("200 OK", json.dumps(TOOL_COUNTS).encode(), b"application/json"))
+            return
+        if method == "POST" and path == "/mcp":
+            req = json.loads(body)
+            if req.get("method") == "tools/list":
+                result = {"tools": [{"name": n, "inputSchema": {"type": "object"}}
+                                    for n in ("open_ticket", "issue_refund")]}
+            elif req.get("method") == "tools/call":
+                name = req["params"]["name"]
+                if name not in ("open_ticket", "issue_refund"):
+                    raise ValueError("Unknown fixture tool")
+                TOOL_COUNTS[name] = TOOL_COUNTS.get(name, 0) + 1
+                result = {"content": [{"type": "text", "text": "synthetic operation completed"}], "isError": False}
+            else:
+                raise ValueError("Unknown fixture method")
+            writer.write(_http_response("200 OK", json.dumps({
+                "jsonrpc": "2.0", "id": req.get("id"), "result": result,
+            }).encode(), b"application/json"))
             return
         if method == "POST" and path in (
             "/v1/chat/completions", "/chat/completions",

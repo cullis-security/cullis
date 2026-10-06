@@ -27,8 +27,8 @@ Save flow:
 Delete flow:
 
   Strips ``rego`` + ``rego_wasm_base64`` from the JSON document so
-  the engine's two-layer logic falls back to the legacy allowlist
-  on the next decision. The source is wiped from disk too (no
+  static rules remain active on the next decision. Resources requiring
+  delegation deny until Rego is restored. The source is wiped from disk too (no
   hidden retention).
 
 Routes:

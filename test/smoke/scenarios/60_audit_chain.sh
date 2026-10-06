@@ -24,22 +24,11 @@ SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 source "$SMOKE_LIB_DIR/_common.sh"
 
 # ── audit_log row count ────────────────────────────────────────────────────
-count="$(smoke_compose exec -T mcp-proxy python3 -c "
+count="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2, re
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM audit_log')
-        print(cur.fetchone()[0])
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        print(conn.execute('SELECT COUNT(*) FROM audit_log').fetchone()[0])
+    print(query('SELECT COUNT(*) FROM audit_log')[0][0])
 except Exception as exc:
     print(f'error:{exc}')
 " 2>/dev/null)"
@@ -53,22 +42,11 @@ fi
 log_pass "audit_log has ${count} row(s)"
 
 # ── chain_seq + row_hash populated on every row ─────────────────────────────
-missing="$(smoke_compose exec -T mcp-proxy python3 -c "
+missing="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2, re
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL')
-        print(cur.fetchone()[0])
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        print(conn.execute('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL').fetchone()[0])
+    print(query('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL')[0][0])
 except Exception as exc:
     print(f'error:{exc}')
 " 2>/dev/null)"
@@ -101,37 +79,14 @@ curl -sk -c "$cookie_jar" -o /dev/null \
     --data-urlencode "password=$pwd_val" \
     "$base/proxy/login" || die "dashboard login failed"
 
-# Pull CSRF token out of the cookie jar (cullis_session sets a JSON
-# blob; the simpler path is to GET the dashboard, scrape the meta tag,
-# then send the token in the X-CSRF-Token header).
-dashboard_html="$(curl -sk -b "$cookie_jar" "$base/proxy/" 2>/dev/null || true)"
-csrf_token="$(printf '%s' "$dashboard_html" | grep -oE 'csrf_token["[:space:]]*[:=][[:space:]"]*[A-Za-z0-9_-]+' 2>/dev/null \
-    | head -1 | sed -E 's/.*[:="]([A-Za-z0-9_-]+).*/\1/' 2>/dev/null || true)"
-
-if [[ -z "$csrf_token" ]]; then
-    log_warn "could not scrape CSRF token from dashboard — verify endpoint test skipped"
-    log_pass "audit chain in-process verify: SKIPPED (CSRF scrape failed, audit_log integrity already covered above)"
-    exit 0
-fi
-
-resp="$(curl -sk -b "$cookie_jar" \
-    -X POST \
-    -H "X-CSRF-Token: $csrf_token" \
-    -H 'Content-Type: application/json' \
-    "$base/proxy/audit/verify" 2>/dev/null || echo '{"ok":false,"error":"curl_failed"}')"
-
-ok_val="$(json_get "$resp" 'ok')"
-case "$ok_val" in
-    true|True)
-        log_pass "/proxy/audit/verify → ok=true (chain integrity verified)"
-        ;;
-    false|False)
-        die "/proxy/audit/verify → ok=false: $resp"
-        ;;
-    *)
-        log_warn "unexpected verify response: $resp"
-        # Don't die: the chain was already shown intact via direct DB
-        # query above. The dashboard verify path is a UX nicety.
-        log_pass "audit chain integrity confirmed via direct DB check"
-        ;;
-esac
+# The audit page renders the session CSRF token on the verify button.
+# The endpoint accepts form data, not an X-CSRF-Token JSON request.
+dashboard_html="$(curl -sk -f -b "$cookie_jar" "$base/proxy/audit")" || die "audit page fetch failed"
+csrf_token="$(printf '%s' "$dashboard_html" | grep -oE 'data-csrf="[a-f0-9]+"' | head -1 | cut -d'"' -f2)"
+[[ -n "$csrf_token" ]] || die "audit page missing CSRF token"
+resp="$(curl -sk -f -b "$cookie_jar" -X POST \
+    --data-urlencode "csrf_token=$csrf_token" "$base/proxy/audit/verify")" \
+    || die "dashboard audit verification request failed"
+[[ "$(json_get "$resp" 'ok')" == "True" || "$(json_get "$resp" 'ok')" == "true" ]] \
+    || die "dashboard audit verification did not confirm integrity"
+log_pass "/proxy/audit/verify → ok=true (both chains verified)"

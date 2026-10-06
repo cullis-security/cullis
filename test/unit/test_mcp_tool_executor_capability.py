@@ -51,7 +51,12 @@ _BUILTIN_CAP = "test.privileged"
 
 
 @pytest.fixture
-def clean_registry():
+def clean_registry(monkeypatch):
+    # Resource metadata store is readable, with delegation optional in this fixture.
+    monkeypatch.setattr(executor, "_resource_requires_delegation", AsyncMock(return_value=False))
+    # This isolated executor fixture has a readable store with no operator policy.
+    # Store failures and configured Rego are covered by the policy gate tests.
+    monkeypatch.setattr(executor, "get_config", AsyncMock(return_value=None))
     """Snapshot + restore the singleton registry to keep tests isolated."""
     saved = dict(tool_registry._tools)
     tool_registry._tools.clear()
@@ -265,15 +270,12 @@ async def test_load_principal_capabilities_sources_from_jwt_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_typed_principal_mcp_resource_not_capability_gated(
-    clean_registry, monkeypatch,
+@pytest.mark.parametrize("principal_type", ["user", "workload"])
+@pytest.mark.parametrize("has_capability", [False, True])
+async def test_typed_principal_mcp_resource_requires_capability(
+    clean_registry, monkeypatch, principal_type, has_capability,
 ) -> None:
-    """ADR-007 invariant: for MCP resources, the binding table is
-    authoritative. Capability is optional discovery-time metadata.
-    Even after the hotfix, typed callers on MCP resources are
-    gated by the binding table only — not by a capability the
-    JWT happens not to carry. (Agents continue to be gated by
-    BOTH on MCP resources; see CRIT-2 suite.)"""
+    """A resource binding never substitutes for the action capability."""
     handler = AsyncMock(return_value={"ok": True, "via": "mcp_resource"})
     tool_registry.register_definition(ToolDefinition(
         name="mcp_resource_with_cap",
@@ -286,8 +288,8 @@ async def test_typed_principal_mcp_resource_not_capability_gated(
     ))
 
     agent = _make_agent(
-        scope=[],   # no github.read — but for typed callers the gate skips
-        principal_type="user",
+        scope=["github.read"] if has_capability else [],
+        principal_type=principal_type,
     )
 
     # Active binding exists, so the binding gate at step 2b lets it through.
@@ -308,5 +310,7 @@ async def test_typed_principal_mcp_resource_not_capability_gated(
             secret_provider=_FakeSecretProvider(),
         )
 
-    assert resp.status == "success", (resp.status, resp.error)
-    handler.assert_awaited_once()
+    assert resp.status == ("success" if has_capability else "error")
+    assert handler.await_count == int(has_capability)
+    if not has_capability:
+        assert resp.denied_reason_code == "capability_denied"

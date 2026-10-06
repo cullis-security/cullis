@@ -26,7 +26,8 @@ INSUFFICIENT_TIER = "insufficient_tier"
 # principal — covers REST + JSON-RPC ingress symmetrically (CRIT-2 fix).
 MISSING_BINDING = "missing_binding"
 
-# Operator's Rego policy returned decision=="deny" for this tool call.
+# Operator's Rego policy denied this call, or policy configuration/evaluation
+# failed. The error reason distinguishes a policy error from an explicit deny.
 # Content-aware ABAC layered on top of the static capability+binding
 # gates — e.g. a rule on input.arguments (a specific customer_id/name).
 POLICY_DENIED = "policy_denied"

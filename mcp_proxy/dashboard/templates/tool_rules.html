@@ -58,10 +58,16 @@
             <tbody class="text-gray-300 font-mono">
                 {% for r in rules %}
                 <tr class="border-b border-gray-800/30 hover:bg-gray-800/20">
-                    <td class="py-2 px-2 align-top text-accent-400">{{ r.tool_name }}</td>
+                    <td class="py-2 px-2 align-top text-accent-400">{{ r.tool_name }}{% if r.delegations is not none %}
+                        <details class="mt-2"><summary class="text-gray-400">Agent delegations</summary>
+                            <pre class="text-xs whitespace-pre-wrap">{{ r.delegations | tojson(indent=2) }}</pre>
+                        </details>
+                        {% endif %}
+                    </td>
                     <td class="py-2 px-2 align-top text-[11px]">
                         {% if r.allowed_principals %}
                         <ul class="space-y-0.5">{% for p in r.allowed_principals %}<li>{{ p }}</li>{% endfor %}</ul>
+                        {% elif r.allowed_principals_present %}<span class="text-red-400">none</span>
                         {% else %}<span class="text-gray-600">any</span>{% endif %}
                     </td>
                     <td class="py-2 px-2 align-top text-[11px]">
@@ -96,7 +102,7 @@
         {% else %}
         <p class="text-xs text-gray-500 italic">
             No tool rules configured. With an empty list the tool-call gate runs in
-            legacy default-allow mode (every call is allowed). Add the first rule below
+            mode without additional tool rules (capability and binding still apply). Add the first rule below
             to switch to explicit-allow.
         </p>
         {% endif %}
@@ -106,7 +112,7 @@
     <div class="bg-surface-900/80 border border-gray-800/50 rounded-lg p-6 card-glow backdrop-blur-sm">
         <h3 class="text-sm font-semibold text-white uppercase tracking-wider mb-1">Add or update a rule</h3>
         <p class="text-xs text-gray-500 mb-5">
-            Saving with an existing tool name overwrites that rule. Lists accept comma or
+            Saving updates the list fields and preserves existing delegations. Lists accept comma or
             newline separation; each token is trimmed.
         </p>
 
@@ -152,6 +158,13 @@
                               class="w-full bg-surface-950 border border-gray-700/60 rounded px-3 py-2 text-xs text-gray-300 placeholder-gray-700 font-mono"></textarea>
                     <p class="text-[10px] text-gray-600 mt-1">Empty = any MCP server.</p>
                 </div>
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1.5">Agent delegations (JSON)</label>
+                <textarea name="delegations" rows="4" placeholder='{"acme::refund100": {"max_amount_cents": 10000}}'
+                          class="w-full bg-surface-950 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 font-mono"></textarea>
+                <p class="text-xs text-gray-500">Rego reads the authenticated agent's conditions as input.delegation. Blank preserves existing delegations; {} denies every agent. Enable the resource's delegation requirement to keep it protected even if this rule is deleted.</p>
             </div>
 
             <div class="flex items-center justify-end pt-2">

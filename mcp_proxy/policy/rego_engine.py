@@ -26,8 +26,8 @@ Two surfaces:
 Failure modes are explicitly fail-closed:
 
   * Compile error → :class:`RegoCompileError` — the dashboard surfaces
-    the message; the legacy allowlist path stays active until the
-    operator fixes the Rego.
+    the message; the previously saved policy remains active. If no policy
+    was saved before, the legacy allowlist remains active.
 
   * Runtime error (WASM trap, malformed input, missing
     ``data.cullis.policy.<surface>`` rule) → the caller sees the

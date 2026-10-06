@@ -34,6 +34,7 @@ class ToolDefinition:
     # PR-3 reads these to forward calls; builtins keep both as None.
     resource_id: str | None = None
     endpoint_url: str | None = None
+    requires_delegation: bool = False
 
     @property
     def is_mcp_resource(self) -> bool:
@@ -70,6 +71,7 @@ class ToolRegistry:
         allowed_domains: list[str] | None = None,
         description: str = "",
         parameters_schema: dict | None = None,
+        requires_delegation: bool = False,
     ) -> Callable:
         """Decorator to register a builtin tool handler function.
 
@@ -80,12 +82,8 @@ class ToolRegistry:
         for every authenticated principal. Refuse at registration so
         the regression is caught at import time, not in production.
 
-        MCP resources loaded from ``local_mcp_resources`` go through
-        :meth:`register_definition` instead, where empty capability is
-        permitted (the binding table is the authoritative authz path
-        per ADR-007). The executor emits an explicit audit subtype
-        when an MCP resource with empty capability is invoked so SOC
-        can detect misconfigured rows.
+        MCP resources loaded through register_definition are checked by the
+        executor as well: a missing capability declaration denies execution.
         """
         if not isinstance(capability, str) or not capability.strip():
             raise ValueError(
@@ -106,6 +104,7 @@ class ToolRegistry:
                 allowed_domains=allowed_domains or [],
                 handler=fn,
                 parameters_schema=parameters_schema,
+                requires_delegation=requires_delegation,
             )
             _log.info("Registered tool '%s' (capability=%s)", name, capability)
             return fn
@@ -150,31 +149,14 @@ class ToolRegistry:
     def has_capability(self, tool_name: str, agent_capabilities: list[str]) -> bool:
         """Check whether the agent has the capability required by the tool.
 
-        Semantics (F-A-304 fail-closed contract, audit 2026-05-20):
-
-        * Unknown tool name → ``False``.
-        * Builtin (``is_mcp_resource is False``) with empty
-          ``required_capability`` → ``False``. Registration-time guard
-          should prevent this state from existing in the first place;
-          treating it as fail-closed here is defense-in-depth for any
-          callsite that bypassed the decorator (e.g. direct
-          :meth:`register_definition` from tests or future migrations).
-        * MCP resource with empty ``required_capability`` → ``True``.
-          The binding table is the authoritative authz path per
-          ADR-007; capability stays optional discovery metadata.
-        * Tool with declared capability → membership check.
-
-        Note: the executor (``mcp_proxy/tools/executor.py``) is the
-        runtime enforcement point. This helper exists for
-        discovery-time filtering and is exercised by aggregator code
-        paths; the executor must independently enforce the same
-        contract.
+        Missing capability declarations deny for every tool, including MCP
+        resources. A binding never grants an action capability.
         """
         tool = self._tools.get(tool_name)
         if tool is None:
             return False
-        if not tool.required_capability:
-            return bool(tool.is_mcp_resource)
+        if not isinstance(tool.required_capability, str) or not tool.required_capability.strip():
+            return False
         return tool.required_capability in agent_capabilities
 
     # ------------------------------------------------------------------
@@ -247,6 +229,8 @@ class ToolRegistry:
                         )
                     else:
                         existing.required_capability = new_cap
+                if "requires_delegation" in spec:
+                    existing.requires_delegation = spec["requires_delegation"] is not False
                 if "allowed_domains" in spec:
                     existing.allowed_domains = spec["allowed_domains"]
             else:

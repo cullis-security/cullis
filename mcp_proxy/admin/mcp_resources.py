@@ -97,6 +97,7 @@ class MCPResourceCreate(BaseModel):
     auth_type: str = "none"
     auth_secret_ref: str | None = None
     required_capability: str | None = None
+    requires_delegation: bool = False
     allowed_domains: list[str] = Field(default_factory=list)
     org_id: str | None = None
     enabled: bool = True
@@ -109,6 +110,7 @@ class MCPResourceOut(BaseModel):
     description: str | None
     auth_type: str
     required_capability: str | None
+    requires_delegation: bool = False
     enabled: bool
     org_id: str | None
     created_at: str
@@ -126,7 +128,7 @@ async def list_resources():
             text(
                 """
                 SELECT resource_id, name, endpoint_url, description, auth_type,
-                       required_capability, enabled, org_id, created_at
+                       required_capability, requires_delegation, enabled, org_id, created_at
                   FROM local_mcp_resources
                  ORDER BY created_at DESC
                 """
@@ -140,6 +142,7 @@ async def list_resources():
             description=r["description"],
             auth_type=r["auth_type"],
             required_capability=r["required_capability"],
+            requires_delegation=bool(r["requires_delegation"]),
             enabled=bool(r["enabled"]),
             org_id=r["org_id"],
             created_at=r["created_at"],
@@ -182,11 +185,11 @@ async def create_resource(body: MCPResourceCreate):
                     """
                     INSERT INTO local_mcp_resources (
                         resource_id, org_id, name, description, endpoint_url,
-                        auth_type, auth_secret_ref, required_capability,
+                        auth_type, auth_secret_ref, required_capability, requires_delegation,
                         allowed_domains, enabled, created_at, updated_at
                     ) VALUES (
                         :rid, :org, :name, :description, :endpoint_url,
-                        :auth_type, :auth_secret_ref, :required_capability,
+                        :auth_type, :auth_secret_ref, :required_capability, :requires_delegation,
                         :allowed_domains, :enabled, :ts, :ts
                     )
                     """
@@ -200,6 +203,7 @@ async def create_resource(body: MCPResourceCreate):
                     "auth_type": auth_type,
                     "auth_secret_ref": body.auth_secret_ref,
                     "required_capability": body.required_capability,
+                    "requires_delegation": int(body.requires_delegation),
                     "allowed_domains": json.dumps(
                         allowed_domains, separators=(",", ":"), sort_keys=True,
                     ),
@@ -232,6 +236,7 @@ async def create_resource(body: MCPResourceCreate):
         description=body.description,
         auth_type=auth_type,
         required_capability=body.required_capability,
+        requires_delegation=body.requires_delegation,
         enabled=body.enabled,
         org_id=body.org_id,
         created_at=ts,

@@ -82,3 +82,31 @@ jobs:
             git ls-files imp/
             exit 1
           fi
+
+  smoke:
+    name: Authorization and audit smoke (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [sqlite, postgres]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run full smoke with real agent credentials
+        env:
+          SMOKE_TEST_BACKEND: ${{ matrix.backend }}
+        run: |
+          args=()
+          if [ "$SMOKE_TEST_BACKEND" = postgres ]; then args+=(--pg); fi
+          bash test/smoke/smoke.sh "${args[@]}" --json "$RUNNER_TEMP/smoke-results.json"
+      - name: Upload verdicts only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-verdicts-${{ matrix.backend }}
+          path: ${{ runner.temp }}/smoke-results.json
+          # State snapshots contain test credentials; do not publish them.

@@ -71,14 +71,11 @@ def _parse_csv_list(raw: str) -> list[str]:
 
 
 async def _read_policy_rules() -> dict:
-    rules_raw = await get_config("policy_rules")
-    if not rules_raw:
-        return {}
+    from mcp_proxy.policy import parse_policy_rules
     try:
-        return json.loads(rules_raw)
-    except json.JSONDecodeError:
-        _log.warning("policy_rules JSON malformed, treating as empty doc")
-        return {}
+        return parse_policy_rules(await get_config("policy_rules"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Policy configuration unavailable") from None
 
 
 async def _write_policy_rules(doc: dict) -> None:
@@ -102,6 +99,8 @@ async def tool_rules_page(request: Request):
         rules_list.append({
             "tool_name": tool_name,
             "allowed_principals": rule.get("allowed_principals") or [],
+            "allowed_principals_present": "allowed_principals" in rule,
+            "delegations": rule.get("delegations"),
             "denied_principals": rule.get("denied_principals") or [],
             "allowed_models": rule.get("allowed_models") or [],
             "allowed_mcp_servers": rule.get("allowed_mcp_servers") or [],
@@ -148,6 +147,24 @@ async def tool_rules_save(request: Request):
 
     doc = await _read_policy_rules()
     tool_rules = doc.get("tool_rules") if isinstance(doc.get("tool_rules"), dict) else {}
+    previous = tool_rules.get(tool_name, {})
+    # Preserve advanced conditions when editing only the list fields.
+    if isinstance(previous, dict):
+        for key in ("delegations", "require_delegation", "scope", "rate_limit", "obligations"):
+            if key in previous:
+                rule[key] = previous[key]
+    raw_delegations = str(form.get("delegations", "")).strip()
+    if raw_delegations:
+        try:
+            delegations = json.loads(raw_delegations)
+            if not isinstance(delegations, dict) or any(
+                not isinstance(v, dict) or not v for v in delegations.values()
+            ):
+                raise ValueError("Invalid delegation")
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Delegations must map principal IDs to non-empty objects") from None
+        rule["delegations"] = delegations
+        rule["require_delegation"] = True
     tool_rules[tool_name] = rule
     doc["tool_rules"] = tool_rules
     await _write_policy_rules(doc)

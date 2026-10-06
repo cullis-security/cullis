@@ -71,6 +71,8 @@ async def list_tools(
     Only tools whose required_capability is present in the agent's
     scope (JWT claim) are returned.
     """
+    from mcp_proxy.local.bindings import bound_resource_ids
+    bound = await bound_resource_ids(agent.agent_id, agent.principal_type)
     all_tools = tool_registry.list_tools()
     agent_caps = set(agent.scope)
 
@@ -82,7 +84,8 @@ async def list_tools(
             parameters_schema=t.parameters_schema,
         )
         for t in all_tools
-        if t.required_capability in agent_caps
+        if tool_registry.has_capability(t.name, list(agent_caps))
+        and (not t.is_mcp_resource or t.resource_id in bound)
     ]
 
     _log.debug(

@@ -23,26 +23,19 @@ SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 # shellcheck source=../lib/_agent.sh
 source "$SMOKE_LIB_DIR/_agent.sh"
 
+audit_agent="$(agent_enroll auditburst 'Audit burst fixture' '[]')"
+
 # Snapshot the row count pre-restart so we can compute the delta after
 # the burst.
-pre_count="$(smoke_compose exec -T mcp-proxy python3 -c "
+pre_count="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2, re
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        print(conn.cursor().execute('SELECT COUNT(*) FROM audit_log') or conn.cursor().fetchone()[0])
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        print(conn.execute('SELECT COUNT(*) FROM audit_log').fetchone()[0])
+    print(query('SELECT COUNT(*) FROM audit_log')[0][0])
 except Exception as exc:
     print(f'error:{exc}')
 " 2>/dev/null)"
-[[ "$pre_count" =~ ^[0-9]+$ ]] || { log_warn "pre_count unreadable ($pre_count) — defaulting to 0"; pre_count=0; }
+[[ "$pre_count" =~ ^[0-9]+$ ]] || die "pre_count unreadable"
 
 log_info "restarting Mastio with MASTIO_WORKERS=4"
 # Restart only the mcp-proxy + nginx so redis + mock-tsa + the state
@@ -55,21 +48,20 @@ if ! wait_http_ok "$(smoke_mastio_url)/health" 60; then
 fi
 log_pass "stack healthy with MASTIO_WORKERS=4"
 
-# ── Burst: 50 concurrent admin reads that each emit an audit row ────────────
-# /v1/admin/mastio-pubkey is the cheapest audited admin call — no body,
-# returns a fixed payload, writes one row per invocation. 50 calls × 4
-# workers stresses the chain retry path without overwhelming dev hardware.
+# Use an audited mutation on a dedicated fixture. Public-key GETs do not
+# emit audit records and cannot exercise concurrent chain writers.
 base="$(smoke_mastio_url)"
 secret="$(smoke_admin_secret)"
-log_info "firing 50 concurrent /v1/admin/mastio-pubkey calls"
+log_info "firing 50 concurrent capability updates on the audit fixture"
 
 burst_pids=()
 fail_log="$(mktemp)"
 for i in $(seq 1 50); do
     (
         if ! curl -sk -f -o /dev/null \
-            -H "X-Admin-Secret: $secret" \
-            "$base/v1/admin/mastio-pubkey"; then
+            -X PATCH -H "X-Admin-Secret: $secret" \
+            -H "Content-Type: application/json" -d '{"capabilities":[]}' \
+            "$base/v1/admin/agents/$audit_agent/capabilities"; then
             echo "call $i failed" >> "$fail_log"
         fi
     ) &
@@ -83,42 +75,40 @@ done
 
 if [[ -s "$fail_log" ]]; then
     fails="$(wc -l <"$fail_log")"
-    if [[ $fails -gt 5 ]]; then
-        log_warn "burst had $fails failed calls — see $fail_log"
-        cat "$fail_log" >&2 || true
-        die "multi-worker burst failed too many calls (${fails}/50)"
-    fi
-    log_warn "burst had $fails sporadic failures (tolerated, <=5)"
+    die "multi-worker burst failed ${fails}/50 calls"
+
 fi
 rm -f "$fail_log"
 
+# Batched audit is asynchronous (one-second flush). Require all 50 fixture
+# events within a bounded deadline; unrelated audit activity cannot satisfy it.
+smoke_compose exec -T -e "AUDIT_BURST_AGENT=$audit_agent" mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
+$(cat <<'PYCODE'
+import time
+sql = "SELECT COUNT(*) FROM audit_log WHERE action = 'agent.capabilities_patched' AND detail = ?"
+detail = "agent_id=" + os.environ["AUDIT_BURST_AGENT"] + " capabilities=[]"
+deadline = time.monotonic() + 10
+while True:
+    count = query(sql, (detail,))[0][0]
+    if count == 50:
+        print("50/50 fixture mutations persisted in audit")
+        break
+    if count > 50 or time.monotonic() >= deadline:
+        raise SystemExit(f"Expected exactly 50 fixture audit rows, found {count}")
+    time.sleep(0.2)
+PYCODE
+)"
+
 # ── Verify the chain is intact ──────────────────────────────────────────────
-result="$(smoke_compose exec -T mcp-proxy python3 -c "
+result="$(smoke_compose exec -T mcp-proxy python3 -c "$(cat "$SMOKE_ROOT/probes/read_db.py")
 import os
 url = os.environ.get('MCP_PROXY_DATABASE_URL', '')
 try:
-    if url.startswith('postgresql'):
-        import psycopg2, re
-        sync_url = re.sub(r'^postgresql\+asyncpg://', 'postgresql://', url)
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM audit_log')
-        total = cur.fetchone()[0]
-        cur.execute('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL')
-        nulls = cur.fetchone()[0]
-        cur.execute('SELECT MAX(chain_seq), COUNT(DISTINCT chain_seq) FROM audit_log WHERE chain_seq IS NOT NULL')
-        row = cur.fetchone()
-        max_seq, distinct_seq = row
-        print(f'{total}|{nulls}|{max_seq or 0}|{distinct_seq or 0}')
-    else:
-        import sqlite3
-        path = url.replace('sqlite+aiosqlite:////', '/').replace('sqlite+aiosqlite:///', '/')
-        conn = sqlite3.connect(path)
-        total = conn.execute('SELECT COUNT(*) FROM audit_log').fetchone()[0]
-        nulls = conn.execute('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL').fetchone()[0]
-        max_seq = conn.execute('SELECT MAX(chain_seq) FROM audit_log WHERE chain_seq IS NOT NULL').fetchone()[0] or 0
-        distinct = conn.execute('SELECT COUNT(DISTINCT chain_seq) FROM audit_log WHERE chain_seq IS NOT NULL').fetchone()[0] or 0
-        print(f'{total}|{nulls}|{max_seq}|{distinct}')
+    total = query('SELECT COUNT(*) FROM audit_log')[0][0]
+    nulls = query('SELECT COUNT(*) FROM audit_log WHERE chain_seq IS NULL OR row_hash IS NULL')[0][0]
+    max_seq = query('SELECT MAX(chain_seq) FROM audit_log WHERE chain_seq IS NOT NULL')[0][0] or 0
+    distinct = query('SELECT COUNT(DISTINCT chain_seq) FROM audit_log WHERE chain_seq IS NOT NULL')[0][0] or 0
+    print(f'{total}|{nulls}|{max_seq}|{distinct}')
 except Exception as exc:
     print(f'error:{exc}')
 " 2>/dev/null)"
@@ -127,16 +117,16 @@ except Exception as exc:
 IFS='|' read -r total nulls max_seq distinct_seq <<<"$result"
 delta=$(( total - pre_count ))
 
-# Allow up to 5 legacy NULL rows from earlier scenarios (pre-trigger).
-if [[ "$nulls" -gt 5 ]]; then
+# Fresh smoke state has no legacy rows; every audit event must be chained.
+if [[ "$nulls" -ne 0 ]]; then
     die "post-burst: ${nulls} rows have NULL chain_seq/row_hash — multi-worker writer broke chain"
 fi
 
 # Burst should have added at LEAST as many rows as there were
 # successful calls (some calls may write multiple rows: auth check +
 # the actual admin call). Don't assert exact count.
-if [[ "$delta" -lt 30 ]]; then
-    log_warn "burst delta=${delta} is low — multi-worker may have dropped audit rows"
+if [[ "$delta" -lt 50 ]]; then
+    die "burst delta=${delta}: missing audit rows from 50 successful writes"
 fi
 
 # distinct_seq must == count of non-null chain_seq rows (no duplicate
@@ -147,3 +137,6 @@ if [[ "$distinct_seq" -ne "$non_null" ]]; then
 fi
 
 log_pass "multi-worker chain integrity OK (delta=${delta}, max_seq=${max_seq}, distinct=${distinct_seq})"
+
+# Recompute hashes after the concurrent writes, not only uniqueness/count.
+bash "$SMOKE_ROOT/scenarios/80_audit_verify.sh"

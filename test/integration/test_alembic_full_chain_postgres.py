@@ -42,6 +42,7 @@ What it pins (and why each assertion exists):
 """
 from __future__ import annotations
 
+from pathlib import Path
 import asyncio
 
 import pytest
@@ -99,7 +100,10 @@ def test_full_chain_applies_clean_against_asyncpg(pg_test_url):
                 text("SELECT version_num FROM alembic_version"))).all()
             assert len(version_rows) == 1
             head = version_rows[0][0]
-            assert head.startswith("0043") or head.startswith("0042"), \
+            from alembic.config import Config
+            from alembic.script import ScriptDirectory
+            config = Config(str(Path(__file__).resolve().parents[2] / "mcp_proxy/alembic.ini"))
+            assert head == ScriptDirectory.from_config(config).get_current_head(), \
                 f"alembic_version not at head: {head!r}"
             columns = (await conn.execute(text(
                 "SELECT column_name FROM information_schema.columns "

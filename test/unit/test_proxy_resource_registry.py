@@ -333,3 +333,28 @@ async def test_load_resources_null_required_capability(tmp_path):
         await dispose_db()
 
     assert registry.get("anon").required_capability == ""
+
+
+@pytest.mark.asyncio
+async def test_delegation_requirement_persists_and_is_read_fresh(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from mcp_proxy.tools.executor import _resource_requires_delegation
+    await dispose_db()
+    await init_db(f"sqlite+aiosqlite:///{tmp_path / 'delegation.db'}")
+    monkeypatch.setattr("mcp_proxy.tools.resource_loader._fetch_upstream_schema", AsyncMock(return_value=None))
+    try:
+        await _seed_resource(resource_id="sensitive", name="refund", required_capability="refunds.issue")
+        assert await _resource_requires_delegation("sensitive") is False
+        async with get_db() as conn:
+            await conn.execute(text("UPDATE local_mcp_resources SET requires_delegation = 1 WHERE resource_id = 'sensitive'"))
+        # No registry reload: a worker with old metadata must see the requirement.
+        assert await _resource_requires_delegation("sensitive") is True
+        registry = ToolRegistry()
+        await load_resources_into_registry(registry)
+        assert registry.get("refund").requires_delegation is True
+        async with get_db() as conn:
+            await conn.execute(text("UPDATE local_mcp_resources SET enabled = 0 WHERE resource_id = 'sensitive'"))
+        with pytest.raises(ValueError, match="Resource unavailable"):
+            await _resource_requires_delegation("sensitive")
+    finally:
+        await dispose_db()
