@@ -157,7 +157,7 @@ banner "Build + push Docker image"
 # IMAGE convention: GHCR tag is the bare version (no ``v`` prefix).
 # Git tag is ``mastio-v${VERSION}``. See feedback/memory note
 # ``mastio-release-tag-convention``.
-docker build -t "${IMAGE_REPO}:${VERSION}" -f mcp_proxy/Dockerfile .
+docker build --build-arg VERSION="$VERSION" -t "${IMAGE_REPO}:${VERSION}" -f mcp_proxy/Dockerfile .
 ok "  built ${IMAGE_REPO}:${VERSION}"
 
 docker tag "${IMAGE_REPO}:${VERSION}" "${IMAGE_REPO}:latest"

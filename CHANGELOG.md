@@ -12,7 +12,18 @@ flow until the next `## ` heading.
 
 ## [Unreleased]
 
-Polish on `main` accumulating for the next minor. No release tag is cut for each individual patch any more; release cadence is intentionally throttled to one minor every 2-3 weeks plus emergency-only patches, matching the practice of comparable alpha-stage open-core projects.
+Changes for the next Mastio release will be collected here.
+
+## [v0.7.0] — Local agent demo, authorization hardening and audit controls — 2026-10-13
+
+Adds an isolated local agent demo to the downloadable bundle, makes authorization checks cumulative, and strengthens production authentication, key storage and audit controls. This is a Mastio release; the Python SDK keeps its separate release version.
+
+### Upgrade notes
+
+- **Explicit tool capabilities are required** (#1084). Tools and MCP resources without a declared capability now deny execution. Add capabilities and grants before upgrading; bindings are still required. Static denials take precedence over Rego, and malformed policy configuration or failed Rego evaluation denies access. Review existing rules against [the policy upgrade guide](https://github.com/cullis-security/cullis/blob/mastio-v0.7.0/site/src/content/docs/operate/rego-policies.md#upgrade-behavior).
+- **Production LOCAL_TOKEN authentication requires DPoP** (#1065). Standalone production enables this automatically when no posture was explicitly configured. An explicit `MCP_PROXY_LOCAL_TOKEN_REQUIRE_DPOP=false` now prevents production boot unless the operator declares a temporary migration exception with `MCP_PROXY_LOCAL_TOKEN_DPOP_INSECURE_OK=true`.
+- **Preserve the database encryption key and Vault data during upgrades.** Legacy Mastio signing keys are encrypted on boot when a master key is configured (#1067). Changing the master requires the [rewrap procedure](https://github.com/cullis-security/cullis/blob/mastio-v0.7.0/docs/operate/master-key-rotation.md), not simply replacing the environment value (#1070). The disaster-recovery guide now makes persistent Vault storage an explicit production prerequisite (#1066).
+- **Redis container names follow the Compose project** (#1086). Independent bundle installations no longer collide with a globally named Redis container. The service hostname remains `redis`; update any external scripts that relied on the old container name.
 
 ### Breaking — production deployments using `culk_*` user API tokens
 
@@ -23,6 +34,28 @@ Polish on `main` accumulating for the next minor. No release tag is cut for each
 ### Audit
 
 - **Audit durability posture is explicit.** The batched audit chain (the default write path) has a bounded crash-loss window: on SIGKILL/OOM/power loss the queued tail — up to `MCP_PROXY_AUDIT_CHAIN_BATCH_SIZE` rows or `MCP_PROXY_AUDIT_CHAIN_FLUSH_INTERVAL_S` seconds — is lost, and the loss is **not detectable by chain verification** (hashes are computed at flush time, so the chain stays contiguous). This was previously documented only in source comments. Now: (a) threat model §2.4 states the boundary and the external cross-check it requires; (b) Mastio declares the active posture at boot (`AUDIT_DURABILITY:` log line); (c) the new `MCP_PROXY_AUDIT_CHAIN_DURABLE=true` opts into per-row durable writes — every row hashed + INSERTed before the request proceeds, write failures surfacing per `MCP_PROXY_AUDIT_FAIL_DENY` — at the cost of the batched path's throughput headroom. SIGTERM/graceful shutdown was and remains loss-free (the shutdown drains the queue).
+- **Offline verification and export for the primary `audit_log` chain** (#1077), alongside the existing chain verifier. The verifier's `--require-anchors` floor excludes mock anchors (#1063, #1064).
+
+### Bundle and local demo
+
+- **Local demo with real inference** (#1085). `local-demo.py` prepares a local Ollama model, starts Mastio and an agent in isolated Docker networks, and guides enrollment through administrator approval. The runtime confines agent access to Mastio's TLS endpoint and blocks direct model access and outbound Internet access. Preparation downloads the required artifacts; the default model is approximately 400 MB. State, identities and trust survive restart. See [LOCAL_DEMO.md](https://github.com/cullis-security/cullis/blob/mastio-v0.7.0/packaging/mastio-bundle/LOCAL_DEMO.md).
+- The bundle includes `first-agent.py` and its enrollment, authentication and chat instructions. Async database dependencies are included in clean builds (#1084).
+- The production Compose memory limit increases from 512 MB to 2 GB (#1062); Helm generates the DPoP nonce secret per installation (#1071). Release image builds now receive the requested version explicitly.
+
+### Authorization and dashboard
+
+- **Required per-agent delegations** (#1084). Sensitive resources can persist `requires_delegation` independently of their rules. Execution requires the declared capability, binding, applicable device tier, static conditions, delegation and Rego approval. Removing a required delegation or its policy denies access. Delegation conditions are separate from caller-supplied arguments.
+- **Dashboard write access is centrally enforced** for non-writer roles (#1083). Rotated organization CA keys go through KMS, and newly minted user tokens no longer appear in redirect URLs (#1081).
+
+### AI gateway
+
+- **Per-agent cumulative token budgets** and dashboard usage views by agent and provider (#1073, #1074). Budget enforcement reserves capacity at admission, accounts for streamed usage and preserves counters during seeding (#1082).
+- Blocking CPU and DNS operations move off the async event loop (#1078).
+
+### Validation
+
+- CI now includes Ruff and regression coverage for cumulative authorization, policy failures and delegation persistence. SQLite and PostgreSQL smoke suites exercise authorization, audit verification and multi-worker behavior (#1079, #1084).
+- Local demo acceptance checks real inference, enrollment, restart persistence, TCP and DNS isolation, and nginx privilege restrictions (#1085).
 
 ## [v0.6.6] — Security super-audit + production-shape resilience hardening — 2026-06-05
 
