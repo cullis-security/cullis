@@ -15,6 +15,16 @@ with every tunable and operations runbook, lives at
 
 ## Quickstart
 
+**Want to evaluate with a local model? Follow [Local model demo](LOCAL_DEMO.md).**
+It prepares Mastio, Ollama and an agent in a separate local environment, with
+automatic model configuration and one explicit agent approval. Use synthetic data.
+
+**First installation? Follow [Mastio and your first autonomous agent](FIRST_AGENT.md).**
+It covers the model provider, administrator approval, an agent connection
+check, and a bounded task using explicitly selected MCP tools. The bundle
+includes `first-agent.py`; Python and the Cullis SDK are needed only on the
+agent computer.
+
 ```bash
 cd cullis-mastio-bundle/
 ./deploy.sh
@@ -22,8 +32,8 @@ cd cullis-mastio-bundle/
 
 `deploy.sh` prints the dashboard URL it picked for your host. Open it
 (the browser warns: TLS is signed by your auto-generated Org CA, not a
-public CA, accept once), complete the first-boot wizard, and enroll your
-first agent.
+public CA), create the administrator account and follow `FIRST_AGENT.md`.
+The broker setup wizard is not required for standalone Mastio.
 
 To grab a fresh download from scratch, see <https://cullis.io/download/>,
 that page tracks the current rc / stable release.
@@ -31,7 +41,7 @@ that page tracks the current rc / stable release.
 ## Enable chat
 
 Configure your LLM provider from the dashboard: **Settings → AI Providers**
-(`/proxy/ai-providers`). Add a key, hit **Test**, save. Registry, MCP, and
+(`/proxy/ai-providers`). Add the provider settings, **Save**, then **Test**. Registry, MCP, and
 audit work without it; only chat completion needs a provider. Until one is
 configured, chat returns `503 provider_not_configured`.
 

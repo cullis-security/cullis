@@ -23,17 +23,21 @@
             <p class="text-xs text-gray-600 mt-0.5">
                 {{ pending | length }} awaiting review
                 <span class="text-gray-700 mx-1">&middot;</span>
-                Connector device-code requests
+                Agent and Connector requests
             </p>
         </div>
     </div>
 
     <!-- Context banner -->
     <div class="mb-6 p-4 bg-surface-900/60 border border-gray-800/50 rounded-lg text-xs text-gray-500 leading-relaxed">
-        Connector clients generate a keypair locally and submit the public key
-        plus self-declared identity. Approve a request to issue an Org-CA signed
-        certificate for the supplied public key and provision the agent in this
-        proxy. Rejection is permanent — the requester must start a new session.
+        Agents and Connector clients request access from their own computer.
+        Approve a request you recognize and choose what it may access.
+        Names and emails are supplied by the requester; verify the request's
+        origin before approving it. Private keys stay on the requesting computer.
+        For the bundle's first-agent example, assign
+        <code>llm.chat, mcp.tools.list</code>. To use a tool, also assign its
+        required capability and grant its resource binding in Backends.
+        Rejection is permanent for this request.
     </div>
 
     <!-- Pending table -->
