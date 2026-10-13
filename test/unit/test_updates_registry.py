@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import types
+from uuid import uuid4
 
 import pytest
 
@@ -20,7 +21,7 @@ from mcp_proxy.updates import registry as registry_mod
 from mcp_proxy.updates.base import Migration
 
 
-# Unique package name per pytest-xdist worker keeps ``_iter_subclasses``
+# Unique package name per test keeps ``_iter_subclasses``
 # traversal isolated — the real ``mcp_proxy.updates.migrations`` is
 # empty in PR 1, so any class whose ``__module__`` starts with this
 # fake package name is picked up by ``discover`` and nothing else is.
@@ -37,7 +38,8 @@ def fake_pkg(monkeypatch):
     leak into the current test's ``discover()`` call — they match a
     stale package prefix the registry does not scan.
     """
-    pkg_name = f"{_FAKE_PKG_NAME}_{id(monkeypatch)}"
+    # Object IDs can be reused while earlier migration classes are still alive.
+    pkg_name = f"{_FAKE_PKG_NAME}_{uuid4().hex}"
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = []  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, pkg_name, pkg)
@@ -91,6 +93,22 @@ def _fixture_cls(
 def test_discover_empty(fake_pkg):
     # No migrations registered — discover returns [].
     assert registry_mod.discover() == []
+
+
+def test_fixture_isolates_surviving_migrations():
+    # Reuse the patch object to model allocator reuse deterministically, while
+    # retaining the earlier class as can happen before cyclic GC runs.
+    with pytest.MonkeyPatch.context() as patch:
+        earlier_pkg = fake_pkg.__wrapped__(patch)
+        earlier = _fixture_cls(earlier_pkg, "HitTarget", "2099-01-01-hit")
+        patch.undo()
+        current_pkg = fake_pkg.__wrapped__(patch)
+        current = _fixture_cls(current_pkg, "HitTarget", "2099-01-01-hit")
+
+        result = registry_mod.discover()
+        assert len(result) == 1
+        assert type(result[0]) is current
+        assert earlier in Migration.__subclasses__()
 
 
 def test_discover_single_migration(fake_pkg):
