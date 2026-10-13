@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass, field
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -53,7 +54,7 @@ def fake_pkg(monkeypatch):
     but match a stale package prefix).
     """
     pkg_name = (
-        f"mcp_proxy.updates.migrations._boot_testfixtures_{id(monkeypatch)}"
+        f"mcp_proxy.updates.migrations._boot_testfixtures_{uuid4().hex}"
     )
     pkg = types.ModuleType(pkg_name)
     pkg.__path__ = []  # type: ignore[attr-defined]

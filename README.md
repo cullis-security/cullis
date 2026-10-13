@@ -34,7 +34,7 @@ Pull the Mastio bundle, enroll an agent, install the SDK, run an agent loop. The
 
 ```bash
 # 1. Pull and deploy the Mastio bundle.
-curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.6.6/cullis-mastio-bundle.tar.gz | tar xz
+curl -L https://github.com/cullis-security/cullis/releases/download/mastio-v0.7.0/cullis-mastio-bundle.tar.gz | tar xz
 cd cullis-mastio-bundle && ./deploy.sh
 
 # 2. Open the dashboard URL the deploy script prints (auto-detected per host:
@@ -173,7 +173,7 @@ Alpha. The Mastio runs end-to-end on a laptop and ships from a public release tr
 
 | Component | Latest | What it is |
 |---|---|---|
-| **Cullis Mastio** | [`mastio-v0.6.6`](https://github.com/cullis-security/cullis/releases/tag/mastio-v0.6.6) | Org gateway, agent CA, Rego + allowlist policy engine, audit chain, MCP reverse proxy, embedded AI gateway, OPA Data API + CloudEvents bridge for external data planes |
+| **Cullis Mastio** | [`mastio-v0.7.0`](https://github.com/cullis-security/cullis/releases/tag/mastio-v0.7.0) | Org gateway, agent CA, Rego + allowlist policy engine, audit chain, MCP reverse proxy, embedded AI gateway, OPA Data API + CloudEvents bridge for external data planes |
 | **Cullis SDK** | [`cullis-sdk 0.2.1`](https://pypi.org/project/cullis-sdk/) | Python client used by autonomous agents to talk to Mastio. Supports `from_identity_dir` (plain file), `from_systemd_credentials` (Linux production tmpfs delivery), and `cullis_httpx_client` drop-in for vanilla Anthropic/OpenAI SDKs |
 
 Use Cullis in evaluation, integration, and internal deploys. The community release is the only release; there is no commercial tier today. Feedback, bug reports, and PRs in the public repo.
