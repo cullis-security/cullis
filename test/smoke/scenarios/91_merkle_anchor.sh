@@ -29,6 +29,8 @@ SCENARIO_TAG="91_merkle_anchor"
 SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)"
 # shellcheck source=../lib/_common.sh
 source "$SMOKE_LIB_DIR/_common.sh"
+# shellcheck source=../lib/_merkle.sh
+source "$SMOKE_LIB_DIR/_merkle.sh"
 
 
 # ── Step 1: wait for the first Merkle anchor row ───────────────────
@@ -59,9 +61,7 @@ log_pass "merkle watcher emitted ${anchors} anchor(s) within 60s"
 ADMIN_SECRET="$(smoke_admin_secret)"
 NGINX_URL="$(smoke_mastio_url)"
 
-response="$(curl -sk -X GET \
-    -H "X-Admin-Secret: ${ADMIN_SECRET}" \
-    "${NGINX_URL}/v1/admin/audit/merkle/anchors?limit=5")"
+response="$(merkle_get '/v1/admin/audit/merkle/anchors?limit=5' 200 "$ADMIN_SECRET")"
 
 # Parse the JSON inside the Mastio container — no host jq needed.
 parsed="$(printf '%s' "$response" | smoke_compose exec -T mcp-proxy \
@@ -93,9 +93,7 @@ if (( end > start )); then
     target_seq=$(( start + 1 ))
 fi
 
-proof_response="$(curl -sk -X GET \
-    -H "X-Admin-Secret: ${ADMIN_SECRET}" \
-    "${NGINX_URL}/v1/admin/audit/merkle/proof/${target_seq}")"
+proof_response="$(merkle_get "/v1/admin/audit/merkle/proof/${target_seq}" 200 "$ADMIN_SECRET")"
 
 proof_parse="$(printf '%s' "$proof_response" | smoke_compose exec -T mcp-proxy \
     python3 -c "
@@ -137,18 +135,10 @@ log_pass "verify_inclusion replay PASSED — Phase 0 math agrees with persisted 
 
 # ── Step 5: negative — chain_seq outside anchored range → 404 ─────
 unanchored_seq=$(( end + 10000 ))
-http_status="$(curl -sk -o /dev/null -w '%{http_code}' \
-    -H "X-Admin-Secret: ${ADMIN_SECRET}" \
-    "${NGINX_URL}/v1/admin/audit/merkle/proof/${unanchored_seq}")"
-[[ "$http_status" == "404" ]] \
-    || die "unanchored chain_seq=${unanchored_seq} returned ${http_status}, expected 404"
+merkle_get "/v1/admin/audit/merkle/proof/${unanchored_seq}" 404 "$ADMIN_SECRET" >/dev/null
 log_pass "unanchored chain_seq correctly returned 404"
 
 
 # ── Step 6: negative — wrong admin secret → 403 ──────────────────
-http_status="$(curl -sk -o /dev/null -w '%{http_code}' \
-    -H "X-Admin-Secret: wrong-secret" \
-    "${NGINX_URL}/v1/admin/audit/merkle/anchors")"
-[[ "$http_status" == "403" ]] \
-    || die "wrong admin secret returned ${http_status}, expected 403"
+merkle_get '/v1/admin/audit/merkle/anchors' 403 wrong-secret >/dev/null
 log_pass "wrong admin secret correctly returned 403"
